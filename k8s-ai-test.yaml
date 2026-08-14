@@ -1,0 +1,41 @@
+# k8s-ai configuration
+kubernetes:
+  # 留空则使用 KUBECONFIG 环境变量或默认 ~/.kube/config
+  kubeconfig: ""
+  context: ""
+  namespace: "" # 空 = 全集群；非空 = 仅该 namespace（系统组件探测除外）
+  timeout: 30s
+  qps: 20
+  burst: 40
+
+llm:
+  enabled: true
+  endpoint: "http://10.62.64.38:30808/api/inference/v1"
+  api_key: "df47e0f3-7a87-4296-a2b7-b06a449e2615"
+  model: "Qwen3.5-397B-A17B"
+  temperature: 0.1
+  max_tokens: 4096
+  max_input_tokens: 8192
+  max_total_tokens: 32768
+  max_findings: 30
+  timeout: 120s
+
+scan:
+  concurrency: 8
+  phase2_concurrency: 4
+  collect_logs: true
+  collect_previous_logs: true
+  collect_events: true
+  max_log_lines: 500
+  max_log_bytes: 65536
+  max_log_line_bytes: 1024
+  pod_logs_timeout: 30s
+  timeout: 5m
+
+report:
+  directory: "./reports"
+  format: markdown
+
+rules:
+  enabled: []
+  disabled: []
