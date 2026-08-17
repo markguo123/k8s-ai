@@ -1,0 +1,68 @@
+# k8s-ai Server 部署（一期 1.2）：提供 healthz/readyz/version + 异步扫描 API。
+# 注意：如与 CronJob 共用报告 PVC，需 RWX 存储类；否则请单独挂载/不挂载 PVC。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-ai-server
+  namespace: k8s-ai
+  labels:
+    app: k8s-ai
+    component: server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-ai
+      component: server
+  template:
+    metadata:
+      labels:
+        app: k8s-ai
+        component: server
+    spec:
+      serviceAccountName: k8s-ai
+      automountServiceAccountToken: true
+      containers:
+        - name: k8s-ai
+          image: k8s-ai:latest
+          args: ["server", "--addr", ":8080"]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: TZ
+              value: "Asia/Shanghai"
+            - name: K8S_AI_LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: k8s-ai-llm
+                  key: api_key
+                  optional: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+      securityContext:
+        fsGroup: 65532

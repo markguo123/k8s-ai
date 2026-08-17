@@ -10,10 +10,17 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
+	"encoding/json"
+	"os"
+	"path/filepath"
+
+	"k8s.io/apimachinery/pkg/runtime"
+
 	"github.com/k8s-ai/k8s-ai/internal/correlation"
 	"github.com/k8s-ai/k8s-ai/internal/kubernetes"
 	"github.com/k8s-ai/k8s-ai/internal/llm"
 	"github.com/k8s-ai/k8s-ai/internal/model"
+	appsv1 "k8s.io/api/apps/v1"
 )
 
 // TestRunFindsCrashLoop 端到端验证：fake 集群中的 CrashLoopBackOff Pod
@@ -220,5 +227,200 @@ func TestEnrichRelatedEvidence(t *testing.T) {
 	}
 	if !strings.Contains(got, "app-abc") || !strings.Contains(got, "panic: StartConsumer fail") {
 		t.Fatalf("Deployment Finding 缺少关联 Pod 证据: %q", got)
+	}
+}
+
+// TestRunEvidenceIDConsistent 回归（P0-2）：报告中的 Finding 证据编号必须与
+// LLM 诊断引用的 E-ID 一致（关联证据补全必须在 result 拷贝前执行）。
+func TestRunEvidenceIDConsistent(t *testing.T) {
+	replicas := int32(1)
+	cs := fake.NewSimpleClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}},
+		&appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "default"},
+			Spec:       appsv1.DeploymentSpec{Replicas: &replicas},
+			Status:     appsv1.DeploymentStatus{ReadyReplicas: 0, AvailableReplicas: 0, UpdatedReplicas: 0},
+		},
+		&appsv1.ReplicaSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "web-rs", Namespace: "default",
+				OwnerReferences: []metav1.OwnerReference{{Kind: "Deployment", Name: "web", UID: "dep-uid"}},
+			},
+			Spec: appsv1.ReplicaSetSpec{Replicas: &replicas},
+		},
+		&corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "web-abc", Namespace: "default",
+				OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "web-rs", UID: "rs-uid"}},
+			},
+			Status: corev1.PodStatus{
+				Phase: corev1.PodRunning,
+				ContainerStatuses: []corev1.ContainerStatus{{
+					Name: "web", RestartCount: 9,
+					State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}},
+				}},
+			},
+		},
+		&corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: "web-svc", Namespace: "default"},
+			Spec:       corev1.ServiceSpec{Selector: map[string]string{"app": "web"}},
+		},
+	)
+	fake := &fakeLLM{content: `{"summary":"s","rootCause":"r","confidence":0.8,"evidenceChain":["E4"],"investigation":["kubectl -n default get pod web-abc"],"remediation":[],"verification":[],"risk":"MEDIUM"}`}
+	svc := newService(
+		func(opts model.ScanOptions) (*kubernetes.Client, error) {
+			return kubernetes.NewClientWithClientset(cs), nil
+		},
+		func(model.LLMOptions) llm.LLMClient { return fake },
+	)
+	opts := model.ScanOptions{
+		Timeout:     30 * time.Second,
+		Concurrency: 4,
+		Namespace:   "default",
+		ReportMode:  "none",
+		LLM: model.LLMOptions{
+			Enabled: true, MaxInputTokens: 8192, MaxTotalTokens: 32768, MaxFindings: 10,
+		},
+	}
+	result, err := svc.Run(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var depFinding *model.Finding
+	for i := range result.Findings {
+		if result.Findings[i].Rule == "DeploymentReplica" {
+			depFinding = &result.Findings[i]
+		}
+	}
+	if depFinding == nil {
+		t.Fatal("未找到 DeploymentReplica Finding")
+	}
+	// 报告中的 Deployment Finding 应包含 affectedPod 证据且编号为 E4。
+	hasAffected := false
+	hasE4 := false
+	for _, e := range depFinding.Evidence {
+		if e.Key == "affectedPod" {
+			hasAffected = true
+		}
+		if e.ID == "E4" {
+			hasE4 = true
+		}
+	}
+	if !hasAffected || !hasE4 {
+		t.Fatalf("Deployment Finding 证据缺失 affectedPod/E4: %+v", depFinding.Evidence)
+	}
+	// 诊断引用 E4 必须与报告证据一致。
+	for _, d := range result.Diagnoses {
+		if d.FindingID == depFinding.ID {
+			found := false
+			for _, ref := range d.EvidenceChain {
+				if ref == "E4" {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("诊断证据链缺少 E4: %+v", d.EvidenceChain)
+			}
+		}
+	}
+}
+
+// TestRunHistoryDiff 验证两次扫描的历史对比：问题消失后标记为"恢复"。
+func TestRunHistoryDiff(t *testing.T) {
+	dir := t.TempDir()
+	mkCluster := func(withPod bool) *fake.Clientset {
+		objs := []runtime.Object{&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}}
+		if withPod {
+			objs = append(objs, &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "bad-0", Namespace: "default"},
+				Status: corev1.PodStatus{
+					Phase: corev1.PodRunning,
+					ContainerStatuses: []corev1.ContainerStatus{{
+						Name: "web", RestartCount: 9,
+						State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}},
+					}},
+				},
+			})
+		}
+		return fake.NewSimpleClientset(objs...)
+	}
+	run := func(cs *fake.Clientset) *model.ScanResult {
+		svc := newService(
+			func(opts model.ScanOptions) (*kubernetes.Client, error) {
+				return kubernetes.NewClientWithClientset(cs), nil
+			},
+			func(model.LLMOptions) llm.LLMClient { return &fakeLLM{} },
+		)
+		res, err := svc.Run(context.Background(), model.ScanOptions{
+			Timeout: 30 * time.Second, Concurrency: 4,
+			ReportDirectory: dir, ReportMode: "none",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	first := run(mkCluster(true))
+	if len(first.Findings) == 0 {
+		t.Fatal("首轮应发现异常")
+	}
+	// 把首轮结果写为上一份 latest.json
+	raw, _ := json.Marshal(first)
+	if err := os.WriteFile(filepath.Join(dir, "latest.json"), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second := run(mkCluster(false))
+	if second.History == nil {
+		t.Fatal("第二轮应有历史对比")
+	}
+	if len(second.History.Recovered) != 1 {
+		t.Fatalf("recovered = %+v", second.History.Recovered)
+	}
+}
+
+// TestEnrichConfigMaps 验证 Pod 引用的 ConfigMap 名称进入证据，且关联 Pod 详情携带名称。
+func TestEnrichConfigMaps(t *testing.T) {
+	snap := &model.ClusterSnapshot{
+		Pods: []model.PodInfo{{
+			Ref:        model.ResourceRef{Kind: "Pod", Namespace: "yanshou-nginx", Name: "nginx-abc"},
+			ConfigMaps: []model.ResourceRef{{Kind: "ConfigMap", Namespace: "yanshou-nginx", Name: "nginx-config"}},
+			SecretRefs: []model.ResourceRef{{Kind: "Secret", Namespace: "yanshou-nginx", Name: "tls-secret"}},
+			OwnerRefs:  []model.ResourceRef{{Kind: "ReplicaSet", Namespace: "yanshou-nginx", Name: "nginx-rs"}},
+		}},
+		Workloads: []model.WorkloadInfo{
+			{Ref: model.ResourceRef{Kind: "ReplicaSet", Namespace: "yanshou-nginx", Name: "nginx-rs"}, OwnerRefs: []model.ResourceRef{{Kind: "Deployment", Namespace: "yanshou-nginx", Name: "nginx"}}},
+			{Ref: model.ResourceRef{Kind: "Deployment", Namespace: "yanshou-nginx", Name: "nginx"}},
+		},
+	}
+	idx := correlation.Build(snap)
+	podF := &model.Finding{ID: "p", Rule: "CrashLoopBackOff", Resource: model.ResourceRef{Kind: "Pod", Namespace: "yanshou-nginx", Name: "nginx-abc"}}
+	depF := &model.Finding{ID: "d", Rule: "DeploymentReplica", Resource: model.ResourceRef{Kind: "Deployment", Namespace: "yanshou-nginx", Name: "nginx"}}
+	enrichRelatedEvidence([]*model.Finding{podF, depF}, idx)
+	got := ""
+	for _, e := range podF.Evidence {
+		if e.Key == "configMaps" {
+			got = e.Value
+		}
+	}
+	if !strings.Contains(got, "yanshou-nginx/nginx-config") {
+		t.Fatalf("Pod Finding 缺少 ConfigMaps 证据: %q", got)
+	}
+	secGot := ""
+	for _, e := range podF.Evidence {
+		if e.Key == "secretRefs" {
+			secGot = e.Value
+		}
+	}
+	if !strings.Contains(secGot, "yanshou-nginx/tls-secret") {
+		t.Fatalf("Pod Finding 缺少 secretRefs 证据: %q", secGot)
+	}
+	found := false
+	for _, e := range depF.Evidence {
+		if strings.Contains(e.Value, "nginx-config") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Deployment Finding 的关联 Pod 详情应包含 ConfigMaps 名称: %+v", depF.Evidence)
 	}
 }

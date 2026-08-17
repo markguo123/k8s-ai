@@ -1,0 +1,70 @@
+# 每日巡检 CronJob：只读 scan + daily 报告，挂载报告 PVC。
+# 依赖：namespace/serviceaccount/clusterrole(+binding)/configmap/pvc/secret(可选)。
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: k8s-ai-daily
+  namespace: k8s-ai
+  labels:
+    app: k8s-ai
+spec:
+  schedule: "0 8 * * *"
+  timeZone: "Asia/Shanghai"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          serviceAccountName: k8s-ai
+          automountServiceAccountToken: true
+          restartPolicy: OnFailure
+          containers:
+            - name: k8s-ai
+              image: k8s-ai:latest
+              args:
+                - scan
+                - --report-mode
+                - daily
+                - --config
+                - /etc/k8s-ai/config.yaml
+              env:
+                - name: TZ
+                  value: "Asia/Shanghai"
+                - name: K8S_AI_LLM_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: k8s-ai-llm
+                      key: api_key
+                      optional: true
+              volumeMounts:
+                - name: config
+                  mountPath: /etc/k8s-ai
+                  readOnly: true
+                - name: reports
+                  mountPath: /reports
+              securityContext:
+                allowPrivilegeEscalation: false
+                runAsNonRoot: true
+                runAsUser: 65532
+                runAsGroup: 65532
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: "1"
+                  memory: 512Mi
+          volumes:
+            - name: config
+              configMap:
+                name: k8s-ai-config
+            - name: reports
+              persistentVolumeClaim:
+                claimName: k8s-ai-reports
+          securityContext:
+            fsGroup: 65532

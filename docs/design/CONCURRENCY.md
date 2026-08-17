@@ -88,6 +88,8 @@ LLM 自适应预算（ADR-017）：
 
 结论：API Server 压力与 Pod 数量解耦；日志请求只与异常数成正比。
 
+实测（P11，fake 压测）：1000 Pod/50 ns 的 Phase1 约 2.5ms、关联+规则链路约 0.46ms；请求量断言（17 类资源 + N 个 namespace）随测试守护，详见 docs/design/PERFORMANCE.md。
+
 ## 7. 防 goroutine 泄漏
 
 - 所有并发原语限定在 scanner/diagnosis 包内部，通过 `errgroup.WithContext` 管理。

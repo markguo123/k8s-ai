@@ -91,6 +91,9 @@ func RenderTerminal(r *model.ScanResult) string {
 	fmt.Fprintf(&b, "k8s-ai scan　Scope: %s\n", scope)
 	fmt.Fprintf(&b, "集群健康：%d/%d  %s\n", r.HealthScore.Score, r.HealthScore.Max, scoreBar(r.HealthScore.Score, r.HealthScore.Max))
 	fmt.Fprintf(&b, "%s\n", severityCountsLine(r.Findings))
+	if r.History != nil {
+		fmt.Fprintf(&b, "历史对比：新增 %d / 持续 %d / 恢复 %d\n", len(r.History.Added), len(r.History.Continued), len(r.History.Recovered))
+	}
 
 	top := topFindings(r.Findings, 10)
 	if len(top) > 0 {

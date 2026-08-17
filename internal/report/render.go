@@ -78,6 +78,15 @@ func (MarkdownRenderer) Render(r *model.ScanResult) ([]byte, error) {
 	b.WriteString("\n")
 
 	section := 4
+	if r.History != nil {
+		fmt.Fprintf(&b, "## %d. 历史对比\n\n", section)
+		section++
+		fmt.Fprintf(&b, "- 上一轮扫描：%s\n", orDash(r.History.PreviousScanAt))
+		fmt.Fprintf(&b, "- 新增：%d　持续：%d　恢复：%d\n\n", len(r.History.Added), len(r.History.Continued), len(r.History.Recovered))
+		renderHistoryRefs(&b, "新增", r.History.Added)
+		renderHistoryRefs(&b, "持续", r.History.Continued)
+		renderHistoryRefs(&b, "恢复", r.History.Recovered)
+	}
 	for _, sev := range severityOrder {
 		issues := findBySeverity(r.Findings, sev)
 		if len(issues) == 0 {
@@ -311,4 +320,16 @@ func renderDiagnosis(b *strings.Builder, diag model.Diagnosis) {
 			fmt.Fprintf(b, "```bash\n%s\n```\n", c.Text)
 		}
 	}
+}
+
+// renderHistoryRefs 渲染历史对比中的 Finding 摘要列表。
+func renderHistoryRefs(b *strings.Builder, label string, refs []model.FindingRef) {
+	if len(refs) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "%s：\n\n", label)
+	for _, r := range refs {
+		fmt.Fprintf(b, "- %s %s/%s：%s（%s，rule=%s）\n", severityIcon(r.Severity), r.Resource.Namespace, r.Resource.Name, r.Title, r.Severity, r.Rule)
+	}
+	b.WriteString("\n")
 }

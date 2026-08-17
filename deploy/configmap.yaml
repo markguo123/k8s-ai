@@ -1,0 +1,42 @@
+# k8s-ai 配置（敏感项 api_key 用 Secret + 环境变量注入，不写在此处）。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k8s-ai-config
+  namespace: k8s-ai
+  labels:
+    app: k8s-ai
+data:
+  config.yaml: |
+    kubernetes:
+      timeout: 30s
+      qps: 20
+      burst: 40
+    llm:
+      enabled: true
+      endpoint: "http://llm-service:8000/v1"
+      model: "qwen-plus"
+      temperature: 0.1
+      max_tokens: 4096
+      max_input_tokens: 8192
+      max_total_tokens: 32768
+      max_findings: 30
+      timeout: 120s
+      disable_thinking: false
+    scan:
+      concurrency: 8
+      phase2_concurrency: 4
+      collect_logs: true
+      collect_previous_logs: true
+      collect_events: true
+      max_log_lines: 500
+      max_log_bytes: 65536
+      max_log_line_bytes: 1024
+      pod_logs_timeout: 30s
+      timeout: 10m
+    report:
+      directory: /reports
+      format: markdown
+    rules:
+      enabled: []
+      disabled: []

@@ -2,6 +2,7 @@ package rule
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -255,5 +256,72 @@ func TestEngineEmptySnapshot(t *testing.T) {
 	fs := NewEngine(reg).Evaluate(context.Background(), &model.ClusterSnapshot{}, correlation.Build(&model.ClusterSnapshot{}), model.ScanOptions{})
 	if len(fs) != 0 {
 		t.Fatalf("空快照不应有 finding: %d", len(fs))
+	}
+}
+
+// TestContainerCreateErrorRule 覆盖 Secret 缺失/配置错误导致的容器创建失败。
+func TestContainerCreateErrorRule(t *testing.T) {
+	snap := &model.ClusterSnapshot{
+		Namespaces: []model.NamespaceInfo{{Ref: model.ResourceRef{Kind: "Namespace", Name: "prod"}}},
+		Pods: []model.PodInfo{{
+			Ref:        model.ResourceRef{Kind: "Pod", Namespace: "prod", Name: "app-0", UID: "uid-1"},
+			SecretRefs: []model.ResourceRef{{Kind: "Secret", Namespace: "prod", Name: "db-secret"}},
+			Containers: []model.ContainerInfo{{Name: "app", State: "Waiting", Reason: "CreateContainerConfigError", Message: "secret \"db-secret\" not found"}},
+		}},
+		EventsIndex: map[string][]model.EventInfo{
+			"uid-1": {{Reason: "FailedMount", Type: "Warning", Message: "MountVolume.SetUp failed for volume \"cred\" : secret \"db-secret\" not found", InvolvedObject: model.ResourceRef{Kind: "Pod", Namespace: "prod", Name: "app-0", UID: "uid-1"}}},
+		},
+	}
+	rctx := ctxFor(snap)
+	fs := (ContainerCreateErrorRule{}).Evaluate(rctx)
+	if len(fs) != 1 {
+		t.Fatalf("ContainerCreateError findings = %d, want 1", len(fs))
+	}
+	hasSecret := false
+	for _, e := range fs[0].Evidence {
+		if e.Key == "secretRefs" && strings.Contains(e.Value, "prod/db-secret") {
+			hasSecret = true
+		}
+	}
+	if !hasSecret {
+		t.Fatalf("证据缺少 secretRefs: %+v", fs[0].Evidence)
+	}
+	// FailedMount 事件规则也应对同一场景命中（事件驱动兜底）。
+	if fm := (FailedMountRule{}).Evaluate(rctx); len(fm) != 1 {
+		t.Fatalf("FailedMount findings = %d, want 1", len(fm))
+	}
+}
+
+// TestScenarioCoverage 覆盖三类常见故障：Secret 缺失 / PVC 未绑定 / 镜像拉取失败。
+func TestScenarioCoverage(t *testing.T) {
+	// 镜像拉取失败
+	pullSnap := &model.ClusterSnapshot{
+		Namespaces: []model.NamespaceInfo{{Ref: model.ResourceRef{Kind: "Namespace", Name: "default"}}},
+		Pods:       []model.PodInfo{testPod("default", "img-1", model.ContainerInfo{Name: "c", State: "Waiting", Reason: "ImagePullBackOff", Message: "pull access denied", Image: "repo/img:latest"})},
+	}
+	if fs := (ImagePullBackOffRule{}).Evaluate(ctxFor(pullSnap)); len(fs) != 1 {
+		t.Fatalf("ImagePullBackOff 应命中: %d", len(fs))
+	}
+	// PVC 未绑定（Pending）
+	pvcSnap := &model.ClusterSnapshot{
+		Namespaces: []model.NamespaceInfo{{Ref: model.ResourceRef{Kind: "Namespace", Name: "default"}}},
+		Storage: []model.StorageInfo{
+			{Ref: model.ResourceRef{Kind: "PVC", Namespace: "default", Name: "data"}, Kind: "PVC", Status: "Pending"},
+		},
+	}
+	if fs := (PVCPendingRule{}).Evaluate(ctxFor(pvcSnap)); len(fs) != 1 {
+		t.Fatalf("PVCPending 应命中: %d", len(fs))
+	}
+	// Secret 缺失（CreateContainerConfigError）
+	secSnap := &model.ClusterSnapshot{
+		Namespaces: []model.NamespaceInfo{{Ref: model.ResourceRef{Kind: "Namespace", Name: "default"}}},
+		Pods: []model.PodInfo{{
+			Ref:        model.ResourceRef{Kind: "Pod", Namespace: "default", Name: "app-0"},
+			SecretRefs: []model.ResourceRef{{Kind: "Secret", Namespace: "default", Name: "db-secret"}},
+			Containers: []model.ContainerInfo{{Name: "app", State: "Waiting", Reason: "CreateContainerConfigError", Message: "secret not found"}},
+		}},
+	}
+	if fs := (ContainerCreateErrorRule{}).Evaluate(ctxFor(secSnap)); len(fs) != 1 {
+		t.Fatalf("ContainerCreateError 应命中: %d", len(fs))
 	}
 }

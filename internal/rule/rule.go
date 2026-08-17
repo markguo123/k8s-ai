@@ -365,6 +365,7 @@ func AllDefault() []Rule {
 		OOMKilledRule{},
 		ImagePullBackOffRule{},
 		PendingPodRule{},
+		ContainerCreateErrorRule{},
 		NodeNotReadyRule{},
 		NodeDiskPressureRule{},
 		NodeMemoryPressureRule{},

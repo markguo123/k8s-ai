@@ -6,11 +6,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/k8s-ai/k8s-ai/internal/correlation"
 	"github.com/k8s-ai/k8s-ai/internal/diagnosis"
 	"github.com/k8s-ai/k8s-ai/internal/evidence"
+	"github.com/k8s-ai/k8s-ai/internal/history"
 	"github.com/k8s-ai/k8s-ai/internal/kubernetes"
 	"github.com/k8s-ai/k8s-ai/internal/llm"
 	"github.com/k8s-ai/k8s-ai/internal/model"
@@ -117,14 +119,15 @@ func (s *scanService) Run(ctx context.Context, opts model.ScanOptions) (*model.S
 		}
 	}
 
+	// 关联证据补全：必须在 result 拷贝前执行，保证报告证据与 LLM 引用编号一致。
+	enrichRelatedEvidence(findings, idx)
+
 	result := &model.ScanResult{
 		Meta: model.ScanMeta{
 			ToolVersion:   version.Version,
 			Cluster:       opts.Context,
 			ServerVersion: serverVersion,
 			ScanStartedAt: started.UTC().Format(time.RFC3339),
-			ScanEndedAt:   time.Now().UTC().Format(time.RFC3339),
-			Duration:      time.Since(started).String(),
 			Namespace:     opts.Namespace,
 			Pod:           opts.PodTarget,
 		},
@@ -135,11 +138,15 @@ func (s *scanService) Run(ctx context.Context, opts model.ScanOptions) (*model.S
 		Components:       snap.Components,
 		CollectionErrors: snap.CollectionErrors,
 	}
-	// P7：LLM 诊断（预算裁剪 → 校验 → 降级），单个/全部失败都不中断 scan。
-	// 关联证据补全：给 Deployment/Service/Node 等 Finding 附上关联异常 Pod 的
-	// 崩溃状态与日志关键行，让 LLM 能跨资源定位真正根因。
-	enrichRelatedEvidence(findings, idx)
+	// 1.2：历史对比——读取上一份 latest.json，按指纹输出新增/持续/恢复
+	// （人读日报为次要产出；主要消费方是二期 Agent 的记忆契约，ADR-019）。
+	if h, err := history.LoadPrevious(opts.ReportDirectory); err != nil {
+		slog.Warn("scan: 读取历史报告失败", "error", err)
+	} else if h != nil {
+		result.History = history.Compare(h, derefFindings(findings))
+	}
 
+	// P7：LLM 诊断（预算裁剪 → 校验 → 降级），单个/全部失败都不中断 scan。
 	if opts.LLM.Enabled && len(findings) > 0 {
 		slog.Info("scan: LLM 诊断开始", "findings", len(findings))
 		diagnoses, llmSummary, err := diagnosis.New(opts.LLM).Diagnose(ctx, derefFindings(findings), s.newLLM(opts.LLM))
@@ -150,6 +157,10 @@ func (s *scanService) Run(ctx context.Context, opts model.ScanOptions) (*model.S
 		result.LLMSummary = llmSummary
 		slog.Info("scan: LLM 诊断完成", "calls", llmSummary.Calls, "failed", llmSummary.Failed, "degraded", llmSummary.Degraded)
 	}
+
+	// 诊断完成后记录结束时间：Duration 包含 LLM 耗时（体检 P0-3 修复）。
+	result.Meta.ScanEndedAt = time.Now().UTC().Format(time.RFC3339)
+	result.Meta.Duration = time.Since(started).String()
 
 	// 报告落盘：none 不写文件；latest/daily 由 Writer 写出（FR-019）。
 	if opts.ReportMode != "" && opts.ReportMode != "none" {
@@ -298,6 +309,12 @@ func enrichRelatedEvidence(findings []*model.Finding, idx *model.CorrelationInde
 			if keyLine != "" {
 				detail += "；日志关键行：" + keyLine
 			}
+			if names := configMapNames(p.ConfigMaps); names != "" {
+				detail += "；ConfigMaps: " + names
+			}
+			if names := secretRefNames(p.SecretRefs); names != "" {
+				detail += "；SecretRefs: " + names
+			}
 			f.Evidence = append(f.Evidence, evidence.Derived("related", "affectedPod", detail))
 			break // 取第一个异常 Pod 即可
 		}
@@ -310,10 +327,43 @@ func enrichRelatedEvidence(findings []*model.Finding, idx *model.CorrelationInde
 			appendAffected(f, idx.PodsOfService(f.Resource.Key()))
 		case "Node":
 			appendAffected(f, idx.PodsOfNode(f.Resource.Name))
+		case "Pod":
+			// 把 Pod 引用的 ConfigMap/Secret 名称（仅名称）作为派生证据，
+			// 让 LLM 能给出 `kubectl edit configmap` / 检查 Secret 等针对性修复，
+			// 而不是只给 restart（通用机制，不针对某个特例）。
+			if p := idx.Pod(f.Resource.Key()); p != nil {
+				if names := configMapNames(p.ConfigMaps); names != "" {
+					f.Evidence = append(f.Evidence, evidence.Derived("related", "configMaps", names))
+				}
+				if names := secretRefNames(p.SecretRefs); names != "" {
+					f.Evidence = append(f.Evidence, evidence.Derived("related", "secretRefs", names))
+				}
+			}
 		}
 	}
 	// 补充证据后重新排序编号（日志不影响指纹签名）。
 	for _, f := range findings {
 		f.Evidence = evidence.AssignIDs(f.Evidence)
 	}
+}
+
+// configMapNames 格式化 ConfigMap 引用（ns/name，逗号分隔）。
+func configMapNames(refs []model.ResourceRef) string {
+	return referencedNames(refs)
+}
+
+// secretRefNames 格式化 Secret 引用（ns/name，逗号分隔；仅名称不读数据）。
+func secretRefNames(refs []model.ResourceRef) string {
+	return referencedNames(refs)
+}
+
+func referencedNames(refs []model.ResourceRef) string {
+	if len(refs) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(refs))
+	for _, r := range refs {
+		names = append(names, r.Namespace+"/"+r.Name)
+	}
+	return strings.Join(names, ", ")
 }

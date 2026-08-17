@@ -58,6 +58,8 @@ type PodInfo struct {
 	Containers  []ContainerInfo
 	OwnerRefs   []ResourceRef
 	PVCRefs     []ResourceRef // 引用的 PVC（Pod 卷声明）
+	ConfigMaps  []ResourceRef // 引用的 ConfigMap（仅名称，不读取数据；供修复建议定位配置来源）
+	SecretRefs  []ResourceRef // 引用的 Secret（仅名称，绝不读取数据；供修复建议定位凭据来源）
 	Labels      map[string]string
 	Annotations map[string]string // redacted at the collection boundary
 	QoSClass    string
@@ -133,11 +135,11 @@ type NetworkPolicyInfo struct {
 
 // ComponentInfo describes a detected system component (FR-010).
 type ComponentInfo struct {
-	Name      string
-	Namespace string
-	Present   bool
-	Ready     bool
-	Detail    string
+	Name      string `json:"name"`
+	Namespace string `json:"namespace,omitempty"`
+	Present   bool   `json:"present"`
+	Ready     bool   `json:"ready"`
+	Detail    string `json:"detail,omitempty"`
 }
 
 type EventInfo struct {

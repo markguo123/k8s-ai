@@ -1,0 +1,8 @@
+bin/
+reports/
+.git/
+docs/
+*.md
+!README.md
+Dockerfile
+Makefile

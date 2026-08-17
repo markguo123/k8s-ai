@@ -34,6 +34,15 @@
 
 ## 3. 架构测试（tests/arch）
 
+四类架构测试最终确认（P11）：
+
+| 类别 | 位置 | 断言 |
+|---|---|---|
+| 只读 | readonly_test.go | AST：无写方法调用、无 os/exec、无 dynamic、**禁止 `Secrets()` 访问**、依赖方向 |
+| RBAC | rbac_test.go | 解析 deploy/clusterrole.yaml：verbs ⊆ {get,list,watch}、无 secrets/exec、无 metrics |
+| 泄密 | llm/client_test.go + kubernetes/client_test.go | LLM 请求体/错误不泄露 api_key；k8s 动作不含 secrets |
+| 请求量 | scanner/collector_test.go | Phase1 请求数 = 资源类型数 + namespace 数，无 N+1 |
+
 ### 3.1 AST 只读扫描
 
 遍历 `internal/**/*.go`（排除 `_test.go`），用 `go/ast` 断言：
@@ -108,8 +117,18 @@ fake client + ActionRecorder，构造 1000 Pod / 50 namespace / 7 异常 Pod：
 - 验证：真实 list 分页、`ResourceVersion="0"`、logs 截断、RBAC 拒绝写操作的端到端表现。
 - 默认 CI 不执行（避免二进制依赖）；`make test-integration` 手动触发。
 
-## 8. 出口标准
+## 8. 性能压测（P11）
+
+```bash
+go test -run=NONE -bench=BenchmarkPhase1LargeCluster -benchmem ./internal/scanner/
+go test -run=NONE -bench=BenchmarkRulesLargeCluster  -benchmem ./internal/rule/
+```
+
+实测（i7-1165G7）：Phase1 1000 Pod/50 ns ≈ 2.5ms、4.9MB；关联+规则链路 ≈ 0.46ms、236KB。详见 docs/design/PERFORMANCE.md。
+
+## 9. 出口标准
 
 - 每阶段：`go test ./...`、`go vet ./...` 全绿。
+- `go test -race ./...`：需要 CGO/gcc（本机无 gcc 时无法运行）；Linux/CI 安装 gcc 后执行 Makefile `test-race`。
 - 核心包覆盖率目标 ≥ 80%（model/rule/evidence/security/diagnosis/report）。
 - 架构测试四类全部通过；`go test -race` 通过。

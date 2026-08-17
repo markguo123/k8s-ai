@@ -69,6 +69,7 @@ type ScanResult struct {
 	Summary          ClusterSummary    `json:"summary"`
 	Findings         []Finding         `json:"findings"`
 	Diagnoses        []Diagnosis       `json:"diagnoses"`
+	History          *HistoryDiff      `json:"history,omitempty"` // 1.2：与上一轮巡检的指纹对比
 	HealthScore      HealthScore       `json:"healthScore"`
 	Components       []ComponentInfo   `json:"components,omitempty"`
 	CollectionErrors []CollectionError `json:"collectionErrors,omitempty"`

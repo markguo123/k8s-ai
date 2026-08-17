@@ -1,0 +1,30 @@
+# k8s-ai 一期只读 RBAC：只有 get/list/watch + pods/log get。
+# 不含 secrets、pods/exec、metrics；不授任何写动词（ADR-009 / SECURITY.md）。
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8s-ai-readonly
+  labels:
+    app: k8s-ai
+rules:
+  - apiGroups: [""]
+    resources: [namespaces, pods, nodes, services, endpoints, events, configmaps]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [apps]
+    resources: [deployments, replicasets, statefulsets, daemonsets]
+    verbs: [get, list, watch]
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: [get, list, watch]
+  - apiGroups: [storage.k8s.io]
+    resources: [persistentvolumes, persistentvolumeclaims, storageclasses, volumeattachments]
+    verbs: [get, list, watch]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list, watch]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses, networkpolicies]
+    verbs: [get, list, watch]

@@ -222,3 +222,42 @@ func TestLogHighlight(t *testing.T) {
 		t.Fatalf("无关键字时应取最后一行: %q", got)
 	}
 }
+
+// TestJSONComponentFieldNames 回归：latest.json 组件字段必须是小写 camelCase（P0-1）。
+func TestJSONComponentFieldNames(t *testing.T) {
+	out, err := JSONRenderer{}.Render(testResult())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	if !strings.Contains(s, `"name": "CoreDNS"`) {
+		t.Fatalf("组件字段应为小写 name: %s", s)
+	}
+	if strings.Contains(s, `"Name"`) {
+		t.Fatal("JSON 中出现大写字段名 Name")
+	}
+}
+
+// TestMarkdownHistorySection 验证历史对比段落渲染。
+func TestMarkdownHistorySection(t *testing.T) {
+	r := testResult()
+	r.History = &model.HistoryDiff{
+		PreviousScanAt: "2026-08-17T00:00:00Z",
+		Added:          []model.FindingRef{{ID: "n", Rule: "R", Severity: model.SeverityHigh, Title: "新增问题", Resource: model.ResourceRef{Kind: "Pod", Namespace: "ns", Name: "x"}}},
+		Continued:      []model.FindingRef{{ID: "c", Rule: "R", Severity: model.SeverityHigh, Title: "持续问题", Resource: model.ResourceRef{Kind: "Pod", Namespace: "ns", Name: "y"}}},
+		Recovered:      []model.FindingRef{{ID: "g", Rule: "R", Severity: model.SeverityMedium, Title: "已恢复", Resource: model.ResourceRef{Kind: "Pod", Namespace: "ns", Name: "z"}}},
+	}
+	s, err := MarkdownRenderer{}.Render(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(s)
+	for _, want := range []string{"历史对比", "新增：1　持续：1　恢复：1", "新增问题", "持续问题", "已恢复"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("历史段落缺少 %q", want)
+		}
+	}
+	if !strings.Contains(RenderTerminal(r), "历史对比：新增 1 / 持续 1 / 恢复 1") {
+		t.Fatal("终端摘要缺少历史对比计数")
+	}
+}

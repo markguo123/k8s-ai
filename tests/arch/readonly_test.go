@@ -22,6 +22,7 @@ var forbiddenImports = []string{
 
 var forbiddenMethodCalls = []string{
 	"Create", "Update", "Patch", "Delete", "Apply", "Replace", "Scale", "Exec", "PortForward",
+	"Secrets", // 一期永不访问 Secret 资源（AGENTS.md / SECURITY.md）
 }
 
 func walkProductionGoFiles(t *testing.T, fn func(path string)) {

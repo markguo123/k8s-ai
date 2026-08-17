@@ -3,3 +3,4 @@ reports/
 coverage.out
 *.test
 .DS_Store
+k8s-ai-test.yaml

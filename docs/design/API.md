@@ -198,7 +198,7 @@ type ScanService interface {
 - 实现方不得 import 定义方（`kubernetes` 不得 import `scanner`——Reader 接口由 scanner 定义，但 kubernetes 只提供结构体，靠编译期断言满足接口）。
 - 一期不引入 DI 框架：`service` 组合根手工装配依赖。
 
-## 11. 1.2 HTTP API 草图（本期不实现）
+## 11. HTTP API（1.2 已实现）
 
 ```text
 GET  /healthz
@@ -208,7 +208,7 @@ POST /api/v1/scans          // body: ScanOptions；返回 {scanId}
 GET  /api/v1/scans/{id}     // 状态: pending/running/succeeded/failed + result
 ```
 
-Server 复用 `ScanService.Run`，任务注册表为内存实现，单次扫描并发限制。
+实现于 `internal/server`：复用 `ScanService.Run`，任务注册表为内存实现，单次扫描并发限制（已有任务运行时 POST 返回 409）；`k8s-ai server --addr :8080` 启动。历史差异数据（internal/history）按 Finding 指纹对比新增/持续/恢复，写入 latest.json 的 history 字段（二期 Agent 记忆契约，ADR-019）。
 
 ## 12. 二期预留约束
 

@@ -1,0 +1,14 @@
+# 巡检报告持久化（CronJob 每次运行写 /reports，latest + 时间戳文件）。
+# 单 CronJob 串行场景 RWO 足够；多副本/Server 部署（1.2）请改用 RWX。
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: k8s-ai-reports
+  namespace: k8s-ai
+  labels:
+    app: k8s-ai
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi

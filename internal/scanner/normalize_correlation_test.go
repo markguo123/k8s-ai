@@ -105,3 +105,66 @@ func TestNormalizeEndpointSliceLink(t *testing.T) {
 func boolPtr(b bool) *bool {
 	return &b
 }
+
+// TestNormalizePodConfigMaps 验证 Pod 归一化会提取引用的 ConfigMap 名称（不读数据）。
+func TestNormalizePodConfigMaps(t *testing.T) {
+	p := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "nginx-0", Namespace: "yanshou-nginx"},
+		Spec: corev1.PodSpec{
+			Volumes: []corev1.Volume{
+				{Name: "conf", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: "nginx-config"}}}},
+			},
+			Containers: []corev1.Container{
+				{Name: "nginx", EnvFrom: []corev1.EnvFromSource{{ConfigMapRef: &corev1.ConfigMapEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: "nginx-env"}}}}},
+			},
+		},
+	}
+	info := normalizePod(p)
+	names := map[string]bool{}
+	for _, cm := range info.ConfigMaps {
+		names[cm.Name] = true
+	}
+	if !names["nginx-config"] || !names["nginx-env"] || len(info.ConfigMaps) != 2 {
+		t.Fatalf("ConfigMaps = %+v, want nginx-config + nginx-env", info.ConfigMaps)
+	}
+	for _, cm := range info.ConfigMaps {
+		if cm.Namespace != "yanshou-nginx" || cm.Kind != "ConfigMap" {
+			t.Fatalf("ConfigMap 引用异常: %+v", cm)
+		}
+	}
+}
+
+// TestNormalizePodSecretRefs 验证 Pod 归一化会提取引用的 Secret 名称（仅名称，不读数据）。
+func TestNormalizePodSecretRefs(t *testing.T) {
+	p := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "app-0", Namespace: "prod"},
+		Spec: corev1.PodSpec{
+			Volumes: []corev1.Volume{
+				{Name: "cred", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "db-secret"}}},
+			},
+			Containers: []corev1.Container{
+				{
+					Name: "app",
+					Env: []corev1.EnvVar{{
+						Name:      "DB_PASS",
+						ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "db-secret"}}},
+					}},
+					EnvFrom: []corev1.EnvFromSource{{SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: "app-env"}}}},
+				},
+			},
+			ImagePullSecrets: []corev1.LocalObjectReference{{Name: "reg-secret"}},
+		},
+	}
+	info := normalizePod(p)
+	names := map[string]bool{}
+	for _, s := range info.SecretRefs {
+		names[s.Name] = true
+		if s.Kind != "Secret" || s.Namespace != "prod" {
+			t.Fatalf("Secret 引用异常: %+v", s)
+		}
+	}
+	// db-secret 出现两次应去重；app-env、reg-secret 各一
+	if len(info.SecretRefs) != 3 || !names["db-secret"] || !names["app-env"] || !names["reg-secret"] {
+		t.Fatalf("SecretRefs = %+v", info.SecretRefs)
+	}
+}

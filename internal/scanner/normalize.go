@@ -84,6 +84,56 @@ func normalizePod(p corev1.Pod) model.PodInfo {
 			info.PVCRefs = append(info.PVCRefs, ref("PVC", p.Namespace, v.PersistentVolumeClaim.ClaimName, ""))
 		}
 	}
+	// 提取 Pod 引用的 ConfigMap 名称（仅名称，不读取数据；用于修复建议定位配置来源）。
+	seenCM := map[string]bool{}
+	addCM := func(name string) {
+		if name == "" || seenCM[name] {
+			return
+		}
+		seenCM[name] = true
+		info.ConfigMaps = append(info.ConfigMaps, ref("ConfigMap", p.Namespace, name, ""))
+	}
+	for _, v := range p.Spec.Volumes {
+		if v.ConfigMap != nil {
+			addCM(v.ConfigMap.Name)
+		}
+	}
+	for _, c := range p.Spec.Containers {
+		for _, e := range c.EnvFrom {
+			if e.ConfigMapRef != nil {
+				addCM(e.ConfigMapRef.Name)
+			}
+		}
+	}
+	// 提取 Pod 引用的 Secret 名称（仅名称，绝不读取数据；用于凭据类根因定位）。
+	seenSec := map[string]bool{}
+	addSec := func(name string) {
+		if name == "" || seenSec[name] {
+			return
+		}
+		seenSec[name] = true
+		info.SecretRefs = append(info.SecretRefs, ref("Secret", p.Namespace, name, ""))
+	}
+	for _, v := range p.Spec.Volumes {
+		if v.Secret != nil {
+			addSec(v.Secret.SecretName)
+		}
+	}
+	for _, c := range p.Spec.Containers {
+		for _, e := range c.Env {
+			if e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil {
+				addSec(e.ValueFrom.SecretKeyRef.Name)
+			}
+		}
+		for _, e := range c.EnvFrom {
+			if e.SecretRef != nil {
+				addSec(e.SecretRef.Name)
+			}
+		}
+	}
+	for _, ips := range p.Spec.ImagePullSecrets {
+		addSec(ips.Name)
+	}
 	return info
 }
 

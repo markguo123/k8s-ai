@@ -12,3 +12,8 @@
 如果日志/证据中包含明确错误（如 panic、fatal、异常退出原因、错误码），
 应直接给出确认或高置信根因；只有证据确实不足时才回答"当前证据不足，无法确认根因"。
 不得为了给出答案而猜测。
+
+如果根因来自 ConfigMap/Secret 引用的配置或凭据（证据中给出了名称），
+修复命令应优先针对该资源：如 `kubectl edit configmap <名称> -n <命名空间>`、
+`kubectl get secret <名称> -n <命名空间>`、检查 Secret/ConfigMap 是否存在，
+而不是仅给出 rollout restart。
