@@ -366,6 +366,8 @@ func AllDefault() []Rule {
 		ImagePullBackOffRule{},
 		PendingPodRule{},
 		ContainerCreateErrorRule{},
+		UnhealthyRule{},
+		IngressBackendRule{},
 		NodeNotReadyRule{},
 		NodeDiskPressureRule{},
 		NodeMemoryPressureRule{},

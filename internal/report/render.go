@@ -39,6 +39,8 @@ func (MarkdownRenderer) Format() string { return "markdown" }
 
 func (MarkdownRenderer) Render(r *model.ScanResult) ([]byte, error) {
 	r = redactResult(r) // 渲染边界字段级脱敏（ADR-006）
+	rootIdx := rootInc(r)
+	memberIdx := memberInc(r)
 	var b strings.Builder
 	// 标题与范围：目标扫描输出"命名空间巡检报告"，全集群输出"集群巡检报告"。
 	title := "Kubernetes 集群巡检报告"
@@ -116,8 +118,21 @@ func (MarkdownRenderer) Render(r *model.ScanResult) ([]byte, error) {
 					fmt.Fprintf(&b, "- %s/%s (%s)\n", ref.Namespace, ref.Name, ref.Kind)
 				}
 			}
+			if inc, ok := memberIdx[f.ID]; ok {
+				// 派生症状：已并入根因 Incident，不单独诊断。
+				fmt.Fprintf(&b, "\n> 派生问题：已并入根因分析（Incident：%s）\n\n", inc.Root.Title)
+				b.WriteString("\n")
+				continue
+			}
 			if diag, ok := diagnosesByID(r)[f.ID]; ok {
 				renderDiagnosis(&b, diag)
+			}
+			if inc, ok := rootIdx[f.ID]; ok && len(inc.Members) > 0 {
+				b.WriteString("\n#### 关联问题（派生影响）\n\n")
+				for _, m := range inc.Members {
+					fmt.Fprintf(&b, "- %s %s/%s：%s\n", severityIcon(m.Severity), m.Resource.Namespace, m.Resource.Name, m.Title)
+				}
+				b.WriteString("\n")
 			}
 			b.WriteString("\n")
 		}
@@ -308,11 +323,24 @@ func renderDiagnosis(b *strings.Builder, diag model.Diagnosis) {
 			fmt.Fprintf(b, "```bash\n%s\n```\n", c.Text)
 		}
 	}
-	if diag.LLMUsed && len(diag.Remediation) > 0 {
-		b.WriteString("\n#### 修复命令\n\n")
-		for _, c := range diag.Remediation {
-			fmt.Fprintf(b, "```bash\n%s\n```\n\n- 风险：%s\n", c.Text, c.Risk)
+	if diag.LLMUsed && (diag.RemediationText != "" || len(diag.Remediation) > 0 || diag.RemediationDirection != "") {
+		b.WriteString("\n#### 修复方案\n\n")
+		text := diag.RemediationText
+		if text == "" {
+			text = diag.RemediationDirection
 		}
+		if text != "" {
+			fmt.Fprintf(b, "%s\n\n", text)
+		}
+		for _, c := range diag.Remediation {
+			fmt.Fprintf(b, "```bash\n%s\n```\n\n- 风险：%s\n\n", c.Text, c.Risk)
+		}
+		if diag.RemediationDirection != "" && diag.RemediationDirection != text {
+			fmt.Fprintf(b, "**修复方向（需人工确认具体修改内容后执行）**：%s\n", diag.RemediationDirection)
+		}
+	} else if !diag.LLMUsed && diag.RemediationDirection != "" {
+		b.WriteString("\n#### 修复方向（规则）\n\n")
+		fmt.Fprintf(b, "%s\n\n（需人工确认具体修改内容后执行）\n", diag.RemediationDirection)
 	}
 	if diag.LLMUsed && len(diag.Verification) > 0 {
 		b.WriteString("\n#### 验证命令\n\n")
@@ -332,4 +360,23 @@ func renderHistoryRefs(b *strings.Builder, label string, refs []model.FindingRef
 		fmt.Fprintf(b, "- %s %s/%s：%s（%s，rule=%s）\n", severityIcon(r.Severity), r.Resource.Namespace, r.Resource.Name, r.Title, r.Severity, r.Rule)
 	}
 	b.WriteString("\n")
+}
+
+// rootInc / memberInc 建立 FindingID → Incident 索引（渲染聚合用）。
+func rootInc(r *model.ScanResult) map[string]model.Incident {
+	m := map[string]model.Incident{}
+	for _, inc := range r.Incidents {
+		m[inc.Root.ID] = inc
+	}
+	return m
+}
+
+func memberInc(r *model.ScanResult) map[string]model.Incident {
+	m := map[string]model.Incident{}
+	for _, inc := range r.Incidents {
+		for _, mem := range inc.Members {
+			m[mem.ID] = inc
+		}
+	}
+	return m
 }

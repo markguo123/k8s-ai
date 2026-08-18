@@ -16,6 +16,7 @@ const validOutput = `{
   "possibleCauses": ["内存不足"],
   "investigation": ["kubectl -n prod get pod web-0", "kubectl -n prod delete pod web-0"],
   "remediation": ["kubectl -n prod set resources deployment web --containers=web --limits=memory=512Mi"],
+  "remediationText": "调高内存限制并观察 Pod 是否恢复",
   "verification": ["kubectl -n prod get pod web-0"],
   "risk": "MEDIUM"
 }`
@@ -69,9 +70,12 @@ func TestBuildDiagnosisValidation(t *testing.T) {
 	if len(d.Investigation) != 1 || d.Investigation[0].Text != "kubectl -n prod get pod web-0" {
 		t.Fatalf("investigation = %+v", d.Investigation)
 	}
-	// 修复命令保留并带风险。
+	// 修复命令保留并带风险；文字说明必须映射。
 	if len(d.Remediation) != 1 || d.Remediation[0].Risk != model.RiskMedium {
 		t.Fatalf("remediation = %+v", d.Remediation)
+	}
+	if d.RemediationText != "调高内存限制并观察 Pod 是否恢复" {
+		t.Fatalf("remediationText = %q", d.RemediationText)
 	}
 }
 
@@ -86,8 +90,9 @@ func TestValidateCommand(t *testing.T) {
 		{"kubectl get pod web-0", model.CmdInvestigation, "", false},                // 缺 namespace
 		{"kubectl -n prod delete pod web-0", model.CmdInvestigation, "prod", false}, // 排查命令不允许写动词
 		{"kubectl -n prod delete pod web-0", model.CmdRemediation, "prod", true},
-		{"kubectl get node node-1", model.CmdInvestigation, "", true},                                         // node 集群级
-		{"kubectl -n prod delete pod", model.CmdRemediation, "prod", false},                                   // 缺资源名
+		{"kubectl get node node-1", model.CmdInvestigation, "", true}, // node 集群级
+		{"kubectl -n prod delete pod", model.CmdRemediation, "prod", false},
+		{"kubectl -n prod get pvc data", model.CmdRemediation, "prod", true},                                  // 只读确认命令允许进入 remediation（命令化修复方案）                                   // 缺资源名
 		{"kubectl -n prod rollout restart deployment <deployment-name>", model.CmdRemediation, "prod", false}, // 占位符命令
 		{"echo rm -rf /", model.CmdRemediation, "prod", false},
 	}
@@ -103,5 +108,23 @@ func TestFilterEvidenceRefs(t *testing.T) {
 	refs := filterEvidenceRefs(testFinding().Evidence, []string{"E1", "E99", "E2"})
 	if len(refs) != 2 || strings.Join(refs, ",") != "E1,E2" {
 		t.Fatalf("refs = %v", refs)
+	}
+}
+
+// TestSchemaNewFields 验证置信度等级/因果链/不确定性字段解析与校验。
+func TestSchemaNewFields(t *testing.T) {
+	out, err := parseLLMOutput(`{"summary":"s","rootCause":"r","confidence":0.7,"confidenceLevel":"HIGH_CONFIDENCE","causalChain":"c","evidenceChain":[],"impact":"i","possibleCauses":[],"investigation":[],"remediation":[],"verification":[],"risk":"LOW","uncertainty":"u"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.ConfidenceLevel != "HIGH_CONFIDENCE" || out.CausalChain != "c" || out.Uncertainty != "u" {
+		t.Fatalf("新字段解析异常: %+v", out)
+	}
+	if _, err := parseLLMOutput(`{"summary":"s","rootCause":"r","confidence":0.5,"confidenceLevel":"BOGUS"}`); err == nil {
+		t.Fatal("非法 confidenceLevel 应报错")
+	}
+	d := buildDiagnosis(testFinding(), out)
+	if d.ConfidenceLevel != "HIGH_CONFIDENCE" || d.CausalChain != "c" || d.Uncertainty != "u" {
+		t.Fatalf("Diagnosis 映射异常: %+v", d)
 	}
 }

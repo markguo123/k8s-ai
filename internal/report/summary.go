@@ -8,6 +8,9 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/model"
 )
 
+// summaryMaxRemediationCommands 终端一屏最多展示的修复命令条数，其余提示用 --verbose 查看。
+const summaryMaxRemediationCommands = 2
+
 // 严重级图标（终端与 Markdown 通用，支持邮件/飞书等场景）。
 var severityIcons = map[model.Severity]string{
 	model.SeverityCritical: "🔴",
@@ -95,17 +98,62 @@ func RenderTerminal(r *model.ScanResult) string {
 		fmt.Fprintf(&b, "历史对比：新增 %d / 持续 %d / 恢复 %d\n", len(r.History.Added), len(r.History.Continued), len(r.History.Recovered))
 	}
 
-	top := topFindings(r.Findings, 10)
-	if len(top) > 0 {
+	if len(r.Incidents) > 0 {
+		// Incident 聚合：一个故障链一行根因，派生问题折叠展示。
 		b.WriteString("\n重点问题：\n")
-		for _, f := range top {
+		shown := 0
+		for _, inc := range r.Incidents {
+			if shown >= 10 {
+				break
+			}
+			var rootF *model.Finding
+			for i := range r.Findings {
+				if r.Findings[i].ID == inc.Root.ID {
+					rootF = &r.Findings[i]
+					break
+				}
+			}
+			if rootF == nil {
+				continue
+			}
+			renderTerminalFinding(&b, *rootF, diagnosisFor(r, inc.Root.ID))
+			if len(inc.Members) > 0 {
+				titles := make([]string, 0, len(inc.Members))
+				for _, m := range inc.Members {
+					titles = append(titles, m.Title)
+				}
+				fmt.Fprintf(&b, "　关联（派生）：%s\n", strings.Join(titles, "；"))
+			}
+			shown++
+		}
+		// 未归入 Incident（或已展示的根因/成员）的独立 Finding 追加展示。
+		printedIDs := map[string]bool{}
+		for _, inc := range r.Incidents {
+			printedIDs[inc.Root.ID] = true
+			for _, m := range inc.Members {
+				printedIDs[m.ID] = true
+			}
+		}
+		for _, f := range topFindings(r.Findings, 10) {
+			if printedIDs[f.ID] {
+				continue
+			}
 			renderTerminalFinding(&b, f, diagnosisFor(r, f.ID))
 		}
-		if len(r.Findings) > len(top) {
-			fmt.Fprintf(&b, "… 还有 %d 个问题，详见报告或 --verbose\n", len(r.Findings)-len(top))
-		}
 	} else {
-		b.WriteString("\n未发现异常。\n")
+		// 兼容：无 Incident（如测试桩）时按 Finding 展示。
+		top := topFindings(r.Findings, 10)
+		if len(top) > 0 {
+			b.WriteString("\n重点问题：\n")
+			for _, f := range top {
+				renderTerminalFinding(&b, f, diagnosisFor(r, f.ID))
+			}
+			if len(r.Findings) > len(top) {
+				fmt.Fprintf(&b, "… 还有 %d 个问题，详见报告或 --verbose\n", len(r.Findings)-len(top))
+			}
+		} else {
+			b.WriteString("\n未发现异常。\n")
+		}
 	}
 
 	if len(r.Components) > 0 {
@@ -192,11 +240,25 @@ func renderTerminalFinding(b *strings.Builder, f model.Finding, diag *model.Diag
 	if diag != nil {
 		if diag.LLMUsed {
 			fmt.Fprintf(b, "　根因：%s\n", diag.RootCause)
-			if len(diag.Remediation) > 0 {
-				fmt.Fprintf(b, "　建议：%s（风险 %s）\n", diag.Remediation[0].Text, diag.Remediation[0].Risk)
+			text := diag.RemediationText
+			if text == "" {
+				text = diag.RemediationDirection
+			}
+			if text != "" {
+				fmt.Fprintf(b, "　建议：%s\n", text)
+			}
+			for i, c := range diag.Remediation {
+				if i >= summaryMaxRemediationCommands {
+					fmt.Fprintf(b, "　… 其余 %d 条修复命令见 --verbose 完整输出\n", len(diag.Remediation)-summaryMaxRemediationCommands)
+					break
+				}
+				fmt.Fprintf(b, "　命令：%s（风险 %s）\n", c.Text, c.Risk)
 			}
 		} else if diag.RootCause != "" {
 			fmt.Fprintf(b, "　初步判断（规则）：%s\n", diag.RootCause)
+			if diag.RemediationDirection != "" {
+				fmt.Fprintf(b, "　修复方向（规则）：%s\n", diag.RemediationDirection)
+			}
 		}
 	}
 }

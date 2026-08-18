@@ -251,6 +251,7 @@ func TestRunEvidenceIDConsistent(t *testing.T) {
 		&corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "web-abc", Namespace: "default",
+				Labels:          map[string]string{"app": "web"},
 				OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "web-rs", UID: "rs-uid"}},
 			},
 			Status: corev1.PodStatus{
@@ -266,7 +267,7 @@ func TestRunEvidenceIDConsistent(t *testing.T) {
 			Spec:       corev1.ServiceSpec{Selector: map[string]string{"app": "web"}},
 		},
 	)
-	fake := &fakeLLM{content: `{"summary":"s","rootCause":"r","confidence":0.8,"evidenceChain":["E4"],"investigation":["kubectl -n default get pod web-abc"],"remediation":[],"verification":[],"risk":"MEDIUM"}`}
+	fake := &fakeLLM{content: `{"summary":"s","rootCause":"r","confidence":0.8,"confidenceLevel":"CONFIRMED","causalChain":"c","evidenceChain":["E2"],"investigation":["kubectl -n default get pod web-abc"],"remediation":[],"verification":[],"risk":"MEDIUM","uncertainty":"u"}`}
 	svc := newService(
 		func(opts model.ScanOptions) (*kubernetes.Client, error) {
 			return kubernetes.NewClientWithClientset(cs), nil
@@ -286,16 +287,30 @@ func TestRunEvidenceIDConsistent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var depFinding *model.Finding
+	var depFinding, podFinding *model.Finding
 	for i := range result.Findings {
-		if result.Findings[i].Rule == "DeploymentReplica" {
+		switch result.Findings[i].Rule {
+		case "DeploymentReplica":
 			depFinding = &result.Findings[i]
+		case "CrashLoopBackOff":
+			podFinding = &result.Findings[i]
 		}
 	}
-	if depFinding == nil {
-		t.Fatal("未找到 DeploymentReplica Finding")
+	if depFinding == nil || podFinding == nil {
+		t.Fatal("未找到 Deployment/Pod Finding")
 	}
-	// 报告中的 Deployment Finding 应包含 affectedPod 证据且编号为 E4。
+	// Incident 聚合：根因为 Pod，Deployment/Service 为派生成员。
+	if len(result.Incidents) != 1 || result.Incidents[0].Root.ID != podFinding.ID {
+		t.Fatalf("incidents = %+v, 根因应为 Pod", result.Incidents)
+	}
+	members := map[string]bool{}
+	for _, m := range result.Incidents[0].Members {
+		members[m.ID] = true
+	}
+	if !members[depFinding.ID] {
+		t.Fatalf("Deployment 应为派生成员: %+v", result.Incidents[0].Members)
+	}
+	// 派生成员仍带 affectedPod/E4 证据（报告规则层可见）。
 	hasAffected := false
 	hasE4 := false
 	for _, e := range depFinding.Evidence {
@@ -309,19 +324,24 @@ func TestRunEvidenceIDConsistent(t *testing.T) {
 	if !hasAffected || !hasE4 {
 		t.Fatalf("Deployment Finding 证据缺失 affectedPod/E4: %+v", depFinding.Evidence)
 	}
-	// 诊断引用 E4 必须与报告证据一致。
+	// 诊断只针对 Incident 根因（Pod），证据链与 Pod 证据一致。
+	var rootDiag *model.Diagnosis
 	for _, d := range result.Diagnoses {
-		if d.FindingID == depFinding.ID {
-			found := false
-			for _, ref := range d.EvidenceChain {
-				if ref == "E4" {
-					found = true
-				}
-			}
-			if !found {
-				t.Fatalf("诊断证据链缺少 E4: %+v", d.EvidenceChain)
-			}
+		if d.FindingID == podFinding.ID {
+			rootDiag = &d
 		}
+	}
+	if rootDiag == nil || !rootDiag.LLMUsed {
+		t.Fatalf("缺少根因诊断: %+v", result.Diagnoses)
+	}
+	found := false
+	for _, ref := range rootDiag.EvidenceChain {
+		if ref == "E2" {
+			found = true
+		}
+	}
+	if !found || rootDiag.ConfidenceLevel != "CONFIRMED" {
+		t.Fatalf("诊断证据链/置信度异常: %+v", rootDiag)
 	}
 }
 
@@ -422,5 +442,61 @@ func TestEnrichConfigMaps(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("Deployment Finding 的关联 Pod 详情应包含 ConfigMaps 名称: %+v", depF.Evidence)
+	}
+}
+
+// TestRunIncidentGrouping 端到端：Pod CrashLoop + Deployment + Service 聚合为 1 个 Incident。
+func TestRunIncidentGrouping(t *testing.T) {
+	replicas := int32(1)
+	cs := fake.NewSimpleClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}},
+		&appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "default"},
+			Spec:       appsv1.DeploymentSpec{Replicas: &replicas},
+			Status:     appsv1.DeploymentStatus{ReadyReplicas: 0},
+		},
+		&appsv1.ReplicaSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "web-rs", Namespace: "default", OwnerReferences: []metav1.OwnerReference{{Kind: "Deployment", Name: "web", UID: "d1"}}},
+			Spec:       appsv1.ReplicaSetSpec{Replicas: &replicas},
+		},
+		&corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "web-abc", Namespace: "default", Labels: map[string]string{"app": "web"}, OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "web-rs", UID: "r1"}}},
+			Status: corev1.PodStatus{
+				Phase: corev1.PodRunning,
+				ContainerStatuses: []corev1.ContainerStatus{{
+					Name: "web", RestartCount: 5,
+					State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}},
+				}},
+			},
+		},
+		&corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: "web-svc", Namespace: "default"},
+			Spec:       corev1.ServiceSpec{Selector: map[string]string{"app": "web"}},
+		},
+	)
+	svc := newService(
+		func(opts model.ScanOptions) (*kubernetes.Client, error) {
+			return kubernetes.NewClientWithClientset(cs), nil
+		},
+		func(model.LLMOptions) llm.LLMClient {
+			return &fakeLLM{content: `{"summary":"s","rootCause":"r","confidence":0.8,"evidenceChain":["E1"],"investigation":[],"remediation":[],"verification":[],"risk":"LOW"}`}
+		},
+	)
+	result, err := svc.Run(context.Background(), model.ScanOptions{
+		Timeout: 30 * time.Second, Concurrency: 4, ReportMode: "none",
+		LLM: model.LLMOptions{Enabled: true, MaxInputTokens: 8192, MaxTotalTokens: 32768, MaxFindings: 10},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Incidents) != 1 {
+		t.Fatalf("incidents = %d, want 1: %+v", len(result.Incidents), result.Incidents)
+	}
+	if result.Incidents[0].Root.Rule != "CrashLoopBackOff" {
+		t.Fatalf("根因规则 = %s, want CrashLoopBackOff", result.Incidents[0].Root.Rule)
+	}
+	// 根因只扣一次分（派生成员不重复扣分）。
+	if len(result.HealthScore.Penalties) != 1 {
+		t.Fatalf("penalties = %d, want 1（仅根因）: %+v", len(result.HealthScore.Penalties), result.HealthScore.Penalties)
 	}
 }

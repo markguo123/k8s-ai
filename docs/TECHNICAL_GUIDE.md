@@ -101,7 +101,10 @@ Events：在 P1 就已按命名空间一次性采集并建立本地索引（不�
 - 流程：Findings → 严重级排序 → 预算裁剪（单 Finding 8k / 总 32k / top-N 30 自适应）→ DiagnosisContext → LLM → JSON 解析 → Schema 校验 → Evidence ID 校验 → kubectl 命令校验
 - 命令校验：排查/验证只允许只读动词；修复命令必须含 namespace/资源/名称并标注风险；非法命令整体丢弃
 - 降级策略：LLM 不可用/超时/限流 → 该 Finding 标注"LLM 分析不可用"，scan 不失败；JSON 解析/校验失败自动带修复指令重试一次
-- 报告已渲染"Root Cause / 排查命令 / 修复命令（含风险）/ 验证命令"段落
+- 报告已渲染"Root Cause / 排查命令 / 修复方案（文字说明+命令，含风险）/ 验证命令"段落
+- **修复方案文字+命令化（P0 优化）**：remediationText 必填文字说明（做什么/为什么/预期结果，文字是主体），remediation 配套可执行 kubectl 命令（含 -n/资源名/完整参数）；LLM 漏写文字时工具用修复方向兜底（system.md §三十五）
+- **日志完整性（P0 优化）**：按行数保留（TailLines 500），单行完整保留（仅 >1MiB 截断防 OOM），总字节按行边界
+- **Incident 上下文（P0 优化）**：只送根因 Finding 给 LLM，派生症状（Deployment 副本/Service 无 Endpoint）合并到 impact 字段，不单独分析
 
 ### P8 报告可读性优化（已完成）
 
@@ -197,6 +200,7 @@ flowchart LR
 - 性能压测（P11）：1000 Pod 采集约 2.5ms、规则链路约 0.46ms、请求量无 N+1；-race 需 CGO（本机无 gcc，CI/Linux 可跑）
 - 安装部署：见 [INSTALLATION.md](INSTALLATION.md)（本地/镜像/集群 CronJob 分步 + 使用指导 + 故障排查）
 - HTTP Server（P12）：`k8s-ai server` 提供 healthz/version/异步扫描 API，真实集群冒烟通过
+- P0 体验优化：修复方案文字+命令化、日志完整保留、Incident 上下文仅根因送诊（派生并入 impact）
 - 历史对比（P12）：按指纹输出新增/持续/恢复，报告与 latest.json 均携带
 
 ### "代码已就绪但未启用"的能力
@@ -215,7 +219,8 @@ flowchart LR
 - **LLM 降级不丢信息**：规则引擎基于已采证据生成"初步判断"，并自动提取日志关键行（panic/fatal/error）——即使大模型超时，报告也能直接给出关键错误（实测能定位 RocketMQ topic 路由不存在导致的 panic）
 - **关联证据补全**：Deployment/Service/Node 类 Finding 会附带关联异常 Pod 的崩溃状态与日志关键行，LLM 可跨资源定位真正根因
 - **日志证据保留尾部**：上下文与报告中的日志取末尾（panic/错误通常在最后），不再从头截断
-- **配置类修复建议**：诊断上下文携带 Pod 引用的 ConfigMap 名称（仅名称不读数据），LLM 会优先给出 `kubectl edit configmap <name> -n <ns>`（实测 nginx `listen 80x` 案例）
+- **配置类修复建议**：诊断上下文携带 Pod 引用的 ConfigMap/Secret 名称（仅名称不读数据），LLM 会优先给出针对性命令（实测 nginx `listen 80x` → `kubectl edit configmap`；PVC 缺失 → `kubectl get pvc` 确认）
+- **Incident 架构**：Finding → Correlation → Incident → LLM，同一故障链一次诊断；派生症状（Deployment 副本不足/Service 无 Endpoint）折叠为影响范围、不重复扣分；健康评分只统计根因；LLM 输出含 confidenceLevel/causalChain/uncertainty
 - **速度对比 kubectl-ai**：一期是"批量单次"诊断（一次长 JSON 输出），思考型大模型解码慢所以慢；二期 chat 将采用 kubectl-ai 式"小步工具调用 + 短输出 + 流式"，速度可对齐。已提供 `llm.disable_thinking` 开关（Qwen/vLLM 惯例），但当前网关（10.62.64.38）实测忽略该字段；**一期模型选型建议**：巡检/排查/分析用更快的非思考型模型（如 qwen-turbo/flash），思考型大模型（Qwen3.5-397B）留给二期 chat
 
 ### 硬限制（一期红线）

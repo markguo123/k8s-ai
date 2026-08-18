@@ -1,6 +1,6 @@
 # k8s-ai
 
-> 当前版本：**v1.0.0**（一期交付基线；版本约定见 [docs/VERSIONING.md](docs/VERSIONING.md)，变更见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）
+> 当前版本：**v1.0.1**（一期迭代；版本约定见 [docs/VERSIONING.md](docs/VERSIONING.md)，变更见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）
 
 Kubernetes AI 智能巡检与故障诊断工具（一期：只读巡检 + 规则引擎 + 私有大模型诊断 + Markdown/JSON 报告）。
 
@@ -26,6 +26,8 @@ k8s-ai 让运维人员执行一次 `k8s-ai scan`，就能快速知道集群哪�
 make build
 ./bin/k8s-ai version
 ```
+
+> `make build` 生成**当前操作系统**的原生二进制（Windows=.exe / Linux / macOS）；交叉编译 Linux amd64 用 `make build-linux`（或自行设置 GOOS/GOARCH）。
 
 ### Docker 镜像
 

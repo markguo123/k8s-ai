@@ -81,14 +81,20 @@ func TestGetPodLogsOptionsFlow(t *testing.T) {
 }
 
 func TestTruncateLogs(t *testing.T) {
-	raw := []byte("line-one\nline-two-is-long\nthree")
-	out := truncateLogs(raw, 64*1024, 8)
+	raw := []byte("line-one\n" + strings.Repeat("x", 5000) + "\nthree")
+	out := truncateLogs(raw, 64*1024, 1024)
 	lines := strings.Split(string(out), "\n")
-	if len(lines) != 3 || lines[0] != "line-one" || lines[1] != "line-two" || lines[2] != "three" {
-		t.Fatalf("unexpected truncation result: %q", out)
+	if len(lines) != 3 || lines[0] != "line-one" || len(lines[1]) != 5000 || lines[2] != "three" {
+		t.Fatalf("长行应完整保留: %q", out)
 	}
-	capped := truncateLogs(raw, 10, 1024)
-	if len(capped) != 10 || string(capped) != "line-one\nl" {
-		t.Fatalf("byte cap failed: %q", capped)
+	// 总字节上限按行边界：超限时丢弃整行而不是截断。
+	capped := truncateLogs(raw, 12, 1024)
+	if string(capped) != "line-one\n" {
+		t.Fatalf("按行边界截断: %q", capped)
+	}
+	// 单条超长行（≤硬上限）允许独占配额，保证错误日志完整。
+	single := truncateLogs([]byte(strings.Repeat("x", 5000)), 100, 1024)
+	if len(single) != 5000 {
+		t.Fatalf("单条超长行应完整保留: %d", len(single))
 	}
 }

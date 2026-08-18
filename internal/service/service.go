@@ -13,6 +13,7 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/diagnosis"
 	"github.com/k8s-ai/k8s-ai/internal/evidence"
 	"github.com/k8s-ai/k8s-ai/internal/history"
+	"github.com/k8s-ai/k8s-ai/internal/incident"
 	"github.com/k8s-ai/k8s-ai/internal/kubernetes"
 	"github.com/k8s-ai/k8s-ai/internal/llm"
 	"github.com/k8s-ai/k8s-ai/internal/model"
@@ -122,6 +123,10 @@ func (s *scanService) Run(ctx context.Context, opts model.ScanOptions) (*model.S
 	// 关联证据补全：必须在 result 拷贝前执行，保证报告证据与 LLM 引用编号一致。
 	enrichRelatedEvidence(findings, idx)
 
+	// Finding → Correlation → Incident：同一故障链聚合为一个诊断单元；
+	// 健康评分只统计根因（派生症状不重复扣分）。
+	findingsV := derefFindings(findings)
+	incs := incident.Build(findingsV, idx)
 	result := &model.ScanResult{
 		Meta: model.ScanMeta{
 			ToolVersion:   version.Version,
@@ -133,7 +138,8 @@ func (s *scanService) Run(ctx context.Context, opts model.ScanOptions) (*model.S
 		},
 		Summary:          summaryFromSnapshot(snap),
 		Findings:         derefFindings(findings),
-		HealthScore:      report.ComputeHealthScore(derefFindings(findings)),
+		HealthScore:      report.ComputeHealthScore(rootOnlyFindings(findingsV, incs)),
+		Incidents:        incs,
 		LLMSummary:       model.LLMSummary{Enabled: opts.LLM.Enabled},
 		Components:       snap.Components,
 		CollectionErrors: snap.CollectionErrors,
@@ -147,9 +153,13 @@ func (s *scanService) Run(ctx context.Context, opts model.ScanOptions) (*model.S
 	}
 
 	// P7：LLM 诊断（预算裁剪 → 校验 → 降级），单个/全部失败都不中断 scan。
-	if opts.LLM.Enabled && len(findings) > 0 {
-		slog.Info("scan: LLM 诊断开始", "findings", len(findings))
-		diagnoses, llmSummary, err := diagnosis.New(opts.LLM).Diagnose(ctx, derefFindings(findings), s.newLLM(opts.LLM))
+	if opts.LLM.Enabled && len(incs) > 0 {
+		slog.Info("scan: LLM 诊断开始", "incidents", len(incs))
+		findingByID := map[string]model.Finding{}
+		for _, f := range findingsV {
+			findingByID[f.ID] = f
+		}
+		diagnoses, llmSummary, err := diagnosis.New(opts.LLM).DiagnoseIncidents(ctx, incs, findingByID, s.newLLM(opts.LLM))
 		if err != nil {
 			return nil, err
 		}
@@ -366,4 +376,21 @@ func referencedNames(refs []model.ResourceRef) string {
 		names = append(names, r.Namespace+"/"+r.Name)
 	}
 	return strings.Join(names, ", ")
+}
+
+// rootOnlyFindings 只保留 Incident 根因与独立 Finding（派生症状不参与健康评分）。
+func rootOnlyFindings(findings []model.Finding, incs []model.Incident) []model.Finding {
+	member := map[string]bool{}
+	for _, inc := range incs {
+		for _, m := range inc.Members {
+			member[m.ID] = true
+		}
+	}
+	var out []model.Finding
+	for _, f := range findings {
+		if !member[f.ID] {
+			out = append(out, f)
+		}
+	}
+	return out
 }

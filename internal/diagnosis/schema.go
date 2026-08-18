@@ -11,16 +11,21 @@ import (
 
 // llmOutput 是 LLM 必须输出的结构化诊断（FR-016 JSON Schema）。
 type llmOutput struct {
-	Summary        string   `json:"summary"`
-	RootCause      string   `json:"rootCause"`
-	Confidence     float64  `json:"confidence"`
-	EvidenceChain  []string `json:"evidenceChain"`
-	Impact         string   `json:"impact"`
-	PossibleCauses []string `json:"possibleCauses"`
-	Investigation  []string `json:"investigation"`
-	Remediation    []string `json:"remediation"`
-	Verification   []string `json:"verification"`
-	Risk           string   `json:"risk"`
+	Summary              string   `json:"summary"`
+	RootCause            string   `json:"rootCause"`
+	Confidence           float64  `json:"confidence"`
+	ConfidenceLevel      string   `json:"confidenceLevel"` // CONFIRMED/HIGH_CONFIDENCE/POSSIBLE/UNKNOWN
+	CausalChain          string   `json:"causalChain"`
+	EvidenceChain        []string `json:"evidenceChain"`
+	Impact               string   `json:"impact"`
+	PossibleCauses       []string `json:"possibleCauses"`
+	Investigation        []string `json:"investigation"`
+	Remediation          []string `json:"remediation"`
+	RemediationText      string   `json:"remediationText"` // 修复文字说明（必填：做什么/为什么/预期结果）
+	Verification         []string `json:"verification"`
+	Risk                 string   `json:"risk"`
+	Uncertainty          string   `json:"uncertainty"`
+	RemediationDirection string   `json:"remediationDirection,omitempty"`
 }
 
 // parseLLMOutput 提取并校验 JSON（支持 ```json 代码块包裹）。
@@ -67,6 +72,13 @@ func validateSchema(o *llmOutput) error {
 	if o.Confidence < 0 || o.Confidence > 1 {
 		return errors.New("llm output confidence out of range")
 	}
+	if o.ConfidenceLevel != "" {
+		switch o.ConfidenceLevel {
+		case "CONFIRMED", "HIGH_CONFIDENCE", "POSSIBLE", "UNKNOWN":
+		default:
+			return fmt.Errorf("llm output invalid confidenceLevel %q", o.ConfidenceLevel)
+		}
+	}
 	if o.Risk != "" {
 		switch model.RiskLevel(o.Risk) {
 		case model.RiskSafe, model.RiskLow, model.RiskMedium, model.RiskHigh, model.RiskCritical:
@@ -80,13 +92,18 @@ func validateSchema(o *llmOutput) error {
 // buildDiagnosis 把 LLM 输出映射为 Diagnosis，并做 Evidence ID 与命令校验（ADR-005）。
 func buildDiagnosis(f model.Finding, out *llmOutput) model.Diagnosis {
 	d := model.Diagnosis{
-		FindingID:      f.ID,
-		Summary:        out.Summary,
-		RootCause:      out.RootCause,
-		Confidence:     out.Confidence,
-		Impact:         out.Impact,
-		PossibleCauses: out.PossibleCauses,
-		LLMUsed:        true,
+		FindingID:            f.ID,
+		Summary:              out.Summary,
+		RootCause:            out.RootCause,
+		Confidence:           out.Confidence,
+		ConfidenceLevel:      out.ConfidenceLevel,
+		CausalChain:          out.CausalChain,
+		Impact:               out.Impact,
+		PossibleCauses:       out.PossibleCauses,
+		Uncertainty:          out.Uncertainty,
+		RemediationText:      out.RemediationText,
+		RemediationDirection: out.RemediationDirection,
+		LLMUsed:              true,
 	}
 	d.EvidenceChain = filterEvidenceRefs(f.Evidence, out.EvidenceChain)
 	for _, text := range out.Investigation {
@@ -94,10 +111,9 @@ func buildDiagnosis(f model.Finding, out *llmOutput) model.Diagnosis {
 			d.Investigation = append(d.Investigation, cmd)
 		}
 	}
-	risk := remediationRisk(out.Risk)
 	for _, text := range out.Remediation {
 		if cmd, ok := validateCommand(text, model.CmdRemediation, f.Resource.Namespace); ok {
-			cmd.Risk = risk
+			cmd.Risk = commandRisk(text, remediationRisk(out.Risk))
 			d.Remediation = append(d.Remediation, cmd)
 		}
 	}

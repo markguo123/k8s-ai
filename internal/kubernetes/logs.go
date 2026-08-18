@@ -25,17 +25,18 @@ func (c *Client) GetPodLogs(ctx context.Context, namespace, pod, container strin
 	return truncateLogs(raw, opts.MaxBytes, opts.MaxLineBytes), nil
 }
 
-// truncateLogs caps total bytes and per-line bytes while preserving newlines.
+// hardLogLineCap 单行硬上限：超过该值的超长行才截断（防 OOM）；
+// 不超过上限的行完整保留，保证错误日志信息完整（P0 优化）。
+const hardLogLineCap = 1 << 20 // 1 MiB
+
+// truncateLogs 按行保留日志：优先按行数（TailLines 由服务端处理），
+// 单行不按 maxLineBytes 截断；总字节上限按行边界控制，
+// 允许首条超长行（≤ hardLogLineCap）独占配额。
 func truncateLogs(raw []byte, maxBytes, maxLineBytes int) []byte {
 	if maxBytes <= 0 {
 		maxBytes = 64 * 1024
 	}
-	if maxLineBytes <= 0 {
-		maxLineBytes = 1024
-	}
-	if len(raw) > maxBytes {
-		raw = raw[:maxBytes]
-	}
+	_ = maxLineBytes // 兼容参数：单行不再按此截断
 	out := make([]byte, 0, len(raw))
 	for len(raw) > 0 {
 		nl := bytes.IndexByte(raw, '\n')
@@ -45,8 +46,11 @@ func truncateLogs(raw []byte, maxBytes, maxLineBytes int) []byte {
 		} else {
 			line, raw = raw, nil
 		}
-		if len(line) > maxLineBytes {
-			line = line[:maxLineBytes]
+		if len(line) > hardLogLineCap {
+			line = line[:hardLogLineCap]
+		}
+		if len(out) > 0 && len(out)+len(line)+1 > maxBytes {
+			break
 		}
 		out = append(out, line...)
 		if nl >= 0 {

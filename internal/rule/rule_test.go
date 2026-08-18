@@ -325,3 +325,33 @@ func TestScenarioCoverage(t *testing.T) {
 		t.Fatalf("ContainerCreateError 应命中: %d", len(fs))
 	}
 }
+
+// TestUnhealthyRule 探针失败信号：Running 未 Ready + Unhealthy 事件。
+func TestUnhealthyRule(t *testing.T) {
+	snap := &model.ClusterSnapshot{
+		Namespaces: []model.NamespaceInfo{{Ref: model.ResourceRef{Kind: "Namespace", Name: "prod"}}},
+		Pods: []model.PodInfo{{
+			Ref:        model.ResourceRef{Kind: "Pod", Namespace: "prod", Name: "web-0", UID: "u-1"},
+			Containers: []model.ContainerInfo{{Name: "web", State: "Running", Ready: false}},
+		}},
+		EventsIndex: map[string][]model.EventInfo{
+			"u-1": {{Reason: "Unhealthy", Type: "Warning", Message: "Readiness probe failed", InvolvedObject: model.ResourceRef{Kind: "Pod", Namespace: "prod", Name: "web-0", UID: "u-1"}}},
+		},
+	}
+	fs := (UnhealthyRule{}).Evaluate(ctxFor(snap))
+	if len(fs) != 1 {
+		t.Fatalf("Unhealthy findings = %d, want 1", len(fs))
+	}
+}
+
+// TestIngressBackendRule Ingress backend 指向不存在 Service 的信号。
+func TestIngressBackendRule(t *testing.T) {
+	snap := &model.ClusterSnapshot{
+		Namespaces: []model.NamespaceInfo{{Ref: model.ResourceRef{Kind: "Namespace", Name: "prod"}}},
+		Ingresses:  []model.IngressInfo{{Ref: model.ResourceRef{Kind: "Ingress", Namespace: "prod", Name: "web"}, Backends: []string{"prod/web-svc:80"}}},
+	}
+	fs := (IngressBackendRule{}).Evaluate(ctxFor(snap))
+	if len(fs) != 1 {
+		t.Fatalf("IngressBackend findings = %d, want 1", len(fs))
+	}
+}

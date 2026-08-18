@@ -72,7 +72,7 @@ func TestMarkdownRender(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(out)
-	for _, want := range []string{"# Kubernetes 集群巡检报告", "## 2. 健康评分", "## 3. 异常摘要", "容器反复崩溃", "E1", "系统组件", "CoreDNS", "Root Cause", "修复命令", "风险：MEDIUM", "█"} {
+	for _, want := range []string{"# Kubernetes 集群巡检报告", "## 2. 健康评分", "## 3. 异常摘要", "容器反复崩溃", "E1", "系统组件", "CoreDNS", "Root Cause", "修复方案", "风险：MEDIUM", "█"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("markdown 缺少 %q", want)
 		}
@@ -259,5 +259,90 @@ func TestMarkdownHistorySection(t *testing.T) {
 	}
 	if !strings.Contains(RenderTerminal(r), "历史对比：新增 1 / 持续 1 / 恢复 1") {
 		t.Fatal("终端摘要缺少历史对比计数")
+	}
+}
+
+// TestRenderIncidents 验证 Incident 聚合渲染：根因带诊断，派生成员折叠。
+func TestRenderIncidents(t *testing.T) {
+	rootID := "root-1"
+	memberDepID := "dep-1"
+	memberSvcID := "svc-1"
+	r := &model.ScanResult{
+		Meta: model.ScanMeta{ServerVersion: "v1.28.13"},
+		Findings: []model.Finding{
+			{ID: rootID, Rule: "CrashLoopBackOff", Severity: model.SeverityHigh, Title: "容器崩溃重启", Resource: model.ResourceRef{Kind: "Pod", Namespace: "prod", Name: "web-abc"}, Evidence: []model.Evidence{{ID: "E1", Key: "restartCount", Value: "9"}}},
+			{ID: memberDepID, Rule: "DeploymentReplica", Severity: model.SeverityHigh, Title: "副本不足", Resource: model.ResourceRef{Kind: "Deployment", Namespace: "prod", Name: "web"}, Evidence: []model.Evidence{{ID: "E1", Key: "desiredReplicas", Value: "1"}}},
+			{ID: memberSvcID, Rule: "ServiceNoEndpoint", Severity: model.SeverityMedium, Title: "无 Endpoint", Resource: model.ResourceRef{Kind: "Service", Namespace: "prod", Name: "web-svc"}},
+		},
+		Incidents: []model.Incident{{
+			ID: rootID, Title: "容器崩溃重启", Severity: model.SeverityHigh,
+			Root: model.FindingRef{ID: rootID, Rule: "CrashLoopBackOff", Severity: model.SeverityHigh, Title: "容器崩溃重启", Resource: model.ResourceRef{Kind: "Pod", Namespace: "prod", Name: "web-abc"}},
+			Members: []model.FindingRef{
+				{ID: memberDepID, Rule: "DeploymentReplica", Severity: model.SeverityHigh, Title: "副本不足", Resource: model.ResourceRef{Kind: "Deployment", Namespace: "prod", Name: "web"}},
+				{ID: memberSvcID, Rule: "ServiceNoEndpoint", Severity: model.SeverityMedium, Title: "无 Endpoint", Resource: model.ResourceRef{Kind: "Service", Namespace: "prod", Name: "web-svc"}},
+			},
+		}},
+		Diagnoses: []model.Diagnosis{{
+			FindingID: rootID, Summary: "s", RootCause: "根因", Confidence: 0.9, ConfidenceLevel: "CONFIRMED", LLMUsed: true,
+		}},
+	}
+	md, err := MarkdownRenderer{}.Render(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(md)
+	for _, want := range []string{"关联问题（派生影响）", "副本不足", "无 Endpoint", "派生问题：已并入根因分析"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("markdown 缺少 %q", want)
+		}
+	}
+	term := RenderTerminal(r)
+	if !strings.Contains(term, "关联（派生）：副本不足；无 Endpoint") {
+		t.Fatalf("终端缺少派生折叠: %q", term)
+	}
+}
+
+// TestRenderRemediationDirection 修复方向兜底为文字说明，在报告与终端渲染。
+func TestRenderRemediationDirection(t *testing.T) {
+	r := testResult()
+	r.Diagnoses = []model.Diagnosis{{
+		FindingID: "f1", RootCause: "根因", LLMUsed: true,
+		RemediationDirection: "确认 PVC 是否应存在，人工确认后重建或修正引用。",
+	}}
+	s, err := MarkdownRenderer{}.Render(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(s), "修复方案") || !strings.Contains(string(s), "确认 PVC 是否应存在") {
+		t.Fatalf("报告缺少修复方案文字: %s", s)
+	}
+	if !strings.Contains(RenderTerminal(r), "建议：确认 PVC 是否应存在") {
+		t.Fatal("终端缺少修复建议文字")
+	}
+}
+
+// TestRenderRemediationText 修复方案=文字说明+命令，Markdown 与终端都渲染。
+func TestRenderRemediationText(t *testing.T) {
+	r := testResult()
+	r.Diagnoses = []model.Diagnosis{{
+		FindingID: "f1", RootCause: "根因", LLMUsed: true,
+		RemediationText: "先确认 PVC 是否存在，若缺失则创建或修正 Deployment 引用。",
+		Remediation: []model.Command{
+			{Category: model.CmdRemediation, Text: "kubectl -n prod get pvc data", Risk: model.RiskSafe},
+		},
+	}}
+	s, err := MarkdownRenderer{}.Render(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := string(s)
+	for _, want := range []string{"修复方案", "先确认 PVC 是否存在", "kubectl -n prod get pvc data"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("markdown 缺少 %q", want)
+		}
+	}
+	term := RenderTerminal(r)
+	if !strings.Contains(term, "建议：先确认 PVC 是否存在") || !strings.Contains(term, "命令：kubectl -n prod get pvc data") {
+		t.Fatalf("终端缺少文字+命令: %q", term)
 	}
 }

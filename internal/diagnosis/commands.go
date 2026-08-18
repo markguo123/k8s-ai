@@ -60,7 +60,8 @@ func validateCommand(text string, category model.CommandCategory, ns string) (mo
 			return model.Command{}, false
 		}
 	case model.CmdRemediation:
-		if !writeVerbs[verb] {
+		// 允许写动词；也允许只读"确认命令"（系统提示词 §三十五：命令化修复方案）。
+		if !writeVerbs[verb] && !readOnlyVerbs[verb] {
 			return model.Command{}, false
 		}
 	}
@@ -134,3 +135,15 @@ func isKnownResource(t string) bool {
 
 // validResourceName 校验 Kubernetes 资源名（小写字母数字、-、.，不允许占位符/斜杠）。
 var validResourceName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`)
+
+// commandRisk 按动词计算修复命令风险：只读确认命令为 SAFE，其余使用 LLM 提供风险。
+func commandRisk(text string, risk model.RiskLevel) model.RiskLevel {
+	fields := strings.Fields(text)
+	if len(fields) < 2 {
+		return risk
+	}
+	if verb, _ := extractVerb(fields[1:]); readOnlyVerbs[verb] {
+		return model.RiskSafe
+	}
+	return risk
+}

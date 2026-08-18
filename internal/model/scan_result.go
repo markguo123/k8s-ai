@@ -68,8 +68,9 @@ type ScanResult struct {
 	Meta             ScanMeta          `json:"meta"`
 	Summary          ClusterSummary    `json:"summary"`
 	Findings         []Finding         `json:"findings"`
-	Diagnoses        []Diagnosis       `json:"diagnoses"`
-	History          *HistoryDiff      `json:"history,omitempty"` // 1.2：与上一轮巡检的指纹对比
+	Diagnoses        []Diagnosis       `json:"diagnoses"`           // Incident 根因的诊断（每个 Incident 一条）
+	Incidents        []Incident        `json:"incidents,omitempty"` // 故障链聚合（Finding→Correlation→Incident）
+	History          *HistoryDiff      `json:"history,omitempty"`   // 1.2：与上一轮巡检的指纹对比
 	HealthScore      HealthScore       `json:"healthScore"`
 	Components       []ComponentInfo   `json:"components,omitempty"`
 	CollectionErrors []CollectionError `json:"collectionErrors,omitempty"`

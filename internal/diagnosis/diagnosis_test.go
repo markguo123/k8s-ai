@@ -197,3 +197,52 @@ func TestDegradedRuleBased(t *testing.T) {
 		t.Fatalf("排查命令缺失: %+v", d.Investigation)
 	}
 }
+
+// TestDiagnoseIncidents 验证按 Incident 送诊：一次调用、上下文含派生影响、新字段映射。
+func TestDiagnoseIncidents(t *testing.T) {
+	root := testFinding() // OOM finding，证据 E1/E2
+	member := model.FindingRef{ID: "m1", Rule: "ServiceNoEndpoint", Severity: model.SeverityMedium, Title: "Service 无 Endpoint", Resource: model.ResourceRef{Kind: "Service", Namespace: "prod", Name: "web-svc"}}
+	inc := model.Incident{ID: root.ID, Title: root.Title, Severity: root.Severity, Root: refOfTest(root), Members: []model.FindingRef{member}}
+	content := `{"summary":"s","rootCause":"r","confidence":0.8,"confidenceLevel":"CONFIRMED","causalChain":"根因→症状","evidenceChain":["E1"],"impact":"i","possibleCauses":[],"investigation":["kubectl -n prod get pod web-0"],"remediation":[],"verification":[],"risk":"MEDIUM","uncertainty":"u"}`
+	f := &fakeLLM{responses: []string{content}}
+	ds, summary, err := New(diagOpts()).DiagnoseIncidents(context.Background(), []model.Incident{inc}, map[string]model.Finding{root.ID: root}, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ds) != 1 || ds[0].FindingID != root.ID {
+		t.Fatalf("diagnoses = %+v", ds)
+	}
+	if ds[0].ConfidenceLevel != "CONFIRMED" || ds[0].CausalChain != "根因→症状" || ds[0].Uncertainty != "u" {
+		t.Fatalf("新字段映射异常: %+v", ds[0])
+	}
+	if summary.Calls != 1 || summary.Degraded != 0 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	// 上下文必须包含派生影响摘要（供影响评估，不单独诊断）。
+	if !strings.Contains(f.lastMsgs[1].Content, "关联问题（派生症状") || !strings.Contains(f.lastMsgs[1].Content, "Service 无 Endpoint") {
+		t.Fatalf("上下文缺少派生影响: %+v", f.lastMsgs)
+	}
+}
+
+func refOfTest(f model.Finding) model.FindingRef {
+	return model.FindingRef{ID: f.ID, Rule: f.Rule, Severity: f.Severity, Title: f.Title, Resource: f.Resource}
+}
+
+// TestRemediationDirectionFallback LLM 未给修复命令时，工具侧按根因规则兜底修复方向。
+func TestRemediationDirectionFallback(t *testing.T) {
+	f := &fakeLLM{responses: []string{`{"summary":"s","rootCause":"r","confidence":0.8,"confidenceLevel":"CONFIRMED","causalChain":"c","evidenceChain":["E1"],"impact":"i","possibleCauses":[],"investigation":["kubectl -n prod get pod web-0"],"remediation":[],"verification":[],"risk":"MEDIUM"}`}}
+	ds, _, err := New(diagOpts()).Diagnose(context.Background(), []model.Finding{testFinding()}, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ds) != 1 || ds[0].RemediationDirection == "" {
+		t.Fatalf("缺少修复方向兜底: %+v", ds)
+	}
+	if len(ds[0].Remediation) == 0 {
+		t.Fatalf("remediation 应至少一条可执行命令: %+v", ds[0])
+	}
+	// remediationText 必须兜底为修复方向文字，保证"文字+命令"永不缺失。
+	if ds[0].RemediationText == "" || ds[0].RemediationText != ds[0].RemediationDirection {
+		t.Fatalf("remediationText 应兜底为修复方向: %+v", ds[0])
+	}
+}

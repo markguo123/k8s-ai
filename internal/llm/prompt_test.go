@@ -5,10 +5,10 @@ import (
 	"testing"
 )
 
-// TestSystemPrompt 契约测试：系统提示词必须包含防编造与证据约束。
+// TestSystemPrompt 契约测试：系统提示词必须包含证据唯一、Incident 聚合、根因优先约束。
 func TestSystemPrompt(t *testing.T) {
 	p := SystemPrompt()
-	for _, want := range []string{"Kubernetes SRE", "禁止编造", "证据不足"} {
+	for _, want := range []string{"Kubernetes SRE", "Evidence", "Incident", "根因", "编造"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("系统提示词缺少 %q", want)
 		}
