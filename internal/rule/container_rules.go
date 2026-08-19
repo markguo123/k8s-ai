@@ -32,7 +32,13 @@ func (r ContainerCreateErrorRule) Evaluate(ctx *RuleContext) []*model.Finding {
 				evs = append(evs, evidence.Derived("related", "secretRefs", s.Namespace+"/"+s.Name))
 			}
 			evs = append(evs, podEventEvidence(ctx, p.Ref)...)
-			out = append(out, newFinding(ctx, r, p.Ref, "容器 "+c.Name+" 创建失败（"+c.Reason+"）", model.SeverityMedium, evs))
+			sev := model.SeverityMedium
+			if isConfigNotFound(c.Message) {
+				// CreateContainerConfigError 因 ConfigMap/Secret 缺失导致
+				// 容器无法创建：服务完全不可用，提升为 HIGH。
+				sev = model.SeverityHigh
+			}
+			out = append(out, newFinding(ctx, r, p.Ref, "容器 "+c.Name+" 创建失败（"+c.Reason+"）", sev, evs))
 			break
 		}
 	}

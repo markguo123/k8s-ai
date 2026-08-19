@@ -91,12 +91,21 @@ func (MarkdownRenderer) Render(r *model.ScanResult) ([]byte, error) {
 	}
 	for _, sev := range severityOrder {
 		issues := findBySeverity(r.Findings, sev)
-		if len(issues) == 0 {
+		// 派生告警（Deployment 副本不足、Service 无 Endpoint 等）不独立显示，
+		// 只并入根因问题的"关联问题（派生影响）"影响范围字段。
+		var roots []model.Finding
+		for _, f := range issues {
+			if _, ok := memberIdx[f.ID]; ok {
+				continue
+			}
+			roots = append(roots, f)
+		}
+		if len(roots) == 0 {
 			continue
 		}
 		fmt.Fprintf(&b, "## %d. %s Issues\n\n", section, sev)
 		section++
-		for _, f := range issues {
+		for _, f := range roots {
 			fmt.Fprintf(&b, "### %s %s/%s：%s（%s）\n\n", severityIcon(f.Severity), f.Resource.Namespace, f.Resource.Name, f.Title, f.Severity)
 			fmt.Fprintf(&b, "- Severity: %s\n- Rule: %s\n- Finding ID: %s\n", f.Severity, f.Rule, f.ID)
 			if f.Correlated {
@@ -117,12 +126,6 @@ func (MarkdownRenderer) Render(r *model.ScanResult) ([]byte, error) {
 				for _, ref := range f.Related {
 					fmt.Fprintf(&b, "- %s/%s (%s)\n", ref.Namespace, ref.Name, ref.Kind)
 				}
-			}
-			if inc, ok := memberIdx[f.ID]; ok {
-				// 派生症状：已并入根因 Incident，不单独诊断。
-				fmt.Fprintf(&b, "\n> 派生问题：已并入根因分析（Incident：%s）\n\n", inc.Root.Title)
-				b.WriteString("\n")
-				continue
 			}
 			if diag, ok := diagnosesByID(r)[f.ID]; ok {
 				renderDiagnosis(&b, diag)

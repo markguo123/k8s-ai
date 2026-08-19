@@ -16,9 +16,18 @@ var penaltyWeights = map[model.Severity]int{
 }
 
 // ComputeHealthScore 计算健康评分：100 − Σ罚分；Correlated 不扣分；封顶 0。
+// 存在 HIGH 及以上等级的根因问题（非 Correlated）时，基础分直接从 100 降至 70，
+// 再叠加其他罚分，确保"服务完全不可用"场景评分 ≤ 70。
 // 评分只由程序计算，LLM 不参与（ADR-004）。
 func ComputeHealthScore(findings []model.Finding) model.HealthScore {
-	hs := model.HealthScore{Score: 100, Max: 100}
+	base := 100
+	for _, f := range findings {
+		if !f.Correlated && model.SeverityRank(f.Severity) >= model.SeverityRank(model.SeverityHigh) {
+			base = 70
+			break
+		}
+	}
+	hs := model.HealthScore{Score: base, Max: 100}
 	for _, f := range findings {
 		if f.Correlated {
 			hs.CorrelatedExcluded++

@@ -47,8 +47,10 @@ func TestComputeHealthScore(t *testing.T) {
 		{ID: "d", Rule: "R", Severity: model.SeverityLow},
 	}
 	hs := ComputeHealthScore(findings)
-	if hs.Score != 100-30-15-1 {
-		t.Fatalf("score = %d, want %d", hs.Score, 100-30-15-1)
+	// 存在 HIGH 及以上（Critical/High）非 Correlated 根因：基础分由 100 降至 70，
+	// 再叠加 Critical 30 + High 15 + Low 1。
+	if hs.Score != 70-30-15-1 {
+		t.Fatalf("score = %d, want %d", hs.Score, 70-30-15-1)
 	}
 	if hs.CorrelatedExcluded != 1 {
 		t.Fatalf("CorrelatedExcluded = %d, want 1", hs.CorrelatedExcluded)
@@ -291,9 +293,15 @@ func TestRenderIncidents(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(md)
-	for _, want := range []string{"关联问题（派生影响）", "副本不足", "无 Endpoint", "派生问题：已并入根因分析"} {
+	for _, want := range []string{"关联问题（派生影响）", "副本不足", "无 Endpoint"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("markdown 缺少 %q", want)
+		}
+	}
+	// 派生告警不再作为独立 ### 标题显示，只并入根因的"关联问题（派生影响）"。
+	for _, hidden := range []string{"### 🟠 prod/web：副本不足", "### 🟡 prod/web-svc：无 Endpoint"} {
+		if strings.Contains(s, hidden) {
+			t.Errorf("派生告警仍被独立显示：%q", hidden)
 		}
 	}
 	term := RenderTerminal(r)

@@ -3,10 +3,48 @@
 package model
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 	"time"
 )
+
+// HardLogLineCap 单行硬上限：超过该值的超长行才截断（防 OOM）；
+// 不超过上限的行完整保留，保证错误日志信息完整（P0 优化）。
+const HardLogLineCap = 1 << 20 // 1 MiB
+
+// TruncateLogs 按行保留日志：优先按行数（TailLines 由服务端处理），
+// 单行不按 maxLineBytes 截断；总字节上限按行边界控制，
+// 允许首条超长行（≤ HardLogLineCap）独占配额。
+// maxBytes 为总字节上限（<=0 时使用 64KB 默认值）；
+// maxLineBytes 为兼容参数，当前未使用（单行硬上限统一为 HardLogLineCap）。
+func TruncateLogs(raw []byte, maxBytes, maxLineBytes int) []byte {
+	if maxBytes <= 0 {
+		maxBytes = 64 * 1024
+	}
+	_ = maxLineBytes // 兼容参数：单行不再按此截断，统一使用 HardLogLineCap
+	out := make([]byte, 0, len(raw))
+	for len(raw) > 0 {
+		nl := bytes.IndexByte(raw, '\n')
+		var line []byte
+		if nl >= 0 {
+			line, raw = raw[:nl], raw[nl+1:]
+		} else {
+			line, raw = raw, nil
+		}
+		if len(line) > HardLogLineCap {
+			line = line[:HardLogLineCap]
+		}
+		if len(out) > 0 && len(out)+len(line)+1 > maxBytes {
+			break
+		}
+		out = append(out, line...)
+		if nl >= 0 {
+			out = append(out, '\n')
+		}
+	}
+	return out
+}
 
 // Severity is the finding severity level. It is computed only by the rule
 // engine; LLM output is advisory (ADR-004).

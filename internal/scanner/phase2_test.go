@@ -235,12 +235,12 @@ func TestNormalizeRedactsSensitiveFields(t *testing.T) {
 // TestTruncateLogsScanner 验证长行完整保留、总字节按行边界（与 kubernetes 包同策略）。
 func TestTruncateLogsScanner(t *testing.T) {
 	raw := []byte("line-one\n" + strings.Repeat("y", 5000) + "\nthree")
-	out := truncateLogs(raw, 64*1024, 8)
+	out := model.TruncateLogs(raw, 64*1024, 8)
 	lines := strings.Split(string(out), "\n")
 	if lines[0] != "line-one" || len(lines[1]) != 5000 || lines[2] != "three" {
 		t.Fatalf("长行应完整保留: %q", out)
 	}
-	capped := truncateLogs(raw, 10, 1024)
+	capped := model.TruncateLogs(raw, 10, 1024)
 	if string(capped) != "line-one\n" {
 		t.Fatalf("按行边界截断: %q", capped)
 	}

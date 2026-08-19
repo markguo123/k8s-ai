@@ -104,6 +104,75 @@ func TestValidateCommand(t *testing.T) {
 	}
 }
 
+// TestValidateCommandNamespace 验证命名空间校验真正生效 + 缺省自动补全：
+// 命令自带 -n 必须与 Finding 命名空间一致（不一致丢弃），缺省时补全 Finding 命名空间。
+func TestValidateCommandNamespace(t *testing.T) {
+	cases := []struct {
+		text     string
+		ns       string
+		wantOK   bool
+		wantText string // 补全后的命令文本；空表示不校验文本
+	}{
+		// 缺省 -n：自动补全 Finding 命名空间（命令可独立执行）。
+		{"kubectl get pod web-0", "prod", true, "kubectl -n prod get pod web-0"},
+		{"kubectl get pvc data -o yaml", "prod", true, "kubectl -n prod get pvc data -o yaml"},
+		{"kubectl logs web-0 --tail=200", "prod", true, "kubectl -n prod logs web-0 --tail=200"},
+		{"kubectl get secret my-secret", "prod", true, "kubectl -n prod get secret my-secret"}, // secret 命名空间级
+		// 已带且一致：原样保留。
+		{"kubectl -n prod get pod web-0", "prod", true, "kubectl -n prod get pod web-0"},
+		{"kubectl --namespace=prod get pod web-0", "prod", true, "kubectl --namespace=prod get pod web-0"},
+		{"kubectl -n=prod get pod web-0", "prod", true, "kubectl -n=prod get pod web-0"},
+		{"kubectl get pod web-0 -n prod", "prod", true, "kubectl get pod web-0 -n prod"},
+		{"kubectl get pod web-0 --namespace=prod", "prod", true, "kubectl get pod web-0 --namespace=prod"},
+		// 命令自带 ns 与 Finding 不一致：视为编造/笔误，整体丢弃。
+		{"kubectl -n staging get pod web-0", "prod", false, ""},
+		{"kubectl --namespace=staging get pod web-0", "prod", false, ""},
+		{"kubectl get pod web-0 -n staging", "prod", false, ""},
+		{"kubectl get pod web-0 --namespace=staging", "prod", false, ""},
+		// Finding 无命名空间可补全（如集群级场景误引用命名空间资源）：丢弃。
+		{"kubectl get pod web-0", "", false, ""},
+		// 显式跨命名空间查询：不补全、不校验。
+		{"kubectl get pod web-0 -A", "prod", true, "kubectl get pod web-0 -A"},
+		{"kubectl -A get pod web-0", "prod", true, "kubectl -A get pod web-0"},
+		// 集群级资源：不要求 -n。
+		{"kubectl get node node-1", "", true, "kubectl get node node-1"},
+		{"kubectl -n prod get node node-1", "", true, "kubectl -n prod get node node-1"},
+	}
+	for _, tc := range cases {
+		cmd, ok := validateCommand(tc.text, model.CmdInvestigation, tc.ns)
+		if ok != tc.wantOK {
+			t.Errorf("validateCommand(%q, ns=%q) ok = %v, want %v", tc.text, tc.ns, ok, tc.wantOK)
+			continue
+		}
+		if tc.wantText != "" && cmd.Text != tc.wantText {
+			t.Errorf("validateCommand(%q, ns=%q) text = %q, want %q", tc.text, tc.ns, cmd.Text, tc.wantText)
+		}
+	}
+}
+
+// TestExtractVerbNamespace 验证动词前的 -n/--namespace（含 = 形式）被正确提取。
+func TestExtractVerbNamespace(t *testing.T) {
+	cases := []struct {
+		tokens []string
+		verb   string
+		ns     string
+	}{
+		{[]string{"-n", "prod", "get", "pod", "web-0"}, "get", "prod"},
+		{[]string{"--namespace", "prod", "get", "pod", "web-0"}, "get", "prod"},
+		{[]string{"-n=prod", "get", "pod", "web-0"}, "get", "prod"},
+		{[]string{"--namespace=prod", "get", "pod", "web-0"}, "get", "prod"},
+		{[]string{"-o", "yaml", "get", "pod", "web-0"}, "get", ""},
+		{[]string{"get", "pod", "web-0"}, "get", ""},
+		{[]string{"-n"}, "", ""},
+	}
+	for _, tc := range cases {
+		verb, _, ns := extractVerb(tc.tokens)
+		if verb != tc.verb || ns != tc.ns {
+			t.Errorf("extractVerb(%v) = (%q, ns=%q), want (%q, ns=%q)", tc.tokens, verb, ns, tc.verb, tc.ns)
+		}
+	}
+}
+
 func TestFilterEvidenceRefs(t *testing.T) {
 	refs := filterEvidenceRefs(testFinding().Evidence, []string{"E1", "E99", "E2"})
 	if len(refs) != 2 || strings.Join(refs, ",") != "E1,E2" {

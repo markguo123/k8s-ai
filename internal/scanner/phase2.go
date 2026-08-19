@@ -1,7 +1,6 @@
 package scanner
 
 import (
-	"bytes"
 	"context"
 	"sync"
 	"time"
@@ -11,9 +10,6 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/model"
 	"github.com/k8s-ai/k8s-ai/internal/security"
 )
-
-// hardLogLineCap 单行硬上限（与 kubernetes 包同值）：超过才截断防 OOM。
-const hardLogLineCap = 1 << 20 // 1 MiB
 
 // redactor 是采集边界使用的默认脱敏器（ADR-006，不可变，线程安全）。
 var redactor = security.NewRedactor()
@@ -130,37 +126,7 @@ func (c *collector) fetchLogs(ctx context.Context, pod *model.PodInfo, container
 		return nil, err
 	}
 	// 先脱敏（替换敏感内容为 [REDACTED]），再按上限截断（ADR-006）。
-	return truncateLogs(redactor.RedactBytes(raw), lo.MaxBytes, lo.MaxLineBytes), nil
-}
-
-// truncateLogs 与 kubernetes 包同策略：按行保留、长行完整（仅 >1MiB 截断），
-// 总字节上限按行边界控制（P0 优化）。
-func truncateLogs(raw []byte, maxBytes, maxLineBytes int) []byte {
-	if maxBytes <= 0 {
-		maxBytes = 64 * 1024
-	}
-	_ = maxLineBytes
-	out := make([]byte, 0, len(raw))
-	for len(raw) > 0 {
-		nl := bytes.IndexByte(raw, '\n')
-		var line []byte
-		if nl >= 0 {
-			line, raw = raw[:nl], raw[nl+1:]
-		} else {
-			line, raw = raw, nil
-		}
-		if len(line) > hardLogLineCap {
-			line = line[:hardLogLineCap]
-		}
-		if len(out) > 0 && len(out)+len(line)+1 > maxBytes {
-			break
-		}
-		out = append(out, line...)
-		if nl >= 0 {
-			out = append(out, '\n')
-		}
-	}
-	return out
+	return model.TruncateLogs(redactor.RedactBytes(raw), lo.MaxBytes, lo.MaxLineBytes), nil
 }
 
 func firstOr(a, b error) error {

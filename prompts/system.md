@@ -1135,10 +1135,12 @@ Finding
 规则：
 
 1. 禁止"只有命令没有文字"，也禁止"只有文字没有命令"。
-2. 如果当前证据不足以确定精确修改内容：
+2. remediationText 不允许空字符串；remediation 不允许空数组：至少包含一条可执行命令。
+3. 修复方案必须至少包含一条写入操作命令（kubectl create/patch/apply/delete/set/edit/scale 等），
+   不允许只有 get/describe/logs 等只读命令；只读确认命令只能作为前置步骤，不能替代写入命令。
+4. 如果当前证据不足以确定精确修改内容：
    - remediationText 说明"先确认什么、为什么、确认后怎么办"；
-   - 第一优先输出"确认命令序列"（只读、可执行）：
-     `kubectl get pvc ...` / `kubectl describe ...` / `kubectl logs ...` / `kubectl get deployment ... -o yaml`
+   - 仍必须给出最可能的写入命令，并对不确定的字段明确标注（如 `<待确认的值>` 或注释），
+     由人工确认后再执行；不要因为字段不确定就退回只读命令。
    - remediationDirection 给出修复方向与前置条件（需人工确认后执行）。
-3. remediation 不允许空数组：至少包含一条可执行命令。
-4. remediationText 不允许空字符串。
+5. 若修复涉及多步操作，必须按执行顺序排列命令序列。

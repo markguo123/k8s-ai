@@ -38,6 +38,7 @@
 - **决策**：LLM 输出必须过 JSON Parse → Schema → Evidence ID → kubectl 命令四层校验；失败重试一次后降级为规则结论。
 - **理由**：仅靠 Prompt 无法保证不编造（AGENTS.md：LLM 不得编造资源/证据）。
 - **后果**：Diagnosis 增加 `LLMUsed/Error` 字段；报告始终可生成。
+- **补充（2026-08-18）**：kubectl 命令的命名空间校验真正生效——命名空间级资源命令必须携带 `-n/--namespace`（含 `-n=`/`--namespace=` 形式，动词前/后均可）；命令自带 namespace 与 Finding 不一致视为编造/笔误整条丢弃；缺省时工具自动补全 Finding 命名空间（保证报告命令复制即用）；显式 `-A`/`--all-namespaces` 豁免；`logs` 动词按 Pod 处理参与同一套校验/补全。
 
 ## ADR-006 脱敏在采集边界 + 渲染边界
 

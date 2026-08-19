@@ -337,6 +337,14 @@ func isNodeRootRule(name string) bool {
 	return false
 }
 
+// isConfigNotFound 判断容器启动/挂载失败的根因是否为 ConfigMap/Secret 缺失
+// （消息含 "xxx not found"）。引用即缺失会使服务完全不可用，等级应提升为 HIGH。
+func isConfigNotFound(msg string) bool {
+	l := strings.ToLower(msg)
+	return strings.Contains(l, "not found") &&
+		(strings.Contains(l, "configmap") || strings.Contains(l, "secret"))
+}
+
 // LogTargets 返回需要 Phase2 深度采集日志的异常 Pod（FR-004）。
 func LogTargets(reg Registry, findings []*model.Finding) []model.ResourceRef {
 	var out []model.ResourceRef

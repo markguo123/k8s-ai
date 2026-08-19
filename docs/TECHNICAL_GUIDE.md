@@ -100,6 +100,7 @@ Events：在 P1 就已按命名空间一次性采集并建立本地索引（不�
 
 - 流程：Findings → 严重级排序 → 预算裁剪（单 Finding 8k / 总 32k / top-N 30 自适应）→ DiagnosisContext → LLM → JSON 解析 → Schema 校验 → Evidence ID 校验 → kubectl 命令校验
 - 命令校验：排查/验证只允许只读动词；修复命令必须含 namespace/资源/名称并标注风险；非法命令整体丢弃
+- **命令命名空间规范化（v1.0.1 迭代）**：命名空间级资源（Pod/Deployment/PVC/Service/ConfigMap/Secret/logs 等）的命令必须携带 `-n/--namespace`（含 `-n=`/`--namespace=` 形式，动词前/后均可）——命令自带但**与 Finding 命名空间不一致**时视为 LLM 编造/笔误，整条丢弃；**缺省时自动补全 Finding 命名空间**（如 `kubectl get pod web-0` → `kubectl -n prod get pod web-0`），保证报告里的命令复制即用；显式 `-A`/`--all-namespaces` 的跨命名空间查询不补全、不校验
 - 降级策略：LLM 不可用/超时/限流 → 该 Finding 标注"LLM 分析不可用"，scan 不失败；JSON 解析/校验失败自动带修复指令重试一次
 - 报告已渲染"Root Cause / 排查命令 / 修复方案（文字说明+命令，含风险）/ 验证命令"段落
 - **修复方案文字+命令化（P0 优化）**：remediationText 必填文字说明（做什么/为什么/预期结果，文字是主体），remediation 配套可执行 kubectl 命令（含 -n/资源名/完整参数）；LLM 漏写文字时工具用修复方向兜底（system.md §三十五）

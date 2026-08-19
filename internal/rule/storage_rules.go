@@ -45,10 +45,14 @@ func (r FailedMountRule) Evaluate(ctx *RuleContext) []*model.Finding {
 	for i := range ctx.Snapshot.Pods {
 		p := &ctx.Snapshot.Pods[i]
 		hit := false
+		configNotFound := false
 		var evs []model.Evidence
 		for _, e := range ctx.Index.EventsFor(p.Ref) {
 			if e.Reason == "FailedMount" || e.Reason == "FailedAttachVolume" {
 				hit = true
+				if isConfigNotFound(e.Message) {
+					configNotFound = true
+				}
 				evs = append(evs, evidence.TruncateValue(evidence.Event(e), 2048))
 			}
 		}
@@ -59,7 +63,12 @@ func (r FailedMountRule) Evaluate(ctx *RuleContext) []*model.Finding {
 		for _, st := range ctx.Index.StorageChain(p) {
 			evs = append(evs, evidence.Derived("storage", st.Kind, st.Ref.Name+"("+st.Status+")"))
 		}
-		out = append(out, newFinding(ctx, r, p.Ref, "存储卷挂载失败（FailedMount）", model.SeverityMedium, evs))
+		sev := model.SeverityMedium
+		if configNotFound {
+			// ConfigMap/Secret 缺失导致挂载失败：服务完全不可用，提升为 HIGH。
+			sev = model.SeverityHigh
+		}
+		out = append(out, newFinding(ctx, r, p.Ref, "存储卷挂载失败（FailedMount）", sev, evs))
 	}
 	return out
 }
