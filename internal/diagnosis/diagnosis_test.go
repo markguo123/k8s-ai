@@ -246,3 +246,32 @@ func TestRemediationDirectionFallback(t *testing.T) {
 		t.Fatalf("remediationText 应兜底为修复方向: %+v", ds[0])
 	}
 }
+
+// TestDetectWorkloadOwner 验证 Workload owner 命名启发式：
+// Deployment 三段名、StatefulSet 数字序号名可识别；两段式（DS/RS/Job）不猜测。
+func TestDetectWorkloadOwner(t *testing.T) {
+	cases := []struct {
+		kind, name string
+		wantHas    bool
+		wantKind   string
+		wantName   string
+	}{
+		{"Deployment", "web", true, "deployment", "web"},
+		{"StatefulSet", "db", true, "statefulset", "db"},
+		{"Pod", "nginx-deployment-7c67df8d79-rhsxx", true, "deployment", "nginx-deployment"},
+		{"Pod", "web-0", true, "statefulset", "web"},
+		{"Pod", "web-prod-1", true, "statefulset", "web-prod"},
+		{"Pod", "ds-abcde", false, "", ""}, // DaemonSet/RS/Job 两段式：不猜测
+		{"Pod", "web-0-7c67df8d79-rhsxx", true, "deployment", "web-0"},
+		{"Service", "web-svc", false, "", ""},
+	}
+	for _, tc := range cases {
+		gotHas, gotKind, gotName := detectWorkloadOwner(model.Finding{
+			Resource: model.ResourceRef{Kind: tc.kind, Namespace: "prod", Name: tc.name},
+		})
+		if gotHas != tc.wantHas || gotKind != tc.wantKind || gotName != tc.wantName {
+			t.Errorf("detectWorkloadOwner(%s/%s) = (%v,%s,%s), want (%v,%s,%s)",
+				tc.kind, tc.name, gotHas, gotKind, gotName, tc.wantHas, tc.wantKind, tc.wantName)
+		}
+	}
+}

@@ -167,7 +167,7 @@ func TestMarkdownRenderPod(t *testing.T) {
 func TestRenderTerminal(t *testing.T) {
 	r := testResult()
 	s := RenderTerminal(r)
-	for _, want := range []string{"k8s-ai scan", "集群健康：", "█", "CRITICAL 1", "重点问题", "系统组件"} {
+	for _, want := range []string{"k8s-ai scan", "集群健康度：", "█", "CRITICAL 1", "重点问题", "系统组件"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("终端摘要缺少 %q", want)
 		}
@@ -350,7 +350,7 @@ func TestRenderRemediationText(t *testing.T) {
 		}
 	}
 	term := RenderTerminal(r)
-	if !strings.Contains(term, "建议：先确认 PVC 是否存在") || !strings.Contains(term, "推荐排查指令：kubectl -n prod get pvc data") {
+	if !strings.Contains(term, "建议：先确认 PVC 是否存在") || !strings.Contains(term, "修复指令：kubectl -n prod get pvc data") {
 		t.Fatalf("终端缺少文字+命令: %q", term)
 	}
 }

@@ -252,10 +252,10 @@ func renderTerminalFinding(b *strings.Builder, f model.Finding, diag *model.Diag
 			}
 			for i, c := range diag.Remediation {
 				if i >= summaryMaxRemediationCommands {
-					fmt.Fprintf(b, "　… 其余 %d 条排查指令见 --verbose 完整输出\n", len(diag.Remediation)-summaryMaxRemediationCommands)
+					fmt.Fprintf(b, "　… 其余 %d 条修复指令见 --verbose 完整输出\n", len(diag.Remediation)-summaryMaxRemediationCommands)
 					break
 				}
-				fmt.Fprintf(b, "　推荐排查指令：%s（风险 %s）\n", c.Text, c.Risk)
+				fmt.Fprintf(b, "　修复指令：%s（风险 %s）\n", c.Text, c.Risk)
 			}
 		} else if diag.RootCause != "" {
 			fmt.Fprintf(b, "　初步判断（规则）：%s\n", diag.RootCause)

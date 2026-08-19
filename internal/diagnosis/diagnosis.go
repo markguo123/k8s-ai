@@ -617,7 +617,7 @@ func fallbackWriteCommands(f model.Finding) []model.Command {
 			{
 				Category: model.CmdRemediation,
 				Risk:     model.RiskMedium,
-				Text:     fmt.Sprintf("kubectl -n %s create -f - <<'EOF'\napiVersion: v1\nkind: PersistentVolumeClaim\nmetadata:\n  name: %s\n  namespace: %s\nspec:\n  accessModes: [\"ReadWriteOnce\"]\n  resources:\n    requests:\n      storage: <待补容量，如 1Gi>\n  storageClassName: <待补StorageClass名>\nEOF", ns, name, ns),
+				Text:     fmt.Sprintf("kubectl -n %s create -f - <<'EOF'\napiVersion: v1\nkind: PersistentVolumeClaim\nmetadata:\n  name: <待确认的PVC名>\n  namespace: %s\nspec:\n  accessModes: [\"ReadWriteOnce\"]\n  resources:\n    requests:\n      storage: <待补容量，如 1Gi>\n  storageClassName: <待补StorageClass名>\nEOF", ns, ns),
 			},
 		}
 		if owner, wlKind, wlName := detectWorkloadOwner(f); owner {
@@ -677,29 +677,44 @@ func fallbackWriteCommands(f model.Finding) []model.Command {
 	return nil
 }
 
-// detectWorkloadOwner 在 Finding 资源为 Pod 时，识别其 Workload 拥有者
-// （Deployment/StatefulSet/DaemonSet/ReplicaSet/Job/CronJob），便于生成更贴近
-// 用户预期的修复命令（改 Workload 而非 Pod）。找不到 owner 时返回 (false, "", "")。
-// 注意此函数只读 Finding 自身元信息（不读集群），owner 信息由 rule 层的
-// Derived evidence 追加写入（见 service/enrichRelatedEvidence 不适用）。目前
-// 我们没有现成 owner 元信息存于 Finding，因此暂时只返回 Pod 名对应的最常见
-// Deployment 级兜底（"rollout restart deployment" 写在命令里明确占位）。
+// detectWorkloadOwner 在 Finding 资源为 Pod 时，按 Pod 命名规律识别其 Workload
+// 拥有者（Deployment/StatefulSet），便于生成"改 Workload 而非 Pod"的修复命令；
+// 识别不了时返回 (false, "", "")，调用方退化为"重建 Pod"或仅给排查命令。
+// 注意：Finding 目前不携带集群侧 owner 元信息（correlation index 有，但未回写到
+// Finding），因此这里只用命名启发式；两段式 Pod 名（DaemonSet/ReplicaSet/Job）
+// 无法仅凭名称可靠区分，不猜测，避免生成错误的 rollout/scale 目标。
 func detectWorkloadOwner(f model.Finding) (has bool, kind, name string) {
 	// 先按资源 Kind 直接返回 Workload 级。
 	switch f.Resource.Kind {
 	case "Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job", "CronJob":
 		return true, strings.ToLower(f.Resource.Kind), f.Resource.Name
 	}
-	// Pod：把 Pod 名去掉末尾的 ReplicaSet/随机 suffix，先尝试回退到 Deployment，
-	// 这对"DeploymentReplica 派生"问题最常见；用方会看到 rollout restart deployment
-	// 后面的名称若与实际 Deployment 名不符也可一眼识别，然后人工改成正确 Workload。
-	if f.Resource.Kind == "Pod" {
-		pname := f.Resource.Name
-		// 常见结构：<deploy>-<replicaset_hash>-<pod_hash>；去掉最后两段即可逼近 Deployment 名。
-		parts := strings.Split(pname, "-")
-		if len(parts) >= 3 {
-			return true, "deployment", strings.Join(parts[:len(parts)-2], "-")
-		}
+	if f.Resource.Kind != "Pod" {
+		return false, "", ""
+	}
+	parts := strings.Split(f.Resource.Name, "-")
+	n := len(parts)
+	// StatefulSet Pod：<sts>-<序号>（如 web-0），序号为纯数字。
+	if n >= 2 && allDigits(parts[n-1]) {
+		return true, "statefulset", strings.Join(parts[:n-1], "-")
+	}
+	// Deployment Pod：<deploy>-<replicaset hash>-<pod hash>（三段及以上），
+	// 去掉最后两段哈希即可逼近 Deployment 名；若与实际不符，命令中名称可人工修正。
+	if n >= 3 {
+		return true, "deployment", strings.Join(parts[:n-2], "-")
 	}
 	return false, "", ""
+}
+
+// allDigits 判断字符串是否全为数字（StatefulSet Pod 序号特征）。
+func allDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }

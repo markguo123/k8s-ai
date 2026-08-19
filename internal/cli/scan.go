@@ -110,13 +110,6 @@ func runScan(deps Dependencies, cmd *cobra.Command, podTarget string, f *scanFla
 	out := cmd.OutOrStdout()
 	useSpinner := f.reportFormat == "markdown" && !f.verbose && isTerminal(os.Stdout)
 	prog := newTerminalProgress(out, useSpinner)
-	defer func() {
-		// 保险：所有阶段都 PhaseDone 了才干净；万一 panic 路径没清
-		// currentLine，这里清一下（terminalProgress 无锁读 currentLine 的路径已被 mu 保护）。
-		if useSpinner {
-			_ = prog
-		}
-	}()
 	opts.Progress = prog
 
 	result, err := deps.NewScan().Run(cmd.Context(), opts)

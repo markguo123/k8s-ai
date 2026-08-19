@@ -283,7 +283,7 @@ kubectl delete -f deploy/namespace.yaml
 
 ```text
 k8s-ai scan　Scope: cluster
-集群健康：65/100  ██████░░░░
+集群健康度：65/100  ██████░░░░
 CRITICAL 0 | HIGH 2 | MEDIUM 1 | LOW 0 | INFO 0
 
 重点问题：
