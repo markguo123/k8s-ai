@@ -187,6 +187,23 @@ type ScanOptions struct {
 
 	// LLM 诊断配置（P7 接入；endpoint/api_key 只用于构建客户端，不落日志）。
 	LLM LLMOptions
+
+	// Progress 是可选的进度回调（不设置则静默）。
+	// 回调不得阻塞/返回错误；耗时任务的"仍在执行"提示由实现端定时推送。
+	// 用于 CLI 阶段进度 Spinner、Server 模式 WebSocket 状态推送、
+	// 以及二期 Agent 的 Thinking / Tool Calling 状态指示器（ADR-007：共用服务层）。
+	Progress ScanProgress
+}
+
+// ScanProgress 是 scan 过程中的单向进度通知。不定义 Error，失败由 Run 返回。
+// 设计上只使用标准库类型，避免 model 包引入 UI 依赖。
+type ScanProgress interface {
+	// PhaseStarted 阶段开始：name 是稳定阶段 ID，title 是终端可读标题。
+	PhaseStarted(name, title string)
+	// PhaseSub 阶段内部的当前子项（用于 LLM 阶段显示 "诊断 2/5 incident xxx"）。
+	PhaseSub(name string, index, total int, detail string)
+	// PhaseDone 阶段结束：ok=false 表示该阶段产生错误/降级（但 Run 可能继续）。
+	PhaseDone(name, detail string, ok bool, elapsed time.Duration)
 }
 
 // LLMOptions 是 LLM 诊断的执行参数（FR-015/FR-016）。
@@ -202,6 +219,19 @@ type LLMOptions struct {
 	MaxFindings     int // 最多送诊 Finding 数（默认 30，自适应下调）
 	Timeout         time.Duration
 	DisableThinking bool // 关闭思考模式（Qwen/vLLM chat_template_kwargs.enable_thinking=false）
+
+	// Progress 是 LLM 诊断级的进度回调。ScanService 会把上层
+	// ScanProgress 传入这里来驱动"单个 Incident 开始/结束"事件。
+	// 如果 DiagnoseIncidents 独立使用，也可单独设置。
+	Progress LLMProgress
+}
+
+// LLMProgress 是 LLM 诊断阶段的细粒度事件（每个 Incident 粒度）。
+// LongTask 用于 >10s 仍在执行时的"抚慰"提示（经验 1073789）。
+type LLMProgress interface {
+	IncidentStarted(id string, index, total int)
+	IncidentDone(id string, index, total int, llmUsed bool, err error)
+	LongTask(id string, index, total int, elapsed time.Duration)
 }
 
 // ReportOptions 传给报告写入器。

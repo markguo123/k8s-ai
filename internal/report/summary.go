@@ -9,7 +9,7 @@ import (
 )
 
 // summaryMaxRemediationCommands 终端一屏最多展示的修复命令条数，其余提示用 --verbose 查看。
-const summaryMaxRemediationCommands = 2
+const summaryMaxRemediationCommands = 5
 
 // 严重级图标（终端与 Markdown 通用，支持邮件/飞书等场景）。
 var severityIcons = map[model.Severity]string{
@@ -85,14 +85,17 @@ func logStat(value string) string {
 func RenderTerminal(r *model.ScanResult) string {
 	var b strings.Builder
 	scope := "cluster"
+	healthLabel := "集群健康度"
 	switch {
 	case r.Meta.Pod != "":
 		scope = "pod " + r.Meta.Namespace + "/" + r.Meta.Pod
+		healthLabel = "Pod 健康度"
 	case r.Meta.Namespace != "":
 		scope = "namespace " + r.Meta.Namespace
+		healthLabel = "命名空间健康度"
 	}
 	fmt.Fprintf(&b, "k8s-ai scan　Scope: %s\n", scope)
-	fmt.Fprintf(&b, "集群健康：%d/%d  %s\n", r.HealthScore.Score, r.HealthScore.Max, scoreBar(r.HealthScore.Score, r.HealthScore.Max))
+	fmt.Fprintf(&b, "%s：%d/%d  %s\n", healthLabel, r.HealthScore.Score, r.HealthScore.Max, scoreBar(r.HealthScore.Score, r.HealthScore.Max))
 	fmt.Fprintf(&b, "%s\n", severityCountsLine(r.Findings))
 	if r.History != nil {
 		fmt.Fprintf(&b, "历史对比：新增 %d / 持续 %d / 恢复 %d\n", len(r.History.Added), len(r.History.Continued), len(r.History.Recovered))
@@ -249,10 +252,10 @@ func renderTerminalFinding(b *strings.Builder, f model.Finding, diag *model.Diag
 			}
 			for i, c := range diag.Remediation {
 				if i >= summaryMaxRemediationCommands {
-					fmt.Fprintf(b, "　… 其余 %d 条修复命令见 --verbose 完整输出\n", len(diag.Remediation)-summaryMaxRemediationCommands)
+					fmt.Fprintf(b, "　… 其余 %d 条排查指令见 --verbose 完整输出\n", len(diag.Remediation)-summaryMaxRemediationCommands)
 					break
 				}
-				fmt.Fprintf(b, "　命令：%s（风险 %s）\n", c.Text, c.Risk)
+				fmt.Fprintf(b, "　推荐排查指令：%s（风险 %s）\n", c.Text, c.Risk)
 			}
 		} else if diag.RootCause != "" {
 			fmt.Fprintf(b, "　初步判断（规则）：%s\n", diag.RootCause)

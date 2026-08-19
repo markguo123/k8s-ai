@@ -1,6 +1,6 @@
 # k8s-ai
 
-> 当前版本：**v1.0.2**（一期迭代；版本约定见 [docs/VERSIONING.md](docs/VERSIONING.md)，变更见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）
+> 当前版本：**v1.0.3**（一期迭代；版本约定见 [docs/VERSIONING.md](docs/VERSIONING.md)，变更见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）
 
 Kubernetes AI 智能巡检与故障诊断工具（一期：只读巡检 + 规则引擎 + 私有大模型诊断 + Markdown/JSON 报告）。
 
@@ -29,6 +29,13 @@ make build
 
 > `make build` 生成**当前操作系统**的原生二进制（Windows=.exe / Linux / macOS）；交叉编译 Linux amd64 用 `make build-linux`（或自行设置 GOOS/GOARCH）。
 
+**Windows 无 make 时**：直接用项目自带的构建脚本：
+
+```powershell
+.\__build.cmd      # CMD / PowerShell 通用，自动注入版本号
+.\bin\k8s-ai.exe version
+```
+
 ### Docker 镜像
 
 ```bash
@@ -55,15 +62,15 @@ k8s-ai scan --fail-on HIGH               # 达到 HIGH 返回退出码 2（CI �
 
 关键项：
 
-| 配置 | 默认 | 说明 |
-|---|---|---|
-| `kubernetes.kubeconfig/context/namespace` | 空 | 连接集群；空 kubeconfig 走 KUBECONFIG 或 ~/.kube/config |
-| `scan.concurrency` / `scan.phase2_concurrency` | 8 / 4 | 采集并发 |
-| `scan.max_log_lines` / `max_log_bytes` | 500 / 65536 | 日志上限 |
-| `scan.timeout` | 5m | 整次扫描超时（LLM 场景建议 10m） |
-| `llm.enabled` / `endpoint` / `model` | true / localhost:8000 / qwen-plus | 大模型 |
-| `llm.timeout` | 120s | 单次 LLM 调用超时（思考型模型建议保持） |
-| `report.directory` / `format` | ./reports / markdown | 报告输出 |
+| 配置                                           | 默认                              | 说明                                                    |
+| ---------------------------------------------- | --------------------------------- | ------------------------------------------------------- |
+| `kubernetes.kubeconfig/context/namespace`      | 空                                | 连接集群；空 kubeconfig 走 KUBECONFIG 或 ~/.kube/config |
+| `scan.concurrency` / `scan.phase2_concurrency` | 8 / 4                             | 采集并发                                                |
+| `scan.max_log_lines` / `max_log_bytes`         | 500 / 65536                       | 日志上限                                                |
+| `scan.timeout`                                 | 5m                                | 整次扫描超时（LLM 场景建议 10m）                        |
+| `llm.enabled` / `endpoint` / `model`           | true / localhost:8000 / qwen-plus | 大模型                                                  |
+| `llm.timeout`                                  | 120s                              | 单次 LLM 调用超时（思考型模型建议保持）                 |
+| `report.directory` / `format`                  | ./reports / markdown              | 报告输出                                                |
 
 环境变量：`KUBECONFIG`、`K8S_AI_LLM_ENDPOINT`、`K8S_AI_LLM_API_KEY`、`K8S_AI_LLM_MODEL` 等。
 
@@ -124,16 +131,16 @@ CronJob 特性：`concurrencyPolicy: Forbid`（不并发）、`restartPolicy: On
 
 ### 安全核对清单（P11 最终确认）
 
-| 检查项 | 保障机制 | 验证方式 |
-|---|---|---|
-| 无写操作 | RBAC 只读 + Reader 只读门面 + 无 os/exec | `tests/arch` AST 只读扫描 |
-| 不访问 Secret | 代码禁止 `Secrets()` 调用 + RBAC 不含 secrets | AST 扫描 + fake Action 断言 |
-| 脱敏 | 采集边界 + 报告渲染双重脱敏 | security 单测 + LLM 请求泄密测试 |
-| api_key 不泄露 | 仅在 Authorization 头 + 错误显式剔除 | llm httptest |
-| LLM 不编造 | Evidence ID 校验 + 命令白名单 | diagnosis 单测 |
-| 不执行 LLM 命令 | 命令仅字符串，无执行器 | CommandExecutor 无实现 + AST 扫描 |
-| 单资源失败不中断 | collection_errors 隔离 | scanner 错误隔离测试 |
-| RBAC 清单只读 | 解析 deploy/clusterrole.yaml 断言 | `tests/arch` RBAC 测试 |
+| 检查项           | 保障机制                                      | 验证方式                          |
+| ---------------- | --------------------------------------------- | --------------------------------- |
+| 无写操作         | RBAC 只读 + Reader 只读门面 + 无 os/exec      | `tests/arch` AST 只读扫描         |
+| 不访问 Secret    | 代码禁止 `Secrets()` 调用 + RBAC 不含 secrets | AST 扫描 + fake Action 断言       |
+| 脱敏             | 采集边界 + 报告渲染双重脱敏                   | security 单测 + LLM 请求泄密测试  |
+| api_key 不泄露   | 仅在 Authorization 头 + 错误显式剔除          | llm httptest                      |
+| LLM 不编造       | Evidence ID 校验 + 命令白名单                 | diagnosis 单测                    |
+| 不执行 LLM 命令  | 命令仅字符串，无执行器                        | CommandExecutor 无实现 + AST 扫描 |
+| 单资源失败不中断 | collection_errors 隔离                        | scanner 错误隔离测试              |
+| RBAC 清单只读    | 解析 deploy/clusterrole.yaml 断言             | `tests/arch` RBAC 测试            |
 
 ## 故障示例
 

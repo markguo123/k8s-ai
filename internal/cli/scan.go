@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -102,22 +103,38 @@ func runScan(deps Dependencies, cmd *cobra.Command, podTarget string, f *scanFla
 		}
 		opts.FailOn = sev
 	}
+
+	// stdout 进度渲染：markdown 且非 --verbose 且 stdout 是真正的交互式终端时
+	// 才启用单行 spinner 覆盖；JSON/YAML/--verbose/管道/重定向全部禁用，
+	// 避免 \r 字符污染机器可读输出或刷屏管道消费者。
+	out := cmd.OutOrStdout()
+	useSpinner := f.reportFormat == "markdown" && !f.verbose && isTerminal(os.Stdout)
+	prog := newTerminalProgress(out, useSpinner)
+	defer func() {
+		// 保险：所有阶段都 PhaseDone 了才干净；万一 panic 路径没清
+		// currentLine，这里清一下（terminalProgress 无锁读 currentLine 的路径已被 mu 保护）。
+		if useSpinner {
+			_ = prog
+		}
+	}()
+	opts.Progress = prog
+
 	result, err := deps.NewScan().Run(cmd.Context(), opts)
 	if err != nil {
 		return err
 	}
 	// 默认输出一屏摘要（markdown 且非 --verbose）；否则输出完整报告。
 	if opts.ReportFormat == "markdown" && !f.verbose {
-		fmt.Fprint(cmd.OutOrStdout(), report.RenderTerminal(result))
+		fmt.Fprint(out, report.RenderTerminal(result))
 	} else {
 		data, err := report.RendererFor(opts.ReportFormat).Render(result)
 		if err != nil {
 			return err
 		}
-		fmt.Fprint(cmd.OutOrStdout(), string(data))
+		fmt.Fprint(out, string(data))
 	}
 	if len(result.ReportPaths) > 0 {
-		fmt.Fprintf(cmd.OutOrStdout(), "\nReport: %s\n", strings.Join(result.ReportPaths, ", "))
+		fmt.Fprintf(out, "\nReport: %s\n", strings.Join(result.ReportPaths, ", "))
 	}
 	if opts.FailOn != "" && reachedSeverity(result.Findings, opts.FailOn) {
 		return &ExitError{Code: 2, Err: fmt.Errorf("scan found issues at severity %s or higher", opts.FailOn)}

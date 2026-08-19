@@ -2,6 +2,38 @@
 
 本项目遵循 docs/VERSIONING.md 的里程碑阶梯约定。
 
+## [v1.0.3] - 2026-08-19
+
+一期体验迭代：修复命令非交互化（edit→patch/apply）+ scan 终端阶段进度 UI（Spinne + LLM 长任务抚慰）。
+
+### Added
+
+- **scan 终端阶段进度 UI**（internal/cli/progress.go + model.ScanProgress）：
+  - 6 个阶段统一显示 `⠋ 1. 标题 ➜ 当前子项` 单行 Spinner（TTY 下 80ms/帧，行内覆盖刷新）；
+  - 阶段结束时 `✓ 1. 标题 完成（耗时 Xs，细节 Y）` 换行落盘，不刷屏；
+  - JSON/YAML/`--verbose` 模式自动退化为逐行日志（无 `\r`），不污染机器可读输出；
+  - 进度接口仅用 stdlib 类型放在 domain 包，Server/Cron 不设置则静默，严格符合「业务不依赖 CLI」；
+  - 二期 Agent 的 Thinking / Tool Calling 状态指示器可直接复用同一接口扩展实现。
+- **LLM 长任务抚慰提示**（internal/diagnosis/diagnostics.go DiagnoseIncidents）：
+  - 每个 Incident 独立 ticker，超过 10s 未完成时触发 `LongTask`，文本显示「仍在诊断中（已 15s，常见耗时 10-30s，请稍候）」，每 10s 再提醒一次；
+  - 避免用户在 LLM 诊断 20s+ 时误以为卡死而 Ctrl+C（经验 1073789）。
+- **Diagnoser / service 层进度打点**：connect、phase1、rules、phase2、enrich、llm、report 共 7 阶段统一 PhaseStart/PhaseDone；LLM 阶段用 `scanProgressLLMBridge` 把 Incident 粒度事件（Started/Done）桥接到 PhaseSub，保证"诊断 i/N incident xxx"在终端可见。
+
+### Changed
+
+- **修复命令非交互强制化**（system.md §三十五 规则 4 + internal/diagnosis/commands.go `remediationAllowsNonInteractive`）：
+  - 提示词禁止 `kubectl edit` / `exec -it` / `run -i` / `attach` / `port-forward` 等任何 TTY/编辑器交互；
+  - 给出 4 种非交互替代并按推荐度排序：① `patch --type=merge`、② `get -o yaml > file && 改 && apply`、③ `create ... --dry-run=client \| apply`、④ `set image/resources/env/selector`；
+  - 命令校验层同步丢弃交互式修复命令，避免模型「不听话」时进入报告（edit/attach/port-forward 直接失败；exec/run 带 `-i -t -it -ti --stdin --tty` 失败）。
+- 补全 `exec`/`run`/`port-forward` 子命令缺资源名解析（按 firstPositional 取 Pod 名，与 `logs` 同一模式），保证后续命名空间补全/校验覆盖这些子命令。
+
+### Fixed
+
+- 上一版本 v1.0.2 中，修复命令推荐为 `kubectl edit configmap`（交互式、不可复制执行）的问题；现在会被命令校验过滤并要求 LLM 给出 patch/apply 非交互版本。
+- **诊断修复退化为纯只读**：当 LLM 只给出 `get cm -o yaml` 等只读命令（被 §三十五 要求丢弃 edit/exec -it 后，常见"只给确认步骤"）时，remediation 列表最终全是只读命令，未满足 §三十五「至少一条写入操作命令」的硬性要求。现由 `ensureRemediation` + `fallbackWriteCommands` 规则级兜底，按 Finding.Rule / Kind 自动补齐 create/patch/apply/set/scale/rollout restart 等写入类命令（带 `<待确认>` 占位），保证每条诊断都能"下一步真正动起来"。同样兜底也应用于 `degraded` 降级路径。
+- **Spinner 刷屏（非 TTY）**：`useSpinner` 此前只检查报告格式（markdown 且非 verbose），未检测 stdout 是否真正是交互式终端；当输出被管道/重定向时 `\r` 覆盖退化为逐行打印，80ms/帧 × 数十秒产生数百行垃圾。现由 `isTerminal(os.Stdout)` 用 `os.ModeCharDevice` 零依赖检测，管道/重定向自动退化为单行日志模式。
+- **健康度标签写死"集群健康"**：`k8s-ai scan -n xxx` 扫描的是命名空间，`k8s-ai scan pod xxx` 扫描的是 Pod，但摘要头始终打印"集群健康"。现按 scope 动态显示：cluster →"集群健康"、namespace →"命名空间健康"、pod →"Pod 健康度"。
+
 ## [v1.0.2] - 2026-08-19
 
 一期迭代：故障等级/修复方案/健康评分/派生展示四项优化 + kubectl 命令命名空间校验生效。

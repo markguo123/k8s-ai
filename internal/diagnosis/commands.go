@@ -69,13 +69,37 @@ func validateCommand(text string, category model.CommandCategory, ns string) (mo
 		if !writeVerbs[verb] && !readOnlyVerbs[verb] {
 			return model.Command{}, false
 		}
+		// 非交互性：禁止 edit / exec -it / run -i / attach / port-forward 等
+		// 需要 TTY 或编辑器交互或阻塞式转发的写法（system.md §三十五 规则 4）。
+		// 一期命令只展示不执行，但仍强制过滤，避免给用户"打开编辑器"的假可执行预期。
+		if !remediationAllowsNonInteractive(verb, parts) {
+			return model.Command{}, false
+		}
 	}
 	resType, resName, cmdNS := extractResource(rest)
-	if verb == "logs" && resType == "" {
+	switch {
+	case verb == "logs" && resType == "":
 		// kubectl logs <pod> [-c <container>]：logs 的位置参数是 Pod 名（无资源类型），
 		// 按 Pod 处理以便后续 -n 补全（system.md §八：kubectl logs <pod> -n <ns>）。
 		if p := firstPositional(rest); p != "" {
 			resType, resName = "pod", p
+		}
+	case (verb == "exec" || verb == "run") && resType == "":
+		// kubectl exec <pod> -- cmd、kubectl run <name> --image=xxx：
+		// exec 的第一个位置参数是 Pod 名；run 的第一个位置参数是 Pod 名（也可视为资源）。
+		if p := firstPositional(rest); p != "" {
+			resType, resName = "pod", p
+		}
+	case verb == "port-forward" && resType == "":
+		// kubectl port-forward pod/<name> 8080:80 或 svc/<name> 80:8080；
+		// 第一个位置参数形如 pod/xxx，用 "/" 拆 kind/name。
+		if p := firstPositional(rest); p != "" {
+			if slash := strings.IndexByte(p, '/'); slash > 0 {
+				resType, resName = p[:slash], p[slash+1:]
+			} else {
+				// 没写前缀按 Pod 处理（kubectl 缺省行为）。
+				resType, resName = "pod", p
+			}
 		}
 	}
 	if resType == "" || resName == "" {
@@ -210,6 +234,27 @@ func isKnownResource(t string) bool {
 
 // validResourceName 校验 Kubernetes 资源名（小写字母数字、-、.，不允许占位符/斜杠）。
 var validResourceName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`)
+
+// remediationAllowsNonInteractive 判断修复命令是否满足「可复制粘贴执行」的非交互要求。
+// 对应 system.md §三十五 规则 4：禁止 edit、exec -it、run -i、attach、port-forward。
+func remediationAllowsNonInteractive(verb string, parts []string) bool {
+	switch verb {
+	case "edit", "attach", "port-forward":
+		return false
+	case "exec", "run":
+		// 检查 -i/--stdin、-t/--tty、-it、-ti、--stdin=true 等组合
+		for _, p := range parts {
+			if p == "-i" || p == "--stdin" || p == "-t" || p == "--tty" ||
+				p == "-it" || p == "-ti" ||
+				strings.HasPrefix(p, "--stdin=") ||
+				strings.HasPrefix(p, "--tty=") {
+				return false
+			}
+		}
+		return true
+	}
+	return true
+}
 
 // commandRisk 按动词计算修复命令风险：只读确认命令为 SAFE，其余使用 LLM 提供风险。
 func commandRisk(text string, risk model.RiskLevel) model.RiskLevel {

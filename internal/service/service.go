@@ -38,6 +38,10 @@ type scanService struct {
 	newLLM    func(model.LLMOptions) llm.LLMClient
 }
 
+// defaultLLMConcurrency 与 diagnosis.llmConcurrency 保持一致（CONCURRENCY.md）。
+// 单独定义以避免 service 包依赖 diagnosis 包内部常量。
+const defaultLLMConcurrency = 2
+
 // New 返回生产 ScanService（注册一期全部默认规则）。
 func New() ScanService {
 	return newService(
@@ -72,6 +76,19 @@ func realLLM(o model.LLMOptions) llm.LLMClient {
 // Run 编排：连通性校验 → Phase1 采集 → 关联索引 → 规则引擎 →
 // Phase2 深度采集（日志）→ 证据挂载 → 结果组装。
 func (s *scanService) Run(ctx context.Context, opts model.ScanOptions) (*model.ScanResult, error) {
+	prog := opts.Progress // 允许 nil（静默）
+	phaseStart := func(name, title string) time.Time {
+		if prog != nil {
+			prog.PhaseStarted(name, title)
+		}
+		return time.Now()
+	}
+	phaseDone := func(name, detail string, ok bool, started time.Time) {
+		if prog != nil {
+			prog.PhaseDone(name, detail, ok, time.Since(started))
+		}
+	}
+
 	// 总预算：scan.timeout 控制整次扫描时长（CONCURRENCY.md §2）。
 	if opts.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -79,26 +96,37 @@ func (s *scanService) Run(ctx context.Context, opts model.ScanOptions) (*model.S
 		defer cancel()
 	}
 	started := time.Now()
+
+	connStart := phaseStart("connect", "连接 Kubernetes 集群并校验连通性")
 	client, err := s.newClient(opts)
 	if err != nil {
+		phaseDone("connect", "", false, connStart)
 		return nil, err
 	}
 	serverVersion, err := client.ServerVersion(ctx)
 	if err != nil {
+		phaseDone("connect", err.Error(), false, connStart)
 		return nil, fmt.Errorf("connect to cluster: %w", err)
 	}
+	phaseDone("connect", "v"+serverVersion, true, connStart)
 
 	// Phase1：全量轻量 list（无 N+1）。
+	p1Start := phaseStart("phase1", "Phase1 集群资源全量采集")
 	collector := scanner.New(client)
 	snap, err := collector.Phase1(ctx, opts)
 	if err != nil {
+		phaseDone("phase1", err.Error(), false, p1Start)
 		return nil, err
 	}
 	snap.ServerVersion = serverVersion
+	phaseDone("phase1", fmt.Sprintf("namespaces=%d pods=%d nodes=%d",
+		len(snap.Namespaces), len(snap.Pods), len(snap.Nodes)), true, p1Start)
 
 	// P3 关联索引 → P4 规则引擎：自动判定异常 Finding。
+	corrStart := phaseStart("rules", "关联索引 & 规则引擎评估")
 	idx := correlation.Build(snap)
 	findings := s.engine.Evaluate(ctx, snap, idx, opts)
+	phaseDone("rules", fmt.Sprintf("%d 条 Finding", len(findings)), true, corrStart)
 	slog.Info("scan: Phase1 采集完成", "namespaces", len(snap.Namespaces), "pods", len(snap.Pods), "findings", len(findings))
 
 	// 单 Pod 目标扫描：只保留该 Pod 及其直接关联资源（owner/Node/PVC/Service）的 Finding。
@@ -109,24 +137,32 @@ func (s *scanService) Run(ctx context.Context, opts model.ScanOptions) (*model.S
 	// Phase2：只对需要日志的异常 Pod 深度采集，并把日志挂到 Finding 证据。
 	if opts.CollectLogs && len(findings) > 0 {
 		targets := rule.LogTargets(s.registry, findings)
+		p2Title := fmt.Sprintf("Phase2 深度采集（日志）：%d 个目标 Pod", len(targets))
+		p2Start := phaseStart("phase2", p2Title)
 		if len(targets) > 0 {
 			if err := collector.Phase2(ctx, snap, targets, opts); err != nil {
 				// 根 ctx 取消时提前返回；其余失败已记入 collection_errors。
 				if ctx.Err() != nil {
+					phaseDone("phase2", err.Error(), false, p2Start)
 					return nil, ctx.Err()
 				}
 			}
 			attachLogEvidence(findings, idx)
 		}
+		phaseDone("phase2", fmt.Sprintf("log targets=%d errors=%d",
+			len(targets), len(snap.CollectionErrors)), true, p2Start)
 	}
 
 	// 关联证据补全：必须在 result 拷贝前执行，保证报告证据与 LLM 引用编号一致。
+	enrichStart := phaseStart("enrich", "关联证据补全 & 故障链聚合")
 	enrichRelatedEvidence(findings, idx)
 
 	// Finding → Correlation → Incident：同一故障链聚合为一个诊断单元；
 	// 健康评分只统计根因（派生症状不重复扣分）。
 	findingsV := derefFindings(findings)
 	incs := incident.Build(findingsV, idx)
+	phaseDone("enrich", fmt.Sprintf("incidents=%d", len(incs)), true, enrichStart)
+
 	result := &model.ScanResult{
 		Meta: model.ScanMeta{
 			ToolVersion:   version.Version,
@@ -154,17 +190,28 @@ func (s *scanService) Run(ctx context.Context, opts model.ScanOptions) (*model.S
 
 	// P7：LLM 诊断（预算裁剪 → 校验 → 降级），单个/全部失败都不中断 scan。
 	if opts.LLM.Enabled && len(incs) > 0 {
+		llmOpts := opts.LLM // copy，避免把 ScanProgress 塞进 LLMProgress 时改到原 opts
+		// 把上层 ScanProgress 桥接到 LLMProgress：Incident 粒度事件走 PhaseSub，
+		// LongTask 也走 PhaseSub（detail 里带"仍在执行…"文案）。
+		if prog != nil && llmOpts.Progress == nil {
+			llmOpts.Progress = &scanProgressLLMBridge{scan: prog}
+		}
+		llmStart := phaseStart("llm", fmt.Sprintf("LLM 诊断：%d 个 Incident（并发 %d）", len(incs), defaultLLMConcurrency))
 		slog.Info("scan: LLM 诊断开始", "incidents", len(incs))
 		findingByID := map[string]model.Finding{}
 		for _, f := range findingsV {
 			findingByID[f.ID] = f
 		}
-		diagnoses, llmSummary, err := diagnosis.New(opts.LLM).DiagnoseIncidents(ctx, incs, findingByID, s.newLLM(opts.LLM))
+		diagnoses, llmSummary, err := diagnosis.New(llmOpts).DiagnoseIncidents(ctx, incs, findingByID, s.newLLM(llmOpts))
 		if err != nil {
+			phaseDone("llm", err.Error(), false, llmStart)
 			return nil, err
 		}
 		result.Diagnoses = diagnoses
 		result.LLMSummary = llmSummary
+		ok := llmSummary.Failed == 0
+		phaseDone("llm", fmt.Sprintf("calls=%d failed=%d degraded=%d",
+			llmSummary.Calls, llmSummary.Failed, llmSummary.Degraded), ok, llmStart)
 		slog.Info("scan: LLM 诊断完成", "calls", llmSummary.Calls, "failed", llmSummary.Failed, "degraded", llmSummary.Degraded)
 	}
 
@@ -174,17 +221,56 @@ func (s *scanService) Run(ctx context.Context, opts model.ScanOptions) (*model.S
 
 	// 报告落盘：none 不写文件；latest/daily 由 Writer 写出（FR-019）。
 	if opts.ReportMode != "" && opts.ReportMode != "none" {
+		wrStart := phaseStart("report", "写入报告文件")
 		paths, err := report.NewWriter(opts.ReportDirectory).Write(result, model.ReportOptions{
 			Directory: opts.ReportDirectory,
 			Format:    opts.ReportFormat,
 			Mode:      opts.ReportMode,
 		})
 		if err != nil {
+			phaseDone("report", err.Error(), false, wrStart)
 			return nil, fmt.Errorf("write report: %w", err)
 		}
 		result.ReportPaths = paths
+		phaseDone("report", strings.Join(paths, ", "), true, wrStart)
 	}
 	return result, nil
+}
+
+// scanProgressLLMBridge 把 LLMProgress 事件桥接到 ScanProgress.PhaseSub，
+// 这样 Diagnoser 包无需知道上层 ScanProgress 实现（分层依然严格）。
+type scanProgressLLMBridge struct {
+	scan model.ScanProgress
+}
+
+func (b *scanProgressLLMBridge) IncidentStarted(id string, index, total int) {
+	b.scan.PhaseSub("llm", index, total, "incident "+shortID(id))
+}
+func (b *scanProgressLLMBridge) IncidentDone(id string, index, total int, llmUsed bool, err error) {
+	tag := "ok"
+	switch {
+	case err != nil:
+		tag = "error"
+	case !llmUsed:
+		tag = "degraded"
+	}
+	b.scan.PhaseSub("llm", index, total, "incident "+shortID(id)+" "+tag)
+}
+func (b *scanProgressLLMBridge) LongTask(id string, index, total int, elapsed time.Duration) {
+	b.scan.PhaseSub("llm", index, total, fmt.Sprintf(
+		"incident %s 仍在诊断中（已 %s，常见耗时 10-30s，请稍候）", shortID(id), truncateDuration(elapsed)))
+}
+
+func shortID(id string) string {
+	if len(id) <= 10 {
+		return id
+	}
+	return id[:10]
+}
+
+func truncateDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+	return d.String()
 }
 
 // attachLogEvidence 把 Phase2 采集的日志证据按 Pod 挂到对应 Finding（FR-014）。

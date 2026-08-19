@@ -95,6 +95,14 @@ func TestValidateCommand(t *testing.T) {
 		{"kubectl -n prod get pvc data", model.CmdRemediation, "prod", true},                                  // 只读确认命令允许进入 remediation（命令化修复方案）                                   // 缺资源名
 		{"kubectl -n prod rollout restart deployment <deployment-name>", model.CmdRemediation, "prod", false}, // 占位符命令
 		{"echo rm -rf /", model.CmdRemediation, "prod", false},
+		// P1 体验：修复命令必须非交互（system.md §三十五 规则 4）。
+		{"kubectl -n prod edit configmap nginx-config", model.CmdRemediation, "prod", false},
+		{"kubectl -n prod attach nginx-pod", model.CmdRemediation, "prod", false},
+		{"kubectl -n prod port-forward svc/web 8080:80", model.CmdRemediation, "prod", false},
+		{"kubectl -n prod exec -it nginx-pod -- sh", model.CmdRemediation, "prod", false},
+		{"kubectl -n prod exec nginx-pod -- ls", model.CmdRemediation, "prod", false}, // exec 不作为修复命令（风险不可控且非修复），只能用于 investigation
+		{"kubectl -n prod run tmp --image=busybox -i -- sleep 1", model.CmdRemediation, "prod", false},
+		{"kubectl -n prod patch configmap nginx-config --type merge -p '{\"data\":{\"k\":\"v\"}}'", model.CmdRemediation, "prod", true},
 	}
 	for _, tc := range cases {
 		_, ok := validateCommand(tc.text, tc.category, tc.ns)

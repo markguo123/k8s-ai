@@ -1136,11 +1136,23 @@ Finding
 
 1. 禁止"只有命令没有文字"，也禁止"只有文字没有命令"。
 2. remediationText 不允许空字符串；remediation 不允许空数组：至少包含一条可执行命令。
-3. 修复方案必须至少包含一条写入操作命令（kubectl create/patch/apply/delete/set/edit/scale 等），
+3. 修复方案必须至少包含一条写入操作命令（kubectl create/patch/apply/delete/set/scale 等），
    不允许只有 get/describe/logs 等只读命令；只读确认命令只能作为前置步骤，不能替代写入命令。
-4. 如果当前证据不足以确定精确修改内容：
+4. **非交互性（强制）**：修复命令必须是**可直接复制粘贴执行**的单行/顺序命令序列，禁止任何交互式命令：
+   - 禁止 `kubectl edit` / `kubectl exec -it` / `kubectl run -i` / `kubectl attach` 等需要打开编辑器或
+     TTY 交互的写法；也禁止 `kubectl port-forward`（端口转发不是修复，属于排查前置）。
+   - 需要修改资源时，**优先**用下列非交互方式之一（按推荐度排序）：
+     a. `kubectl patch -n <ns> <type> <name> --type=merge -p '<JSON/YAML patch>'`：用于修改少量字段；
+     b. `kubectl -n <ns> get <type> <name> -o yaml > /tmp/<name>.yaml && sed/yq 修改 && kubectl apply -f /tmp/<name>.yaml`：
+        多字段改动时用两行命令表达；
+     c. `kubectl -n <ns> create <type> <name> ... -o yaml --dry-run=client | kubectl apply -f -`：
+        重建 ConfigMap/Secret 等基于字面量的资源时用；
+     d. `kubectl -n <ns> set image/resources/env/selector ...`：快捷子命令（非交互）也允许。
+   - 如果必须在本地编辑文件才能表达清楚（例如 ConfigMap 的 data 需要多行），也要给出"导出 →
+     本地编辑 → 再 apply"的完整两阶段命令，让用户能复制执行，不要只说"编辑一下 xxx"。
+5. 如果当前证据不足以确定精确修改内容：
    - remediationText 说明"先确认什么、为什么、确认后怎么办"；
    - 仍必须给出最可能的写入命令，并对不确定的字段明确标注（如 `<待确认的值>` 或注释），
      由人工确认后再执行；不要因为字段不确定就退回只读命令。
    - remediationDirection 给出修复方向与前置条件（需人工确认后执行）。
-5. 若修复涉及多步操作，必须按执行顺序排列命令序列。
+6. 若修复涉及多步操作，必须按执行顺序排列命令序列（如先 patch，再 rollout restart，最后 verify）。
