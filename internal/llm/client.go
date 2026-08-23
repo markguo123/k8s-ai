@@ -77,6 +77,37 @@ type chatRequestBody struct {
 	Stream             bool            `json:"stream"`
 	ResponseFormat     *responseFormat `json:"response_format,omitempty"`
 	ChatTemplateKwargs map[string]any  `json:"chat_template_kwargs,omitempty"`
+	Tools              []wireTool      `json:"tools,omitempty"` // 二期 Tool Calling（native 模式）
+}
+
+// wireTool 是 OpenAI 标准的 tools 数组元素：
+// {"type":"function","function":{"name":...,"description":...,"parameters":...}}。
+// vLLM/Qwen 网关按此格式校验（扁平格式会被拒绝）。
+type wireTool struct {
+	Type     string           `json:"type"`
+	Function wireToolFunction `json:"function"`
+}
+
+type wireToolFunction struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Parameters  any    `json:"parameters,omitempty"`
+}
+
+// toWireTools 把领域 ToolSpec 转为 OpenAI 标准 wire 格式。
+func toWireTools(specs []ToolSpec) []wireTool {
+	out := make([]wireTool, 0, len(specs))
+	for _, s := range specs {
+		out = append(out, wireTool{
+			Type: "function",
+			Function: wireToolFunction{
+				Name:        s.Name,
+				Description: s.Description,
+				Parameters:  s.Parameters,
+			},
+		})
+	}
+	return out
 }
 
 // responseFormat 强制网关输出 JSON（OpenAI Compatible）。
@@ -104,6 +135,9 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 	}
 	if req.DisableThinking {
 		body.ChatTemplateKwargs = map[string]any{"enable_thinking": false}
+	}
+	if len(req.Tools) > 0 {
+		body.Tools = toWireTools(req.Tools)
 	}
 	// 单次请求可覆盖 max_tokens（诊断用它压缩生成长度，避免大模型长时间生成）。
 	maxTokens := c.maxTokens
@@ -178,6 +212,14 @@ func parseChatResponse(resp *http.Response) (*ChatResponse, error) {
 			Message struct {
 				Content          string `json:"content"`
 				ReasoningContent string `json:"reasoning_content"`
+				ToolCalls        []struct {
+					ID       string `json:"id"`
+					Type     string `json:"type"`
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
 			} `json:"message"`
 		} `json:"choices"`
 		Usage struct {
@@ -192,21 +234,46 @@ func parseChatResponse(resp *http.Response) (*ChatResponse, error) {
 	if len(out.Choices) == 0 {
 		return nil, fmt.Errorf("llm response has no choices")
 	}
+	toolCalls := parseToolCalls(out.Choices[0].Message.ToolCalls)
 	// 思考型模型（如 Qwen3）可能只返回 reasoning_content，content 为空。
-	if strings.TrimSpace(out.Choices[0].Message.Content) == "" {
+	if strings.TrimSpace(out.Choices[0].Message.Content) == "" && len(toolCalls) == 0 {
 		if out.Choices[0].Message.ReasoningContent != "" {
 			return nil, fmt.Errorf("llm response content is empty (reasoning only; max_tokens may be too small)")
 		}
 		return nil, fmt.Errorf("llm response content is empty")
 	}
 	return &ChatResponse{
-		Content: out.Choices[0].Message.Content,
+		Content:   out.Choices[0].Message.Content,
+		ToolCalls: toolCalls,
 		Usage: TokenUsage{
 			PromptTokens:     out.Usage.PromptTokens,
 			CompletionTokens: out.Usage.CompletionTokens,
 			TotalTokens:      out.Usage.TotalTokens,
 		},
 	}, nil
+}
+
+// parseToolCalls 把响应中的 tool_calls（arguments 为字符串）转为 []ToolCall。
+func parseToolCalls(calls []struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}) []ToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+	out := make([]ToolCall, 0, len(calls))
+	for _, c := range calls {
+		tc := ToolCall{ID: c.ID, Name: c.Function.Name}
+		if s := strings.TrimSpace(c.Function.Arguments); s != "" {
+			tc.Arguments = json.RawMessage(s)
+		}
+		out = append(out, tc)
+	}
+	return out
 }
 
 // readAPIError 读取错误响应体并脱敏：先显式剔除本客户端 api_key，

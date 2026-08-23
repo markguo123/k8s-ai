@@ -20,6 +20,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	metricsv1beta1 "k8s.io/metrics/pkg/apis/metrics/v1beta1"
+	metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
 )
 
 // Options configure cluster access.
@@ -35,6 +37,7 @@ type Options struct {
 // Client implements scanner.Reader with a typed read-only clientset.
 type Client struct {
 	clientset kubernetes.Interface
+	metrics   metricsclientset.Interface
 }
 
 // NewClient builds a read-only client from kubeconfig or in-cluster config
@@ -49,7 +52,26 @@ func NewClient(opts Options) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create clientset: %w", err)
 	}
-	return &Client{clientset: cs}, nil
+	mcs, err := metricsclientset.NewForConfig(rc)
+	if err != nil {
+		return nil, fmt.Errorf("create metrics clientset: %w", err)
+	}
+	return &Client{clientset: cs, metrics: mcs}, nil
+}
+
+// NewClientset 返回配置好的 client-go clientset
+// （executor 写操作与只读门面共用同一连接配置）。
+func NewClientset(opts Options) (kubernetes.Interface, error) {
+	rc, err := buildRESTConfig(opts)
+	if err != nil {
+		return nil, err
+	}
+	applyLimits(rc, opts)
+	cs, err := kubernetes.NewForConfig(rc)
+	if err != nil {
+		return nil, fmt.Errorf("create clientset: %w", err)
+	}
+	return cs, nil
 }
 
 // NewClientWithClientset 用已有 clientset 构造只读客户端（测试注入用）。
@@ -308,4 +330,88 @@ func (c *Client) GetService(ctx context.Context, namespace, name string) (*corev
 		return nil, fmt.Errorf("get service %s/%s: %w", namespace, name, err)
 	}
 	return svc, nil
+}
+
+// GetNamespace 定向读取命名空间（二期 Tool 用）。
+func (c *Client) GetNamespace(ctx context.Context, name string) (*corev1.Namespace, error) {
+	ns, err := c.clientset.CoreV1().Namespaces().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("get namespace %s: %w", name, err)
+	}
+	return ns, nil
+}
+
+// GetStatefulSet 定向读取 StatefulSet（二期 Tool 用）。
+func (c *Client) GetStatefulSet(ctx context.Context, namespace, name string) (*appsv1.StatefulSet, error) {
+	sts, err := c.clientset.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("get statefulset %s/%s: %w", namespace, name, err)
+	}
+	return sts, nil
+}
+
+// GetDaemonSet 定向读取 DaemonSet（二期 Tool 用）。
+func (c *Client) GetDaemonSet(ctx context.Context, namespace, name string) (*appsv1.DaemonSet, error) {
+	ds, err := c.clientset.AppsV1().DaemonSets(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("get daemonset %s/%s: %w", namespace, name, err)
+	}
+	return ds, nil
+}
+
+// GetReplicaSet 定向读取 ReplicaSet（二期 Tool 用）。
+func (c *Client) GetReplicaSet(ctx context.Context, namespace, name string) (*appsv1.ReplicaSet, error) {
+	rs, err := c.clientset.AppsV1().ReplicaSets(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("get replicaset %s/%s: %w", namespace, name, err)
+	}
+	return rs, nil
+}
+
+// GetEndpoints 定向读取 Endpoints（二期 Tool 用）。
+func (c *Client) GetEndpoints(ctx context.Context, namespace, name string) (*corev1.Endpoints, error) {
+	eps, err := c.clientset.CoreV1().Endpoints(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("get endpoints %s/%s: %w", namespace, name, err)
+	}
+	return eps, nil
+}
+
+// GetPersistentVolumeClaim 定向读取 PVC（二期 Tool 用）。
+func (c *Client) GetPersistentVolumeClaim(ctx context.Context, namespace, name string) (*corev1.PersistentVolumeClaim, error) {
+	pvc, err := c.clientset.CoreV1().PersistentVolumeClaims(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("get pvc %s/%s: %w", namespace, name, err)
+	}
+	return pvc, nil
+}
+
+// GetPersistentVolume 定向读取 PV（二期 Tool 用）。
+func (c *Client) GetPersistentVolume(ctx context.Context, name string) (*corev1.PersistentVolume, error) {
+	pv, err := c.clientset.CoreV1().PersistentVolumes().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("get pv %s: %w", name, err)
+	}
+	return pv, nil
+}
+
+// GetStorageClass 定向读取 StorageClass（二期 Tool 用）。
+func (c *Client) GetStorageClass(ctx context.Context, name string) (*storagev1.StorageClass, error) {
+	sc, err := c.clientset.StorageV1().StorageClasses().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("get storageclass %s: %w", name, err)
+	}
+	return sc, nil
+}
+
+// ListNodeMetrics 读取节点资源用量（metrics.k8s.io，需 metrics-server，ADR-012 二期启用）。
+func (c *Client) ListNodeMetrics(ctx context.Context) ([]metricsv1beta1.NodeMetrics, error) {
+	if c.metrics == nil {
+		return nil, fmt.Errorf("metrics client not available")
+	}
+	list, err := c.metrics.MetricsV1beta1().NodeMetricses().List(ctx, listOpts())
+	if err != nil {
+		return nil, fmt.Errorf("list node metrics: %w", err)
+	}
+	return list.Items, nil
 }

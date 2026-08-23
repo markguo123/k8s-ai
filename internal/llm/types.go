@@ -16,19 +16,43 @@ type LLMClient interface {
 
 // Message 聊天消息。
 type Message struct {
-	Role      string     `json:"role"` // system | user | assistant
-	Content   string     `json:"content"`
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"` // 二期 Tool Calling 预留
+	Role       string     `json:"role"` // system | user | assistant | tool
+	Content    string     `json:"content"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // assistant 消息携带的 Tool 调用
+	ToolCallID string     `json:"tool_call_id,omitempty"` // role=tool 消息回传的调用 ID
 }
 
-// ToolCall 二期 Tool Calling 预留。
+// ToolCall 是 LLM 请求执行的工具调用。
 type ToolCall struct {
 	ID        string          `json:"id,omitempty"`
 	Name      string          `json:"name,omitempty"`
 	Arguments json.RawMessage `json:"arguments,omitempty"`
 }
 
-// ToolSpec 二期 Tool Calling 预留（一期恒为 nil）。
+// MarshalJSON 把 ToolCall 序列化为 OpenAI 标准 assistant tool_calls 元素：
+// {"id":..., "type":"function", "function":{"name":..., "arguments":"<json string>"}}。
+// vLLM/Qwen 网关按该格式校验（扁平 {id,name,arguments} 会被 400 拒绝）。
+func (t ToolCall) MarshalJSON() ([]byte, error) {
+	type wireFunction struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	}
+	type wire struct {
+		ID       string       `json:"id"`
+		Type     string       `json:"type"`
+		Function wireFunction `json:"function"`
+	}
+	return json.Marshal(wire{
+		ID:   t.ID,
+		Type: "function",
+		Function: wireFunction{
+			Name:      t.Name,
+			Arguments: string(t.Arguments),
+		},
+	})
+}
+
+// ToolSpec 是暴露给 LLM 的工具定义（OpenAI compatible tools 数组元素）。
 type ToolSpec struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
@@ -48,8 +72,9 @@ type ChatRequest struct {
 
 // ChatResponse 一次 Chat 补全响应。
 type ChatResponse struct {
-	Content string
-	Usage   TokenUsage
+	Content   string
+	ToolCalls []ToolCall // 非空 = LLM 请求执行工具（多轮 Tool Calling）
+	Usage     TokenUsage
 }
 
 // TokenUsage token 用量统计。

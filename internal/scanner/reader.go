@@ -45,6 +45,14 @@ type Reader interface {
 	GetNode(ctx context.Context, name string) (*corev1.Node, error)
 	GetDeployment(ctx context.Context, namespace, name string) (*appsv1.Deployment, error)
 	GetService(ctx context.Context, namespace, name string) (*corev1.Service, error)
+	GetNamespace(ctx context.Context, name string) (*corev1.Namespace, error)
+	GetStatefulSet(ctx context.Context, namespace, name string) (*appsv1.StatefulSet, error)
+	GetDaemonSet(ctx context.Context, namespace, name string) (*appsv1.DaemonSet, error)
+	GetReplicaSet(ctx context.Context, namespace, name string) (*appsv1.ReplicaSet, error)
+	GetEndpoints(ctx context.Context, namespace, name string) (*corev1.Endpoints, error)
+	GetPersistentVolumeClaim(ctx context.Context, namespace, name string) (*corev1.PersistentVolumeClaim, error)
+	GetPersistentVolume(ctx context.Context, name string) (*corev1.PersistentVolume, error)
+	GetStorageClass(ctx context.Context, name string) (*storagev1.StorageClass, error)
 
 	// GetPodLogs returns capped log bytes for a container (FR-022).
 	GetPodLogs(ctx context.Context, namespace, pod, container string, opts model.LogOptions) ([]byte, error)
