@@ -2,6 +2,36 @@
 
 本项目遵循 docs/VERSIONING.md 的里程碑阶梯约定。
 
+## [v2.0.0] - 2026-08-24
+
+二期交付：自然语言 Kubernetes Agent（chat/web）+ 读写操作 + 人工确认闭环。
+
+### Added
+
+- **`k8s-ai chat`**：交互 / 单发 / stdin / `--format json`；会话管理（--session/--new-session/--list-sessions/--delete-session）；`clear`/`exit` 元命令。
+- **`k8s-ai web`**：浏览器 chat（REST + SSE 流式 + 会话侧栏 + Markdown 渲染 + 审批卡片 + 工具执行过程 Show output）。
+- **Agent 核心**（internal/agent）：消息总线/状态机、native + shim + auto 双模式 Tool Calling、max_iterations/max_tool_calls/timeout、单轮上下文预算、ToolResult 截断/脱敏/不可信定界。
+- **工具集**（internal/tools + tools/k8s）：19 个只读工具、5 个诊断工具（复用一期 ScanService.Run）、7 个写工具（kubectl/scale/patch_deployment/patch_configmap/restart_rollout/label/delete_pod）；`CommandDescriber` 审批可读化。
+- **审批与执行**（internal/approval + internal/executor）：SAFE..CRITICAL 风险分级、deny_ops、require_approval、--skip-permissions；kubectl argv 直调（无 shell）+ client-go 结构化写；执行后验证（Deployment 状态核对）。
+- **修复行为门禁**：诊断类提问只给结论+方案并询问"需要我修复吗？"，用户同意后才调用写工具。
+- **审计**（internal/audit 接入主流程）：用户输入 / LLM / 工具调用 / 审批 / 执行事件落盘（脱敏）。
+- **MCP 预留**（internal/mcp）：Client 接口 + 工具注册表适配器骨架。
+- **RBAC 写权限示例**（deploy/rbac-write.example.yaml，默认清单保持只读）。
+
+### Changed
+
+- `agent.max_iterations` 默认 10 → 15（对标 kubectl-ai，降低弱模型触发上限概率）。
+- LLM tools 请求/回传 wire 对齐 OpenAI 标准（`{"type":"function","function":{...}}`），兼容 vLLM/Qwen 网关。
+- 注册 client-go 认证插件（k8s.io/client-go/plugin/pkg/client/auth），支持 OIDC 等 kubeconfig 认证。
+- 一期兼容改动：kubernetes 包增加节点 metrics 读取（k8s.io/metrics）、kubernetes.Client NewClientset、scanner.Reader Get*/ConfigMap 扩展。
+
+### Fixed
+
+- 工具结果投喂 LLM 被 Text 摘要覆盖（get_pods 只见 "pods=20"）→ Text+Data 一起投喂。
+- `get_pod` 支持省略 namespace 全集群查找 + 前缀匹配（Deployment 名查 Pod），避免模型猜命名空间导致 max_iterations。
+- markdown 表格重复渲染（解析器每行重复建表）。
+- 审批卡片展示原始转义 JSON → 人类可读命令 + 变更说明。
+
 ## [v1.0.3] - 2026-08-19
 
 一期体验迭代：修复命令非交互化（edit→patch/apply）+ scan 终端阶段进度 UI（Spinne + LLM 长任务抚慰）。

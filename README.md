@@ -1,8 +1,9 @@
 # k8s-ai
 
-> 当前版本：**v1.0.3**（一期迭代；版本约定见 [docs/VERSIONING.md](docs/VERSIONING.md)，变更见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）
+> 当前版本：**v2.0.0**（二期 Agent；版本约定见 [docs/VERSIONING.md](docs/VERSIONING.md)，变更见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）
 
-Kubernetes AI 智能巡检与故障诊断工具（一期：只读巡检 + 规则引擎 + 私有大模型诊断 + Markdown/JSON 报告）。
+Kubernetes AI 智能巡检、故障诊断与自然语言运维 Agent
+（一期：只读巡检 + 规则引擎 + 私有大模型诊断 + 报告；二期：`chat` 对话 Agent + `web` 浏览器界面 + 读写操作 + 人工确认）。
 
 ## 项目介绍
 
@@ -14,7 +15,29 @@ k8s-ai 让运维人员执行一次 `k8s-ai scan`，就能快速知道集群哪�
 - **LLM 诊断**：OpenAI 兼容接口（OpenAI / Qwen / DeepSeek / vLLM / Ollama），输出根因、影响、排查/修复/验证命令（只展示，不执行）
 - **报告**：Markdown + JSON（latest / 时间戳 / 终端一屏摘要），健康评分
 
-**一期红线**：严格只读，绝不创建/修改/删除资源，绝不执行任何命令；LLM 生成的 kubectl 命令仅供人工复制执行。
+**安全边界**：只读操作自动执行；写操作（patch/scale/restart/delete 等）必须人工确认；LLM 不是权限主体，真实边界来自 Kubernetes RBAC；无任意 shell 执行（kubectl 以 argv 直调）。
+
+## 二期：chat / web（自然语言 Agent）
+
+```bash
+# 终端对话（交互 / 单发 / stdin / JSON）
+k8s-ai chat "为什么 payment-api 一直重启？"
+k8s-ai chat --format json "检查下集群健康状态"
+
+# 浏览器对话（多会话 + SSE 流式 + 工具执行过程 + 审批卡片）
+k8s-ai web --addr 127.0.0.1:8081
+```
+
+二期能力：
+
+- **Agent 工具集**：19 个只读工具（Pod/Node/Workload/存储/网络/Events/日志/ConfigMap/节点资源用量）+ 5 个诊断工具（scan_cluster/diagnose_*，复用一期 Scanner/规则/诊断）+ 写工具（patch_configmap/patch_deployment/scale/restart/delete_pod/label/kubectl）
+- **集群健康检查**：节点 → 资源使用（metrics API）→ 命名空间 → Pod → 系统组件 → 警告事件 → 规则评分 + LLM 综合评分双轨
+- **安全执行闭环**：诊断 → 询问"需要我修复吗？" → 用户同意 → 每个写操作审批卡片（人类可读命令 + 变更）→ 执行 → 验证
+- **会话持久化**：`--session` / `--new-session` / `--list-sessions` / `--delete-session`，落盘 `~/.k8s-ai/sessions`
+- **审计**：用户输入 / LLM / 工具调用 / 审批 / 执行全部留痕 `~/.k8s-ai/audit/<session>.jsonl`（脱敏）
+- **MCP 预留**：Client 接口 + 注册表适配器（二期 v1 不连接外部服务器）
+
+> 写权限示例见 [deploy/rbac-write.example.yaml](deploy/rbac-write.example.yaml)（默认 clusterrole 保持只读）；安装部署见 [docs/INSTALLATION.md](docs/INSTALLATION.md)。
 
 ## 安装
 

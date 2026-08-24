@@ -14,6 +14,7 @@ type Dependencies struct {
 	Version    string
 	LoadConfig func(config.LoadOptions) (*config.Config, error)
 	NewScan    func() service.ScanService
+	NewChat    func(cfg *config.Config) service.ChatService
 }
 
 // NewRootCmd builds the k8s-ai command tree.
@@ -28,6 +29,8 @@ func NewRootCmd(deps Dependencies) *cobra.Command {
 	root.AddCommand(newVersionCmd(deps))
 	root.AddCommand(newConfigCmd(deps))
 	root.AddCommand(newScanCmd(deps))
+	root.AddCommand(newChatCmd(deps))
+	root.AddCommand(newWebCmd(deps))
 	root.AddCommand(newServerCmd(deps))
 	return root
 }

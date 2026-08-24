@@ -1,0 +1,253 @@
+package webui
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/k8s-ai/k8s-ai/internal/service"
+	"github.com/k8s-ai/k8s-ai/internal/session"
+)
+
+// fakeChat 是 webui 测试用 ChatService 桩。
+type fakeChat struct {
+	mu        sync.Mutex
+	sessions  map[string]*session.Session
+	script    []service.ChatEvent
+	gotChoice string
+}
+
+func newFakeChat(script ...service.ChatEvent) *fakeChat {
+	return &fakeChat{sessions: map[string]*session.Session{}, script: script}
+}
+
+func (f *fakeChat) GetOrCreateSession(id, _, _ string) (*session.Session, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if s, ok := f.sessions[id]; ok {
+		return s, nil
+	}
+	s := &session.Session{ID: id, Name: "Session " + id}
+	f.sessions[id] = s
+	return s, nil
+}
+
+func (f *fakeChat) ListSessions() ([]session.Session, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]session.Session, 0, len(f.sessions))
+	for _, s := range f.sessions {
+		out = append(out, *s)
+	}
+	return out, nil
+}
+
+func (f *fakeChat) DeleteSession(id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.sessions, id)
+	return nil
+}
+
+func (f *fakeChat) RenameSession(id, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if s, ok := f.sessions[id]; ok {
+		s.Name = name
+	}
+	return nil
+}
+
+func (f *fakeChat) Chat(ctx context.Context, _ service.ChatRequest, respond <-chan string) (<-chan service.ChatEvent, error) {
+	out := make(chan service.ChatEvent, len(f.script)+4)
+	go func() {
+		defer close(out)
+		for _, e := range f.script {
+			if e.Type == service.ChatEventChoice {
+				select {
+				case <-ctx.Done():
+					return
+				case c := <-respond:
+					f.mu.Lock()
+					f.gotChoice = c
+					f.mu.Unlock()
+					out <- service.ChatEvent{Type: service.ChatEventAnswer, Text: "approved:" + c}
+					return
+				}
+			}
+			out <- e
+		}
+	}()
+	return out, nil
+}
+
+func postJSON(t *testing.T, url string, body string) *http.Response {
+	t.Helper()
+	resp, err := http.Post(url, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+func TestIndexAndSessionCRUD(t *testing.T) {
+	srv := httptest.NewServer(New(newFakeChat(), "qwen-plus").Handler())
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := make([]byte, 4096)
+	n, _ := resp.Body.Read(body)
+	resp.Body.Close()
+	if !strings.Contains(string(body[:n]), "k8s-ai") {
+		t.Fatal("首页缺少 k8s-ai 品牌")
+	}
+
+	resp = postJSON(t, srv.URL+"/api/sessions", `{"id":"s1","name":"incident-001"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("create status = %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp, _ = http.Get(srv.URL + "/api/sessions")
+	var list []map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&list)
+	resp.Body.Close()
+	if len(list) != 1 || list[0]["name"] != "incident-001" {
+		t.Fatalf("sessions = %v", list)
+	}
+
+	resp = postJSON(t, srv.URL+"/api/sessions/s1/rename", `{"name":"renamed"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("rename status = %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/sessions/s1", nil)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("delete status = %v err=%v", resp.StatusCode, err)
+	}
+	resp.Body.Close()
+}
+
+// startSSE 打开一条 SSE 连接：收到 history 快照后通知 connected，继续读到 want 事件。
+// 必须在独立 goroutine 中调用（阻塞式）。
+func startSSE(url string, connected chan<- struct{}, want string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	sc := bufio.NewScanner(resp.Body)
+	for sc.Scan() {
+		line := sc.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		switch {
+		case strings.Contains(data, "history"):
+			close(connected)
+		case strings.Contains(data, want):
+			return data, nil
+		}
+	}
+	return "", sc.Err()
+}
+
+type sseResult struct {
+	data string
+	err  error
+}
+
+func TestStreamAndSendMessage(t *testing.T) {
+	fake := newFakeChat(
+		service.ChatEvent{Type: service.ChatEventToolCall, Tool: &service.ChatToolCallView{Name: "get_resources"}},
+		service.ChatEvent{Type: service.ChatEventAnswer, Text: "完成"},
+	)
+	srv := httptest.NewServer(New(fake, "m").Handler())
+	defer srv.Close()
+	_, _ = fake.GetOrCreateSession("s1", "", "m")
+
+	connected := make(chan struct{})
+	res := make(chan sseResult, 1)
+	go func() {
+		data, err := startSSE(srv.URL+"/api/sessions/s1/stream", connected, "完成")
+		res <- sseResult{data: data, err: err}
+	}()
+	<-connected
+
+	resp := postJSON(t, srv.URL+"/api/sessions/s1/send-message", `{"query":"检查"}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("send status = %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	select {
+	case r := <-res:
+		if r.err != nil {
+			t.Fatal(r.err)
+		}
+		if !strings.Contains(r.data, "answer") {
+			t.Fatalf("SSE 数据异常: %s", r.data)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("未收到 answer 事件")
+	}
+}
+
+func TestApproveFlow(t *testing.T) {
+	fake := newFakeChat(service.ChatEvent{Type: service.ChatEventChoice, Choice: &service.ChatChoice{Prompt: "是否执行？"}})
+	srv := httptest.NewServer(New(fake, "m").Handler())
+	defer srv.Close()
+	_, _ = fake.GetOrCreateSession("s1", "", "m")
+
+	connected := make(chan struct{})
+	res := make(chan sseResult, 1)
+	go func() {
+		data, err := startSSE(srv.URL+"/api/sessions/s1/stream", connected, "approved:")
+		res <- sseResult{data: data, err: err}
+	}()
+	<-connected
+
+	resp := postJSON(t, srv.URL+"/api/sessions/s1/send-message", `{"query":"扩容"}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("send status = %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp = postJSON(t, srv.URL+"/api/sessions/s1/approve", `{"choice":"yes"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("approve status = %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	select {
+	case r := <-res:
+		if r.err != nil {
+			t.Fatal(r.err)
+		}
+		if !strings.Contains(r.data, "approved:yes") {
+			t.Fatalf("SSE 数据异常: %s", r.data)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("未收到审批结果事件")
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.gotChoice != "yes" {
+		t.Fatalf("choice = %q", fake.gotChoice)
+	}
+}

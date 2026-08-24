@@ -300,6 +300,24 @@ func (c *Client) ListEvents(ctx context.Context, namespace string) ([]corev1.Eve
 	return list.Items, nil
 }
 
+// ListConfigMaps 按命名空间列出 ConfigMap（二期诊断配置类问题用）。
+func (c *Client) ListConfigMaps(ctx context.Context, namespace string) ([]corev1.ConfigMap, error) {
+	list, err := c.clientset.CoreV1().ConfigMaps(allOrNs(namespace)).List(ctx, listOpts())
+	if err != nil {
+		return nil, fmt.Errorf("list configmaps: %w", err)
+	}
+	return list.Items, nil
+}
+
+// GetConfigMap 定向读取 ConfigMap（数据视为不可信输入，进入 LLM 前统一脱敏）。
+func (c *Client) GetConfigMap(ctx context.Context, namespace, name string) (*corev1.ConfigMap, error) {
+	cm, err := c.clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("get configmap %s/%s: %w", namespace, name, err)
+	}
+	return cm, nil
+}
+
 func (c *Client) GetPod(ctx context.Context, namespace, name string) (*corev1.Pod, error) {
 	pod, err := c.clientset.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {

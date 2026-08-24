@@ -10,6 +10,9 @@ import (
 	"os/signal"
 	"syscall"
 
+	// 注册 client-go 认证插件（kubeconfig 可能使用 oidc/gcp/azure/exec 等）。
+	_ "k8s.io/client-go/plugin/pkg/client/auth"
+
 	"github.com/k8s-ai/k8s-ai/internal/cli"
 	"github.com/k8s-ai/k8s-ai/internal/config"
 	"github.com/k8s-ai/k8s-ai/internal/service"
@@ -26,6 +29,7 @@ func main() {
 		Version:    version.String(),
 		LoadConfig: config.Load,
 		NewScan:    service.New,
+		NewChat:    service.NewChatWithConfig,
 	})
 	if err := root.ExecuteContext(ctx); err != nil {
 		var exitErr *cli.ExitError

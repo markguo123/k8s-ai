@@ -1,0 +1,41 @@
+# k8s-ai 二期：Agent 写操作权限示例（RBAC）
+#
+# ⚠️ 说明：
+#   - 默认 deploy/clusterrole.yaml 保持只读（scan 巡检 + chat 只读调查）。
+#   - 仅当需要 k8s-ai chat 执行"修复操作"（patch/scale/restart/delete）时，
+#     才按需授予以下写权限；LLM 永远不是权限主体，真实边界来自 RBAC。
+#   - 建议按最小权限裁剪 resources/verbs（如不需要 delete 就删除）。
+#   - 使用方法：kubectl apply -f deploy/rbac-write.example.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8s-ai-write
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch", "patch", "update", "scale"]
+  - apiGroups: [""]
+    resources: ["pods", "configmaps", "services", "endpoints", "events", "namespaces", "nodes", "persistentvolumeclaims", "persistentvolumes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods", "configmaps", "services"]
+    verbs: ["patch", "update", "delete"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: k8s-ai-write
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: k8s-ai-write
+subjects:
+  - kind: ServiceAccount
+    name: k8s-ai
+    namespace: k8s-ai

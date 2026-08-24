@@ -21,16 +21,20 @@ type Config struct {
 	Scan       ScanConfig       `mapstructure:"scan"`
 	Report     ReportConfig     `mapstructure:"report"`
 	Rules      RulesConfig      `mapstructure:"rules"`
+	Agent      AgentConfig      `mapstructure:"agent"` // 二期 Agent
+	WebUI      WebUIConfig      `mapstructure:"webui"` // 二期 Web UI
+	MCP        MCPConfig        `mapstructure:"mcp"`   // 二期 MCP 预留
 }
 
 // KubernetesConfig controls cluster access (FR-003).
 type KubernetesConfig struct {
-	Kubeconfig string        `mapstructure:"kubeconfig"` // empty = loading rules (KUBECONFIG or ~/.kube/config)
-	Context    string        `mapstructure:"context"`
-	Namespace  string        `mapstructure:"namespace"`
-	Timeout    time.Duration `mapstructure:"timeout"`
-	QPS        float32       `mapstructure:"qps"`
-	Burst      int           `mapstructure:"burst"`
+	Kubeconfig  string        `mapstructure:"kubeconfig"` // empty = loading rules (KUBECONFIG or ~/.kube/config)
+	Context     string        `mapstructure:"context"`
+	Namespace   string        `mapstructure:"namespace"`
+	KubectlPath string        `mapstructure:"kubectl_path"` // 二期：kubectl 二进制路径（空 = PATH 查找）
+	Timeout     time.Duration `mapstructure:"timeout"`
+	QPS         float32       `mapstructure:"qps"`
+	Burst       int           `mapstructure:"burst"`
 }
 
 // LLMConfig controls the OpenAI-compatible endpoint (FR-015).
@@ -72,6 +76,44 @@ type ReportConfig struct {
 type RulesConfig struct {
 	Enabled  []string `mapstructure:"enabled"`
 	Disabled []string `mapstructure:"disabled"`
+}
+
+// AgentConfig 控制二期 Agent（需求规格 §24）。
+type AgentConfig struct {
+	MaxIterations   int           `mapstructure:"max_iterations"`
+	MaxToolCalls    int           `mapstructure:"max_tool_calls"`
+	Timeout         time.Duration `mapstructure:"timeout"`
+	ToolCalling     string        `mapstructure:"tool_calling"` // native | shim | auto
+	RequireApproval bool          `mapstructure:"require_approval"`
+	SkipPermissions bool          `mapstructure:"skip_permissions"`
+	DenyOps         []string      `mapstructure:"deny_ops"`
+	ResultMaxBytes  int           `mapstructure:"result_max_bytes"`
+	TurnMaxBytes    int           `mapstructure:"turn_max_bytes"`
+	CmdMaxBytes     int           `mapstructure:"cmd_max_bytes"`
+	HistoryTurns    int           `mapstructure:"history_turns"`
+	SessionDir      string        `mapstructure:"session_dir"`
+	AuditDir        string        `mapstructure:"audit_dir"`
+	DisabledTools   []string      `mapstructure:"disabled_tools"`
+}
+
+// WebUIConfig 控制二期 Web UI 监听地址。
+type WebUIConfig struct {
+	Addr string `mapstructure:"addr"`
+}
+
+// MCPConfig 是 MCP 客户端预留配置（v1 只解析，不连接）。
+type MCPConfig struct {
+	Enabled bool              `mapstructure:"enabled"`
+	Servers []MCPServerConfig `mapstructure:"servers"`
+}
+
+// MCPServerConfig 描述一个 MCP 服务器（stdio 或 http）。
+type MCPServerConfig struct {
+	Name    string            `mapstructure:"name"`
+	Command string            `mapstructure:"command"`
+	Args    []string          `mapstructure:"args"`
+	Env     map[string]string `mapstructure:"env"`
+	URL     string            `mapstructure:"url"`
 }
 
 // LoadOptions controls a single Load call.
@@ -155,6 +197,23 @@ func setDefaults(v *viper.Viper) {
 
 	v.SetDefault("report.directory", "./reports")
 	v.SetDefault("report.format", "markdown")
+
+	v.SetDefault("agent.max_iterations", 15)
+	v.SetDefault("agent.max_tool_calls", 20)
+	v.SetDefault("agent.timeout", 5*time.Minute)
+	v.SetDefault("agent.tool_calling", "native")
+	v.SetDefault("agent.require_approval", true)
+	v.SetDefault("agent.skip_permissions", false)
+	v.SetDefault("agent.result_max_bytes", 8*1024)
+	v.SetDefault("agent.turn_max_bytes", 32*1024)
+	v.SetDefault("agent.cmd_max_bytes", 64*1024)
+	v.SetDefault("agent.history_turns", 20)
+	v.SetDefault("agent.session_dir", "~/.k8s-ai/sessions")
+	v.SetDefault("agent.audit_dir", "~/.k8s-ai/audit")
+
+	v.SetDefault("webui.addr", "127.0.0.1:8081")
+
+	v.SetDefault("mcp.enabled", false)
 }
 
 func resolveConfigPath(explicit string) (string, error) {
@@ -196,6 +255,16 @@ func expandHomePaths(cfg *Config) error {
 		return err
 	}
 	cfg.Report.Directory = dir
+	sessDir, err := expandHome(cfg.Agent.SessionDir)
+	if err != nil {
+		return err
+	}
+	cfg.Agent.SessionDir = sessDir
+	auditDir, err := expandHome(cfg.Agent.AuditDir)
+	if err != nil {
+		return err
+	}
+	cfg.Agent.AuditDir = auditDir
 	return nil
 }
 
@@ -264,6 +333,32 @@ func (c *Config) Validate() error {
 	case "markdown", "json", "yaml":
 	default:
 		return fmt.Errorf("report.format must be one of markdown, json, yaml")
+	}
+	if c.Agent.MaxIterations <= 0 {
+		return fmt.Errorf("agent.max_iterations must be > 0")
+	}
+	if c.Agent.MaxToolCalls <= 0 {
+		return fmt.Errorf("agent.max_tool_calls must be > 0")
+	}
+	if c.Agent.Timeout <= 0 {
+		return fmt.Errorf("agent.timeout must be > 0")
+	}
+	switch c.Agent.ToolCalling {
+	case "native", "shim", "auto":
+	default:
+		return fmt.Errorf("agent.tool_calling must be one of native, shim, auto")
+	}
+	if c.Agent.ResultMaxBytes <= 0 || c.Agent.TurnMaxBytes <= 0 || c.Agent.CmdMaxBytes <= 0 {
+		return fmt.Errorf("agent result/turn/cmd max bytes must be > 0")
+	}
+	if c.Agent.HistoryTurns <= 0 {
+		return fmt.Errorf("agent.history_turns must be > 0")
+	}
+	if c.Agent.SessionDir == "" || c.Agent.AuditDir == "" {
+		return fmt.Errorf("agent.session_dir and agent.audit_dir must not be empty")
+	}
+	if c.WebUI.Addr == "" {
+		return fmt.Errorf("webui.addr must not be empty")
 	}
 	return nil
 }

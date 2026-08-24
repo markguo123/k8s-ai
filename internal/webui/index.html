@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>k8s-ai · Kubernetes AI Agent</title>
+<style>
+  :root { --bg:#f7f8fa; --panel:#ffffff; --sidebar:#1f2937; --sidebar-text:#e5e7eb;
+          --text:#111827; --muted:#6b7280; --accent:#2563eb; --border:#e5e7eb;
+          --code-bg:#f3f4f6; --ok:#16a34a; --danger:#dc2626; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0b1220; --panel:#111827; --text:#e5e7eb; --muted:#9ca3af;
+            --border:#1f2937; --code-bg:#0f172a; --accent:#3b82f6; }
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html,body { height:100%; }
+  body { background:var(--bg); color:var(--text); font-family:"Segoe UI",system-ui,-apple-system,sans-serif;
+         display:flex; font-size:14px; line-height:1.65; }
+  #sidebar { width:250px; background:var(--sidebar); color:var(--sidebar-text); display:flex; flex-direction:column; flex-shrink:0; }
+  #sidebar header { padding:18px 16px 12px; border-bottom:1px solid rgba(255,255,255,.08); }
+  #sidebar h1 { font-size:16px; letter-spacing:.3px; }
+  #sidebar .sub { color:#9ca3af; font-size:12px; margin-top:2px; }
+  #sessionList { flex:1; overflow-y:auto; padding:10px 8px; }
+  .session-item { display:flex; align-items:center; justify-content:space-between; padding:9px 10px;
+                  border-radius:8px; cursor:pointer; margin-bottom:2px; }
+  .session-item:hover { background:rgba(255,255,255,.06); }
+  .session-item.active { background:rgba(59,130,246,.18); }
+  .session-item .name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; }
+  .session-item .del { color:#9ca3af; border:none; background:none; cursor:pointer; font-size:12px; padding:0 4px; }
+  .session-item .del:hover { color:#f87171; }
+  #newSession { margin:10px; padding:10px; border:none; border-radius:8px; background:var(--accent); color:#fff;
+                cursor:pointer; font-size:13px; font-weight:500; }
+  #main { flex:1; display:flex; flex-direction:column; min-width:0; }
+  #chat { flex:1; overflow-y:auto; padding:24px 20px; }
+  .inner { max-width:860px; margin:0 auto; }
+  .msg { margin-bottom:20px; }
+  .msg .who { font-size:12px; color:var(--muted); margin-bottom:4px; font-weight:600; }
+  .msg.user { text-align:right; }
+  .msg.user .who::after { content:" →"; }
+  .msg.agent .who::before { content:"← "; }
+  .msg .content { display:inline-block; text-align:left; max-width:100%; }
+  .msg.user .content { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:10px 14px; }
+  .msg.agent .content { width:100%; }
+  .msg.error .content { color:var(--danger); }
+  .markdown h1,.markdown h2,.markdown h3 { margin:14px 0 6px; line-height:1.3; }
+  .markdown h1 { font-size:20px; } .markdown h2 { font-size:17px; } .markdown h3 { font-size:15px; }
+  .markdown p { margin:8px 0; }
+  .markdown ul,.markdown ol { padding-left:22px; margin:8px 0; }
+  .markdown li { margin:3px 0; }
+  .markdown a { color:var(--accent); }
+  .markdown table { border-collapse:collapse; margin:10px 0; width:100%; font-size:13px; }
+  .markdown th,.markdown td { border:1px solid var(--border); padding:6px 10px; text-align:left; }
+  .markdown th { background:var(--code-bg); }
+  .markdown blockquote { border-left:3px solid var(--border); padding-left:12px; color:var(--muted); margin:8px 0; }
+  pre { background:var(--code-bg); border:1px solid var(--border); border-radius:8px; padding:10px 12px;
+        overflow-x:auto; font-size:12.5px; line-height:1.5; margin:8px 0; }
+  code { background:var(--code-bg); padding:1px 5px; border-radius:4px; font-family:Consolas,"Cascadia Mono",monospace; font-size:12.5px; }
+  pre code { background:none; padding:0; }
+  .tool-card { border:1px solid var(--border); border-radius:12px; background:var(--panel); margin:10px 0; overflow:hidden;
+               transition:border-color .2s, background .2s; }
+  .tool-card.executing { border-color:var(--accent); }
+  .tool-card.completed { border-color:var(--ok); }
+  .tool-card.error { border-color:var(--danger); }
+  .tool-head { display:flex; align-items:center; gap:10px; padding:10px 14px; flex-wrap:wrap; }
+  .tool-status { display:flex; align-items:center; gap:7px; font-size:12px; font-weight:600; min-width:96px; }
+  .tool-status .dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+  .tool-card.executing .tool-status { color:var(--accent); }
+  .tool-card.executing .dot { background:var(--accent); animation:pulse 1.1s ease-in-out infinite; }
+  .tool-card.completed .tool-status { color:var(--ok); }
+  .tool-card.completed .dot { background:var(--ok); }
+  .tool-card.error .tool-status { color:var(--danger); }
+  .tool-card.error .dot { background:var(--danger); }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.3; } }
+  .tool-command { flex:1; min-width:200px; font-family:Consolas,"Cascadia Mono",monospace; font-size:12.5px;
+                  background:var(--code-bg); border:1px solid var(--border); border-radius:7px; padding:6px 10px;
+                  overflow-x:auto; white-space:nowrap; }
+  .tool-time { color:var(--muted); font-size:11px; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .tool-toggle { display:flex; align-items:center; gap:4px; border:none; background:none; color:var(--muted);
+                 cursor:pointer; font-size:12px; white-space:nowrap; }
+  .tool-toggle:hover { color:var(--text); }
+  .tool-toggle svg { width:12px; height:12px; transition:transform .2s; }
+  .tool-toggle.open svg { transform:rotate(180deg); }
+  .tool-copy { border:1px solid var(--border); background:none; color:var(--muted); cursor:pointer; font-size:11px;
+               padding:2px 8px; border-radius:5px; white-space:nowrap; }
+  .tool-copy:hover { color:var(--text); }
+  .tool-output { display:none; border-top:1px solid var(--border); margin:0; padding:12px 14px;
+                 font-family:Consolas,"Cascadia Mono",monospace; font-size:12px; line-height:1.55;
+                 white-space:pre-wrap; word-break:break-word; max-height:360px; overflow:auto; background:var(--code-bg); }
+  .tool-card.open .tool-output { display:block; }
+  .approval { border:1px solid var(--accent); border-radius:10px; background:var(--panel); padding:14px 16px; margin:12px 0; }
+  .approval .prompt { font-size:13px; white-space:pre-wrap; margin-bottom:10px; }
+  .approval .btns { display:flex; gap:8px; flex-wrap:wrap; }
+  .approval button { padding:8px 16px; border:none; border-radius:8px; cursor:pointer; font-size:13px; }
+  .approval .yes { background:var(--ok); color:#fff; }
+  .approval .always { background:var(--accent); color:#fff; }
+  .approval .no { background:var(--code-bg); color:var(--text); border:1px solid var(--border); }
+  #inputBar { border-top:1px solid var(--border); padding:14px 20px 16px; background:var(--panel); }
+  #inputRow { max-width:860px; margin:0 auto; display:flex; gap:10px; align-items:flex-end; }
+  #input { flex:1; background:var(--bg); border:1px solid var(--border); border-radius:12px; color:var(--text);
+           padding:12px 16px; font-size:14px; resize:none; height:46px; max-height:160px; font-family:inherit; }
+  #input:focus { outline:2px solid var(--accent); outline-offset:-1px; }
+  #send { width:76px; height:46px; border:none; border-radius:12px; background:var(--accent); color:#fff;
+          cursor:pointer; font-size:14px; font-weight:500; }
+  #send:disabled { opacity:.5; cursor:not-allowed; }
+  .hint { max-width:860px; margin:8px auto 0; text-align:center; color:var(--muted); font-size:12px; }
+  #status { display:none; max-width:860px; margin:8px auto 0; text-align:center; color:var(--accent);
+            font-size:12px; font-weight:500; }
+  #status.on { display:block; animation:pulse 1.4s ease-in-out infinite; }
+</style>
+</head>
+<body>
+<aside id="sidebar">
+  <header>
+    <h1>k8s-ai</h1>
+    <div class="sub">Kubernetes AI Agent</div>
+  </header>
+  <div id="sessionList"></div>
+  <button id="newSession">＋ 新会话</button>
+</aside>
+<main id="main">
+  <div id="chat"><div class="inner"></div></div>
+  <div id="inputBar">
+    <div id="inputRow">
+      <textarea id="input" placeholder="例如：检查下集群健康状态，或 为什么 payment-api 一直重启？" rows="1"></textarea>
+      <button id="send">发送</button>
+    </div>
+    <div id="status">⏳ 正在执行，请稍候…</div>
+    <div class="hint">写操作会弹出确认卡片；点击工具卡片可查看执行过程与输出</div>
+  </div>
+</main>
+
+<script>
+"use strict";
+let currentSession = null;
+let eventSource = null;
+let chatBusy = false;
+let pendingTools = [];
+
+const $ = (id) => document.getElementById(id);
+const inner = () => document.querySelector("#chat .inner");
+
+async function api(path, options) {
+  const resp = await fetch(path, Object.assign({ headers: { "Content-Type": "application/json" } }, options));
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(data.error || ("HTTP " + resp.status));
+  return data;
+}
+
+async function loadSessions() {
+  const list = await api("/api/sessions");
+  const box = $("sessionList");
+  box.innerHTML = "";
+  list.forEach((s) => {
+    const item = document.createElement("div");
+    item.className = "session-item" + (s.id === currentSession ? " active" : "");
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = s.name || s.id;
+    name.title = s.id;
+    const del = document.createElement("button");
+    del.className = "del";
+    del.textContent = "✕";
+    del.onclick = async (e) => {
+      e.stopPropagation();
+      if (s.id === currentSession) closeStream();
+      await api("/api/sessions/" + encodeURIComponent(s.id), { method: "DELETE" });
+      loadSessions();
+    };
+    item.onclick = () => openSession(s.id);
+    item.appendChild(name);
+    item.appendChild(del);
+    box.appendChild(item);
+  });
+  if (!currentSession) {
+    if (list.length > 0) {
+      openSession(list[0].id);
+    } else {
+      try {
+        const d = await api("/api/sessions", { method: "POST", body: JSON.stringify({}) });
+        openSession(d.id);
+      } catch (e) {
+        addMsg("error", "创建会话失败: " + e.message);
+      }
+    }
+  }
+}
+
+function closeStream() {
+  if (eventSource) { eventSource.close(); eventSource = null; }
+}
+
+function openSession(id) {
+  closeStream();
+  currentSession = id;
+  pendingTools = [];
+  inner().innerHTML = "";
+  loadSessions();
+  if (!id) return;
+  eventSource = new EventSource("/api/sessions/" + encodeURIComponent(id) + "/stream");
+  eventSource.onmessage = (ev) => handleEvent(JSON.parse(ev.data));
+  eventSource.onerror = () => { chatBusy = false; };
+}
+
+function handleEvent(ev) {
+  switch (ev.type) {
+    case "history":
+      setStatus(false);
+      inner().innerHTML = "";
+      pendingTools = [];
+      (ev.messages || []).forEach((m) => {
+        if (m.role === "user") addMsg("user", m.content);
+        else if (m.role === "tool") addToolFromHistory(m);
+        else addMsg("agent", m.content);
+      });
+      scroll();
+      chatBusy = false;
+      break;
+    case "text":
+    case "answer":
+      if (ev.text) addMsg("agent", ev.text);
+      if (ev.type === "answer") chatBusy = false;
+      if (ev.type === "answer") setStatus(false);
+      break;
+    case "tool-call":
+      if (ev.tool) addToolCard(ev.tool);
+      break;
+    case "tool-response":
+      if (ev.tool) fillToolOutput(ev.tool);
+      break;
+    case "error":
+      if (ev.text) addMsg("error", ev.text);
+      chatBusy = false;
+      setStatus(false);
+      break;
+    case "choice-request":
+      if (ev.choice) showApproval(ev.choice);
+      setStatus(false); // 等待用户审批
+      break;
+  }
+}
+
+function setStatus(on) {
+  $("status").classList.toggle("on", on);
+}
+
+function addMsg(kind, text) {
+  const msg = document.createElement("div");
+  msg.className = "msg " + kind;
+  const who = document.createElement("div");
+  who.className = "who";
+  who.textContent = kind === "user" ? "You" : kind === "error" ? "Error" : "AI Assistant";
+  const content = document.createElement("div");
+  content.className = "content";
+  if (kind === "agent") content.innerHTML = markdown(escapeHtml(text));
+  else content.textContent = text;
+  msg.appendChild(who);
+  msg.appendChild(content);
+  inner().appendChild(msg);
+  scroll();
+}
+
+function addToolCard(tool) {
+  const card = document.createElement("div");
+  card.className = "tool-card executing";
+  card.dataset.name = tool.name || "";
+  card.dataset.started = Date.now();
+
+  const head = document.createElement("div");
+  head.className = "tool-head";
+
+  const status = document.createElement("div");
+  status.className = "tool-status";
+  status.innerHTML = '<span class="dot"></span><span>执行中</span>';
+
+  const cmd = document.createElement("div");
+  cmd.className = "tool-command";
+  cmd.textContent = commandText(tool);
+
+  const time = document.createElement("span");
+  time.className = "tool-time";
+
+  const copy = document.createElement("button");
+  copy.className = "tool-copy";
+  copy.textContent = "复制";
+  copy.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(cmd.textContent);
+      copy.textContent = "已复制";
+      setTimeout(() => { copy.textContent = "复制"; }, 1200);
+    } catch (e) { /* 剪贴板不可用时静默 */ }
+  };
+
+  const toggle = document.createElement("button");
+  toggle.className = "tool-toggle";
+  toggle.innerHTML = '<span>Show output</span><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>';
+  toggle.onclick = () => {
+    card.classList.toggle("open");
+    toggle.classList.toggle("open");
+    toggle.querySelector("span").textContent = card.classList.contains("open") ? "Hide output" : "Show output";
+    scroll();
+  };
+
+  head.append(status, cmd, time, copy, toggle);
+  const output = document.createElement("pre");
+  output.className = "tool-output";
+  card.appendChild(head);
+  card.appendChild(output);
+  inner().appendChild(card);
+  pendingTools.push(card);
+  scroll();
+}
+
+function fillToolOutput(tool) {
+  const idx = pendingTools.findIndex((c) => !c.dataset.filled && (!tool.name || c.dataset.name === tool.name));
+  if (idx < 0) return;
+  const card = pendingTools[idx];
+  card.dataset.filled = "1";
+  card.classList.remove("executing");
+  const text = tool.result || "";
+  const isErr = /错误|error|not found|denied|invalid/i.test(text.slice(0, 200));
+  card.classList.add(isErr ? "error" : "completed");
+  const status = card.querySelector(".tool-status");
+  status.innerHTML = isErr ? '<span class="dot"></span><span>执行出错</span>' : '<span class="dot"></span><span>已完成</span>';
+  const time = card.querySelector(".tool-time");
+  const ms = Date.now() - Number(card.dataset.started || Date.now());
+  time.textContent = ms >= 0 ? (ms / 1000).toFixed(1) + "s" : "";
+  const output = card.querySelector(".tool-output");
+  output.textContent = text;
+  if (tool.truncated) output.textContent += "\n…[TRUNCATED]";
+  pendingTools.splice(idx, 1);
+}
+
+function addToolFromHistory(m) {
+  const card = document.createElement("div");
+  card.className = "tool-card completed";
+  const head = document.createElement("div");
+  head.className = "tool-head";
+  const status = document.createElement("div");
+  status.className = "tool-status";
+  status.innerHTML = '<span class="dot"></span><span>已完成</span>';
+  const cmd = document.createElement("div");
+  cmd.className = "tool-command";
+  cmd.textContent = m.name || "tool";
+  const toggle = document.createElement("button");
+  toggle.className = "tool-toggle";
+  toggle.innerHTML = '<span>Show output</span><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>';
+  toggle.onclick = () => {
+    card.classList.toggle("open");
+    toggle.classList.toggle("open");
+    toggle.querySelector("span").textContent = card.classList.contains("open") ? "Hide output" : "Show output";
+  };
+  head.append(status, cmd, toggle);
+  const output = document.createElement("pre");
+  output.className = "tool-output";
+  output.textContent = m.content || "";
+  card.appendChild(head);
+  card.appendChild(output);
+  inner().appendChild(card);
+}
+
+function commandText(tool) {
+  if (tool.name === "kubectl") {
+    const c = tool.arguments && tool.arguments.command;
+    return c ? String(c) : "kubectl";
+  }
+  return "[" + (tool.name || "") + "] " + formatArgs(tool.arguments);
+}
+
+function showApproval(choice) {
+  const existing = document.querySelector(".approval");
+  if (existing) existing.remove();
+  const card = document.createElement("div");
+  card.className = "approval";
+  const prompt = document.createElement("div");
+  prompt.className = "prompt";
+  prompt.textContent = choice.prompt || "是否执行？";
+  const btns = document.createElement("div");
+  btns.className = "btns";
+  const mk = (label, cls, value) => {
+    const b = document.createElement("button");
+    b.className = cls;
+    b.textContent = label;
+    b.onclick = async () => {
+      await api("/api/sessions/" + encodeURIComponent(currentSession) + "/approve", { method: "POST", body: JSON.stringify({ choice: value }) });
+      card.remove();
+      setStatus(true); // 审批后继续执行
+    };
+    return b;
+  };
+  btns.appendChild(mk("是", "yes", "yes"));
+  btns.appendChild(mk("是，本次会话不再询问", "always", "yes_and_dont_ask_again"));
+  btns.appendChild(mk("否", "no", "no"));
+  card.appendChild(prompt);
+  card.appendChild(btns);
+  inner().appendChild(card);
+  scroll();
+}
+
+async function send() {
+  const input = $("input");
+  const q = input.value.trim();
+  if (!q || chatBusy) return;
+  if (!currentSession) {
+    try {
+      const d = await api("/api/sessions", { method: "POST", body: JSON.stringify({}) });
+      openSession(d.id);
+    } catch (e) {
+      addMsg("error", "创建会话失败: " + e.message);
+      return;
+    }
+  }
+  chatBusy = true;
+  setStatus(true);
+  addMsg("user", q);
+  input.value = "";
+  input.style.height = "46px";
+  try {
+    await api("/api/sessions/" + encodeURIComponent(currentSession) + "/send-message", {
+      method: "POST", body: JSON.stringify({ query: q, skipPermissions: false }),
+    });
+  } catch (e) {
+    addMsg("error", e.message);
+    chatBusy = false;
+  }
+}
+
+function formatArgs(args) {
+  if (!args) return "";
+  return "(" + Object.entries(args).map(([k, v]) => k + "=" + v).join(" ") + ")";
+}
+
+function scroll() {
+  const c = $("chat");
+  c.scrollTop = c.scrollHeight;
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+function markdown(s) {
+  const lines = s.split("\n");
+  let html = "", inCode = false, codeBuf = [], list = null;
+  const closeList = () => { if (list) { html += "</" + list + ">"; list = null; } };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.startsWith("```")) {
+      closeList();
+      if (inCode) { html += "<pre><code>" + codeBuf.join("\n") + "</code></pre>"; codeBuf = []; }
+      inCode = !inCode;
+      continue;
+    }
+    if (inCode) { codeBuf.push(line); continue; }
+    if (/^#{1,3} /.test(line)) {
+      closeList();
+      const level = line.indexOf(" ");
+      html += "<h" + level + ">" + inline(line.slice(level + 1)) + "</h" + level + ">";
+    } else if (/^\s*[-*] /.test(line)) {
+      if (list !== "ul") { closeList(); list = "ul"; html += "<ul>"; }
+      html += "<li>" + inline(line.replace(/^\s*[-*] /, "")) + "</li>";
+    } else if (/^\s*\d+\. /.test(line)) {
+      if (list !== "ol") { closeList(); list = "ol"; html += "<ol>"; }
+      html += "<li>" + inline(line.replace(/^\s*\d+\. /, "")) + "</li>";
+    } else if (/^\|/.test(line)) {
+      closeList();
+      html += "<table><tr>" + tableCells(line, "th") + "</tr>";
+      i++;
+      // 跳过表头分隔行（|---|）。
+      if (i < lines.length && /^[-|:\s]+$/.test(lines[i].replace(/^\|/, "").replace(/\|$/, ""))) {
+        i++;
+      }
+      while (i < lines.length && lines[i].startsWith("|")) {
+        html += "<tr>" + tableCells(lines[i], "td") + "</tr>";
+        i++;
+      }
+      i--; // for 循环会再次 ++，避免跳过下一行。
+      html += "</table>";
+    } else if (/^&gt; /.test(line)) {
+      closeList();
+      html += "<blockquote>" + inline(line.replace(/^&gt; /, "")) + "</blockquote>";
+    } else if (line.trim() === "") {
+      closeList();
+    } else {
+      closeList();
+      html += "<p>" + inline(line) + "</p>";
+    }
+  }
+  closeList();
+  if (inCode) html += "<pre><code>" + codeBuf.join("\n") + "</code></pre>";
+  return '<div class="markdown">' + html + "</div>";
+}
+
+function tableCells(line, tag) {
+  return line.split("|").filter((c) => c.trim() !== "").map((c) => "<" + tag + ">" + inline(c.trim()) + "</" + tag + ">").join("");
+}
+
+function inline(s) {
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  return s;
+}
+
+$("newSession").onclick = async () => {
+  const data = await api("/api/sessions", { method: "POST", body: JSON.stringify({}) });
+  openSession(data.id);
+};
+$("send").onclick = send;
+$("input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+});
+$("input").addEventListener("input", function () {
+  this.style.height = "46px";
+  this.style.height = Math.min(this.scrollHeight, 160) + "px";
+});
+
+loadSessions().catch((e) => addMsg("error", "加载会话失败: " + e.message));
+</script>
+</body>
+</html>

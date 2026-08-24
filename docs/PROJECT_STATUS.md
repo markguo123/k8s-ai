@@ -21,11 +21,11 @@
 
 ## 进行中
 
-- [ ] 二期（chat Agent / Tool Calling / 会话记忆 / 审批执行）：按 PROJECT_SPEC_二期.md 启动
+- [x] 二期（chat Agent / Tool Calling / 会话记忆 / 审批执行 / Web UI / 审计）：已完成（v2.0.0）
 
 ## 下一步
 
-P12（1.2）已完成 → 二期（chat Agent）
+二期已完成 → 阶段收尾：全量测试/vet、文档、代码提交 GitLab
 
 ## 已知事项
 

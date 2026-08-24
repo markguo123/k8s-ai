@@ -53,6 +53,8 @@ type Reader interface {
 	GetPersistentVolumeClaim(ctx context.Context, namespace, name string) (*corev1.PersistentVolumeClaim, error)
 	GetPersistentVolume(ctx context.Context, name string) (*corev1.PersistentVolume, error)
 	GetStorageClass(ctx context.Context, name string) (*storagev1.StorageClass, error)
+	GetConfigMap(ctx context.Context, namespace, name string) (*corev1.ConfigMap, error)
+	ListConfigMaps(ctx context.Context, namespace string) ([]corev1.ConfigMap, error)
 
 	// GetPodLogs returns capped log bytes for a container (FR-022).
 	GetPodLogs(ctx context.Context, namespace, pod, container string, opts model.LogOptions) ([]byte, error)

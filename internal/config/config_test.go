@@ -27,6 +27,21 @@ func TestDefaults(t *testing.T) {
 	if cfg.Report.Format != "markdown" {
 		t.Errorf("report.format = %q, want markdown", cfg.Report.Format)
 	}
+	if cfg.Agent.MaxIterations != 15 || cfg.Agent.MaxToolCalls != 20 || cfg.Agent.Timeout != 5*time.Minute {
+		t.Errorf("unexpected agent defaults: %+v", cfg.Agent)
+	}
+	if cfg.Agent.ToolCalling != "native" || !cfg.Agent.RequireApproval || cfg.Agent.SkipPermissions {
+		t.Errorf("unexpected agent approval defaults: %+v", cfg.Agent)
+	}
+	if cfg.Agent.ResultMaxBytes != 8*1024 || cfg.Agent.TurnMaxBytes != 32*1024 || cfg.Agent.CmdMaxBytes != 64*1024 {
+		t.Errorf("unexpected agent bytes defaults: %+v", cfg.Agent)
+	}
+	if cfg.WebUI.Addr != "127.0.0.1:8081" {
+		t.Errorf("webui.addr = %q", cfg.WebUI.Addr)
+	}
+	if cfg.MCP.Enabled || len(cfg.MCP.Servers) != 0 {
+		t.Errorf("unexpected mcp defaults: %+v", cfg.MCP)
+	}
 }
 
 func TestPrecedence(t *testing.T) {
@@ -72,6 +87,73 @@ func TestExpandHome(t *testing.T) {
 	want := filepath.Join(home, "kube", "config")
 	if cfg.Kubernetes.Kubeconfig != want {
 		t.Errorf("kubeconfig = %q, want %q", cfg.Kubernetes.Kubeconfig, want)
+	}
+}
+
+func TestAgentDirsExpandHome(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(LoadOptions{NoEnv: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSessions := filepath.Join(home, ".k8s-ai", "sessions")
+	wantAudit := filepath.Join(home, ".k8s-ai", "audit")
+	if cfg.Agent.SessionDir != wantSessions {
+		t.Errorf("session_dir = %q, want %q", cfg.Agent.SessionDir, wantSessions)
+	}
+	if cfg.Agent.AuditDir != wantAudit {
+		t.Errorf("audit_dir = %q, want %q", cfg.Agent.AuditDir, wantAudit)
+	}
+}
+
+func TestAgentConfigFromFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "agent:\n  max_iterations: 5\n  tool_calling: shim\n  require_approval: false\n  deny_ops:\n    - \"delete namespace\"\nwebui:\n  addr: 0.0.0.0:9090\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(LoadOptions{ConfigFile: path, NoEnv: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Agent.MaxIterations != 5 || cfg.Agent.ToolCalling != "shim" || cfg.Agent.RequireApproval {
+		t.Errorf("unexpected agent config: %+v", cfg.Agent)
+	}
+	if len(cfg.Agent.DenyOps) != 1 || cfg.Agent.DenyOps[0] != "delete namespace" {
+		t.Errorf("deny_ops = %v", cfg.Agent.DenyOps)
+	}
+	if cfg.WebUI.Addr != "0.0.0.0:9090" {
+		t.Errorf("webui.addr = %q", cfg.WebUI.Addr)
+	}
+}
+
+func TestAgentValidateErrors(t *testing.T) {
+	base, err := Load(LoadOptions{NoEnv: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := []struct {
+		name string
+		mut  func(*Config)
+	}{
+		{"max_iterations", func(c *Config) { c.Agent.MaxIterations = 0 }},
+		{"max_tool_calls", func(c *Config) { c.Agent.MaxToolCalls = 0 }},
+		{"timeout", func(c *Config) { c.Agent.Timeout = 0 }},
+		{"tool_calling", func(c *Config) { c.Agent.ToolCalling = "json" }},
+		{"result_max_bytes", func(c *Config) { c.Agent.ResultMaxBytes = 0 }},
+		{"session_dir", func(c *Config) { c.Agent.SessionDir = "" }},
+		{"webui_addr", func(c *Config) { c.WebUI.Addr = "" }},
+	}
+	for _, b := range bad {
+		c := *base
+		b.mut(&c)
+		if err := c.Validate(); err == nil {
+			t.Errorf("%s: 应校验失败", b.name)
+		}
 	}
 }
 

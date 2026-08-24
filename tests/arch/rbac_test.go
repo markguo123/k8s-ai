@@ -24,7 +24,8 @@ type rbacManifest struct {
 	Rules []rbacRule `yaml:"rules"`
 }
 
-// TestRBACReadOnly 解析 deploy/clusterrole.yaml，断言一期只读约束（SECURITY.md §3）。
+// TestRBACReadOnly 解析 deploy/clusterrole.yaml，断言默认清单保持只读
+// （二期写权限示例以注释形式提供，不进入默认 ClusterRole；SECURITY.md §3）。
 func TestRBACReadOnly(t *testing.T) {
 	raw, err := os.ReadFile("../../deploy/clusterrole.yaml")
 	if err != nil {

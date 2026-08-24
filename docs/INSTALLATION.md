@@ -1,8 +1,8 @@
-# k8s-ai 安装部署手册（一期）
+# k8s-ai 安装部署手册
 
-> 版本：1.0.0（一期 MVP）
-> 适用：本地命令行使用 + Kubernetes 集群内 CronJob 每日巡检
-> 说明：一期严格只读；LLM 生成的 kubectl 命令仅供人工复制执行
+> 版本：2.0.0（一期巡检 + 二期 Agent）
+> 适用：本地命令行 / 浏览器 chat / 集群内 CronJob 每日巡检
+> 说明：一期 `scan` 只读巡检；二期 `chat`/`web` 支持写操作，写操作需人工确认（RBAC 写权限示例见 deploy/rbac-write.example.yaml）
 
 ---
 
@@ -322,8 +322,63 @@ CRITICAL 0 | HIGH 2 | MEDIUM 1 | LOW 0 | INFO 0
 
 ## 7. 安全注意事项
 
-- 一期严格只读：程序不创建/修改/删除任何资源，不执行任何命令；
-- LLM 生成的 kubectl 命令**只展示**，请人工核对后执行；
+- 一期 `scan` 严格只读；二期 `chat`/`web` 写操作必须人工确认（默认 `agent.require_approval: true`）；
+- LLM 生成的 kubectl 命令只展示/受审批约束执行，请人工核对；
 - api_key 仅存在于 Secret/环境变量，永不写入 ConfigMap、日志或报告；
 - 日志/Events/ConfigMap/注解视为不可信数据，先脱敏再分析；
-- 部署前建议执行 `go test ./...` 与 `go test ./tests/arch/` 验证只读约束。
+- 部署前建议执行 `go test ./...` 与 `go test ./tests/arch/` 验证边界约束。
+
+---
+
+## 8. 二期 Agent（chat / web）快速开始
+
+### 8.1 终端对话
+
+```bash
+# 交互模式
+k8s-ai chat --config ~/.k8s-ai/config.yaml
+
+# 单发 / stdin / JSON
+k8s-ai chat "为什么 payment-api 一直重启？"
+echo "检查下集群健康状态" | k8s-ai chat
+k8s-ai chat --format json "检查下集群健康状态"
+```
+
+### 8.2 浏览器对话（web）
+
+```bash
+k8s-ai web --addr 127.0.0.1:8081 --config ~/.k8s-ai/config.yaml
+# 打开 http://127.0.0.1:8081
+```
+
+页面支持：会话列表/新建/删除、SSE 流式回答、工具执行过程（Show output）、写操作审批卡片。
+
+### 8.3 写操作与 RBAC
+
+- 默认 `agent.require_approval: true`，每个写工具调用都弹审批卡片（展示人类可读命令 + 变更）；
+- 非交互自动化可用 `--skip-permissions` 显式放行（审计会记录）；
+- 需要让 Agent 执行写操作时，按需应用写权限示例：`kubectl apply -f deploy/rbac-write.example.yaml`（默认 clusterrole 保持只读）。
+
+### 8.4 kubectl 兜底工具
+
+- 通用 `kubectl` 工具需要本机安装 kubectl 并在 PATH（或配置 `kubernetes.kubectl_path`）；
+- 其余结构化工具（get_*/scan_*/diagnose_*/写工具）不依赖 kubectl，走 client-go。
+
+### 8.5 常用二期配置
+
+```yaml
+agent:
+  max_iterations: 15          # LLM 往返上限
+  max_tool_calls: 20          # 累计工具调用上限
+  tool_calling: native        # native | shim | auto
+  require_approval: true      # 写操作默认要求确认
+  skip_permissions: false     # --skip-permissions（自动化显式开启）
+  deny_ops: []                # 可选硬拦截，如 ["delete namespace"]
+  session_dir: ~/.k8s-ai/sessions
+  audit_dir: ~/.k8s-ai/audit
+webui:
+  addr: 127.0.0.1:8081
+mcp:
+  enabled: false
+  servers: []
+```

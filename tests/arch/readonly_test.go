@@ -1,5 +1,5 @@
 // Package arch_test guards architecture rules with static analysis
-// (TESTING.md §3): read-only surface, forbidden imports, dependency directions.
+// (TESTING.md §3): read/write surface, forbidden imports, dependency directions.
 package arch_test
 
 import (
@@ -8,6 +8,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -15,15 +16,29 @@ import (
 const module = "github.com/k8s-ai/k8s-ai"
 
 var forbiddenImports = []string{
-	"os/exec",
 	"k8s.io/client-go/kubernetes/fake",
 	"k8s.io/client-go/dynamic",
 }
 
+// packageScopedImports 只允许指定生产包出现的 import（相对 internal/ 的包路径）。
+var packageScopedImports = map[string][]string{
+	"executor": {"os/exec"},
+}
+
+// forbiddenMethodCalls 是 client-go 写方法调用；仅 internal/executor 允许。
 var forbiddenMethodCalls = []string{
 	"Create", "Update", "Patch", "Delete", "Apply", "Replace", "Scale", "Exec", "PortForward",
-	"Secrets", // 一期永不访问 Secret 资源（AGENTS.md / SECURITY.md）
 }
+
+// forbiddenSecretsCall 在任何包都禁止：Secret 数据读取只能走 kubectl 二进制
+// （executor 内），client-go 的 Secrets() 方法永不使用（AGENTS.md LLM Safety）。
+const forbiddenSecretsCall = "Secrets"
+
+// mutationAllowedPkg 是允许 client-go 写方法的生产包（相对 internal/ 的包路径）。
+const mutationAllowedPkg = "executor"
+
+// forbiddenShellBins 是 exec.Command 首参的禁止 shell 解释器字面量。
+var forbiddenShellBins = map[string]bool{"bash": true, "sh": true, "cmd": true}
 
 func walkProductionGoFiles(t *testing.T, fn func(path string)) {
 	t.Helper()
@@ -57,14 +72,61 @@ func parseFile(t *testing.T, path string) *ast.File {
 	return f
 }
 
+// relPkg 返回文件相对 internal/ 的包路径（POSIX 风格，如 "executor"）。
+func relPkg(path string) string {
+	root := filepath.Join("..", "..", "internal")
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return ""
+	}
+	return filepath.ToSlash(filepath.Dir(rel))
+}
+
+// isShellCommandCall 检测 exec.Command/CommandContext 是否以 shell 解释器执行。
+// 只捕获字面量形式（exec.Command("bash", "-c", ...)），变量拼接由代码评审兜底。
+func isShellCommandCall(call *ast.CallExpr) bool {
+	for _, arg := range call.Args {
+		lit, ok := arg.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			continue
+		}
+		s, err := strconv.Unquote(lit.Value)
+		if err != nil {
+			continue
+		}
+		if s == "-c" || forbiddenShellBins[s] {
+			return true
+		}
+	}
+	return false
+}
+
 func TestProductionCodeReadOnly(t *testing.T) {
 	walkProductionGoFiles(t, func(path string) {
+		pkg := relPkg(path)
+		inExecutor := pkg == mutationAllowedPkg || strings.HasPrefix(pkg, mutationAllowedPkg+"/")
 		f := parseFile(t, path)
+		importsClientGo := false
 		for _, imp := range f.Imports {
 			p := strings.Trim(imp.Path.Value, `"`)
+			if strings.HasPrefix(p, "k8s.io/client-go/") || strings.HasPrefix(p, "k8s.io/api/") {
+				importsClientGo = true
+			}
 			for _, forb := range forbiddenImports {
 				if p == forb {
 					t.Errorf("%s: forbidden import %s", path, p)
+				}
+			}
+			if allow, ok := packageScopedImports[p]; ok {
+				allowed := false
+				for _, a := range allow {
+					if pkg == a || strings.HasPrefix(pkg, a+"/") {
+						allowed = true
+						break
+					}
+				}
+				if !allowed {
+					t.Errorf("%s: import %s is only allowed in internal/%s", path, p, strings.Join(allow, ", internal/"))
 				}
 			}
 		}
@@ -77,10 +139,22 @@ func TestProductionCodeReadOnly(t *testing.T) {
 			if !ok {
 				return true
 			}
-			for _, m := range forbiddenMethodCalls {
-				if sel.Sel.Name == m {
-					t.Errorf("%s: forbidden method call %s", path, m)
+			name := sel.Sel.Name
+			if name == forbiddenSecretsCall {
+				t.Errorf("%s: forbidden method call Secrets (Secret data never via client-go)", path)
+			}
+			// 只对 import client-go/api 的文件做写方法检查，避免误伤自有接口
+			// （如 session.Store 的 Create/Update/Delete）。
+			if importsClientGo {
+				for _, m := range forbiddenMethodCalls {
+					if name == m && !inExecutor {
+						t.Errorf("%s: forbidden method call %s", path, m)
+					}
 				}
+			}
+			// 执行层内禁止 shell 解释器执行（bash/sh/cmd -c）。
+			if inExecutor && (name == "Command" || name == "CommandContext") && isShellCommandCall(call) {
+				t.Errorf("%s: shell interpreter execution is forbidden (%s)", path, name)
 			}
 			return true
 		})
@@ -135,6 +209,20 @@ func TestDependencyDirections(t *testing.T) {
 	for _, to := range []string{"scanner", "kubernetes", "llm", "diagnosis"} {
 		if graph[cliPkg][module+"/internal/"+to] {
 			t.Errorf("cli must not import internal/%s directly (must go through service)", to)
+		}
+	}
+
+	// 二期新增业务包禁止 CLI 直接依赖（经 service 组合根）；
+	// webui 与 server 同属展示/基础设施层，允许 cli 直接装配。
+	for _, to := range []string{"agent", "tools", "approval", "executor", "session", "audit", "mcp"} {
+		if graph[cliPkg][module+"/internal/"+to] {
+			t.Errorf("cli must not import internal/%s directly (must go through service)", to)
+		}
+	}
+	// kubernetes 基础设施不得反向依赖任何业务/领域包。
+	for _, to := range []string{"agent", "tools", "approval", "executor", "session", "audit", "webui", "mcp"} {
+		if graph[k8sPkg][module+"/internal/"+to] {
+			t.Errorf("kubernetes must not import internal/%s", to)
 		}
 	}
 }
