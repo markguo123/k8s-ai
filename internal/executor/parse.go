@@ -7,6 +7,8 @@ import (
 )
 
 // 动词白名单：只读 + 非交互写。
+// 写动词分类对齐 approval/risk.go 与 kubectl-ai kubectl_filter.go（autoscale/expose/
+// taint/reconcile/certificate 等纳入审批流；edit/attach/port-forward 等交互式命令拒绝）。
 var allowedVerbs = map[string]bool{
 	// 只读
 	"get": true, "describe": true, "logs": true, "events": true,
@@ -15,6 +17,7 @@ var allowedVerbs = map[string]bool{
 	"apply": true, "create": true, "delete": true, "patch": true,
 	"scale": true, "rollout": true, "set": true, "annotate": true, "label": true,
 	"exec": true, "drain": true, "cordon": true, "uncordon": true,
+	"autoscale": true, "expose": true, "taint": true, "reconcile": true, "certificate": true,
 }
 
 // rejectedInteractiveVerbs 是交互式/阻塞式命令，直接拒绝。
@@ -26,7 +29,8 @@ var rejectedInteractiveVerbs = map[string]bool{
 // ParseCommand 解析 kubectl 命令为 argv：
 // - 拒绝引号外的 shell 元字符（| & ; < > $ ( ) ` 换行）
 // - 引号感知切分（单/双引号）
-// - 动词白名单 + 交互式/流式命令拒绝
+// - 动词白名单 + 交互式命令拒绝
+// 流式命令（logs -f / get -w）不再在解析层拒绝，改由 executor 统一超时捕获部分输出。
 // 返回的 argv[0] 恒为 "kubectl"。
 func ParseCommand(command string) ([]string, error) {
 	if len(command) > 2048 {
@@ -56,6 +60,35 @@ func ParseCommand(command string) ([]string, error) {
 		return nil, err
 	}
 	return tokens, nil
+}
+
+// IsStreaming 判断已解析的 argv 是否为需超时采样的流式命令（logs -f / get -w）。
+// 交互式流（attach/exec -it）在 ParseCommand 阶段已拒绝，不会到达此处。
+// 借鉴 kubectl-ai streaming.go DetectKubectlStreaming。
+func IsStreaming(argv []string) bool {
+	if len(argv) < 2 {
+		return false
+	}
+	verb, rest := extractFirstNonFlag(argv[1:])
+	switch verb {
+	case "logs":
+		return containsFlag(rest, "-f", "--follow")
+	case "get":
+		return containsFlag(rest, "-w", "--watch")
+	}
+	return false
+}
+
+// containsFlag 在 tokens 中查找 flag（精确匹配或 flag=value 形式）。
+func containsFlag(tokens []string, flags ...string) bool {
+	for _, t := range tokens {
+		for _, f := range flags {
+			if t == f || strings.HasPrefix(t, f+"=") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // tokenize 引号感知切分并拒绝 shell 元字符。
@@ -111,22 +144,15 @@ func extractFirstNonFlag(tokens []string) (string, []string) {
 	return "", nil
 }
 
-// validateFlags 拒绝交互式/流式 flag（exec -it、logs -f、get -w 等）。
+// validateFlags 拒绝交互式 flag（exec -i/-t）。
+// 流式 flag（logs -f / get -w）不再拒绝，改由 executor 统一超时捕获部分输出。
 func validateFlags(verb string, tokens []string) error {
+	if verb != "exec" {
+		return nil
+	}
 	for _, t := range tokens {
-		switch verb {
-		case "exec":
-			if t == "-i" || t == "-t" || t == "-it" || t == "-ti" || t == "--stdin" || t == "--tty" {
-				return fmt.Errorf("interactive exec is not supported; use non-interactive exec with a specific command")
-			}
-		case "logs":
-			if t == "-f" || t == "--follow" {
-				return fmt.Errorf("streaming logs (-f) is not supported; use --tail instead")
-			}
-		case "get":
-			if t == "-w" || t == "--watch" || t == "-f" || t == "--follow" {
-				return fmt.Errorf("streaming watch is not supported")
-			}
+		if t == "-i" || t == "-t" || t == "-it" || t == "-ti" || t == "--stdin" || t == "--tty" {
+			return fmt.Errorf("interactive exec is not supported; use non-interactive exec with a specific command")
 		}
 	}
 	return nil

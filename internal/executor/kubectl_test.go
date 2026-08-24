@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeKubectl 生成一个回显参数的可执行 kubectl.bat（Windows 测试用）。
@@ -51,6 +52,54 @@ func TestRunKubectlRejectsShellMeta(t *testing.T) {
 	}
 	if _, err := r.RunKubectl(context.Background(), "kubectl exec -it pod -- ls"); err == nil {
 		t.Fatal("交互式 exec 应被拒绝")
+	}
+}
+
+func TestIsStreaming(t *testing.T) {
+	cases := []struct {
+		argv []string
+		want bool
+	}{
+		{[]string{"kubectl", "logs", "-f", "pod"}, true},
+		{[]string{"kubectl", "logs", "--follow", "pod"}, true},
+		{[]string{"kubectl", "logs", "pod", "--tail=10"}, false},
+		{[]string{"kubectl", "get", "pods", "-w"}, true},
+		{[]string{"kubectl", "get", "pods", "--watch"}, true},
+		{[]string{"kubectl", "get", "pods"}, false},
+		{[]string{"kubectl", "describe", "pod", "x"}, false},
+		{[]string{"kubectl"}, false},
+	}
+	for _, c := range cases {
+		if got := IsStreaming(c.argv); got != c.want {
+			t.Errorf("IsStreaming(%v) = %v, want %v", c.argv, got, c.want)
+		}
+	}
+}
+
+// streamingFakeKubectl 生成先输出一行标记再阻塞的 kubectl.bat，模拟 logs -f 持续输出。
+func streamingFakeKubectl(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "kubectl.bat")
+	// echo 标记后用 ping 阻塞（Windows 惯用睡眠手法），输出重定向到 nul 不污染 stdout。
+	content := "@echo off\r\necho stream-marker\r\nping -n 5 127.0.0.1 >nul\r\n"
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestRunKubectlStreamingTimeout(t *testing.T) {
+	bin := streamingFakeKubectl(t)
+	r := NewRunner(Options{KubectlBin: bin, MaxBytes: 4096, StreamTimeout: 800 * time.Millisecond})
+	res, err := r.RunKubectl(context.Background(), "kubectl logs -f pod -n default")
+	if err != nil {
+		t.Fatalf("流式超时不应返回错误: %v", err)
+	}
+	if !res.StreamTimeout {
+		t.Fatal("流式超时应标记 StreamTimeout=true")
+	}
+	if !strings.Contains(res.Stdout, "stream-marker") {
+		t.Fatalf("应捕获部分输出: %q", res.Stdout)
 	}
 }
 

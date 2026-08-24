@@ -26,6 +26,9 @@
 | 审批交互 y / a / n | pkg/agent 审批流 | internal/agent + internal/webui 审批卡片 |
 | kubectl 动词分类思路 | pkg/tools/kubectl_filter.go | internal/approval/risk.go（改为风险分级） |
 | kubectl 执行工具（无 shell 改良） | pkg/tools/kubectl_tool.go | internal/executor + internal/tools/write.go |
+| 终端 Markdown 渲染 + readline 输入 | pkg/ui/terminal.go（glamour + chzyer/readline） | internal/cli/chat.go |
+| 流式命令超时采样（logs -f / get -w） | pkg/tools/streaming.go DetectKubectlStreaming | internal/executor（kubectl.go IsStreaming + RunKubectl 超时） |
+| rollout 子命令只读/写细分 + --dry-run 降级只读 | pkg/tools/kubectl_filter.go readOnlyOps/writeOps | internal/approval/risk.go classifyCommand |
 
 ## 其他
 

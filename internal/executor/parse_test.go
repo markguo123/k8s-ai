@@ -14,6 +14,11 @@ func TestParseCommandValid(t *testing.T) {
 		{"kubectl logs web-0 -n default --tail=50", []string{"kubectl", "logs", "web-0", "-n", "default", "--tail=50"}},
 		{`kubectl patch deployment/d --patch '{"spec":{"replicas":3}}'`, []string{"kubectl", "patch", "deployment/d", "--patch", `{"spec":{"replicas":3}}`}},
 		{`kubectl delete pod "web 0"`, []string{"kubectl", "delete", "pod", "web 0"}},
+		// 流式命令不再在解析层拒绝，改由 executor 超时采样。
+		{"kubectl logs -f pod -n default", []string{"kubectl", "logs", "-f", "pod", "-n", "default"}},
+		{"kubectl get pods -w", []string{"kubectl", "get", "pods", "-w"}},
+		// 扩充的写动词（autoscale/expose/taint/certificate）。
+		{"kubectl autoscale deployment api --min=2 --max=5", []string{"kubectl", "autoscale", "deployment", "api", "--min=2", "--max=5"}},
 	}
 	for _, c := range cases {
 		got, err := ParseCommand(c.cmd)
@@ -47,8 +52,6 @@ func TestParseCommandRejects(t *testing.T) {
 		"kubectl port-forward svc/x 80:80",
 		"kubectl exec -it pod -- ls",
 		"kubectl exec -i pod -- ls",
-		"kubectl logs -f pod",
-		"kubectl get pods -w",
 		"kubectl frobnicate pods",
 		`kubectl get pods "unbalanced`,
 		"",

@@ -47,7 +47,7 @@ type kubectlTool struct{ runner WriteRunner }
 
 func (t *kubectlTool) Name() string { return "kubectl" }
 func (t *kubectlTool) Description() string {
-	return "执行 kubectl 命令（argv 直调二进制，无 shell）。只读命令自动执行；写命令需用户确认。禁止交互式（edit/exec -it/attach/port-forward）、流式（logs -f/get -w）、管道/重定向/变量替换。"
+	return "执行 kubectl 命令（argv 直调二进制，无 shell）。只读命令自动执行；写命令需用户确认。禁止交互式（edit/exec -it/attach/port-forward）、管道/重定向/变量替换。流式命令（logs -f/get -w）以固定超时采样部分输出，超时后返回已捕获内容。"
 }
 func (t *kubectlTool) InputSchema() any {
 	return objSchema(map[string]any{

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"strings"
@@ -143,5 +144,49 @@ func TestChatInteractiveExit(t *testing.T) {
 	root.SetArgs([]string{"chat"})
 	if err := root.ExecuteContext(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestBufInput 覆盖非 TTY 回退输入：SetPrompt 后 Readline 打印提示符并按行返回。
+func TestBufInput(t *testing.T) {
+	var out bytes.Buffer
+	in := &bufInput{r: bufio.NewReader(strings.NewReader("yes\n")), w: &out}
+	in.SetPrompt("选择: ")
+	line, err := in.Readline()
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if line != "yes" {
+		t.Fatalf("line = %q, want yes", line)
+	}
+	if !strings.Contains(out.String(), "选择:") {
+		t.Fatalf("提示符未打印: %q", out.String())
+	}
+	// 第二次无提示符，回读直到 EOF。
+	line, err = in.Readline()
+	if err == nil {
+		t.Fatal("EOF 应返回错误")
+	}
+	if line != "" {
+		t.Fatalf("EOF 行应为空, got %q", line)
+	}
+}
+
+// TestRenderMarkdown 覆盖 Markdown 渲染：空文本原样、非空渲染后非空且含原文关键词。
+func TestRenderMarkdown(t *testing.T) {
+	md := newMarkdownRenderer()
+	if got := renderMarkdown(md, ""); got != "" {
+		t.Fatalf("空文本应原样返回, got %q", got)
+	}
+	got := renderMarkdown(md, "| 列 A | 列 B |\n|---|---|\n| 1 | 2 |")
+	if strings.TrimSpace(got) == "" {
+		t.Fatal("Markdown 渲染结果不应为空")
+	}
+	if !strings.Contains(got, "列") {
+		t.Fatalf("渲染结果应保留原文关键词: %q", got)
+	}
+	// 渲染器为 nil 时原样返回。
+	if got := renderMarkdown(nil, "**x**"); got != "**x**" {
+		t.Fatalf("nil 渲染器应原样返回, got %q", got)
 	}
 }

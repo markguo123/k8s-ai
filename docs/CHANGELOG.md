@@ -2,6 +2,29 @@
 
 本项目遵循 docs/VERSIONING.md 的里程碑阶梯约定。
 
+## [v2.0.1] - 2026-08-24
+
+终端交互体验与执行层安全/正确性优化（对标 kubectl-ai，见 docs/CREDITS.md）。
+
+### Added
+
+- **终端 Markdown 渲染**（internal/cli/chat.go）：`k8s-ai chat` 交互模式最终回答经 glamour 渲染（表格/列表/代码块）；`WithAutoStyle` 在管道/非 TTY 自动去样式，`--format json` 不受影响。
+- **readline 交互输入**（internal/cli/chat.go）：终端输入走 chzyer/readline（历史记录文件 `k8s-ai-history`、Ctrl+C/Ctrl+D 优雅退出）；非 TTY（管道/测试）自动回退 bufio，行为与原先一致。
+- **流式命令超时采样**（internal/executor）：`logs -f` / `get -w` 不再在解析层拒绝，改由 executor 套固定超时（默认 7s，`Options.StreamTimeout` 可配）捕获部分输出并标记 `Result.StreamTimeout`，超时不视为错误，不阻塞 Agent Loop。交互式流（attach/exec -it）仍被拒绝。
+- **kubectl 动词分类表扩充**（internal/approval/risk.go + internal/executor/parse.go）：
+  - `rollout history` / `rollout status` 归为只读（SAFE，自动执行）；
+  - 写动词带 `--dry-run` 降级为只读（不实际变更）；
+  - 新增写动词 `autoscale` / `expose` / `taint` / `reconcile` / `certificate` 纳入审批流。
+- 测试：`TestIsStreaming` / `TestRunKubectlStreamingTimeout` / `TestBufInput` / `TestRenderMarkdown` / 风险分类新增 rollout 子命令与 dry-run 用例。
+
+### Changed
+
+- 流式命令（logs -f / get -w）从「解析层拒绝」改为「执行层超时采样」，行为更接近 kubectl-ai 且不再阻塞。
+
+### Fixed
+
+- `kubectl delete ... --dry-run` 此前仍被分类为 HIGH/CRITICAL（delete 走特殊分支、未纳入 dry-run 只读判定）；现统一降级为只读（SAFE），与 apply/scale 等 dry-run 行为一致。
+
 ## [v2.0.0] - 2026-08-24
 
 二期交付：自然语言 Kubernetes Agent（chat/web）+ 读写操作 + 人工确认闭环。
