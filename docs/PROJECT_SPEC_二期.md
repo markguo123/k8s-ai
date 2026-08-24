@@ -534,15 +534,16 @@ agent:
 ## 11.3 风险分级（展示给用户）
 
 ```text
-SAFE      只读操作
+SAFE      只读操作；rollout history/status；带 --dry-run 的写动词（不实际变更）
 LOW       rollout restart（dry-run 先行）
-MEDIUM    scale / annotate / label / set resources
-HIGH      patch / delete pod / delete job / cordon / uncordon
+MEDIUM    scale / annotate / label / set / autoscale / expose / taint resources
+HIGH      patch / apply / create / delete pod / delete job / cordon / uncordon /
+          reconcile / certificate approve|deny
 CRITICAL  delete deployment / delete pvc/pv / delete statefulset / delete storageclass /
-          修改 RBAC / delete namespace / 读取 Secret data
+          修改 RBAC / delete namespace / 读取 Secret data / edit / attach / port-forward
 ```
 
-风险等级用于确认卡片展示与审计，不构成硬性禁止；如部署方需要硬拦截，通过 `agent.deny_ops` 配置（默认空）。
+只读判定（`IsReadOnlyCommand`，自动执行无需审批）：只读动词、`rollout history/status`、带 `--dry-run` 的已知写动词均视为只读；未知动词保守按 CRITICAL 处理。风险等级用于确认卡片展示与审计，不构成硬性禁止；如部署方需要硬拦截，通过 `agent.deny_ops` 配置（默认空）。
 
 ---
 
@@ -603,7 +604,8 @@ Command Parser（argv 解析，无 shell）→ Verb Allowlist → Risk Assessmen
 ## 13.2 kubectl 执行路径（改造 kubectl-ai）
 
 - 通用 `kubectl` Tool：LLM 生成完整 kubectl 命令字符串 → 解析为 argv（字符串切分 + 引号处理，拒绝元字符 `| & ; > < $ () \``）→ 动词白名单校验 → 风险分级 → 审批 → `exec.Command("kubectl", argv...)` 直调二进制 → 输出捕获/截断/脱敏。
-- 禁止：`bash -c`、管道、重定向、子 shell、交互式命令（`exec -it` / `edit` / `port-forward` 等拒绝并回传原因）。
+- 禁止：`bash -c`、管道、重定向、子 shell、交互式命令（`exec -it` / `edit` / `attach` / `port-forward` 等拒绝并回传原因）。
+- 流式命令（`logs -f` / `get -w`）：不在解析层拒绝，由 executor 统一套固定超时（默认 7s，`Options.StreamTimeout` 可配）采样部分输出并标记 `Result.StreamTimeout`，超时不视为错误、不阻塞 Agent Loop（借鉴 kubectl-ai streaming.go）。
 - 输出上限默认 64KB（`agent.cmd_max_bytes`）。
 
 ## 13.3 client-go 执行路径（结构化写 Tool）

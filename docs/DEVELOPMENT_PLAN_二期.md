@@ -9,20 +9,20 @@
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
-| v1.0 | 2026-08-23 | Codex | 初版：基于 v3.0 需求规格拆分 P0–P6 阶段 |
-| v1.1 | 2026-08-23 | Codex | P0 基础底座、P1 只读 Tool 层、P2 Agent Loop + chat CLI 已完成（M1/M2 达成），补进度跟踪 |
-| v1.2 | 2026-08-23 | Codex | P3 诊断 Tool 化已完成（M3 达成）；按澄清修订借鉴/复用策略（代码可复用，文档统一写"借鉴"） |
-| v1.3 | 2026-08-23 | Codex | P4 写操作与审批执行已完成（M4 达成）：approval 风险分级、executor（kubectl argv + client-go）、写 Tool、审批→执行→验证闭环 |
-| v1.4 | 2026-08-23 | Codex | P5 Web UI 已完成（M5 达成）：k8s-ai web（REST + SSE + 会话管理 + 审批卡片 + 内嵌页面），借鉴记录入 CREDITS.md |
-| v1.5 | 2026-08-23 | Codex | P5 体验迭代：修复回答重复（answer 事件单一来源）；集群健康检查协议（多维度调查 + 规则评分与 LLM 整体评估双轨）；新增 get_node_usage 节点资源用量工具（metrics API，k8s.io/metrics，不依赖 kubectl）；tools wire 格式对齐 OpenAI 标准（function 包裹） |
-| v1.6 | 2026-08-23 | Codex | P5 体验迭代 2：健康评分双轨（规则评分 + LLM 综合评分 0-100 + 差异解释）；Web UI 重做（无重边框、消息全宽流式、You/AI 标签）；工具调用卡片化（Show output 折叠查看执行命令与结果）；一期兼容改动提交 e248698（二期代码未提交） |
-| v1.7 | 2026-08-23 | Codex | P5 体验迭代 3：修复 markdown 表格重复渲染（解析器每行重复建表）；get_pod 支持省略 namespace 全集群查找 + 前缀匹配（解决模型猜命名空间/Deployment 名查 Pod 导致的工具反复调用与 max_iterations）；提示词加调查效率与回答收敛约束（诊断输出=现象→根因→排查→修复） |
-| v1.8 | 2026-08-23 | Codex | P5 体验迭代 4（对照 kubectl-ai 定位硬伤）：ToolResult 投喂 LLM 时 Text 摘要覆盖 Data 数据（get_pods 只输出 "pods=20" 导致模型反复调同一工具至 max_iterations）；修复为 Text+Data 一起投喂、日志正文放 Text 原样输出；同问题复测收敛（约 90s 完成诊断） |
-| v1.9 | 2026-08-23 | Codex | P5 体验迭代 5（对照 kubectl-ai 补齐排查链路）：新增 get_configmap/get_configmaps（配置类根因必查项）、patch_configmap、delete_pod 写工具；get_pod 内联最近 Events（describe 效果）；提示词补充配置类故障排查顺序（get_pod→get_previous_logs→get_configmap→patch_configmap→restart_rollout/delete_pod） |
-| v2.0 | 2026-08-23 | Codex | P5 体验迭代 6：修复行为门禁（诊断类提问禁止调用写工具，先给结论+方案并询问"需要我修复吗？"，用户同意后才走写工具+审批）；get_pod 带 namespace 时也支持前缀回退（Deployment 名查 Pod）；评估结论：保留结构化工具 + kubectl 兜底双轨，不抛弃 |
-| v2.1 | 2026-08-23 | Codex | P5 体验迭代 7：审批卡片可读化（CommandDescriber：每个写工具输出人类可读 kubectl 命令 + 变更说明，替代原始转义 JSON 参数）；端到端验证"询问→诊断→修复→验证"闭环（listen 80x 故障：patch_configmap→restart_rollout→get_pods 验证 Running 1/1） |
-| v2.2 | 2026-08-24 | Codex | P5 体验迭代 8：Web 工具调用卡片美化（借鉴 kubectl-ai 状态着色设计：执行中蓝点脉冲/完成绿点/出错红点 + 状态文字、命令等宽色块、Show output 旋转箭头折叠、输出等宽可滚动）；新增耗时显示与复制按钮（非照搬）；页面 JS 用 node --check 校验 |
-| v2.3 | 2026-08-24 | Codex | P6 收尾完成：审计接入 Agent 主流程（用户输入/LLM/工具/审批事件落盘脱敏）；MCP Client 接口 + 注册表适配器；RBAC 写权限示例；README/INSTALLATION/CHANGELOG/TECHNICAL_GUIDE/PROJECT_STATUS/E2E_SMOKE 文档；max_iterations 默认 15；web 执行中状态；版本 v2.0.0 |
+| v1.0 | 2026-08-23 |  | 初版：基于 v3.0 需求规格拆分 P0–P6 阶段 |
+| v1.1 | 2026-08-23 |  | P0 基础底座、P1 只读 Tool 层、P2 Agent Loop + chat CLI 已完成（M1/M2 达成），补进度跟踪 |
+| v1.2 | 2026-08-23 |  | P3 诊断 Tool 化已完成（M3 达成）；按澄清修订借鉴/复用策略（代码可复用，文档统一写"借鉴"） |
+| v1.3 | 2026-08-23 |  | P4 写操作与审批执行已完成（M4 达成）：approval 风险分级、executor（kubectl argv + client-go）、写 Tool、审批→执行→验证闭环 |
+| v1.4 | 2026-08-23 |  | P5 Web UI 已完成（M5 达成）：k8s-ai web（REST + SSE + 会话管理 + 审批卡片 + 内嵌页面），借鉴记录入 CREDITS.md |
+| v1.5 | 2026-08-23 |  | P5 体验迭代：修复回答重复（answer 事件单一来源）；集群健康检查协议（多维度调查 + 规则评分与 LLM 整体评估双轨）；新增 get_node_usage 节点资源用量工具（metrics API，k8s.io/metrics，不依赖 kubectl）；tools wire 格式对齐 OpenAI 标准（function 包裹） |
+| v1.6 | 2026-08-23 |  | P5 体验迭代 2：健康评分双轨（规则评分 + LLM 综合评分 0-100 + 差异解释）；Web UI 重做（无重边框、消息全宽流式、You/AI 标签）；工具调用卡片化（Show output 折叠查看执行命令与结果）；一期兼容改动提交 e248698（二期代码未提交） |
+| v1.7 | 2026-08-23 |  | P5 体验迭代 3：修复 markdown 表格重复渲染（解析器每行重复建表）；get_pod 支持省略 namespace 全集群查找 + 前缀匹配（解决模型猜命名空间/Deployment 名查 Pod 导致的工具反复调用与 max_iterations）；提示词加调查效率与回答收敛约束（诊断输出=现象→根因→排查→修复） |
+| v1.8 | 2026-08-23 |  | P5 体验迭代 4（对照 kubectl-ai 定位硬伤）：ToolResult 投喂 LLM 时 Text 摘要覆盖 Data 数据（get_pods 只输出 "pods=20" 导致模型反复调同一工具至 max_iterations）；修复为 Text+Data 一起投喂、日志正文放 Text 原样输出；同问题复测收敛（约 90s 完成诊断） |
+| v1.9 | 2026-08-23 |  | P5 体验迭代 5（对照 kubectl-ai 补齐排查链路）：新增 get_configmap/get_configmaps（配置类根因必查项）、patch_configmap、delete_pod 写工具；get_pod 内联最近 Events（describe 效果）；提示词补充配置类故障排查顺序（get_pod→get_previous_logs→get_configmap→patch_configmap→restart_rollout/delete_pod） |
+| v2.0 | 2026-08-23 |  | P5 体验迭代 6：修复行为门禁（诊断类提问禁止调用写工具，先给结论+方案并询问"需要我修复吗？"，用户同意后才走写工具+审批）；get_pod 带 namespace 时也支持前缀回退（Deployment 名查 Pod）；评估结论：保留结构化工具 + kubectl 兜底双轨，不抛弃 |
+| v2.1 | 2026-08-23 |  | P5 体验迭代 7：审批卡片可读化（CommandDescriber：每个写工具输出人类可读 kubectl 命令 + 变更说明，替代原始转义 JSON 参数）；端到端验证"询问→诊断→修复→验证"闭环（listen 80x 故障：patch_configmap→restart_rollout→get_pods 验证 Running 1/1） |
+| v2.2 | 2026-08-24 |  | P5 体验迭代 8：Web 工具调用卡片美化（借鉴 kubectl-ai 状态着色设计：执行中蓝点脉冲/完成绿点/出错红点 + 状态文字、命令等宽色块、Show output 旋转箭头折叠、输出等宽可滚动）；新增耗时显示与复制按钮（非照搬）；页面 JS 用 node --check 校验 |
+| v2.3 | 2026-08-24 |  | P6 收尾完成：审计接入 Agent 主流程（用户输入/LLM/工具/审批事件落盘脱敏）；MCP Client 接口 + 注册表适配器；RBAC 写权限示例；README/INSTALLATION/CHANGELOG/TECHNICAL_GUIDE/PROJECT_STATUS/E2E_SMOKE 文档；max_iterations 默认 15；web 执行中状态；版本 v2.0.0 |
 
 ## 0. 进度状态（2026-08-23）
 
