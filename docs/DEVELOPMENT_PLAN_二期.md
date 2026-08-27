@@ -2,7 +2,7 @@
 
 - 版本：v1.0
 - 日期：2026-08-23
-- 状态：待执行
+- 状态：已完成（v2.0.1，2026-08-24）
 - 关联文档：PROJECT_SPEC_二期.md（v3.0）、AGENTS.md、docs/design/ARCHITECTURE.md、docs/design/ADR.md
 
 ## 修订记录
@@ -24,7 +24,7 @@
 | v2.2 | 2026-08-24 |  | P5 体验迭代 8：Web 工具调用卡片美化（借鉴 kubectl-ai 状态着色设计：执行中蓝点脉冲/完成绿点/出错红点 + 状态文字、命令等宽色块、Show output 旋转箭头折叠、输出等宽可滚动）；新增耗时显示与复制按钮（非照搬）；页面 JS 用 node --check 校验 |
 | v2.3 | 2026-08-24 |  | P6 收尾完成：审计接入 Agent 主流程（用户输入/LLM/工具/审批事件落盘脱敏）；MCP Client 接口 + 注册表适配器；RBAC 写权限示例；README/INSTALLATION/CHANGELOG/TECHNICAL_GUIDE/PROJECT_STATUS/E2E_SMOKE 文档；max_iterations 默认 15；web 执行中状态；版本 v2.0.0 |
 
-## 0. 进度状态（2026-08-23）
+## 0. 进度状态（2026-08-24）
 
 ```text
 [x] P0 基础底座          已完成：AGENTS.md/架构测试更新、llm 双模式 Tool Calling、
@@ -39,7 +39,7 @@
                                审批 y/a/n + skip-permissions、执行后验证（deployment 状态核对）
 [x] P5 Web UI            已完成：k8s-ai web（/api/sessions CRUD + SSE 流 + send-message/approve +
                                会话侧栏 + Markdown 渲染 + 审批卡片，go:embed 内嵌页面）
-[ ] P6 收尾交付          未开始
+[x] P6 收尾交付          已完成（2026-08-24）：审计接入主流程（脱敏落盘）、MCP Client 接口+注册表适配器、RBAC 写权限示例、README/INSTALLATION/TECHNICAL_GUIDE/CHANGELOG/PROJECT_STATUS/E2E_SMOKE 文档、max_iterations 默认 15、版本 v2.0.0/v2.0.1
 ```
 
 ---
@@ -91,7 +91,7 @@ flowchart LR
 | P3 | 诊断 Tool 化（scan_cluster / diagnose_*） | 4 | 18 | ✅ 完成 |
 | P4 | 写操作与审批执行（kubectl argv + client-go + 验证） | 6 | 24 | ✅ 完成 |
 | P5 | Web UI（SSE + 会话管理 + 审批卡片） | 6 | 30 | ✅ 完成 |
-| P6 | 收尾交付（审计 / MCP / RBAC / 文档 / 全量测试） | 4 | 34 |
+| P6 | 收尾交付（审计 / MCP / RBAC / 文档 / 全量测试） | 4 | 34 | ✅ 完成 |
 
 合计约 **34 人日**，按 5 天/周约 **6.8 周**；加缓冲按 **8 周**排。
 

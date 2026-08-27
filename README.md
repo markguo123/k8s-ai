@@ -1,6 +1,6 @@
 # k8s-ai
 
-> 当前版本：**v2.0.0**（二期 Agent；版本约定见 [docs/VERSIONING.md](docs/VERSIONING.md)，变更见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）
+> 当前版本：**v2.0.1**（二期迭代；版本约定见 [docs/VERSIONING.md](docs/VERSIONING.md)，变更见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）
 
 Kubernetes AI 智能巡检、故障诊断与自然语言运维 Agent
 （一期：只读巡检 + 规则引擎 + 私有大模型诊断 + 报告；二期：`chat` 对话 Agent + `web` 浏览器界面 + 读写操作 + 人工确认）。

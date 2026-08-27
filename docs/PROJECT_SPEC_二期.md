@@ -2,7 +2,7 @@
 
 > 版本：v3.0
 > 日期：2026-08-23
-> 状态：待评审
+> 状态：已确认并实施完成（v2.0.1，2026-08-24）
 > 关联：docs/DEVELOPMENT_PLAN_二期.md（开发计划）、AGENTS.md、docs/design/ARCHITECTURE.md、docs/design/ADR.md
 
 ## 修订记录

@@ -1,6 +1,6 @@
 # k8s-ai 项目状态
 
-> 维护规则：每完成一个阶段（P3/P4/P5/一期终版），刷新下方"已完成模块"与"进行中"，并同步刷新 TECHNICAL_GUIDE.md 的第二章与第五章。
+> 维护规则：每完成一个阶段（一期 P0–P12 / 二期 P0–P6），刷新下方"已完成模块"与"进行中"，并同步刷新 TECHNICAL_GUIDE.md 的第二章与第五章。
 
 ## 已完成模块
 
@@ -18,14 +18,19 @@
 - [x] P10 部署交付：Dockerfile（distroless 非 root）、deploy/ RBAC+ConfigMap+Secret 示例+PVC+CronJob、RBAC 清单测试、README、Makefile docker 目标
 - [x] P11 加固收尾：大集群压测（PERFORMANCE.md）、四类架构测试确认（含 Secrets 禁访）、安全核对清单、-race 环境说明、INSTALLATION.md 安装部署手册
 - [x] P12 一期 1.2：Server 最小化（healthz/version/异步扫描 API）+ 历史差异数据（新增/持续/恢复，二期 Agent 记忆契约）+ deployment/service 清单
+- [x] 二期 P0–P2：Agent 基础（llm native/shim/auto Tool Calling、agent/tools/session 骨架、chat CLI 交互/单发/stdin/JSON/会话管理）
+- [x] 二期 P3：诊断 Tool 化（scan_cluster / scan_pod / diagnose_*，复用一期 ScanService）
+- [x] 二期 P4：写操作与审批执行（kubectl argv 无 shell + client-go 写、SAFE..CRITICAL 风险分级、y/a/n 确认、--skip-permissions、执行后验证）
+- [x] 二期 P5：Web UI（k8s-ai web：REST + SSE 流式、会话侧栏、Markdown 渲染、审批卡片、工具过程展示）
+- [x] 二期 P6：收尾（审计落盘脱敏、MCP 接口预留、RBAC 写权限示例、CREDITS/E2E_SMOKE/文档、版本 v2.0.0/v2.0.1）
 
 ## 进行中
 
-- [x] 二期（chat Agent / Tool Calling / 会话记忆 / 审批执行 / Web UI / 审计）：已完成（v2.0.0）
+- 无：一期（v1.0.x）与二期（v2.0.x）均已交付，当前版本 v2.0.1
 
 ## 下一步
 
-二期已完成 → 阶段收尾：全量测试/vet、文档、代码提交 GitLab
+- 迭代按 CHANGELOG / VERSIONING 推进；如需发布二进制或新版本，按 docs/VERSIONING.md 发布流程执行
 
 ## 已知事项
 
