@@ -79,3 +79,23 @@ func (r NodeMemoryPressureRule) Evaluate(ctx *RuleContext) []*model.Finding {
 	}
 	return out
 }
+
+// NodePIDPressureRule 节点 PID 压力（与 Disk/MemoryPressure 同源的驱逐信号）。
+type NodePIDPressureRule struct{}
+
+func (NodePIDPressureRule) Name() string    { return "NodePIDPressure" }
+func (NodePIDPressureRule) NeedsLogs() bool { return false }
+
+func (r NodePIDPressureRule) Evaluate(ctx *RuleContext) []*model.Finding {
+	var out []*model.Finding
+	for i := range ctx.Snapshot.Nodes {
+		n := &ctx.Snapshot.Nodes[i]
+		for _, c := range n.Conditions {
+			if c.Type == "PIDPressure" && c.Status == "True" {
+				out = append(out, nodeConditionFinding(ctx, r, n, "PIDPressure", model.SeverityHigh, "节点 PIDPressure", nil))
+				break
+			}
+		}
+	}
+	return out
+}

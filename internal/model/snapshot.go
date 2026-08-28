@@ -50,20 +50,24 @@ type ContainerInfo struct {
 }
 
 type PodInfo struct {
-	Ref         ResourceRef
-	Phase       string
-	NodeName    string
-	StartTime   string
-	Conditions  []ConditionInfo
-	Containers  []ContainerInfo
-	OwnerRefs   []ResourceRef
-	PVCRefs     []ResourceRef // 引用的 PVC（Pod 卷声明）
-	ConfigMaps  []ResourceRef // 引用的 ConfigMap（仅名称，不读取数据；供修复建议定位配置来源）
-	SecretRefs  []ResourceRef // 引用的 Secret（仅名称，绝不读取数据；供修复建议定位凭据来源）
-	Labels      map[string]string
-	Annotations map[string]string // redacted at the collection boundary
-	QoSClass    string
-	Logs        map[string]CollectedLog // Phase 2: container name → log
+	Ref               ResourceRef
+	Phase             string
+	NodeName          string
+	StartTime         string
+	CreationTimestamp string // RFC3339；用于 Pending/Terminating 等时间门槛判定
+	DeletionTimestamp string // RFC3339；非空表示正在删除（卡 Terminating 判定）
+	Finalizers        []string
+	Conditions        []ConditionInfo
+	Containers        []ContainerInfo
+	InitContainers    []ContainerInfo // initContainerStatuses 归一化
+	OwnerRefs         []ResourceRef
+	PVCRefs           []ResourceRef // 引用的 PVC（Pod 卷声明）
+	ConfigMaps        []ResourceRef // 引用的 ConfigMap（仅名称，不读取数据；供修复建议定位配置来源）
+	SecretRefs        []ResourceRef // 引用的 Secret（仅名称，绝不读取数据；供修复建议定位凭据来源）
+	Labels            map[string]string
+	Annotations       map[string]string // redacted at the collection boundary
+	QoSClass          string
+	Logs              map[string]CollectedLog // Phase 2: container name → log
 }
 
 // CollectedLog holds capped, redacted log bytes for one container.

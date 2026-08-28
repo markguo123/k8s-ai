@@ -34,6 +34,44 @@ func (r PVCPendingRule) Evaluate(ctx *RuleContext) []*model.Finding {
 	return out
 }
 
+// PVFailedRule PV 异常：Failed 为真故障；Released 在 Retain 策略下属正常生命周期，仅低级别提示。
+type PVFailedRule struct{}
+
+func (PVFailedRule) Name() string    { return "PVFailed" }
+func (PVFailedRule) NeedsLogs() bool { return false }
+
+func (r PVFailedRule) Evaluate(ctx *RuleContext) []*model.Finding {
+	var out []*model.Finding
+	for i := range ctx.Snapshot.Storage {
+		st := &ctx.Snapshot.Storage[i]
+		if st.Kind != "PV" {
+			continue
+		}
+		var sev model.Severity
+		var title string
+		switch st.Status {
+		case "Failed":
+			sev = model.SeverityHigh
+			title = "PV 处于 Failed 状态"
+		case "Released":
+			// Retain 回收策略下 Released 是正常状态，仅提示可能需要人工清理。
+			sev = model.SeverityLow
+			title = "PV 处于 Released 状态（待清理或重新绑定）"
+		default:
+			continue
+		}
+		evs := []model.Evidence{
+			evidence.ObjectField("PV/"+st.Ref.Name+"/status.phase", "phase", st.Status),
+		}
+		if st.Reason != "" {
+			evs = append(evs, evidence.ObjectField("PV/"+st.Ref.Name+"/status", "reason", st.Reason))
+		}
+		evs = append(evs, podEventEvidence(ctx, st.Ref)...)
+		out = append(out, newFinding(ctx, r, st.Ref, title, sev, evs))
+	}
+	return out
+}
+
 // FailedMountRule 挂载/附加卷失败（Events 驱动）。
 type FailedMountRule struct{}
 

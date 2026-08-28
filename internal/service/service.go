@@ -136,7 +136,7 @@ func (s *scanService) Run(ctx context.Context, opts model.ScanOptions) (*model.S
 
 	// Phase2：只对需要日志的异常 Pod 深度采集，并把日志挂到 Finding 证据。
 	if opts.CollectLogs && len(findings) > 0 {
-		targets := rule.LogTargets(s.registry, findings)
+		targets := rule.LogTargets(s.registry, findings, idx)
 		p2Title := fmt.Sprintf("Phase2 深度采集（日志）：%d 个目标 Pod", len(targets))
 		p2Start := phaseStart("phase2", p2Title)
 		if len(targets) > 0 {
@@ -147,7 +147,7 @@ func (s *scanService) Run(ctx context.Context, opts model.ScanOptions) (*model.S
 					return nil, ctx.Err()
 				}
 			}
-			attachLogEvidence(findings, idx)
+			attachLogEvidence(findings, idx, s.registry)
 		}
 		phaseDone("phase2", fmt.Sprintf("log targets=%d errors=%d",
 			len(targets), len(snap.CollectionErrors)), true, p2Start)
@@ -274,19 +274,29 @@ func truncateDuration(d time.Duration) string {
 }
 
 // attachLogEvidence 把 Phase2 采集的日志证据按 Pod 挂到对应 Finding（FR-014）。
-func attachLogEvidence(findings []*model.Finding, idx *model.CorrelationIndex) {
+func attachLogEvidence(findings []*model.Finding, idx *model.CorrelationIndex, reg rule.Registry) {
 	for _, f := range findings {
-		if f.Resource.Kind != "Pod" {
+		r := reg.ByName(f.Rule)
+		if r == nil || !r.NeedsLogs() {
 			continue
 		}
-		p := idx.Pod(f.Resource.Key())
-		if p == nil {
-			continue
+		// Pod Finding 直接取自身日志；非 Pod（如 Job）反查下属 Pod 日志。
+		var pods []*model.PodInfo
+		if f.Resource.Kind == "Pod" {
+			if p := idx.Pod(f.Resource.Key()); p != nil {
+				pods = append(pods, p)
+			}
+		} else {
+			pods = idx.PodsOfWorkload(f.Resource.Key())
 		}
-		for _, cl := range p.Logs {
-			f.Evidence = append(f.Evidence, evidence.Log(cl)...)
+		added := false
+		for _, p := range pods {
+			for _, cl := range p.Logs {
+				f.Evidence = append(f.Evidence, evidence.Log(cl)...)
+				added = true
+			}
 		}
-		if len(p.Logs) > 0 {
+		if added {
 			// 重新排序编号，保证证据链稳定（日志不影响指纹签名）。
 			f.Evidence = evidence.AssignIDs(f.Evidence)
 		}

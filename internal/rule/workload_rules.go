@@ -82,8 +82,11 @@ func (r StatefulSetReplicaRule) Evaluate(ctx *RuleContext) []*model.Finding {
 // JobFailedRule Job 失败。
 type JobFailedRule struct{}
 
-func (JobFailedRule) Name() string    { return "JobFailed" }
-func (JobFailedRule) NeedsLogs() bool { return false }
+func (JobFailedRule) Name() string { return "JobFailed" }
+
+// NeedsLogs 为 true：Job 失败的关键证据是其 Pod 的日志，
+// LogTargets 通过关联索引反查 Job 下属 Pod 进行 Phase2 采集。
+func (JobFailedRule) NeedsLogs() bool { return true }
 
 func (r JobFailedRule) Evaluate(ctx *RuleContext) []*model.Finding {
 	var out []*model.Finding

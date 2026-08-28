@@ -20,6 +20,7 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/kubernetes"
 	"github.com/k8s-ai/k8s-ai/internal/llm"
 	"github.com/k8s-ai/k8s-ai/internal/model"
+	"github.com/k8s-ai/k8s-ai/internal/rule"
 	appsv1 "k8s.io/api/apps/v1"
 )
 
@@ -498,5 +499,37 @@ func TestRunIncidentGrouping(t *testing.T) {
 	// 根因只扣一次分（派生成员不重复扣分）。
 	if len(result.HealthScore.Penalties) != 1 {
 		t.Fatalf("penalties = %d, want 1（仅根因）: %+v", len(result.HealthScore.Penalties), result.HealthScore.Penalties)
+	}
+}
+
+// TestAttachLogEvidenceJobToPod 验证 JobFailed Finding 能反查下属 Pod 并挂载其日志证据。
+func TestAttachLogEvidenceJobToPod(t *testing.T) {
+	snap := &model.ClusterSnapshot{
+		Namespaces: []model.NamespaceInfo{{Ref: model.ResourceRef{Kind: "Namespace", Name: "prod"}}},
+		Workloads: []model.WorkloadInfo{
+			{Ref: model.ResourceRef{Kind: "Job", Namespace: "prod", Name: "migrate"}},
+		},
+		Pods: []model.PodInfo{{
+			Ref:       model.ResourceRef{Kind: "Pod", Namespace: "prod", Name: "migrate-x1"},
+			OwnerRefs: []model.ResourceRef{{Kind: "Job", Namespace: "prod", Name: "migrate"}},
+			Logs:      map[string]model.CollectedLog{"job": {Current: []byte("panic: boom")}},
+		}},
+	}
+	idx := correlation.Build(snap)
+	reg := rule.NewRegistry()
+	reg.Register(rule.JobFailedRule{})
+	findings := []*model.Finding{{
+		Rule:     "JobFailed",
+		Resource: model.ResourceRef{Kind: "Job", Namespace: "prod", Name: "migrate"},
+	}}
+	attachLogEvidence(findings, idx, reg)
+	hasLog := false
+	for _, e := range findings[0].Evidence {
+		if e.Kind == model.EvLog && strings.Contains(e.Value, "panic: boom") {
+			hasLog = true
+		}
+	}
+	if !hasLog {
+		t.Fatalf("Job Finding 缺少 Pod 日志证据: %+v", findings[0].Evidence)
 	}
 }

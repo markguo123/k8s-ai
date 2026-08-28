@@ -307,7 +307,7 @@ func relatedRefs(ctx *RuleContext, ref model.ResourceRef) []model.ResourceRef {
 	return out
 }
 
-// markCorrelated 把节点级根因（NotReady/DiskPressure/MemoryPressure）影响下的
+// markCorrelated 把节点级根因（NotReady/DiskPressure/MemoryPressure/PIDPressure）影响下的
 // Pod Finding 标记为 Correlated，避免健康评分重复扣分（FR-020）。
 func markCorrelated(index *model.CorrelationIndex, findings []*model.Finding) {
 	nodeRoots := map[string]bool{}
@@ -331,7 +331,7 @@ func markCorrelated(index *model.CorrelationIndex, findings []*model.Finding) {
 
 func isNodeRootRule(name string) bool {
 	switch name {
-	case "NodeNotReady", "NodeDiskPressure", "NodeMemoryPressure":
+	case "NodeNotReady", "NodeDiskPressure", "NodeMemoryPressure", "NodePIDPressure":
 		return true
 	}
 	return false
@@ -346,22 +346,33 @@ func isConfigNotFound(msg string) bool {
 }
 
 // LogTargets 返回需要 Phase2 深度采集日志的异常 Pod（FR-004）。
-func LogTargets(reg Registry, findings []*model.Finding) []model.ResourceRef {
+// 对于资源本身不是 Pod 但 NeedsLogs 的规则（如 JobFailed），通过关联索引
+// 反查其下属 Pod 作为日志采集目标。
+func LogTargets(reg Registry, findings []*model.Finding, index *model.CorrelationIndex) []model.ResourceRef {
 	var out []model.ResourceRef
 	seen := map[string]bool{}
-	for _, f := range findings {
-		if f.Resource.Kind != "Pod" {
-			continue
+	add := func(ref model.ResourceRef) {
+		if seen[ref.Key()] {
+			return
 		}
+		seen[ref.Key()] = true
+		out = append(out, ref)
+	}
+	for _, f := range findings {
 		r := reg.ByName(f.Rule)
 		if r == nil || !r.NeedsLogs() {
 			continue
 		}
-		if seen[f.Resource.Key()] {
+		if f.Resource.Kind == "Pod" {
+			add(f.Resource)
 			continue
 		}
-		seen[f.Resource.Key()] = true
-		out = append(out, f.Resource)
+		// 非 Pod 资源（如 Job）：反查其下属 Pod 采集日志。
+		if index != nil {
+			for _, p := range index.PodsOfWorkload(f.Resource.Key()) {
+				add(p.Ref)
+			}
+		}
 	}
 	return out
 }
@@ -373,13 +384,16 @@ func AllDefault() []Rule {
 		OOMKilledRule{},
 		ImagePullBackOffRule{},
 		PendingPodRule{},
+		PodTerminatingRule{},
 		ContainerCreateErrorRule{},
 		UnhealthyRule{},
 		IngressBackendRule{},
 		NodeNotReadyRule{},
 		NodeDiskPressureRule{},
 		NodeMemoryPressureRule{},
+		NodePIDPressureRule{},
 		PVCPendingRule{},
+		PVFailedRule{},
 		FailedMountRule{},
 		ServiceNoEndpointRule{},
 		DeploymentReplicaRule{},

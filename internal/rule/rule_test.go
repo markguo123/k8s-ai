@@ -2,6 +2,7 @@ package rule
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -47,7 +48,7 @@ func TestCrashLoopBackOff(t *testing.T) {
 	// NeedsLogs → 进入 Phase2 目标。
 	reg := NewRegistry()
 	reg.Register(CrashLoopBackOffRule{})
-	targets := LogTargets(reg, fs)
+	targets := LogTargets(reg, fs, rctx.Index)
 	if len(targets) != 1 || targets[0].Name != "web-abc" {
 		t.Fatalf("targets = %+v", targets)
 	}
@@ -353,5 +354,204 @@ func TestIngressBackendRule(t *testing.T) {
 	fs := (IngressBackendRule{}).Evaluate(ctxFor(snap))
 	if len(fs) != 1 {
 		t.Fatalf("IngressBackend findings = %d, want 1", len(fs))
+	}
+}
+
+// TestInitContainerRules init 容器不再是盲区：
+// CrashLoopBackOff/ImagePullBackOff/ContainerCreateError 均应识别 init 容器并正确称谓。
+func TestInitContainerRules(t *testing.T) {
+	snap := &model.ClusterSnapshot{
+		Namespaces: []model.NamespaceInfo{{Ref: model.ResourceRef{Kind: "Namespace", Name: "default"}}},
+		Pods: []model.PodInfo{{
+			Ref:            model.ResourceRef{Kind: "Pod", Namespace: "default", Name: "app-0"},
+			InitContainers: []model.ContainerInfo{{Name: "init-db", State: "Waiting", Reason: "CrashLoopBackOff", RestartCount: 5, LastReason: "Error", LastExitCode: 1}},
+			Containers:     []model.ContainerInfo{{Name: "app", State: "Running", Ready: true}},
+		}},
+	}
+	rctx := ctxFor(snap)
+	fs := (CrashLoopBackOffRule{}).Evaluate(rctx)
+	if len(fs) != 1 {
+		t.Fatalf("init 容器 CrashLoopBackOff findings = %d, want 1", len(fs))
+	}
+	if !strings.Contains(fs[0].Title, "init 容器 init-db") {
+		t.Fatalf("标题应标识 init 容器: %s", fs[0].Title)
+	}
+	// init 容器镜像拉取失败。
+	snap.Pods[0].InitContainers = []model.ContainerInfo{{Name: "init-db", State: "Waiting", Reason: "ImagePullBackOff", Message: "pull denied", Image: "repo/init:1"}}
+	if fs := (ImagePullBackOffRule{}).Evaluate(rctx); len(fs) != 1 || !strings.Contains(fs[0].Title, "init 容器") {
+		t.Fatalf("init 容器 ImagePullBackOff = %+v", fs)
+	}
+	// init 容器创建失败（配置缺失应升 HIGH）。
+	snap.Pods[0].InitContainers = []model.ContainerInfo{{Name: "init-db", State: "Waiting", Reason: "CreateContainerConfigError", Message: "configmap \"cfg\" not found"}}
+	fs = (ContainerCreateErrorRule{}).Evaluate(rctx)
+	if len(fs) != 1 || !strings.Contains(fs[0].Title, "init 容器") {
+		t.Fatalf("init 容器 ContainerCreateError = %+v", fs)
+	}
+	if fs[0].Severity != model.SeverityHigh {
+		t.Fatalf("init 容器配置缺失应为 HIGH: %s", fs[0].Severity)
+	}
+}
+
+// TestPendingPodAgeThreshold PendingPod 时间门槛：新建（<60s）的 Pending 属滚动发布暂态，跳过。
+func TestPendingPodAgeThreshold(t *testing.T) {
+	mk := func(age time.Duration) *RuleContext {
+		snap := &model.ClusterSnapshot{
+			Namespaces: []model.NamespaceInfo{{Ref: model.ResourceRef{Kind: "Namespace", Name: "default"}}},
+			Pods: []model.PodInfo{{
+				Ref:               model.ResourceRef{Kind: "Pod", Namespace: "default", Name: "web-new"},
+				Phase:             "Pending",
+				CreationTimestamp: time.Now().Add(-age).UTC().Format(time.RFC3339),
+			}},
+		}
+		return ctxFor(snap)
+	}
+	if fs := (PendingPodRule{}).Evaluate(mk(30 * time.Second)); len(fs) != 0 {
+		t.Fatalf("Pending <60s 应被时间门槛跳过: %d", len(fs))
+	}
+	if fs := (PendingPodRule{}).Evaluate(mk(5 * time.Minute)); len(fs) != 1 {
+		t.Fatalf("Pending >60s 应上报: %d", len(fs))
+	}
+}
+
+// TestPodTerminatingRule Pod 卡 Terminating：>5min 才报，且证据含 finalizers。
+func TestPodTerminatingRule(t *testing.T) {
+	mk := func(age time.Duration, finalizers []string) *RuleContext {
+		snap := &model.ClusterSnapshot{
+			Namespaces: []model.NamespaceInfo{{Ref: model.ResourceRef{Kind: "Namespace", Name: "default"}}},
+			Pods: []model.PodInfo{{
+				Ref:               model.ResourceRef{Kind: "Pod", Namespace: "default", Name: "web-old"},
+				DeletionTimestamp: time.Now().Add(-age).UTC().Format(time.RFC3339),
+				Finalizers:        finalizers,
+			}},
+		}
+		return ctxFor(snap)
+	}
+	if fs := (PodTerminatingRule{}).Evaluate(mk(2*time.Minute, nil)); len(fs) != 0 {
+		t.Fatalf("Terminating <5min 应跳过: %d", len(fs))
+	}
+	fs := (PodTerminatingRule{}).Evaluate(mk(10*time.Minute, []string{"kubernetes.io/pv-protection"}))
+	if len(fs) != 1 {
+		t.Fatalf("Terminating >5min 应上报: %d", len(fs))
+	}
+	hasFin := false
+	for _, e := range fs[0].Evidence {
+		if e.Key == "finalizers" {
+			hasFin = true
+		}
+	}
+	if !hasFin {
+		t.Fatalf("证据应包含 finalizers: %+v", fs[0].Evidence)
+	}
+}
+
+// TestNodePIDPressureRule 节点 PID 压力：规则命中且其下 Pod 异常被标记 Correlated。
+func TestNodePIDPressureRule(t *testing.T) {
+	snap := &model.ClusterSnapshot{
+		Namespaces: []model.NamespaceInfo{{Ref: model.ResourceRef{Kind: "Namespace", Name: "default"}}},
+		Nodes:      []model.NodeInfo{nodeWithConditions("node-p", model.ConditionInfo{Type: "PIDPressure", Status: "True"})},
+		Pods: []model.PodInfo{
+			{Ref: model.ResourceRef{Kind: "Pod", Namespace: "default", Name: "web-1"}, NodeName: "node-p", Containers: []model.ContainerInfo{crashContainer()}},
+		},
+	}
+	rctx := ctxFor(snap)
+	fs := (NodePIDPressureRule{}).Evaluate(rctx)
+	if len(fs) != 1 || fs[0].Severity != model.SeverityHigh {
+		t.Fatalf("PIDPressure = %+v", fs)
+	}
+	// 引擎级后处理：PIDPressure 节点上的 Pod 异常应被标记 Correlated。
+	reg := NewRegistry()
+	reg.Register(CrashLoopBackOffRule{})
+	reg.Register(NodePIDPressureRule{})
+	findings := NewEngine(reg).Evaluate(context.Background(), snap, rctx.Index, model.ScanOptions{})
+	var podF *model.Finding
+	for _, f := range findings {
+		if f.Rule == "CrashLoopBackOff" {
+			podF = f
+		}
+	}
+	if podF == nil || !podF.Correlated {
+		t.Fatalf("web-1 应被标记 Correlated: %+v", podF)
+	}
+}
+
+// TestPVFailedRule PV 异常：Failed=High，Released=Low，Bound 不报。
+func TestPVFailedRule(t *testing.T) {
+	snap := &model.ClusterSnapshot{
+		Storage: []model.StorageInfo{
+			{Ref: model.ResourceRef{Kind: "PV", Name: "pv-failed"}, Kind: "PV", Status: "Failed", Reason: "VolumeDeleted"},
+			{Ref: model.ResourceRef{Kind: "PV", Name: "pv-released"}, Kind: "PV", Status: "Released"},
+			{Ref: model.ResourceRef{Kind: "PV", Name: "pv-bound"}, Kind: "PV", Status: "Bound"},
+		},
+	}
+	fs := (PVFailedRule{}).Evaluate(ctxFor(snap))
+	if len(fs) != 2 {
+		t.Fatalf("PVFailed findings = %d, want 2", len(fs))
+	}
+	sevByName := map[string]model.Severity{}
+	for _, f := range fs {
+		sevByName[f.Resource.Name] = f.Severity
+	}
+	if sevByName["pv-failed"] != model.SeverityHigh {
+		t.Fatalf("Failed 应为 HIGH: %s", sevByName["pv-failed"])
+	}
+	if sevByName["pv-released"] != model.SeverityLow {
+		t.Fatalf("Released 应为 LOW: %s", sevByName["pv-released"])
+	}
+}
+
+// TestServiceNoEndpointGracePeriod 滚动发布宽限：匹配 Pod 全新（<2min）时跳过，混合或无匹配仍上报。
+func TestServiceNoEndpointGracePeriod(t *testing.T) {
+	mk := func(podAges ...time.Duration) *RuleContext {
+		snap := &model.ClusterSnapshot{
+			Namespaces: []model.NamespaceInfo{{Ref: model.ResourceRef{Kind: "Namespace", Name: "default"}}},
+			Services: []model.ServiceInfo{
+				{Ref: model.ResourceRef{Kind: "Service", Namespace: "default", Name: "web-svc"}, Selector: map[string]string{"app": "web"}},
+			},
+		}
+		for i, age := range podAges {
+			snap.Pods = append(snap.Pods, model.PodInfo{
+				Ref:               model.ResourceRef{Kind: "Pod", Namespace: "default", Name: fmt.Sprintf("web-%d", i)},
+				Labels:            map[string]string{"app": "web"},
+				CreationTimestamp: time.Now().Add(-age).UTC().Format(time.RFC3339),
+			})
+		}
+		return ctxFor(snap)
+	}
+	// 全部 Pod 为 2min 内新建：滚动发布暂态，跳过。
+	if fs := (ServiceNoEndpointRule{}).Evaluate(mk(30*time.Second, 1*time.Minute)); len(fs) != 0 {
+		t.Fatalf("全新 Pod 应处于宽限期: %d", len(fs))
+	}
+	// 存在旧 Pod：非暂态，上报。
+	if fs := (ServiceNoEndpointRule{}).Evaluate(mk(30*time.Second, 10*time.Minute)); len(fs) != 1 {
+		t.Fatalf("新旧混合应上报: %d", len(fs))
+	}
+	// 无匹配 Pod：selector 失配，仍上报。
+	if fs := (ServiceNoEndpointRule{}).Evaluate(mk()); len(fs) != 1 {
+		t.Fatalf("无匹配 Pod 应上报: %d", len(fs))
+	}
+}
+
+// TestJobFailedLogTargets JobFailed 通过关联索引反查下属 Pod 作为日志采集目标。
+func TestJobFailedLogTargets(t *testing.T) {
+	snap := &model.ClusterSnapshot{
+		Namespaces: []model.NamespaceInfo{{Ref: model.ResourceRef{Kind: "Namespace", Name: "prod"}}},
+		Workloads: []model.WorkloadInfo{
+			{Ref: model.ResourceRef{Kind: "Job", Namespace: "prod", Name: "migrate"}, Conditions: []model.ConditionInfo{{Type: "Failed", Status: "True", Reason: "BackoffLimitExceeded"}}},
+		},
+		Pods: []model.PodInfo{{
+			Ref:       model.ResourceRef{Kind: "Pod", Namespace: "prod", Name: "migrate-x1"},
+			OwnerRefs: []model.ResourceRef{{Kind: "Job", Namespace: "prod", Name: "migrate"}},
+		}},
+	}
+	rctx := ctxFor(snap)
+	fs := (JobFailedRule{}).Evaluate(rctx)
+	if len(fs) != 1 {
+		t.Fatalf("JobFailed findings = %d, want 1", len(fs))
+	}
+	reg := NewRegistry()
+	reg.Register(JobFailedRule{})
+	targets := LogTargets(reg, fs, rctx.Index)
+	if len(targets) != 1 || targets[0].Name != "migrate-x1" {
+		t.Fatalf("Job→Pod 反查目标 = %+v", targets)
 	}
 }

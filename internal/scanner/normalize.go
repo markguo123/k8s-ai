@@ -45,35 +45,29 @@ func normalizePod(p corev1.Pod) model.PodInfo {
 	if p.Status.StartTime != nil {
 		info.StartTime = p.Status.StartTime.UTC().Format(time.RFC3339)
 	}
+	if !p.CreationTimestamp.IsZero() {
+		info.CreationTimestamp = p.CreationTimestamp.UTC().Format(time.RFC3339)
+	}
+	if p.DeletionTimestamp != nil {
+		info.DeletionTimestamp = p.DeletionTimestamp.UTC().Format(time.RFC3339)
+	}
+	info.Finalizers = p.Finalizers
 	for _, cond := range p.Status.Conditions {
 		info.Conditions = append(info.Conditions, conditionInfo(string(cond.Type), string(cond.Status), cond.Reason, cond.Message))
 	}
 	// 容器 spec 按名称索引，用于补全 requests/limits。
-	specByName := make(map[string]corev1.Container, len(p.Spec.Containers))
+	specByName := make(map[string]corev1.Container, len(p.Spec.Containers)+len(p.Spec.InitContainers))
 	for _, c := range p.Spec.Containers {
 		specByName[c.Name] = c
 	}
+	for _, c := range p.Spec.InitContainers {
+		specByName[c.Name] = c
+	}
 	for _, cs := range p.Status.ContainerStatuses {
-		ci := model.ContainerInfo{
-			Name:         cs.Name,
-			Image:        cs.Image,
-			ImageID:      cs.ImageID,
-			RestartCount: cs.RestartCount,
-			Ready:        cs.Ready,
-			Requests:     map[string]string{},
-			Limits:       map[string]string{},
-		}
-		ci.State, ci.Reason, ci.Message, ci.ExitCode = containerState(cs.State)
-		ci.LastState, ci.LastReason, _, ci.LastExitCode = containerState(cs.LastTerminationState)
-		if spec, ok := specByName[cs.Name]; ok {
-			for r, q := range spec.Resources.Requests {
-				ci.Requests[string(r)] = q.String()
-			}
-			for r, q := range spec.Resources.Limits {
-				ci.Limits[string(r)] = q.String()
-			}
-		}
-		info.Containers = append(info.Containers, ci)
+		info.Containers = append(info.Containers, normalizeContainerStatus(cs, specByName))
+	}
+	for _, cs := range p.Status.InitContainerStatuses {
+		info.InitContainers = append(info.InitContainers, normalizeContainerStatus(cs, specByName))
 	}
 	for _, o := range p.OwnerReferences {
 		info.OwnerRefs = append(info.OwnerRefs, ref(o.Kind, p.Namespace, o.Name, string(o.UID)))
@@ -149,6 +143,30 @@ func containerState(st corev1.ContainerState) (state, reason, message string, ex
 	default:
 		return "Unknown", "", "", 0
 	}
+}
+
+// normalizeContainerStatus 归一化单个容器状态（普通容器与 init 容器共用）。
+func normalizeContainerStatus(cs corev1.ContainerStatus, specByName map[string]corev1.Container) model.ContainerInfo {
+	ci := model.ContainerInfo{
+		Name:         cs.Name,
+		Image:        cs.Image,
+		ImageID:      cs.ImageID,
+		RestartCount: cs.RestartCount,
+		Ready:        cs.Ready,
+		Requests:     map[string]string{},
+		Limits:       map[string]string{},
+	}
+	ci.State, ci.Reason, ci.Message, ci.ExitCode = containerState(cs.State)
+	ci.LastState, ci.LastReason, _, ci.LastExitCode = containerState(cs.LastTerminationState)
+	if spec, ok := specByName[cs.Name]; ok {
+		for r, q := range spec.Resources.Requests {
+			ci.Requests[string(r)] = q.String()
+		}
+		for r, q := range spec.Resources.Limits {
+			ci.Limits[string(r)] = q.String()
+		}
+	}
+	return ci
 }
 
 // normalizeNode 归一化节点状态、容量与污点（FR-006）。

@@ -16,11 +16,12 @@ func (r ContainerCreateErrorRule) Evaluate(ctx *RuleContext) []*model.Finding {
 	var out []*model.Finding
 	for i := range ctx.Snapshot.Pods {
 		p := &ctx.Snapshot.Pods[i]
-		for _, c := range p.Containers {
+		for _, e := range allContainers(p) {
+			c := e.c
 			if c.State != "Waiting" || (c.Reason != "CreateContainerConfigError" && c.Reason != "CreateContainerError") {
 				continue
 			}
-			src := "Pod/" + p.Ref.Name + "/status.containerStatuses[" + c.Name + "]"
+			src := containerSrc(p, e)
 			evs := []model.Evidence{
 				evidence.ObjectField(src, "waiting.reason", c.Reason),
 				evidence.ObjectField(src, "waiting.message", c.Message),
@@ -38,7 +39,7 @@ func (r ContainerCreateErrorRule) Evaluate(ctx *RuleContext) []*model.Finding {
 				// 容器无法创建：服务完全不可用，提升为 HIGH。
 				sev = model.SeverityHigh
 			}
-			out = append(out, newFinding(ctx, r, p.Ref, "容器 "+c.Name+" 创建失败（"+c.Reason+"）", sev, evs))
+			out = append(out, newFinding(ctx, r, p.Ref, containerLabel(e)+" 创建失败（"+c.Reason+"）", sev, evs))
 			break
 		}
 	}
