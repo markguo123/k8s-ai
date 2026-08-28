@@ -198,12 +198,7 @@ func runChatInteractive(cmd *cobra.Command, chat service.ChatService, sessionID 
 	w := cmd.OutOrStdout()
 	errW := cmd.ErrOrStderr()
 	md := newMarkdownRenderer()
-	if cluster != "" {
-		fmt.Fprintf(w, "k8s-ai AI Kubernetes Assistant (cluster: %s)\n", cluster)
-	} else {
-		fmt.Fprintln(w, "k8s-ai AI Kubernetes Assistant")
-	}
-	fmt.Fprintln(w, "输入 exit 退出，clear 清空会话上下文，Ctrl+C/Ctrl+D 直接退出。")
+	printChatBanner(w, cluster)
 	in := newChatInput(cmd.InOrStdin(), w)
 	defer in.Close()
 	for {
@@ -337,13 +332,14 @@ func renderEvents(events <-chan service.ChatEvent, respond chan<- string, in cha
 				fmt.Fprintln(w, ev.Text)
 			}
 		case service.ChatEventAnswer:
-			// 最终回答以 Markdown 渲染（表格/列表/代码块等）。
+			// 最终回答以 Markdown 渲染（表格/列表/代码块等），前置空行与工具调用分隔。
 			if ev.Text != "" {
+				fmt.Fprintln(w)
 				fmt.Fprintln(w, renderMarkdown(md, ev.Text))
 			}
 		case service.ChatEventToolCall:
 			if ev.Tool != nil {
-				fmt.Fprintf(w, "[Tool] %s %s\n", ev.Tool.Name, formatArgs(ev.Tool.Arguments))
+				fmt.Fprintf(w, "  ↳ [Tool] %s %s\n", ev.Tool.Name, formatArgs(ev.Tool.Arguments))
 			}
 		case service.ChatEventToolResponse:
 			// 终端默认不打印原始工具结果，保持简洁。
