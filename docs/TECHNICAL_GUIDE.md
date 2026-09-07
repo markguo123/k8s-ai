@@ -1,7 +1,7 @@
 # k8s-ai 技术指导手册
 
 > 面向读者：产品经理 / 运维负责人 / 项目决策者（不需要懂 Go）。
-> 本文基于**代码实际状态（截至 v2.0.0，2026-08-24，一期 1.1 + 1.2 与二期 Agent 全部完成）**编写；每完成一个阶段都会刷新第二章与第五章。
+> 本文基于**代码实际状态（截至 v2.0.8，2026-09-07，一期 1.1 + 1.2 与二期 Agent 全部完成）**编写；每完成一个阶段都会刷新第二章与第五章。
 
 ---
 
@@ -21,7 +21,7 @@ k8s-ai 是一个 Kubernetes 集群的"只读体检医生"：运维人员执行�
 
 > 说明：按代码实际状态编写；P3-P11（一期 1.1）与 P12（一期 1.2：Server + 历史差异数据）均已完成。
 
-### 二期（v2.0.0）：自然语言 Agent（chat / web）
+### 二期（v2.0.0–v2.0.8）：自然语言 Agent（chat / web）
 
 **核心能力：**
 
@@ -31,7 +31,9 @@ k8s-ai 是一个 Kubernetes 集群的"只读体检医生"：运维人员执行�
 | `k8s-ai web` | 浏览器 chat：多会话 + SSE 流式 + 工具执行过程（Show output）+ 审批卡片 |
 | Agent 工具集 | 19 个只读工具 + 5 个诊断工具（复用一期）+ 7 个写工具 |
 | 集群健康检查 | 节点 → 资源使用（metrics API）→ 命名空间 → Pod → 系统组件 → 警告事件 → 双评分 |
-| 安全执行闭环 | 诊断 → 询问"需要我修复吗？" → 审批（人类可读命令+变更）→ 执行 → 验证 |
+| 安全执行闭环 | 诊断 → 询问"需要我修复吗？" → 审批（等效 kubectl 命令+变更+风险等级）→ 执行 → 验证；批量审批支持一轮多写操作合并确认 |
+| 拒绝闸门 | 同一写操作被拒绝 2 次后硬拦截；kubectl 命令归一化（忽略 --force/--grace-period 等修饰性 flag）防绕过 |
+| Shell 构造 | chat 模式允许 pipe/heredoc/redirect/&&/|| 等，但含写操作的 shell 命令必须走审批，shell 命令永不自动执行 |
 | 审计 | 用户输入/LLM/工具/审批/执行事件落盘（脱敏） |
 | MCP 预留 | Client 接口 + 注册表适配器骨架（v1 不连接外部服务器） |
 
@@ -90,7 +92,7 @@ Events：在 P1 就已按命名空间一次性采集并建立本地索引（不�
 
 ### P4 规则引擎 + 证据链（已完成）
 
-- 13 条规则：CrashLoopBackOff / OOMKilled / ImagePullBackOff / PendingPod / NodeNotReady / NodeDiskPressure / NodeMemoryPressure / PVCPending / FailedMount / ServiceNoEndpoint / DeploymentReplica / StatefulSetReplica / JobFailed
+- 23 条规则：CrashLoopBackOff / OOMKilled / ImagePullBackOff / PendingPod / NodeNotReady / NodeDiskPressure / EvictedPod / HighRestartCount / DaemonSetReplica / DeploymentProgressDeadline /... NodeMemoryPressure / PVCPending / FailedMount / ServiceNoEndpoint / DeploymentReplica / StatefulSetReplica / JobFailed
 - 严重级自动调整：生产环境 / 系统命名空间 / 被 Service 选中 / 大量副本不可用 → 升级；测试与开发环境 → 降级
 - 每条 Finding 带稳定指纹（Pod 归属 workload 归一化，支撑跨扫描指纹对比；1.2 为二期 Agent 提供结构化的历史差异数据）
 - 节点级根因（NotReady/压力）导致的下游 Pod 异常自动标记 Correlated，供评分去重（P5 使用）
@@ -165,7 +167,7 @@ flowchart LR
     A["用户执行 k8s-ai scan"] --> B["1 连接集群<br/>kubeconfig / 集群内自动识别（只读）"]
     B --> C["2 Phase1 全量轻量扫描<br/>约 17 类资源 + 每命名空间一次 Events<br/>请求量与 Pod 数量无关（无 N+1）"]
     C --> D["3 关联索引 P3<br/>三条关联链 + 事件索引<br/>（已完成，P4 规则引擎消费）"]
-    D --> E["4 规则引擎判定异常 Finding<br/>13 条规则（已完成）"]
+    D --> E["4 规则引擎判定异常 Finding<br/>23 条规则（已完成）"]
     E --> F["5 Phase2 深度采集（已接入）<br/>只对异常 Pod 拉日志/历史日志<br/>并挂载证据"]
     F --> G["6 LLM 深度分析<br/>（P6-P7 已完成；只分析，不执行）"]
     G --> H["7 报告 Markdown/JSON + 健康评分<br/>（P5 已完成；P12 增加历史对比）"]
@@ -177,7 +179,7 @@ flowchart LR
 1. 用户执行 `k8s-ai scan`，程序自动识别 kubeconfig 或集群内配置并连接集群（只读）。
 2. 全量轻量扫描：一次性拉取所有资源列表 + 每个命名空间一次事件。请求次数固定（约 17 类资源 + 命名空间数），不会因为 Pod 多而爆炸。
 3. **P3 关联索引（已完成）**：把 Pod/Workload/Node/存储/网络串成关系链，供规则引擎查询。
-4. **规则引擎（已完成）**：13 条规则自动判定异常，产出 Finding（含严重等级、证据、指纹）。
+4. **规则引擎（已完成）**：23 条规则自动判定异常，产出 Finding（含严重等级、证据、指纹）。
 5. **P2 深度采集（已接入）**：只对需要日志的异常 Pod 拉日志和历史日志，挂上证据。
 6. **LLM 深度分析（已完成）**：基于证据做根因判断，生成排查/修复命令（只展示）；超时自动降级为规则初步判断。
 7. **报告（已完成）**：输出 Markdown/JSON，含健康评分、异常摘要、证据链、Root Cause、命令与风险；P12 增加"历史对比"（新增/持续/恢复）。
@@ -214,7 +216,7 @@ flowchart LR
 - `k8s-ai version`；`--fail-on` 退出码契约（0 成功 / 1 错误 / 2 达到阈值）
 - 只读 Kubernetes 客户端 + 脱敏库 + 架构测试（自动证明代码里没有任何写操作）
 - 关联索引三条链（P3）：owner 归属链、存储链、Service→EndpointSlice→Pod 与标签匹配，P4 规则引擎已消费
-- 规则引擎（P4）：13 条规则自动发现异常并挂载证据，真实集群一次 scan 即产出 Findings；Phase2 深度采集已接入主流程
+- 规则引擎（P4）：23 条规则自动发现异常并挂载证据，真实集群一次 scan 即产出 Findings；Phase2 深度采集已接入主流程
 - 健康评分 + 报告（P5）：全集群 scan 自动写 latest.md/latest.json（评分/扣分明细/分级详情）；目标扫描终端直出完整报告
 - 单 Pod 扫描（P9.1 提前）：`scan pod <name> -n <ns>` 输出 Pod 巡检报告（Scope 标注、证据链、日志）
 - 报告可读性（P8）：终端一屏摘要、日志证据压缩（-91% 体积）、严重级图标与健康条
@@ -229,9 +231,12 @@ flowchart LR
 
 - 暂无：Phase2 已接入、规则引擎已上线、LLM 已接入（scaffold 清单生成能力未实现，可留二期）
 
+### 已完成的二期能力
+
+- **二期（v2.0.0–v2.0.8）**：chat Agent / Tool Calling / 会话记忆 / 审批执行（按 PROJECT_SPEC_二期.md）；v2.0.6–v2.0.8 迭代：四层意图决策树、放开 shell 构造、批量审批、拒绝闸门命令归一化
+
 ### 尚未开始的能力
 
-- 二期（v2.0.0 阶段）：chat Agent / Tool Calling / 会话记忆 / 审批执行（按 PROJECT_SPEC_二期.md）
 - scaffold 清单生成能力（未实现，可留二期）
 
 ### 已知约束（LLM）
@@ -257,7 +262,7 @@ flowchart LR
 
 - **P12（已完成）**：Server 最小化（healthz/version/异步扫描 API）+ 历史差异数据（二期 Agent 记忆契约）
 - **一期终版达成**：1.1（巡检/排查/分析/报告/部署）+ 1.2（Server/历史对比）全部交付
-- **二期（v2.0.0）**：`k8s-ai chat` 自然语言 Agent、Tool Calling、会话记忆（复用 latest.json 历史差异数据）、安全审批与执行
+- **二期（v2.0.0–v2.0.8）**：`k8s-ai chat` 自然语言 Agent、Tool Calling、会话记忆（复用 latest.json 历史差异数据）、安全审批与执行（含批量审批 + 拒绝闸门 + shell 构造受控放开）。
 
 ---
 
@@ -287,6 +292,6 @@ flowchart LR
 
 ## 附录 C：给决策者的安全承诺
 
-1. **四层只读保证**：部署权限（RBAC）→ 代码门面（只暴露读方法）→ 无 shell 调用 → 自动化测试证明无写操作。
+1. **审批是唯一安全门**：部署权限（RBAC）→ 代码门面（只暴露读方法）→ 写操作（含 shell 构造）必须人工审批 → 自动化测试证明无未审批写操作。
 2. **双重脱敏**：数据进入系统前脱敏一次，报告输出前再脱敏一次；Secret 永远不读取。
 3. **LLM 无执行能力**：大模型只产出文本分析，命令永远只是字符串。

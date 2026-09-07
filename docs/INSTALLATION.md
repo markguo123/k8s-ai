@@ -1,8 +1,8 @@
 # k8s-ai 安装部署手册
 
-> 版本：2.0.0（一期巡检 + 二期 Agent）
+> 版本：2.0.8（一期巡检 + 二期 Agent）
 > 适用：本地命令行 / 浏览器 chat / 集群内 CronJob 每日巡检
-> 说明：一期 `scan` 只读巡检；二期 `chat`/`web` 支持写操作，写操作需人工确认（RBAC 写权限示例见 deploy/rbac-write.example.yaml）
+> 说明：一期 `scan` 只读巡检；二期 `chat`/`web` 支持读写操作，写操作（含 shell 构造）需人工确认；批量审批支持一轮多写操作合并确认
 
 ---
 

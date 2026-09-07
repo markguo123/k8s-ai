@@ -8,7 +8,7 @@
 - [x] P1 采集 Phase1（17 类资源 list + events 索引 + worker pool + 系统组件探测）
 - [x] P2 采集 Phase2 + 采集边界脱敏（日志/历史日志上限、超时、并发、security 包）
 - [x] P3 关联索引（Pod→Owner→Node / Pod→PVC→PV→SC / Service→EndpointSlice→Pod + 事件索引）
-- [x] P4 规则引擎（13 条规则）+ Phase2 接入主流程 + 证据链（指纹/严重级/Correlated）
+- [x] P4 规则引擎（23 条规则）+ Phase2 接入主流程 + 证据链（指纹/严重级/Correlated）
 - [x] P5 健康评分 + 报告层（Markdown/JSON/YAML 渲染、latest/daily/none 模式、latest.json 记忆契约）
 - [x] P6 LLM 客户端（OpenAI Compatible、重试/429/超时、prompt go:embed、api_key 脱敏）
 - [x] P7 诊断编排（预算裁剪、JSON Schema/Evidence ID/命令校验、修复重试、失败降级）
@@ -20,13 +20,19 @@
 - [x] P12 一期 1.2：Server 最小化（healthz/version/异步扫描 API）+ 历史差异数据（新增/持续/恢复，二期 Agent 记忆契约）+ deployment/service 清单
 - [x] 二期 P0–P2：Agent 基础（llm native/shim/auto Tool Calling、agent/tools/session 骨架、chat CLI 交互/单发/stdin/JSON/会话管理）
 - [x] 二期 P3：诊断 Tool 化（scan_cluster / scan_pod / diagnose_*，复用一期 ScanService）
-- [x] 二期 P4：写操作与审批执行（kubectl argv 无 shell + client-go 写、SAFE..CRITICAL 风险分级、y/a/n 确认、--skip-permissions、执行后验证）
+- [x] 二期 P4：写操作与审批执行（kubectl argv + policy-gated shell + client-go 写、SAFE..CRITICAL 风险分级、y/a/n 确认、--skip-permissions、执行后验证）
 - [x] 二期 P5：Web UI（k8s-ai web：REST + SSE 流式、会话侧栏、Markdown 渲染、审批卡片、工具过程展示）
-- [x] 二期 P6：收尾（审计落盘脱敏、MCP 接口预留、RBAC 写权限示例、CREDITS/E2E_SMOKE/文档、版本 v2.0.0/v2.0.1）
+- [x] 二期 P6：收尾（审计落盘脱敏、MCP 接口预留、RBAC 写权限示例、CREDITS/E2E_SMOKE/文档、版本 v2.0.0）
+- [x] 二期迭代 v2.0.1–v2.0.8：
+  - v2.0.1：终端 Markdown/readline、流式命令超时采样、dry-run/rollout 风险分级修正
+  - v2.0.2–v2.0.5：web 集群配置讨论、chat 横幅优化、会话重命名、Linux 静态编译
+  - v2.0.6：四层意图决策树 + 砍 diagnose_* 双重 LLM + Secret 拒读 + kubectl 输出脱敏 + confidence/risk 归一化 + 新增 4 条规则至 23 条
+  - v2.0.7：修复流程优化（多选方案必须先澄清 + 拒绝 2 次硬拦截 + 替代方案引导 + 四步标准化）
+  - v2.0.8：放开 shell 构造 + 批量审批（借鉴 kubectl-ai）+ 拒绝闸门命令归一化 + prompt 决策树扩展 + 架构测试反转
 
 ## 进行中
 
-- 无：一期（v1.0.x）与二期（v2.0.x）均已交付，当前版本 v2.0.1
+- 无：一期（v1.0.x）与二期（v2.0.x）均已交付，当前版本 v2.0.8
 
 ## 下一步
 

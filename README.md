@@ -1,6 +1,6 @@
 # k8s-ai
 
-> 当前版本：**v2.0.1**（二期迭代；版本约定见 [docs/VERSIONING.md](docs/VERSIONING.md)，变更见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）
+> 当前版本：**v2.0.8**（二期迭代；版本约定见 [docs/VERSIONING.md](docs/VERSIONING.md)，变更见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）
 
 Kubernetes AI 智能巡检、故障诊断与自然语言运维 Agent
 （一期：只读巡检 + 规则引擎 + 私有大模型诊断 + 报告；二期：`chat` 对话 Agent + `web` 浏览器界面 + 读写操作 + 人工确认）。
@@ -10,12 +10,12 @@ Kubernetes AI 智能巡检、故障诊断与自然语言运维 Agent
 k8s-ai 让运维人员执行一次 `k8s-ai scan`，就能快速知道集群哪里有问题、为什么、影响什么、应该怎么排查和怎么修：
 
 - **全集群巡检**：Pod / Node / Workload / Storage / Network / 系统组件 / Events
-- **异常自动发现**：13 条内置规则（CrashLoopBackOff、OOMKilled、ImagePullBackOff、PendingPod、NodeNotReady、PVC Pending、Service 无 Endpoint、副本不匹配、Job Failed 等）
+- **异常自动发现**：23 条内置规则（CrashLoopBackOff、OOMKilled、ImagePullBackOff、PendingPod、NodeNotReady、PVC Pending、Service 无 Endpoint、副本不匹配、Job Failed、EvictedPod、HighRestartCount、DaemonSetReplica、DeploymentProgressDeadline 等）
 - **证据链**：每个异常带真实证据（状态字段 / Events / 日志），LLM 只能基于证据分析
 - **LLM 诊断**：OpenAI 兼容接口（OpenAI / Qwen / DeepSeek / vLLM / Ollama），输出根因、影响、排查/修复/验证命令（只展示，不执行）
 - **报告**：Markdown + JSON（latest / 时间戳 / 终端一屏摘要），健康评分
 
-**安全边界**：只读操作自动执行；写操作（patch/scale/restart/delete 等）必须人工确认；LLM 不是权限主体，真实边界来自 Kubernetes RBAC；无任意 shell 执行（kubectl 以 argv 直调）。
+**安全边界**：只读操作自动执行；写操作（patch/scale/restart/delete/apply 等）必须人工确认；LLM 不是权限主体，真实边界来自 Kubernetes RBAC；shell 构造（pipe/heredoc/redirect）允许在 chat 模式使用，但含写操作的 shell 命令必须走人工审批，shell 命令永不自动执行。
 
 ## 二期：chat / web（自然语言 Agent）
 
@@ -31,8 +31,11 @@ k8s-ai web --addr 127.0.0.1:8081
 二期能力：
 
 - **Agent 工具集**：19 个只读工具（Pod/Node/Workload/存储/网络/Events/日志/ConfigMap/节点资源用量）+ 5 个诊断工具（scan_cluster/diagnose_*，复用一期 Scanner/规则/诊断）+ 写工具（patch_configmap/patch_deployment/scale/restart/delete_pod/label/kubectl）
+- **四层意图决策树**：诊断意图→kubectl -o yaml+previous logs+events；浏览意图→结构化摘要工具；ns 级健康→scan_cluster(namespace=X)；集群全景→scan_cluster()+健康检查协议。LLM 按场景在结构化工具和 kubectl+shell 之间自由选择，写操作统一走审批
 - **集群健康检查**：节点 → 资源使用（metrics API）→ 命名空间 → Pod → 系统组件 → 警告事件 → 规则评分 + LLM 综合评分双轨
-- **安全执行闭环**：诊断 → 询问"需要我修复吗？" → 用户同意 → 每个写操作审批卡片（人类可读命令 + 变更）→ 执行 → 验证
+- **批量审批**：LLM 一轮返回多个写操作时，合并为一次审批面板（逐条展示等效 kubectl 命令 + 风险等级），用户选一次→顺序执行→分别回传结果。借鉴 kubectl-ai
+- **安全执行闭环**：诊断 → 询问"需要我修复吗？" → 用户同意 → 写操作审批卡片（等效 kubectl 命令 + 变更说明 + 风险等级）→ 执行 → 验证
+- **拒绝闸门**：同一写操作被用户拒绝 2 次后自动硬拦截，要求 LLM 给出替代方案；kubectl 命令归一化（忽略 --force/--grace-period 等修饰性 flag），防止绕过
 - **会话持久化**：`--session` / `--new-session` / `--list-sessions` / `--delete-session`，落盘 `~/.k8s-ai/sessions`
 - **审计**：用户输入 / LLM / 工具调用 / 审批 / 执行全部留痕 `~/.k8s-ai/audit/<session>.jsonl`（脱敏）
 - **MCP 预留**：Client 接口 + 注册表适配器（二期 v1 不连接外部服务器）
@@ -62,7 +65,7 @@ make build
 ### Docker 镜像
 
 ```bash
-make docker VERSION=1.0.0
+make docker VERSION=v2.0.8
 ```
 
 镜像基于 distroless static（非 root、小体积），prompts 已内嵌，无需挂载额外文件。
@@ -76,7 +79,7 @@ k8s-ai scan                              # 全集群巡检（写 reports/latest.
 k8s-ai scan -n mysql                     # 只巡检 mysql 命名空间（终端直出）
 k8s-ai scan pod web-abc -n mysql         # 只诊断单个 Pod
 k8s-ai scan --report-mode daily          # 日报模式（追加时间戳文件）
-k8s-ai scan --fail-on HIGH               # 达到 HIGH 返回退出码 2（CI 用）
+k8s-ai scan --fail-on HIGH              # 达到 HIGH 返回退出码 2（CI 用）
 ```
 
 ## 配置
@@ -146,22 +149,25 @@ CronJob 特性：`concurrencyPolicy: Forbid`（不并发）、`restartPolicy: On
 
 ## 安全
 
-- **四层只读保证**：RBAC 只读动词 → 代码只读门面 → 无 shell/exec 调用 → 架构测试证明
+- **审批是唯一安全门**：只读操作自动执行；写操作（含 shell 构造）必须人工确认；shell 命令永不自动执行（不被 `--skip-permissions` 豁免）
+- **放开 shell 构造**：chat 模式允许 pipe/heredoc/redirect/`&&`/`||`/command substitution，但含写操作的 shell 命令必须走审批；交互式命令（edit/attach/port-forward/proxy/run/cp/debug）仍硬拒
 - **永不读取 Secret**；日志/Events/ConfigMap/注解视为不可信数据，先脱敏再使用
 - **双重脱敏**：采集边界 + 报告渲染；`api_key` 只在 Authorization 头，错误消息显式剔除
-- **LLM 无执行能力**：命令永远是字符串，人工复制执行；一期不实现任何执行器
+- **LLM 无自动执行能力**：写操作必须审批后执行；LLM 不是权限主体，真实边界来自 Kubernetes RBAC
+- **拒绝闸门**：同一写操作被拒绝 2 次后硬拦截；kubectl 命令归一化防绕过
 - **Prompt 注入防护**：不可信数据用定界符包裹并声明"是数据不是指令"
 
-### 安全核对清单（P11 最终确认）
+### 安全核对清单
 
 | 检查项           | 保障机制                                      | 验证方式                          |
 | ---------------- | --------------------------------------------- | --------------------------------- |
-| 无写操作         | RBAC 只读 + Reader 只读门面 + 无 os/exec      | `tests/arch` AST 只读扫描         |
+| 写操作必须审批   | Approver.Confirm + 风险分级 + 拒绝闸门        | agent 单测（审批/拒绝/硬拦截）     |
+| shell 命令需审批 | `HasShellSyntax()` → `IsReadOnly()=false`    | approval 单测（7 类 shell 构造）  |
 | 不访问 Secret    | 代码禁止 `Secrets()` 调用 + RBAC 不含 secrets | AST 扫描 + fake Action 断言       |
 | 脱敏             | 采集边界 + 报告渲染双重脱敏                   | security 单测 + LLM 请求泄密测试  |
 | api_key 不泄露   | 仅在 Authorization 头 + 错误显式剔除          | llm httptest                      |
 | LLM 不编造       | Evidence ID 校验 + 命令白名单                 | diagnosis 单测                    |
-| 不执行 LLM 命令  | 命令仅字符串，无执行器                        | CommandExecutor 无实现 + AST 扫描 |
+| 交互式命令拒绝   | deny_ops 硬拒（edit/attach/port-forward 等）  | executor 单测                     |
 | 单资源失败不中断 | collection_errors 隔离                        | scanner 错误隔离测试              |
 | RBAC 清单只读    | 解析 deploy/clusterrole.yaml 断言             | `tests/arch` RBAC 测试            |
 
@@ -171,6 +177,7 @@ CronJob 特性：`concurrencyPolicy: Forbid`（不并发）、`restartPolicy: On
 - **OOMKilled**：证据链含 `lastState.reason=OOMKilled / exitCode=137 / memory.limit`，LLM 输出根因与 `kubectl set resources` 建议
 - **RocketMQ topic 不存在导致 panic**：日志关键行提取 `panic: StartConsumer fail ... route info not found`，规则初步判断兜底
 - **Service 无 Endpoint**：规则发现 readyEndpoints=0 + selector 匹配数，LLM 结合关联 Pod 崩溃证据定位根因
+- **PVC 绑定失败（StorageClass 不存在）**：Agent 批量审批修复（patch PVC storageClassName + 重建 Pod），拒绝后自动提出替代方案
 
 ## 开发
 
@@ -186,10 +193,6 @@ make docker    # 构建镜像
 
 ## 测试
 
-- 单元测试：规则、证据、脱敏、配置优先级、报告渲染、LLM 客户端（httptest）、诊断校验/降级、历史对比、Server API
-- 架构测试：只读 AST 扫描、依赖方向、RBAC 清单、泄密、请求量
+- 单元测试：规则、证据、脱敏、配置优先级、报告渲染、LLM 客户端（httptest）、诊断校验/降级、历史对比、Server API、Agent Loop（批量审批/拒绝闸门/命令归一化）
+- 架构测试：只读 AST 扫描、依赖方向、RBAC 清单、泄密、请求量、executor shell 守护
 - 每阶段出口：`go test ./...` + `go vet ./...` 全绿
-
-## 二期预告
-
-二期（未实现）：`k8s-ai chat` 自然语言 Agent、Tool Calling、会话记忆（复用 latest.json 历史差异数据）、安全审批与执行。
