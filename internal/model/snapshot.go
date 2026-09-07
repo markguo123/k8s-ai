@@ -52,6 +52,7 @@ type ContainerInfo struct {
 type PodInfo struct {
 	Ref               ResourceRef
 	Phase             string
+	Reason            string // Pod.Status.Reason（如 Evicted）
 	NodeName          string
 	StartTime         string
 	CreationTimestamp string // RFC3339；用于 Pending/Terminating 等时间门槛判定

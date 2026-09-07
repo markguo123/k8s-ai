@@ -88,8 +88,11 @@ func TestDiagnosePodTool(t *testing.T) {
 	if _, err := NewDiagnosisTools(r, model.ScanOptions{})[2].Execute(context.Background(), json.RawMessage(`{"namespace":"production","name":"web-0"}`)); err != nil {
 		t.Fatal(err)
 	}
-	if !r.opts.LLM.Enabled {
-		t.Fatalf("diagnose_pod 应开启 LLM 诊断: %+v", r.opts.LLM)
+	if r.opts.LLM.Enabled {
+		t.Fatalf("diagnose_pod 不应开启内部 LLM 诊断（Agent 是唯一大脑）: %+v", r.opts.LLM)
+	}
+	if r.opts.PodTarget != "web-0" || r.opts.Namespace != "production" {
+		t.Fatalf("diagnose_pod 参数 = %+v", r.opts)
 	}
 }
 
@@ -99,8 +102,8 @@ func TestDiagnoseNodeTool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !r.opts.LLM.Enabled {
-		t.Fatal("diagnose_node 应开启 LLM 诊断")
+	if r.opts.LLM.Enabled {
+		t.Fatal("diagnose_node 不应开启内部 LLM 诊断（Agent 是唯一大脑）")
 	}
 	m := tr.Data.(map[string]any)
 	findings := m["findings"].([]map[string]any)
@@ -114,6 +117,9 @@ func TestDiagnoseWorkloadTool(t *testing.T) {
 	tr, err := NewDiagnosisTools(r, model.ScanOptions{})[4].Execute(context.Background(), json.RawMessage(`{"kind":"deployment","namespace":"production","name":"web"}`))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if r.opts.LLM.Enabled {
+		t.Fatal("diagnose_workload 不应开启内部 LLM 诊断（Agent 是唯一大脑）")
 	}
 	m := tr.Data.(map[string]any)
 	findings := m["findings"].([]map[string]any)

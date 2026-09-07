@@ -26,40 +26,80 @@ var rejectedInteractiveVerbs = map[string]bool{
 	"run": true, "cp": true, "debug": true, "auth": true, "plugin": true,
 }
 
-// ParseCommand 解析 kubectl 命令为 argv：
-// - 拒绝引号外的 shell 元字符（| & ; < > $ ( ) ` 换行）
+// shellMetachars 是触发 shell 模式的元字符集合（引号外出现时标记 isShell=true）。
+var shellMetachars = `|&;<>$()` + "`"
+
+// ParsedCommand 包含解析后的 argv 及是否需要 shell 执行。
+type ParsedCommand struct {
+	Argv    []string
+	IsShell bool // 引号外含 shell 元字符 → 需 bash -c 执行
+}
+
+// ParseCommand 解析 kubectl 命令：
 // - 引号感知切分（单/双引号）
-// - 动词白名单 + 交互式命令拒绝
-// 流式命令（logs -f / get -w）不再在解析层拒绝，改由 executor 统一超时捕获部分输出。
-// 返回的 argv[0] 恒为 "kubectl"。
+// - 引号外的 shell 元字符不再拒绝，而是标记 IsShell=true 透传给 executor
+// - 动词白名单 + 交互式命令拒绝（对第一个非 flag 动词校验）
+// - 流式命令（logs -f / get -w）不在解析层拒绝，改由 executor 统一超时采样
+// 返回的 Argv[0] 恒为 "kubectl"（shell 模式下 Argv 仅含原始命令字符串）。
 func ParseCommand(command string) ([]string, error) {
-	if len(command) > 2048 {
-		return nil, fmt.Errorf("command too long")
-	}
-	tokens, err := tokenize(command)
+	pc, err := ParseCommandDetail(command)
 	if err != nil {
 		return nil, err
 	}
-	if len(tokens) == 0 {
-		return nil, fmt.Errorf("empty command")
+	return pc.Argv, nil
+}
+
+// ParseCommandDetail 是 ParseCommand 的详细版本，额外返回 IsShell 标记。
+func ParseCommandDetail(command string) (ParsedCommand, error) {
+	if len(command) > 4096 {
+		return ParsedCommand{}, fmt.Errorf("command too long")
 	}
+	tokens, isShell, err := tokenize(command)
+	if err != nil {
+		return ParsedCommand{}, err
+	}
+	if len(tokens) == 0 {
+		return ParsedCommand{}, fmt.Errorf("empty command")
+	}
+	// shell 模式：命令可能不以 kubectl 开头（如 cat <<EOF | kubectl apply），
+	// 跳过 tokens[0] 检查和动词白名单，但扫描全命令拒绝交互式动词。
+	if isShell {
+		if err := rejectInteractiveAnywhere(command); err != nil {
+			return ParsedCommand{}, err
+		}
+		return ParsedCommand{Argv: tokens, IsShell: true}, nil
+	}
+	// 非 shell 模式：严格校验 tokens[0] == kubectl + 动词白名单。
 	if tokens[0] != "kubectl" {
-		return nil, fmt.Errorf("command must start with kubectl")
+		return ParsedCommand{}, fmt.Errorf("command must start with kubectl")
 	}
 	verb, rest := extractFirstNonFlag(tokens[1:])
 	if verb == "" {
-		return nil, fmt.Errorf("missing kubectl verb")
+		return ParsedCommand{}, fmt.Errorf("missing kubectl verb")
 	}
 	if rejectedInteractiveVerbs[verb] {
-		return nil, fmt.Errorf("interactive command %q is not supported", verb)
+		return ParsedCommand{}, fmt.Errorf("interactive command %q is not supported", verb)
 	}
 	if !allowedVerbs[verb] {
-		return nil, fmt.Errorf("verb %q is not allowed", verb)
+		return ParsedCommand{}, fmt.Errorf("verb %q is not allowed", verb)
 	}
 	if err := validateFlags(verb, rest); err != nil {
-		return nil, err
+		return ParsedCommand{}, err
 	}
-	return tokens, nil
+	return ParsedCommand{Argv: tokens, IsShell: false}, nil
+}
+
+// rejectInteractiveAnywhere 在 shell 命令中扫描是否含交互式动词（如 edit/attach/port-forward）。
+// shell 模式下动词可能在命令任意位置（如 cat <<EOF | kubectl edit ...）。
+func rejectInteractiveAnywhere(command string) error {
+	for verb := range rejectedInteractiveVerbs {
+		if strings.Contains(command, " kubectl "+verb+" ") ||
+			strings.Contains(command, " kubectl "+verb+"\t") ||
+			strings.HasSuffix(command, " kubectl "+verb) {
+			return fmt.Errorf("interactive command %q is not supported", verb)
+		}
+	}
+	return nil
 }
 
 // IsStreaming 判断已解析的 argv 是否为需超时采样的流式命令（logs -f / get -w）。
@@ -91,9 +131,11 @@ func containsFlag(tokens []string, flags ...string) bool {
 	return false
 }
 
-// tokenize 引号感知切分并拒绝 shell 元字符。
-func tokenize(command string) ([]string, error) {
-	var tokens []string
+// tokenize 引号感知切分。引号外的 shell 元字符不再返回错误，
+// 而是设置 isShell=true 并作为普通字符加入当前 token。
+// 引号字符本身不写入 token（与非 shell 模式行为一致），
+// executor 在 shell 模式下用原始 command 字符串执行 bash -c，不依赖 tokens。
+func tokenize(command string) (tokens []string, isShell bool, err error) {
 	var cur strings.Builder
 	inSingle, inDouble := false, false
 	flush := func() {
@@ -122,17 +164,19 @@ func tokenize(command string) ([]string, error) {
 			inDouble = true
 		case unicode.IsSpace(r):
 			flush()
-		case strings.ContainsRune(`|&;<>$()`+"`", r) || r == '\n' || r == '\r':
-			return nil, fmt.Errorf("shell metacharacter %q is not allowed", r)
+		case strings.ContainsRune(shellMetachars, r) || r == '\n' || r == '\r':
+			// shell 元字符：标记 isShell，作为普通字符保留在 token 中。
+			isShell = true
+			cur.WriteRune(r)
 		default:
 			cur.WriteRune(r)
 		}
 	}
 	if inSingle || inDouble {
-		return nil, fmt.Errorf("unbalanced quotes")
+		return nil, false, fmt.Errorf("unbalanced quotes")
 	}
 	flush()
-	return tokens, nil
+	return tokens, isShell, nil
 }
 
 func extractFirstNonFlag(tokens []string) (string, []string) {

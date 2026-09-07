@@ -47,7 +47,7 @@ type kubectlTool struct{ runner WriteRunner }
 
 func (t *kubectlTool) Name() string { return "kubectl" }
 func (t *kubectlTool) Description() string {
-	return "执行 kubectl 命令（argv 直调二进制，无 shell）。只读命令自动执行；写命令需用户确认。禁止交互式（edit/exec -it/attach/port-forward）、管道/重定向/变量替换。流式命令（logs -f/get -w）以固定超时采样部分输出，超时后返回已捕获内容。"
+	return "执行 kubectl 命令。支持 shell 构造（pipe |、heredoc <<EOF、redirect >、&& / ||、command substitution $() 等）。\n只读命令（get/describe/list/logs/events，且不含 shell 语法）自动执行；写命令及所有含 shell 语法的命令必须走人工审批。\n禁止：交互式命令（edit/attach/port-forward/proxy/run/cp/debug）、读取 Secret 资源、--raw 参数。\n流式命令（logs -f/get -w）以固定超时采样部分输出。输出自动脱敏并截断。\n标准写操作（scale/patch/restart/label/delete pod）建议优先使用对应的结构化写工具（参数校验更严格、风险分级更精确）；\n当结构化工具无法表达操作时（完整 YAML 创建/重建、多 op JSON patch、复合命令），可直接用 kubectl + shell 构造，走审批即可。\n写命令注意（务必遵守）：(1) delete/删除类操作永远是最后选择，PVC/PV/Deployment/StatefulSet/Service/Namespace 的删除必须先给出更小范围的 patch/annotate/rollout 替代方案并征得用户同意，特别是 PVC 绑定失败必须先 patch storageClassName，只有被 immutable 拒绝+用户明确同意的情况下才允许提出 delete pvc；(2) 任何 delete pvc / delete pv / delete namespace 这种 CRITICAL 级别的删除，必须在同一个回答里同时列出 patch 替代方案给用户选择，不能只提删除。"
 }
 func (t *kubectlTool) InputSchema() any {
 	return objSchema(map[string]any{

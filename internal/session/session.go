@@ -16,16 +16,17 @@ type Message struct {
 
 // Session 是一个对话会话。
 type Session struct {
-	ID             string    `json:"id"`
-	Name           string    `json:"name"`
-	Cluster        string    `json:"cluster,omitempty"`
-	Namespace      string    `json:"namespace,omitempty"`
-	Model          string    `json:"model,omitempty"`
-	State          string    `json:"state,omitempty"` // AgentState 快照（避免包依赖环）
-	Messages       []Message `json:"messages"`
-	ApprovedWrites []string  `json:"approvedWrites,omitempty"` // 本次会话已授权的写操作
-	CreatedAt      time.Time `json:"createdAt"`
-	LastModified   time.Time `json:"lastModified"`
+	ID             string            `json:"id"`
+	Name           string            `json:"name"`
+	Cluster        string            `json:"cluster,omitempty"`
+	Namespace      string            `json:"namespace,omitempty"`
+	Model          string            `json:"model,omitempty"`
+	State          string            `json:"state,omitempty"` // AgentState 快照（避免包依赖环）
+	Messages       []Message         `json:"messages"`
+	ApprovedWrites []string          `json:"approvedWrites,omitempty"` // 本次会话已授权的写操作
+	DeclinedWrites map[string]int    `json:"declinedWrites,omitempty"` // 本次会话拒绝过的写操作 key→次数（用于≥2 次硬拦截）
+	CreatedAt      time.Time         `json:"createdAt"`
+	LastModified   time.Time         `json:"lastModified"`
 }
 
 // AddMessage 追加消息并刷新 LastModified。
@@ -60,4 +61,32 @@ func (s *Session) AddApproved(key string) {
 	}
 	s.ApprovedWrites = append(s.ApprovedWrites, key)
 	s.LastModified = time.Now()
+}
+
+// Declined 返回"操作类型+资源"在本次会话被拒绝的次数。
+func (s *Session) Declined(key string) int {
+	if s.DeclinedWrites == nil {
+		return 0
+	}
+	return s.DeclinedWrites[key]
+}
+
+// AddDeclined 累计一次用户拒绝（返回累计次数供上层判断硬拦截阈值）。
+// 同 key 在同一拒绝窗口的重复计入，用于触发"被拒≥2 次必须换方案"的强闸门。
+// 授权与拒绝互斥：若该 key 已在 ApprovedWrites，说明用户后来否定之前的选择，移除已授权记录。
+func (s *Session) AddDeclined(key string) int {
+	for i, k := range s.ApprovedWrites {
+		if k == key {
+			s.ApprovedWrites = append(s.ApprovedWrites[:i], s.ApprovedWrites[i+1:]...)
+			break
+		}
+	}
+	if s.DeclinedWrites == nil {
+		s.DeclinedWrites = map[string]int{key: 1}
+		s.LastModified = time.Now()
+		return 1
+	}
+	s.DeclinedWrites[key]++
+	s.LastModified = time.Now()
+	return s.DeclinedWrites[key]
 }

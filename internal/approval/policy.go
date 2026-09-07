@@ -27,3 +27,30 @@ func IsDenied(denyOps []string, command string) bool {
 	}
 	return false
 }
+
+// IsForbiddenCommand 判断命令是否触碰 LLM 数据安全硬红线，
+// 命中则无论只读/写、无论是否审批，一律拒绝执行：
+//   - 红线 1：任何形式的 Secret 资源访问——工具输出会进入 LLM 上下文，
+//     违反 "Never send Kubernetes Secret data to the LLM"（AGENTS.md）。
+//   - 红线 2：--raw flag——可绕过资源名直接请求任意 API 路径（含 secret data）。
+//
+// 匹配非 flag 的资源 token：secret、secrets、secret/name。
+// 极端情况（如 -n secret 指向名为 secret 的命名空间）会误拦，
+// 宁可过严不可漏放。
+func IsForbiddenCommand(command string) bool {
+	for _, f := range strings.Fields(command) {
+		if f == "--raw" || strings.HasPrefix(f, "--raw=") {
+			return true
+		}
+		if strings.HasPrefix(f, "-") {
+			continue
+		}
+		if i := strings.Index(f, "/"); i >= 0 {
+			f = f[:i] // secret/name 或 kind/name 写法
+		}
+		if lf := strings.ToLower(f); lf == "secret" || lf == "secrets" {
+			return true
+		}
+	}
+	return false
+}

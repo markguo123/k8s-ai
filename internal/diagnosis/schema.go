@@ -62,6 +62,7 @@ func extractJSON(s string) string {
 }
 
 // validateSchema 校验必填字段与取值范围（ADR-005 第一层）。
+// confidenceLevel / risk 不再严格枚举拒绝，而是做归一化兜底，避免 LLM 轻微格式错误导致诊断整体降级。
 func validateSchema(o *llmOutput) error {
 	if strings.TrimSpace(o.Summary) == "" {
 		return errors.New("llm output missing summary")
@@ -72,21 +73,86 @@ func validateSchema(o *llmOutput) error {
 	if o.Confidence < 0 || o.Confidence > 1 {
 		return errors.New("llm output confidence out of range")
 	}
-	if o.ConfidenceLevel != "" {
-		switch o.ConfidenceLevel {
-		case "CONFIRMED", "HIGH_CONFIDENCE", "POSSIBLE", "UNKNOWN":
-		default:
-			return fmt.Errorf("llm output invalid confidenceLevel %q", o.ConfidenceLevel)
-		}
-	}
-	if o.Risk != "" {
-		switch model.RiskLevel(o.Risk) {
-		case model.RiskSafe, model.RiskLow, model.RiskMedium, model.RiskHigh, model.RiskCritical:
-		default:
-			return fmt.Errorf("llm output invalid risk %q", o.Risk)
-		}
-	}
+	// confidenceLevel 归一化：兼容 HIGH_CONF / HIGH_CONF0.9 / confirmed / 数字文字 等常见变体，
+	// 空值时按 confidence 数值兜底，确保不会因为枚举拼写偏差走降级路径。
+	o.ConfidenceLevel = normalizeConfidenceLevel(o.ConfidenceLevel, o.Confidence)
+	// risk 归一化：未知值退化为 MEDIUM（保守方向，不影响审批流程正确性）。
+	o.Risk = normalizeRisk(o.Risk)
 	return nil
+}
+
+// normalizeConfidenceLevel 将 LLM 可能的变体统一为合法枚举。
+// 合法枚举：CONFIRMED / HIGH_CONFIDENCE / POSSIBLE / UNKNOWN。
+// 兼容：大小写变体、前后缀缺失（HIGH_CONF / HIGH_CONF0.9 / Confidence: High）、
+// 空字符串（按 confidence 数值兜底）。
+func normalizeConfidenceLevel(raw string, confidence float64) string {
+	s := strings.TrimSpace(raw)
+	s = strings.ToUpper(s)
+	// 去掉 LLM 常写的末尾数字（如 HIGH_CONF0.9）、标点、空格、下划线粘连。
+	s = strings.TrimRight(s, "0123456789._ -:～")
+	s = strings.TrimSpace(s)
+
+	switch {
+	case s == "CONFIRMED" || strings.HasPrefix(s, "CONFIRM") || s == "CERTAIN" || s == "DEFINITELY":
+		return "CONFIRMED"
+	case s == "HIGH_CONFIDENCE" || strings.HasPrefix(s, "HIGH_CONF") || s == "HIGH" ||
+		s == "HIGH CONFIDENCE" || s == "LIKELY" || strings.Contains(s, "HIGH"):
+		return "HIGH_CONFIDENCE"
+	case s == "POSSIBLE" || s == "MEDIUM" || s == "MED" || s == "MODERATE" || strings.Contains(s, "POSSIB"):
+		return "POSSIBLE"
+	case s == "UNKNOWN" || s == "LOW" || s == "UNCERTAIN" || s == "UNSURE" || strings.HasPrefix(s, "UNK"):
+		return "UNKNOWN"
+	case s == "":
+		// 空值：按 confidence 数值兜底
+		switch {
+		case confidence >= 0.85:
+			return "CONFIRMED"
+		case confidence >= 0.6:
+			return "HIGH_CONFIDENCE"
+		case confidence >= 0.3:
+			return "POSSIBLE"
+		default:
+			return "UNKNOWN"
+		}
+	}
+	// 无法识别：同样按 confidence 兜底，拒绝会导致整个诊断降级，代价太大。
+	switch {
+	case confidence >= 0.85:
+		return "CONFIRMED"
+	case confidence >= 0.6:
+		return "HIGH_CONFIDENCE"
+	case confidence >= 0.3:
+		return "POSSIBLE"
+	default:
+		return "UNKNOWN"
+	}
+}
+
+// normalizeRisk 将 risk 文本归一化，非法值返回 MEDIUM（安全保守方向）。
+func normalizeRisk(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	s = strings.ToUpper(s)
+	switch model.RiskLevel(s) {
+	case model.RiskSafe, model.RiskLow, model.RiskMedium, model.RiskHigh, model.RiskCritical:
+		return s
+	}
+	// 常见别名兼容
+	switch s {
+	case "SAFE", "NONE", "NO":
+		return string(model.RiskSafe)
+	case "LOW", "LOW_RISK", "MINOR":
+		return string(model.RiskLow)
+	case "MEDIUM", "MID", "MODERATE":
+		return string(model.RiskMedium)
+	case "HIGH", "HIGH_RISK", "MAJOR":
+		return string(model.RiskHigh)
+	case "CRITICAL", "SEVERE", "FATAL", "BLOCKER":
+		return string(model.RiskCritical)
+	}
+	return string(model.RiskMedium)
 }
 
 // buildDiagnosis 把 LLM 输出映射为 Diagnosis，并做 Evidence ID 与命令校验（ADR-005）。

@@ -38,14 +38,31 @@ func TestParseCommandValid(t *testing.T) {
 	}
 }
 
-func TestParseCommandRejects(t *testing.T) {
-	rejects := []string{
+func TestParseCommandShellDetected(t *testing.T) {
+	// shell 元字符不再被拒绝，而是标记 isShell=true。
+	shellCmds := []string{
 		"kubectl get pods | grep x",
 		"kubectl get pods && kubectl get nodes",
 		"kubectl get pods > out.txt",
 		"kubectl get pods $FOO",
-		"kubectl get pods `id`",
 		"kubectl get pods; kubectl get nodes",
+		"cat <<'EOF' | kubectl apply -f -",
+		"kubectl delete pod x 2>/dev/null || true",
+	}
+	for _, cmd := range shellCmds {
+		pc, err := ParseCommandDetail(cmd)
+		if err != nil {
+			t.Errorf("shell 命令不应拒绝: %q: %v", cmd, err)
+			continue
+		}
+		if !pc.IsShell {
+			t.Errorf("shell 命令应标记 isShell=true: %q", cmd)
+		}
+	}
+}
+
+func TestParseCommandRejects(t *testing.T) {
+	rejects := []string{
 		"get pods",
 		"kubectl edit deployment/d",
 		"kubectl attach pod",
@@ -55,11 +72,31 @@ func TestParseCommandRejects(t *testing.T) {
 		"kubectl frobnicate pods",
 		`kubectl get pods "unbalanced`,
 		"",
-		"kubectl " + strings.Repeat("x", 3000),
+		"kubectl " + strings.Repeat("x", 5000),
 	}
 	for _, cmd := range rejects {
 		if _, err := ParseCommand(cmd); err == nil {
 			t.Errorf("应拒绝: %q", cmd)
+		}
+	}
+}
+
+// TestParseCommandNonShell 验证普通命令不误判为 shell。
+func TestParseCommandNonShell(t *testing.T) {
+	plainCmds := []string{
+		"kubectl get pods -n default",
+		"kubectl logs web-0 -n default --tail=50",
+		`kubectl patch deployment/d --patch '{"spec":{"replicas":3}}'`,
+		"kubectl delete pod web-0 -n default",
+	}
+	for _, cmd := range plainCmds {
+		pc, err := ParseCommandDetail(cmd)
+		if err != nil {
+			t.Errorf("%s: %v", cmd, err)
+			continue
+		}
+		if pc.IsShell {
+			t.Errorf("普通命令不应标记 isShell: %q", cmd)
 		}
 	}
 }

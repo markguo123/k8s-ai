@@ -37,6 +37,7 @@ func normalizePod(p corev1.Pod) model.PodInfo {
 	info := model.PodInfo{
 		Ref:         ref("Pod", p.Namespace, p.Name, string(p.UID)),
 		Phase:       string(p.Status.Phase),
+		Reason:      p.Status.Reason,
 		NodeName:    p.Spec.NodeName,
 		Labels:      redactMap(p.Labels),
 		Annotations: redactMap(p.Annotations),

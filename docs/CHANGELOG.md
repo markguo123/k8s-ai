@@ -2,6 +2,121 @@
 
 本项目遵循 docs/VERSIONING.md 的里程碑阶梯约定。
 
+## [v2.0.8] - 2026-09-07
+
+chat 修复体验对齐 kubectl-ai：放开 shell 构造 + 批量审批 + 拒绝闸门归一化（优化 1/2/3/4/6 全部落地）。
+
+### Added
+
+- **放开 shell 构造（AGENTS.md + executor + approval）**：
+  - AGENTS.md 修改 Kubernetes Safety 条款：shell 构造（pipe/heredoc/redirect/`&&`/`||`/command substitution）允许在 chat 模式使用，但含写操作的 shell 命令必须走人工审批，shell 命令永不自动执行（不被 `--skip-permissions` 豁免）；
+  - `parse.go` 引号外 shell 元字符不再拒绝，改为标记 `isShell=true` 透传 executor；shell 模式跳过 `kubectl` 前缀检查 + 全命令扫描交互式动词；非 shell 模式保持原校验不变；
+  - `kubectl.go` `isShell=true` 时走 `exec.CommandContext(ctx, "bash", "-c", command)`，非 shell 走 argv 直调；两条路径共享 deny_ops + Secret 拦截 + 脱敏 + 截断 + 流式超时；
+  - `approval/risk.go` 新增 `HasShellSyntax()`：`IsReadOnlyCommand()` 对含 shell 语法的命令永远返回 `false`（必须审批）。
+- **批量审批（loop.go `batchApprove`）**：native 模式下 LLM 一轮返回 2+ 写工具调用时，收集所有写操作 → 合并为一个审批面板（逐条展示命令/变更/风险等级）→ 用户选一次 → 顺序执行 → 分别回传结果。借鉴 kubectl-ai `conversation.go L757-794`。审批次数从 9 次降到 3-4 次。
+- **拒绝闸门命令归一化（loop.go `declineKey` + `normalizeKubectlCommand`）**：kubectl 工具的拒绝计数 key 做命令归一化（提取 verb+resource+name+namespace，忽略 `--force`/`--grace-period`/`--now`/`--wait`/`--timeout`/`--cascade`/`--dry-run` 等修饰性 flag 和 flag 顺序），防止 LLM 用"加个 --force"绕过拒绝闸门。结构化工具不归一化（原始 JSON 作为 key）。
+- **Prompt 决策树扩展工具选择引导（prompt.go）**：交叉规则改为"结构化写工具优先，kubectl+shell 作为 fallback"；新增"shell 命令永不自动执行"规则；healthCheckProtocol 去掉 shell 禁止语。
+- **kubectlTool Description 更新（write.go）**：声明支持 shell 构造 + 写命令走审批 + 结构化工具优先 + 复杂场景可直接用 kubectl+shell。
+
+### Changed
+
+- `executeTool` 签名新增 `batchApproved bool` 参数（批量审批预授权时跳过个体审批）。
+- 架构守护测试 `readonly_test.go` 反转：`!inExecutor` 时禁止 shell（executor 内允许 policy-gated shell 路径）；`relPkg` 改用绝对路径修复 WalkDir 场景。
+
+### Tests
+
+- `parse_test.go`：shell 命令检测 isShell=true（7 类 shell 构造）+ 非 shell 不误判（4 类普通命令）。
+- `kubectl_test.go`：交互式命令仍拒绝 + `HasShellSyntax` 正负例。
+- `approval_test.go`：shell 命令永不归类为只读（7 类 shell + 引号内不误判）。
+- `loop_test.go`：批量审批（Yes/No/Mixed 3 组）+ 命令归一化（6 类 kubectl 变体 + 结构化工具不归一化）。
+
+## [v2.0.7] - 2026-09-03
+
+chat 全场景架构优化 + 规则补齐与误报治理 + 安全与诊断解析鲁棒性闭环（一次把近期 5 项优化集中收口：规则覆盖到 23 条、安全洞堵上、双重 LLM 砍掉、工具选择分层、confidence/risk 解析归一化）。
+
+### Added
+
+- **规则引擎补 4 条**，规则总数达到 **23 条**：
+  - `EvictedPod`（Pod 因节点压力被驱逐，Medium；根因指向节点，避免误报普通 Failed）；
+  - `HighRestartCount`（容器仍在 Running 但 restartCount≥5 隐性崩溃抖动，Low；取日志）；
+  - `DaemonSetReplica`（补齐 Workload 三件套对称性，High，desired>ready<desired 即报）；
+  - `DeploymentProgressDeadline`（发布超时时 ProgressDeadlineExceeded 单独报 Medium，比副本不足更精确）。
+- **模型层：chat 按意图分层的工具选择决策树**（internal/agent/prompt.go `toolSelectionProtocol`）：
+  - 第一层 诊断意图 → 首选 `kubectl get <资源> -o yaml`（完整视图不漏字段）+ previous logs + events；
+  - 第二层 浏览意图 → 结构化 get_* 摘要工具（省 token）；
+  - 第三层 命名空间级批量健康 → `scan_cluster namespace=<ns>`（23 规则秒级确定性覆盖）；
+  - 第四层 集群全景 → 健康检查协议 + scan_cluster() 全量；
+  - 硬性交叉规则：结构化工具=摘要视图（不够时必须升级 YAML）、写操作永不走 kubectl 工具、CRD 走 YAML 兜底。
+- **诊断输出解析鲁棒性**（internal/diagnosis/schema.go）：
+  - `normalizeConfidenceLevel`：兼容 `HIGH_CONF0.9 / HIGH_CONF / Confidence High / POSSIBLE / uncertain` 等 10+ 类常见变体；空值或无法识别时按 confidence 数值分档兜底（≥0.85 CONFIRMED / ≥0.6 HIGH_CONFIDENCE / ≥0.3 POSSIBLE / <0.3 UNKNOWN），消除因 LLM 枚举轻微偏差走降级；
+  - `normalizeRisk`：兼容 `SAFE / HIGH_RISK / SEVERE / FATAL` 别名，未知值默认 MEDIUM（保守方向）。
+- **安全红线：kubectl 链路拒读 Secret + 输出统一脱敏**（internal/approval/policy.go `IsForbiddenCommand` + internal/executor/kubectl.go）：
+  - 任何形式的 `get/describe/delete secret(s)` 以及 `secret/name`（大小写不敏感、`--raw / --raw=`）无论审批与否一律拒绝；
+  - kubectl stdout/stderr 全路径（含流式超时路径）统一走 `security.Redactor`，明文 env、token、密码等替换为 `[REDACTED]`。
+- **砍 diagnose_* 工具内部双重 LLM**（internal/tools/diagnosis.go `LLM.Enabled=false`）：diagnose_pod / diagnose_node / diagnose_workload 退化为**证据采集器**（秒级），分析由 Agent LLM 一次完成，典型 chat 诊断从 40s+ 降到秒级。
+- **模型 & 采集补齐**：PodInfo 补 `Reason`（EvictedPod 判定依据）、`scanner.normalizePod` 采集 `Status.Reason`。
+- **测试**：`TestIsForbiddenCommand`（16 用例：8 拦截 + 8 放行）、`TestRunKubectlForbidsSecretAccess / TestRunKubectlRedactsSensitiveOutput`、`TestSchemaNewFields` 扩充 10 类 confidence 变体 + 6 类 risk 变体断言。
+
+### Changed
+
+- efficiencyProtocol 排查顺序修正：诊断意图先 kubectl -o yaml 再 previous logs + events + configmap，而不是先结构化摘要；
+- agent prompt 重构为 `basePrompt()`，native/shim 两种 tool calling 模式统一装载决策树协议，避免遗漏；
+- kubectl 工具 Description 明确标注禁读 Secret 与 --raw，以及写命令需审批的边界提示。
+
+### Fixed
+
+- confidenceLevel 写为 `HIGH_CONF0.9`、risk 写为 `HIGH_RISK` 等常见 LLM 输出变体被合法枚举拒判 → 走规则初步判断降级的问题，现全部归一化正常进入诊断流程；
+- `kubectl get secret -o yaml` 被 risk.go 误判为只读 SAFE → Secret 明文可能进入 LLM 的安全洞，现于 executor 入口 + deny_ops 双层硬拦截并统一输出脱敏；
+- chat 单点诊断 `diagnose_pod` 因内部 LLM（40s+）+ 摘要视图漏字段导致绕路问题，通过砍内部 LLM + 决策树引导 YAML 取证两条并行路径解决。
+
+## [v2.0.6] - 2026-08-30
+
+规则引擎补齐 4 项重要盲区与误报治理（为后续 chat 优化打基础）。
+
+### Added
+
+- `PVFailed` 规则（storage_rules.go）：PV `Failed=High`、`Released=Low`（Retain 策略下属正常生命周期，低级别提示待清理），PVC 正常但 PV 异常不再静默；
+- `PodTerminating` 规则（pod_rules.go）：`DeletionTimestamp` 存在且年龄 >5min 报 Medium，证据包含 finalizers（finalizer 卡住/卷卸载失败常见）；
+- `NodePIDPressure` 规则（node_rules.go）：High，并纳入 `markCorrelated` 的节点根因集合（PID 压力引发的 Pod 异常标记 Correlated，避免健康评分重复扣分）；
+- IngressBackend 增强：Service 存在但端口不匹配或 Endpoint=0 也报（之前只查 Service 是否存在），使用 `ServiceNoEndpoint` 已有索引；
+- ServiceNoEndpoint 滚动宽限：匹配 Pod 全是 <2min 新建时跳过（滚动发布瞬间 0 端点误报）。
+- `PendingPod` 60s 时间门槛：新建 <60s Pending 属滚动发布暂态跳过；
+- Job `NeedsLogs=true`：`LogTargets` 通过关联索引反查 Job 下属 Pod 进行 Phase2 日志采集；
+- init 容器盲区补齐：CrashLoopBackOff / ImagePullBackOff / ContainerCreateError 均识别 init 容器并在标题注明，配置缺失仍升 HIGH。
+
+### Changed
+
+- `LogTargets(reg, findings, index)` 接收关联索引：非 Pod 但 NeedsLogs 的资源（如 Job）反查下属 Pod 作为日志目标；
+- `markCorrelated` 根因规则表新增 PIDPressure。
+
+### Fixed
+
+- PodInfo 缺 `DeletionTimestamp` 与 `Finalizers` 字段 → Pod 长时间 Terminating 无法判定的盲区；
+- normalize 阶段未采集 Job/CronJob 失败相关的状态字段（导致 JobFailed / CronJobFailed 无法精确命中的问题已通过索引补足）。
+
+## [v2.0.5] - 2026-08-29
+
+Web UI 会话重命名功能 + chat 终端横幅美化与工具调用缩进输出。
+
+### Added
+
+- Web 会话侧栏：会话删除按钮前新增重命名按钮（✎），点击后 prompt 输入新名称；空名或未变更时不发请求；失败在聊天区提示错误，成功后刷新会话列表。
+  - 后端接口：复用 `POST /api/sessions/{id}/rename`（server.go + chatService.RenameSession 既有），零后端改动。
+- chat 终端欢迎横幅（internal/cli/banner.go）：带边框的 ASCII 风格横幅，显示「k8s-ai」产品名 + 版本 + 集群信息；下方展示 3 条精简能力介绍和 exit/clear/Ctrl+C 退出提示；非 TTY（管道/测试）自动降级为无框纯文本。
+- 工具调用行格式优化（chat.go emit）：带缩进箭头 `  ↳ [Tool] 工具名 (参数)`，最终回答前插入空行分隔。
+
+## [v2.0.4] - 2026-08-28
+
+Windows + Linux 双平台二进制重新打包（含会话重命名 + 横幅优化功能）。
+
+## [v2.0.3] - 2026-08-28
+
+Web UI 会话重命名（✎ 按钮）+ Makefile 默认版本升级到 v2.0.3，双平台打包。
+
+## [v2.0.2] - 2026-08-27
+
+Web UI 支持集群下拉切换本机 ~/.kube/config context；会话模型新增 `Session.Cluster` 绑定会话集群，运行中会话不允许热切。
+
 ## [v2.0.1] - 2026-08-24
 
 终端交互体验与执行层安全/正确性优化（对标 kubectl-ai，见 docs/CREDITS.md）。

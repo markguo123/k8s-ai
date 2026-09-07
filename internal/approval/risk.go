@@ -72,9 +72,40 @@ func ClassifyCommand(command string) model.RiskLevel {
 
 // IsReadOnlyCommand 判断命令是否为只读（自动执行，无需审批）。
 // 只读动词、rollout history/status、带 --dry-run 的已知写动词均视为只读。
+// 含 shell 语法的命令（pipe/heredoc/redirect/&&/|| 等）永不归类为只读，
+// 必须走人工审批（AGENTS.md: shell commands are never classified as read-only auto-execute）。
 func IsReadOnlyCommand(command string) bool {
+	if HasShellSyntax(command) {
+		return false
+	}
 	readOnly, _ := classifyCommand(command)
 	return readOnly
+}
+
+// HasShellSyntax 判断命令字符串是否包含 shell 元字符（用于审批分类：
+// 含 shell 语法的命令永不归类为只读，必须走人工审批）。
+func HasShellSyntax(command string) bool {
+	inSingle, inDouble := false, false
+	for _, r := range command {
+		switch r {
+		case '\'':
+			if !inDouble {
+				inSingle = !inSingle
+			}
+		case '"':
+			if !inSingle {
+				inDouble = !inDouble
+			}
+		case '|', '&', ';', '<', '>', '$', '(', ')':
+			if !inSingle && !inDouble {
+				return true
+			}
+		}
+	}
+	if strings.Contains(command, "`") {
+		return true
+	}
+	return false
 }
 
 // classifyCommand 统一分类：返回 (只读, 风险等级)。

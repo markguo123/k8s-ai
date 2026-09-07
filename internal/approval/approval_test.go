@@ -6,6 +6,61 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/model"
 )
 
+func TestIsReadOnlyCommandShellNeverReadOnly(t *testing.T) {
+	// 含 shell 语法的命令永不归类为只读（即使动词是 get）。
+	shellReadOnlyCmds := []string{
+		"kubectl get pods | grep crash",
+		"kubectl get pods && kubectl get nodes",
+		"kubectl get pods > out.txt",
+		"kubectl get pods; kubectl get nodes",
+		"kubectl get pods $FOO",
+		"cat <<'EOF' | kubectl apply -f -",
+		"kubectl get pods 2>/dev/null || true",
+	}
+	for _, cmd := range shellReadOnlyCmds {
+		if IsReadOnlyCommand(cmd) {
+			t.Errorf("含 shell 语法的命令不应为只读: %q", cmd)
+		}
+	}
+	// 引号内的管道符号不应误判为 shell（虽然实际 kubectl 不会有引号内管道，但逻辑需正确）。
+	if !IsReadOnlyCommand(`kubectl get pods -n "default"`) {
+		t.Fatal("引号内不含 shell 语法，应为只读")
+	}
+}
+
+func TestIsForbiddenCommand(t *testing.T) {
+	forbidden := []string{
+		"kubectl get secret -n default",                     // get secret
+		"kubectl get secrets",                               // 复数
+		"kubectl get secret/db-password -o yaml",            // secret/name
+		"kubectl describe secret db-password -n production", // describe
+		"kubectl delete secret db-password",                 // 写也拦（输出/审计不落敏感数据）
+		"kubectl get --raw /api/v1/namespaces/default/secrets/x", // --raw 绕过
+		"kubectl get --raw=/api/v1/pods",                    // --raw= 形式
+		"kubectl get pods -n SECRET",                        // 大小写不敏感（命名空间极端例，宁严勿漏）
+	}
+	for _, cmd := range forbidden {
+		if !IsForbiddenCommand(cmd) {
+			t.Errorf("IsForbiddenCommand(%q) = false, want true", cmd)
+		}
+	}
+	allowed := []string{
+		"kubectl get pods -n default",
+		"kubectl get deployment web -o yaml",
+		"kubectl logs pod-1 -n default --tail=50",
+		"kubectl describe pod web-0",
+		"kubectl get configmap my-secret-config -n default", // 名字含 secret 但资源是 configmap
+		"kubectl get pods -l app=secret-app",                // label 值含 secret
+		"kubectl top pods -n production",
+		"kubectl delete pod web-0 -n default",
+	}
+	for _, cmd := range allowed {
+		if IsForbiddenCommand(cmd) {
+			t.Errorf("IsForbiddenCommand(%q) = true, want false", cmd)
+		}
+	}
+}
+
 func TestClassifyCommand(t *testing.T) {
 	cases := []struct {
 		cmd  string

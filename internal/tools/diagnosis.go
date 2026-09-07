@@ -93,12 +93,13 @@ func (t *scanPodTool) Execute(ctx context.Context, input json.RawMessage) (ToolR
 	return ToolResult{Data: summarizeScanResult(result)}, nil
 }
 
-// diagnosePodTool：单 Pod 深度诊断（规则 + LLM）。
+// diagnosePodTool：单 Pod 深度证据采集（规则级；LLM 分析由 Agent 负责，
+// 工具内部不再跑诊断 LLM，避免双重 LLM 拖慢与信息损耗）。
 type diagnosePodTool struct{ scanToolBase }
 
 func (t *diagnosePodTool) Name() string { return "diagnose_pod" }
 func (t *diagnosePodTool) Description() string {
-	return "对单个 Pod 深度诊断：复用一期 Scanner+规则+Evidence+LLM 诊断，返回根因/证据链/修复建议。适合『为什么这个 Pod 起不来/一直重启』类问题。"
+	return "对单个 Pod 深度诊断：复用一期 Scanner+规则+Evidence 采集该 Pod 的问题清单、证据链与关联日志，直接返回给 Agent 分析。适合『为什么这个 Pod 起不来/一直重启』类问题。"
 }
 func (t *diagnosePodTool) InputSchema() any {
 	return objSchema(map[string]any{
@@ -114,7 +115,7 @@ func (t *diagnosePodTool) Execute(ctx context.Context, input json.RawMessage) (T
 	opts := t.baseOpts
 	opts.Namespace = args["namespace"]
 	opts.PodTarget = args["name"]
-	opts.LLM.Enabled = true
+	opts.LLM.Enabled = false // Agent 是唯一大脑：证据采集秒级返回，分析由 Agent LLM 完成
 	opts.ReportMode = "none"
 	result, err := t.runner.Run(ctx, opts)
 	if err != nil {
@@ -123,12 +124,12 @@ func (t *diagnosePodTool) Execute(ctx context.Context, input json.RawMessage) (T
 	return ToolResult{Data: summarizeScanResult(result)}, nil
 }
 
-// diagnoseNodeTool：Node 深度诊断（按 Node 过滤一期结果）。
+// diagnoseNodeTool：Node 深度证据采集（按 Node 过滤一期结果；LLM 分析由 Agent 负责）。
 type diagnoseNodeTool struct{ scanToolBase }
 
 func (t *diagnoseNodeTool) Name() string { return "diagnose_node" }
 func (t *diagnoseNodeTool) Description() string {
-	return "对单个 Node 深度诊断：巡检后只保留该 Node 及其相关 Pod 的 Finding 与诊断。"
+	return "对单个 Node 深度诊断：巡检后只保留该 Node 及其相关 Pod 的 Finding 与证据，供 Agent 分析。"
 }
 func (t *diagnoseNodeTool) InputSchema() any {
 	return objSchema(map[string]any{
@@ -143,7 +144,7 @@ func (t *diagnoseNodeTool) Execute(ctx context.Context, input json.RawMessage) (
 	}
 	opts := t.baseOpts
 	opts.Namespace = args["namespace"]
-	opts.LLM.Enabled = true
+	opts.LLM.Enabled = false // Agent 是唯一大脑：证据采集秒级返回，分析由 Agent LLM 完成
 	opts.ReportMode = "none"
 	result, err := t.runner.Run(ctx, opts)
 	if err != nil {
@@ -155,12 +156,13 @@ func (t *diagnoseNodeTool) Execute(ctx context.Context, input json.RawMessage) (
 	return ToolResult{Data: summarizeScanResult(filtered)}, nil
 }
 
-// diagnoseWorkloadTool：Workload 深度诊断（Deployment/StatefulSet/DaemonSet 及其 Pod 链）。
+// diagnoseWorkloadTool：Workload 深度证据采集（Deployment/StatefulSet/DaemonSet
+// 及其 Pod 链；LLM 分析由 Agent 负责）。
 type diagnoseWorkloadTool struct{ scanToolBase }
 
 func (t *diagnoseWorkloadTool) Name() string { return "diagnose_workload" }
 func (t *diagnoseWorkloadTool) Description() string {
-	return "对 Deployment/StatefulSet/DaemonSet 深度诊断：巡检后保留该 Workload 及其 Pod 链的 Finding 与诊断（含故障链聚合 Incident）。"
+	return "对 Deployment/StatefulSet/DaemonSet 深度诊断：巡检后保留该 Workload 及其 Pod 链的 Finding 与证据（含故障链聚合 Incident），供 Agent 分析。"
 }
 func (t *diagnoseWorkloadTool) InputSchema() any {
 	return objSchema(map[string]any{
@@ -188,7 +190,7 @@ func (t *diagnoseWorkloadTool) Execute(ctx context.Context, input json.RawMessag
 	}
 	opts := t.baseOpts
 	opts.Namespace = args["namespace"]
-	opts.LLM.Enabled = true
+	opts.LLM.Enabled = false // Agent 是唯一大脑：证据采集秒级返回，分析由 Agent LLM 完成
 	opts.ReportMode = "none"
 	result, err := t.runner.Run(ctx, opts)
 	if err != nil {

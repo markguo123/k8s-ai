@@ -213,3 +213,67 @@ func (r PodTerminatingRule) Evaluate(ctx *RuleContext) []*model.Finding {
 	}
 	return out
 }
+
+// highRestartThreshold 是 HighRestartCount 的重启次数门槛：Running 但反复重启属隐性故障。
+const highRestartThreshold = 5
+
+// EvictedPodRule Pod 被驱逐（phase=Failed + reason=Evicted），通常是节点压力的后果。
+// 根因在节点（DiskPressure/MemoryPressure），不在此 Pod 自身，故 NeedsLogs=false。
+type EvictedPodRule struct{}
+
+func (EvictedPodRule) Name() string    { return "EvictedPod" }
+func (EvictedPodRule) NeedsLogs() bool { return false }
+
+func (r EvictedPodRule) Evaluate(ctx *RuleContext) []*model.Finding {
+	var out []*model.Finding
+	for i := range ctx.Snapshot.Pods {
+		p := &ctx.Snapshot.Pods[i]
+		if p.Phase != "Failed" || p.Reason != "Evicted" {
+			continue
+		}
+		src := "Pod/" + p.Ref.Name + "/status"
+		evs := []model.Evidence{
+			evidence.ObjectField(src, "phase", p.Phase),
+			evidence.ObjectField(src, "reason", p.Reason),
+		}
+		evs = append(evs, podEventEvidence(ctx, p.Ref)...)
+		out = append(out, newFinding(ctx, r, p.Ref, "Pod 被驱逐（Evicted）", model.SeverityMedium, evs))
+	}
+	return out
+}
+
+// HighRestartCountRule 容器仍在 Running 但重启次数超阈值（隐性崩溃/抖动）。
+// CrashLoopBackOff 漏掉的盲区：状态不是 Waiting 而是 Running，但反复重启。
+type HighRestartCountRule struct{}
+
+func (HighRestartCountRule) Name() string    { return "HighRestartCount" }
+func (HighRestartCountRule) NeedsLogs() bool { return true } // 抖动根因在日志里
+
+func (r HighRestartCountRule) Evaluate(ctx *RuleContext) []*model.Finding {
+	var out []*model.Finding
+	for i := range ctx.Snapshot.Pods {
+		p := &ctx.Snapshot.Pods[i]
+		for _, e := range allContainers(p) {
+			c := e.c
+			if c.RestartCount < highRestartThreshold {
+				continue
+			}
+			// Running 状态下高频重启才有意义；CrashLoopBackOff（Waiting）由专属规则管。
+			if c.State != "Running" {
+				continue
+			}
+			src := containerSrc(p, e)
+			evs := []model.Evidence{
+				evidence.ObjectField(src, "restartCount", fmt.Sprint(c.RestartCount)),
+				evidence.ObjectField(src, "state", c.State),
+			}
+			if c.LastReason != "" {
+				evs = append(evs, evidence.ObjectField(src, "lastState.reason", c.LastReason))
+			}
+			evs = append(evs, podEventEvidence(ctx, p.Ref)...)
+			out = append(out, newFinding(ctx, r, p.Ref, containerLabel(e)+" 高频重启（restartCount="+fmt.Sprint(c.RestartCount)+"）", model.SeverityLow, evs))
+			break // 每个 Pod 只出一条
+		}
+	}
+	return out
+}

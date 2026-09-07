@@ -1,6 +1,7 @@
 package diagnosis
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -188,7 +189,7 @@ func TestFilterEvidenceRefs(t *testing.T) {
 	}
 }
 
-// TestSchemaNewFields 验证置信度等级/因果链/不确定性字段解析与校验。
+// TestSchemaNewFields 验证置信度等级/因果链/不确定性字段解析与校验（含归一化兜底）。
 func TestSchemaNewFields(t *testing.T) {
 	out, err := parseLLMOutput(`{"summary":"s","rootCause":"r","confidence":0.7,"confidenceLevel":"HIGH_CONFIDENCE","causalChain":"c","evidenceChain":[],"impact":"i","possibleCauses":[],"investigation":[],"remediation":[],"verification":[],"risk":"LOW","uncertainty":"u"}`)
 	if err != nil {
@@ -197,11 +198,62 @@ func TestSchemaNewFields(t *testing.T) {
 	if out.ConfidenceLevel != "HIGH_CONFIDENCE" || out.CausalChain != "c" || out.Uncertainty != "u" {
 		t.Fatalf("新字段解析异常: %+v", out)
 	}
-	if _, err := parseLLMOutput(`{"summary":"s","rootCause":"r","confidence":0.5,"confidenceLevel":"BOGUS"}`); err == nil {
-		t.Fatal("非法 confidenceLevel 应报错")
+	if out.Risk != "LOW" {
+		t.Fatalf("LOW risk 未映射: %q", out.Risk)
+	}
+	// #4 修复：HIGH_CONF0.9 这类变体 + 其他乱拼法 不再报错，而是归一化。
+	variants := []struct {
+		raw        string
+		confidence float64
+		want       string
+	}{
+		{"HIGH_CONF0.9", 0.9, "HIGH_CONFIDENCE"},
+		{"HIGH_CONF", 0.7, "HIGH_CONFIDENCE"},
+		{"confirmed", 0.95, "CONFIRMED"},
+		{"Confidence: High", 0.7, "HIGH_CONFIDENCE"},
+		{"possible", 0.4, "POSSIBLE"},
+		{"BOGUS", 0.9, "CONFIRMED"},        // 无法识别但 confidence=0.9 → CONFIRMED (≥0.85)
+		{"BOGUS", 0.5, "POSSIBLE"},          // confidence=0.5 → POSSIBLE (0.3~0.59)
+		{"BOGUS", 0.65, "HIGH_CONFIDENCE"},  // confidence=0.65 → HIGH_CONFIDENCE (0.6~0.84)
+		{"", 0.95, "CONFIRMED"},             // 空值按 confidence 高值
+		{"", 0.2, "UNKNOWN"},                // 空值按 confidence 低值
+		{"uncertain", 0.5, "UNKNOWN"},
+	}
+	for _, v := range variants {
+		json := `{"summary":"s","rootCause":"r","confidence":` + fmtFloat(v.confidence) + `,"confidenceLevel":"` + v.raw + `"}`
+		out, err := parseLLMOutput(json)
+		if err != nil {
+			t.Fatalf("confidenceLevel 变体 %q 归一化不应报错: %v", v.raw, err)
+		}
+		if out.ConfidenceLevel != v.want {
+			t.Errorf("confidenceLevel 变体 %q (conf=%v)= %q, want %q", v.raw, v.confidence, out.ConfidenceLevel, v.want)
+		}
+	}
+	// risk 归一化
+	riskCases := []struct {
+		raw  string
+		want string
+	}{
+		{"LOW", "LOW"}, {"low", "LOW"}, {"SAFE", "SAFE"},
+		{"HIGH_RISK", "HIGH"}, {"SEVERE", "CRITICAL"}, {"whatever", "MEDIUM"},
+	}
+	for _, r := range riskCases {
+		json := `{"summary":"s","rootCause":"r","confidence":0.7,"risk":"` + r.raw + `"}`
+		out, err := parseLLMOutput(json)
+		if err != nil {
+			t.Fatalf("risk 变体 %q 归一化不应报错: %v", r.raw, err)
+		}
+		if out.Risk != r.want {
+			t.Errorf("risk 变体 %q = %q, want %q", r.raw, out.Risk, r.want)
+		}
 	}
 	d := buildDiagnosis(testFinding(), out)
 	if d.ConfidenceLevel != "HIGH_CONFIDENCE" || d.CausalChain != "c" || d.Uncertainty != "u" {
 		t.Fatalf("Diagnosis 映射异常: %+v", d)
 	}
+}
+
+func fmtFloat(f float64) string {
+	// 测试中 confidence 范围固定 0.2/0.5/0.7/0.9/0.95，用通用 sprintf 即可
+	return fmt.Sprintf("%g", f)
 }

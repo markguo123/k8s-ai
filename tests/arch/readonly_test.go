@@ -74,7 +74,10 @@ func parseFile(t *testing.T, path string) *ast.File {
 
 // relPkg 返回文件相对 internal/ 的包路径（POSIX 风格，如 "executor"）。
 func relPkg(path string) string {
-	root := filepath.Join("..", "..", "internal")
+	root, err := filepath.Abs(filepath.Join("..", "..", "internal"))
+	if err != nil {
+		return ""
+	}
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
 		return ""
@@ -152,9 +155,10 @@ func TestProductionCodeReadOnly(t *testing.T) {
 					}
 				}
 			}
-			// 执行层内禁止 shell 解释器执行（bash/sh/cmd -c）。
-			if inExecutor && (name == "Command" || name == "CommandContext") && isShellCommandCall(call) {
-				t.Errorf("%s: shell interpreter execution is forbidden (%s)", path, name)
+			// 执行层外禁止 shell 解释器执行（bash/sh/cmd -c）；
+			// 执行层内允许 policy-gated shell 路径（AGENTS.md: chat 模式下含 shell 语法的命令经人工审批后执行）。
+			if !inExecutor && (name == "Command" || name == "CommandContext") && isShellCommandCall(call) {
+				t.Errorf("%s: shell interpreter execution is only allowed in internal/executor (%s)", path, name)
 			}
 			return true
 		})

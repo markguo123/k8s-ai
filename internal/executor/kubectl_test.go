@@ -44,14 +44,15 @@ func TestRunKubectlNonZeroExit(t *testing.T) {
 	}
 }
 
-func TestRunKubectlRejectsShellMeta(t *testing.T) {
+func TestRunKubectlRejectsInteractive(t *testing.T) {
 	bin := fakeKubectl(t, "echo ok")
 	r := NewRunner(Options{KubectlBin: bin})
-	if _, err := r.RunKubectl(context.Background(), "kubectl get pods | grep x"); err == nil {
-		t.Fatal("管道命令应被拒绝")
-	}
+	// 交互式命令仍被拒绝。
 	if _, err := r.RunKubectl(context.Background(), "kubectl exec -it pod -- ls"); err == nil {
 		t.Fatal("交互式 exec 应被拒绝")
+	}
+	if _, err := r.RunKubectl(context.Background(), "kubectl edit deployment/d"); err == nil {
+		t.Fatal("交互式 edit 应被拒绝")
 	}
 }
 
@@ -111,6 +112,37 @@ func TestRunKubectlDenyOps(t *testing.T) {
 	}
 	if _, err := r.RunKubectl(context.Background(), "kubectl get namespaces"); err != nil {
 		t.Fatalf("只读命令不应被拦截: %v", err)
+	}
+}
+
+func TestRunKubectlForbidsSecretAccess(t *testing.T) {
+	bin := fakeKubectl(t, "echo should-not-run")
+	r := NewRunner(Options{KubectlBin: bin})
+	for _, cmd := range []string{
+		"kubectl get secret -n default",
+		"kubectl get secret/db-password -o yaml",
+		"kubectl describe secrets -n production",
+		"kubectl get --raw /api/v1/namespaces/default/secrets/x",
+	} {
+		if _, err := r.RunKubectl(context.Background(), cmd); err == nil {
+			t.Errorf("Secret 红线命令应被拒绝: %q", cmd)
+		}
+	}
+}
+
+func TestRunKubectlRedactsSensitiveOutput(t *testing.T) {
+	// 注意：.bat 中 & 是命令分隔符，用空格分隔多个键值对。
+	bin := fakeKubectl(t, "echo password=SuperSecret123 token=eyJhbGciOi.eyJzdWIi.SflKxwRJ")
+	r := NewRunner(Options{KubectlBin: bin, MaxBytes: 4096})
+	res, err := r.RunKubectl(context.Background(), "kubectl get pods -n default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(res.Stdout, "SuperSecret123") || strings.Contains(res.Stdout, "eyJhbGciOi") {
+		t.Fatalf("输出未脱敏: %q", res.Stdout)
+	}
+	if !strings.Contains(res.Stdout, "[REDACTED]") {
+		t.Fatalf("脱敏输出应含 [REDACTED]: %q", res.Stdout)
 	}
 }
 

@@ -42,18 +42,39 @@ CLI, Server, Web UI and CronJob must reuse the same application services.
 Phase 2 allows both read and write operations as part of normal
 troubleshooting and operations, subject to the following rules:
 
-- Read-only operations (get/list/watch/logs/events/describe) execute
-  automatically.
+- Read-only operations that do not use shell syntax (get/list/watch/logs/
+  events/describe and the structured read tools) execute automatically.
 - Write operations (create/update/patch/delete/apply/replace/scale/rollout
   etc.) require human confirmation (approval flow) before execution, except
   when the user explicitly opts in for non-interactive automation
   (`--skip-permissions`).
 - The LLM is never the permission authority: real permissions come from
   Kubernetes RBAC, and prompts cannot bypass RBAC.
-- No arbitrary shell execution: `bash -c` / `sh -c` / pipes / redirects /
-  command substitution are forbidden. kubectl commands are executed only
-  through the executor as parsed argv against the kubectl binary; all other
-  mutations go through typed client-go calls in `internal/executor`.
+- Structured tools remain the default tool path in chat (four-layer intent
+  decision tree). The kubectl tool is the fallback when structured tools
+  cannot express the operation (resource kinds not covered by structured
+  tools, full-manifest create/apply, complex JSON patches, composite
+  repairs), and shell constructs are allowed only when the LLM needs to
+  express such an operation.
+- Shell constructs are allowed in interactive chat sessions ONLY under
+  human approval, never automatically:
+  * Any command containing shell syntax (`|`, `&`, `;`, `<`, `>`, `$()`,
+    backticks, heredocs, redirects, `||`/`&&`, command substitution) must
+    pass the approval flow before execution. This applies to BOTH
+    read-like and write-like shell commands; shell commands are never
+    classified as read-only auto-execute.
+  * Shell commands are not covered by `--skip-permissions` or
+    non-interactive automation: executing them requires a real human
+    approver.
+  * Interactive/blocking kubectl commands (edit/attach/port-forward/proxy/
+    run/cp/debug, exec -i/-t) remain hard-rejected.
+  * Secret access and `--raw` red lines remain in force for both shell and
+    non-shell commands.
+- kubectl and shell execution happen only in `internal/executor`: parsed-
+  argv execution against the kubectl binary remains the default; the
+  policy-gated shell path is used only after human approval in interactive
+  chat. All other mutations go through typed client-go calls in
+  `internal/executor`.
 - Mutating client-go calls are allowed only inside `internal/executor`
   (guarded by architecture tests).
 - Do not implement automatic remediation without approval.
@@ -116,7 +137,9 @@ Use Viper or an equivalent configuration system.
 Use structured logging.
 
 kubectl binary (optional) is located via PATH or `kubernetes.kubectl_path`;
-it is executed only by `internal/executor` with parsed argv.
+it is executed only by `internal/executor` (parsed-argv execution by
+default; policy-gated shell execution only after human approval in
+interactive chat).
 
 ## Phase 2 Reference
 

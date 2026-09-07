@@ -2,7 +2,7 @@
 @echo off
 setlocal
 
-set "VERSION=v2.0.5"
+set "VERSION=v2.0.8"
 set "BIN_DIR=bin"
 set "BINARY=k8s-ai"
 set "MODULE=github.com/k8s-ai/k8s-ai"

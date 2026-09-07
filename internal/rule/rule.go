@@ -385,6 +385,8 @@ func AllDefault() []Rule {
 		ImagePullBackOffRule{},
 		PendingPodRule{},
 		PodTerminatingRule{},
+		EvictedPodRule{},
+		HighRestartCountRule{},
 		ContainerCreateErrorRule{},
 		UnhealthyRule{},
 		IngressBackendRule{},
@@ -398,6 +400,8 @@ func AllDefault() []Rule {
 		ServiceNoEndpointRule{},
 		DeploymentReplicaRule{},
 		StatefulSetReplicaRule{},
+		DaemonSetReplicaRule{},
+		DeploymentProgressDeadlineRule{},
 		JobFailedRule{},
 	}
 }

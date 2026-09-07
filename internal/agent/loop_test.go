@@ -292,8 +292,71 @@ func TestChatApprovalDeclined(t *testing.T) {
 	if executed != 0 {
 		t.Fatalf("拒绝后不应执行: %d", executed)
 	}
-	if !strings.Contains(sess.Messages[1].Content, "user declined") {
-		t.Fatalf("拒绝原因应回传 LLM: %s", sess.Messages[1].Content)
+	if !strings.Contains(sess.Messages[1].Content, "USER_EXPLICITLY_DECLINED") {
+		t.Fatalf("拒绝原因应带 USER_EXPLICITLY_DECLINED 前缀回传 LLM: %s", sess.Messages[1].Content)
+	}
+	if sess.Declined("scale_deployment:{\"replicas\":5}") != 1 {
+		t.Fatalf("拒绝计数应 =1: %+v", sess.DeclinedWrites)
+	}
+}
+
+// TestChatApprovalDeclinedTwiceBlocks 验证同签名写操作被拒 ≥ maxDeclinesBeforeBlock 次后，
+// LLM 下一轮再提同一个工具 → **Approver.Confirm 不再被调用**，直接以 DECLINED_TOO_MANY_TIMES 回传 LLM。
+func TestChatApprovalDeclinedTwiceBlocks(t *testing.T) {
+	executed := 0
+	fl := &fakeLLM{responses: []*llm.ChatResponse{
+		toolCallResp(call("c1", "scale_deployment", `{"replicas":5}`)), // 第 1 次：用户 No
+		toolCallResp(call("c2", "scale_deployment", `{"replicas":5}`)), // 第 2 次：用户 No（达到阈值前最后一次）
+		toolCallResp(call("c3", "scale_deployment", `{"replicas":5}`)), // 第 3 次：同签名，应被系统自动拦截，Approver 不响
+		{Content: "好的，我改用其他方案"},
+	}}
+	// 只有前两次会走 Confirm；如果 Approver 被调用超过 2 次就是 bug。
+	ap := &stubApprover{choices: []string{ChoiceNo, ChoiceNo, ChoiceNo, ChoiceNo, ChoiceNo}}
+	a, sess := testAgent(t, fl, []tools.Tool{&stubTool{name: "scale_deployment", readonly: false, executed: &executed}}, ap)
+	answer, _, err := a.Chat(context.Background(), "扩容")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executed != 0 {
+		t.Fatalf("全程拒绝后不应执行: %d", executed)
+	}
+	if ap.calls != 2 {
+		t.Fatalf("写工具相同参数被拒 2 次后第 3 次应阻断 Approver 调用，但实际调用 %d 次", ap.calls)
+	}
+	// 检查三条 tool 消息：前两条是 USER_EXPLICITLY_DECLINED，第三条带 DECLINED_TOO_MANY_TIMES。
+	seenBlocked := false
+	for _, m := range sess.Messages {
+		if m.Role == "tool" && strings.Contains(m.Content, "DECLINED_TOO_MANY_TIMES") {
+			seenBlocked = true
+		}
+	}
+	if !seenBlocked {
+		t.Fatalf("应出现 DECLINED_TOO_MANY_TIMES 的系统级拦截提示，会话消息：%+v", sess.Messages)
+	}
+	if answer != "好的，我改用其他方案" {
+		t.Fatalf("answer=%q", answer)
+	}
+}
+
+// TestChatDeclinedRemovesApproved 验证：当某 key 先被 AddApproved，再被用户拒绝一次，
+// 授权记录应被移除（用户否定之前的"会话不再询问"选择）。
+func TestChatDeclinedRemovesApproved(t *testing.T) {
+	sess := &session.Session{ID: "t"}
+	key := "kubectlTool:delete_pvc:{\"name\":\"p\"}"
+	sess.AddApproved(key)
+	if !sess.Approved(key) {
+		t.Fatal("授权写入应生效")
+	}
+	total := sess.AddDeclined(key)
+	if total != 1 {
+		t.Fatalf("第 1 次拒绝 count=1, got %d", total)
+	}
+	if sess.Approved(key) {
+		t.Fatal("被拒绝后应取消原授权记录")
+	}
+	total = sess.AddDeclined(key)
+	if total != 2 {
+		t.Fatalf("第 2 次拒绝 count=2, got %d", total)
 	}
 }
 
@@ -414,10 +477,172 @@ func TestChatInjectionWriteBlocked(t *testing.T) {
 	if !strings.Contains(joined, "ignore previous instructions") {
 		t.Fatal("注入文本应作为数据回传 LLM")
 	}
-	if !strings.Contains(joined, "user declined") {
-		t.Fatal("拒绝原因应回传 LLM")
+	if !strings.Contains(joined, "USER_EXPLICITLY_DECLINED") {
+		t.Fatal("拒绝原因应回传 LLM（明确语义前缀）")
 	}
 	if last := sess.Messages[len(sess.Messages)-1]; last.Role != "assistant" {
 		t.Fatalf("会话最后一条应为 assistant 回答: %+v", last)
+	}
+}
+
+// TestChatBatchApprovalYes 验证 LLM 一轮返回 2+ 写工具调用时，
+// 批量审批面板只弹出一次，用户选"是"后全部执行。
+func TestChatBatchApprovalYes(t *testing.T) {
+	exec1, exec2 := 0, 0
+	fl := &fakeLLM{responses: []*llm.ChatResponse{
+		// 一轮返回两个写工具调用。
+		toolCallResp(
+			call("c1", "patch_deployment", `{"namespace":"prod","name":"web","patch":"{}"}`),
+			call("c2", "scale_deployment", `{"namespace":"prod","name":"web","replicas":3}`),
+		),
+		{Content: "两个修复都完成了", Usage: llm.TokenUsage{TotalTokens: 5}},
+	}}
+	ap := &stubApprover{choices: []string{ChoiceYes}}
+	a, _ := testAgent(t, fl, []tools.Tool{
+		&stubTool{name: "patch_deployment", readonly: false, executed: &exec1},
+		&stubTool{name: "scale_deployment", readonly: false, executed: &exec2},
+	}, ap)
+	_, _, err := a.Chat(context.Background(), "修复")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ap.calls != 1 {
+		t.Fatalf("批量审批应只弹 1 次，got %d", ap.calls)
+	}
+	if exec1 != 1 || exec2 != 1 {
+		t.Fatalf("两个写工具都应执行: exec1=%d exec2=%d", exec1, exec2)
+	}
+}
+
+// TestChatBatchApprovalNo 验证批量审批被拒绝后所有写操作都不执行。
+func TestChatBatchApprovalNo(t *testing.T) {
+	exec1, exec2 := 0, 0
+	fl := &fakeLLM{responses: []*llm.ChatResponse{
+		toolCallResp(
+			call("c1", "patch_deployment", `{"namespace":"prod","name":"web","patch":"{}"}`),
+			call("c2", "scale_deployment", `{"namespace":"prod","name":"web","replicas":3}`),
+		),
+		{Content: "用户拒绝了，换方案", Usage: llm.TokenUsage{TotalTokens: 5}},
+	}}
+	ap := &stubApprover{choices: []string{ChoiceNo}}
+	a, sess := testAgent(t, fl, []tools.Tool{
+		&stubTool{name: "patch_deployment", readonly: false, executed: &exec1},
+		&stubTool{name: "scale_deployment", readonly: false, executed: &exec2},
+	}, ap)
+	_, _, err := a.Chat(context.Background(), "修复")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ap.calls != 1 {
+		t.Fatalf("批量审批应只弹 1 次，got %d", ap.calls)
+	}
+	if exec1 != 0 || exec2 != 0 {
+		t.Fatalf("拒绝后不应执行: exec1=%d exec2=%d", exec1, exec2)
+	}
+	// 两条工具结果都应含 USER_EXPLICITLY_DECLINED。
+	declinedCount := 0
+	for _, m := range sess.Messages {
+		if m.Role == "tool" && strings.Contains(m.Content, "USER_EXPLICITLY_DECLINED") {
+			declinedCount++
+		}
+	}
+	if declinedCount != 2 {
+		t.Fatalf("应有两个 DECLINED 结果，got %d", declinedCount)
+	}
+}
+
+// TestChatBatchApprovalMixedReadAndWrite 验证一轮中既有只读又有写工具时，
+// 只读自动执行，写工具走批量审批。
+func TestChatBatchApprovalMixedReadAndWrite(t *testing.T) {
+	readExec, writeExec := 0, 0
+	fl := &fakeLLM{responses: []*llm.ChatResponse{
+		toolCallResp(
+			call("c1", "get_pod", `{"namespace":"prod","name":"web-0"}`),
+			call("c2", "patch_deployment", `{"namespace":"prod","name":"web","patch":"{}"}`),
+			call("c3", "scale_deployment", `{"namespace":"prod","name":"web","replicas":3}`),
+		),
+		{Content: "完成", Usage: llm.TokenUsage{TotalTokens: 5}},
+	}}
+	ap := &stubApprover{choices: []string{ChoiceYes}}
+	a, _ := testAgent(t, fl, []tools.Tool{
+		&stubTool{name: "get_pod", readonly: true, executed: &readExec},
+		&stubTool{name: "patch_deployment", readonly: false, executed: &writeExec},
+		&stubTool{name: "scale_deployment", readonly: false, executed: &writeExec},
+	}, ap)
+	_, _, err := a.Chat(context.Background(), "修复")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ap.calls != 1 {
+		t.Fatalf("批量审批应只弹 1 次（2 个写工具），got %d", ap.calls)
+	}
+	if readExec != 1 {
+		t.Fatalf("只读工具应执行: %d", readExec)
+	}
+	if writeExec != 2 {
+		t.Fatalf("两个写工具都应执行: %d", writeExec)
+	}
+}
+
+// TestNormalizeKubectlCommand 验证 kubectl 命令归一化：
+// 同一操作加 --force/--grace-period 或 flag 顺序不同 → 相同归一化 key。
+func TestNormalizeKubectlCommand(t *testing.T) {
+	cases := []struct {
+		name string
+		cmd  string
+		want string
+	}{
+		{
+			"plain delete",
+			"kubectl delete pvc app-data-pvc -n test-complex",
+			"delete pvc app-data-pvc -n test-complex",
+		},
+		{
+			"delete with --force",
+			"kubectl delete pvc app-data-pvc -n test-complex --force",
+			"delete pvc app-data-pvc -n test-complex",
+		},
+		{
+			"delete with --grace-period",
+			"kubectl delete pvc app-data-pvc -n test-complex --grace-period=0",
+			"delete pvc app-data-pvc -n test-complex",
+		},
+		{
+			"delete with --force --now",
+			"kubectl delete pvc app-data-pvc --force --now -n test-complex",
+			"delete pvc app-data-pvc -n test-complex",
+		},
+		{
+			"namespace flag order different",
+			"kubectl -n test-complex delete pvc app-data-pvc",
+			"delete pvc app-data-pvc -n test-complex",
+		},
+		{
+			"patch command",
+			`kubectl patch deployment app-backend -n test-complex --type merge -p {"x":1}`,
+			"patch deployment app-backend -n test-complex",
+		},
+	}
+	for _, c := range cases {
+		got := normalizeKubectlCommand(c.cmd)
+		if got != c.want {
+			t.Errorf("%s: normalizeKubectlCommand(%q) = %q, want %q", c.name, c.cmd, got, c.want)
+		}
+	}
+}
+
+// TestDeclineKeyKubectlNormalization 验证 kubectl 工具的 declineKey 归一化：
+// 加 --force 与不加 --force 产生相同的 key → 拒绝计数累加而非各自独立。
+func TestDeclineKeyKubectlNormalization(t *testing.T) {
+	key1 := declineKey("kubectl", json.RawMessage(`{"command":"kubectl delete pvc app-data-pvc -n test-complex"}`))
+	key2 := declineKey("kubectl", json.RawMessage(`{"command":"kubectl delete pvc app-data-pvc -n test-complex --force"}`))
+	if key1 != key2 {
+		t.Fatalf("归一化后 key 应相同:\n  key1=%q\n  key2=%q", key1, key2)
+	}
+	// 结构化工具不归一化（原始 JSON 作为 key）。
+	sk1 := declineKey("patch_deployment", json.RawMessage(`{"namespace":"prod","name":"web","patch":"{}"}`))
+	sk2 := declineKey("patch_deployment", json.RawMessage(`{"namespace":"prod","name":"web","patch":"{\"x\":1}"}`))
+	if sk1 == sk2 {
+		t.Fatal("不同参数的结构化工具 key 应不同")
 	}
 }
