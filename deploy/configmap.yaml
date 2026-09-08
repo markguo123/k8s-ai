@@ -40,3 +40,17 @@ data:
     rules:
       enabled: []
       disabled: []
+    agent:
+      session_dir: /data/sessions
+      audit_dir: /data/audit
+      max_iterations: 10
+      max_tool_calls: 20
+      timeout: 5m
+      tool_calling: native
+      require_approval: true
+      result_max_bytes: 8192
+      turn_max_bytes: 32768
+      cmd_max_bytes: 65536
+      history_turns: 20
+      deny_ops: []
+      disabled_tools: []

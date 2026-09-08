@@ -46,6 +46,32 @@ report:
   directory: "./reports"
   format: markdown
 
+# 二期 Agent 配置（chat / web 模式）
+agent:
+  max_iterations: 15          # LLM 往返上限
+  max_tool_calls: 20          # 单轮工具调用上限
+  timeout: 5m                 # Agent 单次会话超时
+  tool_calling: native        # native | shim | auto（auto 先 native，不支持时降级 shim）
+  require_approval: true      # 写操作必须人工确认（false 仅用于 --skip-permissions 场景）
+  skip_permissions: false     # true 时跳过审批（非交互自动化，慎用）
+  result_max_bytes: 8192      # 单个工具结果截断上限
+  turn_max_bytes: 32768       # 单轮上下文截断上限
+  cmd_max_bytes: 65536        # kubectl 命令输出截断上限
+  history_turns: 20           # 保留的历史对话轮数
+  session_dir: "~/.k8s-ai/sessions"
+  audit_dir: "~/.k8s-ai/audit"
+  deny_ops: []                # 硬拒绝动词列表（如 ["delete","edit"]），默认空
+  disabled_tools: []          # 禁用的工具名列表
+
+# Web UI 配置（k8s-ai web）
+webui:
+  addr: "127.0.0.1:8081"      # 监听地址（非回环地址会输出安全警告）
+
+# MCP 预留（二期 v1 不连接外部服务器）
+mcp:
+  enabled: false
+  servers: []
+
 rules:
   enabled: []
   disabled: []
