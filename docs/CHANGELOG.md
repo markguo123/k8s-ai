@@ -1,6 +1,35 @@
-# Changelog
+﻿# Changelog
 
 本项目遵循 docs/VERSIONING.md 的里程碑阶梯约定。
+
+## [v2.0.9] - 2026-09-08
+
+删除 6 个结构化写工具，写操作统一走 kubectlTool + 执行器 bug 修复 + Web UI 第一批交互优化。
+
+### Added
+
+- **Web UI 第一批交互优化（index.html）**：
+  - 输入框 disabled + spinner：AI 处理中输入框变灰、placeholder 切为"AI 正在处理..."、发送按钮 disabled、右侧旋转 spinner；
+  - 空会话欢迎页：渐变 logo + 产品名 + 3 张可点击能力卡片（巡检集群/故障诊断/执行变更），点击自动填充提问；
+  - 删除会话确认：删除前 `confirm()` 防误删；
+  - 会话列表时间戳：session item 下方显示"刚刚 / X 分钟前 / X 小时前 / X 天前"；
+  - AI 思考 typing indicator：三点跳动动画 + "AI 正在分析..."，执行完成自动隐藏。
+- **kubectlTool.Execute 补 Text 字段**：之前不填 Text → `MarshalForLLM()` 只能 `json.Marshal(Data)` → 用户看到带引号的 JSON 字符串；现在 `extractKubectlSummary()` 成功取 Stdout 前 200 字符，失败取 exit+stderr，空输出显示 "ok"。
+
+### Changed
+
+- **写工具从 7 个精简为 1 个**：删除 `scale_deployment` / `patch_deployment` / `patch_configmap` / `restart_rollout` / `label` / `delete_pod` 共 6 个结构化写工具（~250 行 Go 代码），全部走 `kubectlTool` → `executor.RunKubectl` 一条路径。WriteRunner 接口和 executor.Runner 的 typed client 实现保留，留作未来内部场景。
+- **NewWriteTools 只注册 kubectlTool**：之前 7 个 → 现在 1 个。LLM 写操作统一生成完整 kubectl 命令（含 shell 构造），执行器自动判断 argv 直调或 `bash -c`。
+
+### Why
+
+6 个结构化工具是 v2.0.8 放开 shell 之前的过渡产物（shell 被 parse.go 硬拒时，LLM 只能用结构化工具调 typed client）。v2.0.8 放开 shell + 新增批量审批后，kubectlTool 已能覆盖全部写操作，结构化工具成为多余维护负担：
+
+- 覆盖不全（写不完 patch_pvc / patch_ingress / annotate / cordon 等无限场景）；
+- LLM 在 JSON patch 参数上反复试错（日志出现 `--access-mode` 单数、`apiVersion: v11` 笔误）；
+- prompt 说"结构化优先"但 LLM 发现覆盖不了又退回 kubectl，体验不统一。
+
+删除后写操作**一条清晰路径**：LLM 生成 kubectl 命令 → `RunKubectl` → 风险分级 → 审批 → 执行。
 
 ## [v2.0.8] - 2026-09-07
 
@@ -283,3 +312,4 @@ Web UI 支持集群下拉切换本机 ~/.kube/config context；会话模型新�
 ### Security
 
 - 四层只读保证 + AST 架构测试（含 Secrets 禁访）；-race 需 CGO（本机无 gcc，CI/Linux 可跑）
+

@@ -1,8 +1,8 @@
-@REM Windows CMD 构建脚本：版本注入 + 编译二进制
+﻿@REM Windows CMD 构建脚本：版本注入 + 编译二进制
 @echo off
 setlocal
 
-set "VERSION=v2.0.8"
+set "VERSION=v2.0.9"
 set "BIN_DIR=bin"
 set "BINARY=k8s-ai"
 set "MODULE=github.com/k8s-ai/k8s-ai"
@@ -22,3 +22,4 @@ if errorlevel 1 exit /b %errorlevel%
 
 echo ==^> binary: %~dp0%BIN_DIR%\%BINARY%.exe
 "%BIN_DIR%\%BINARY%.exe" version
+

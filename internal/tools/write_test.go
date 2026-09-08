@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -12,33 +13,29 @@ import (
 
 // fakeWriteRunner 记录调用并返回固定结果。
 type fakeWriteRunner struct {
-	lastCommand  string
-	lastReplicas int32
+	lastCommand string
 }
 
 func (f *fakeWriteRunner) RunKubectl(_ context.Context, command string) (executor.Result, error) {
 	f.lastCommand = command
 	return executor.Result{Command: command, Stdout: "ok", ExitCode: 0}, nil
 }
-func (f *fakeWriteRunner) ScaleDeployment(_ context.Context, ns, name string, replicas int32) (executor.Result, error) {
-	_ = ns
-	_ = name
-	f.lastReplicas = replicas
+func (f *fakeWriteRunner) ScaleDeployment(context.Context, string, string, int32) (executor.Result, error) {
 	return executor.Result{Stdout: "scaled"}, nil
 }
-func (f *fakeWriteRunner) PatchDeployment(_ context.Context, ns, name, patch string) (executor.Result, error) {
+func (f *fakeWriteRunner) PatchDeployment(context.Context, string, string, string) (executor.Result, error) {
 	return executor.Result{Stdout: "patched"}, nil
 }
-func (f *fakeWriteRunner) PatchConfigMap(_ context.Context, ns, name, patch string) (executor.Result, error) {
+func (f *fakeWriteRunner) PatchConfigMap(context.Context, string, string, string) (executor.Result, error) {
 	return executor.Result{Stdout: "configmap patched"}, nil
 }
-func (f *fakeWriteRunner) RestartRollout(_ context.Context, ns, name string) (executor.Result, error) {
+func (f *fakeWriteRunner) RestartRollout(context.Context, string, string) (executor.Result, error) {
 	return executor.Result{Stdout: "restarted"}, nil
 }
-func (f *fakeWriteRunner) LabelResource(_ context.Context, kind, ns, name, key, value string) (executor.Result, error) {
+func (f *fakeWriteRunner) LabelResource(context.Context, string, string, string, string, string) (executor.Result, error) {
 	return executor.Result{Stdout: "labeled"}, nil
 }
-func (f *fakeWriteRunner) DeletePod(_ context.Context, ns, name string, grace *int64) (executor.Result, error) {
+func (f *fakeWriteRunner) DeletePod(context.Context, string, string, *int64) (executor.Result, error) {
 	return executor.Result{Stdout: "deleted"}, nil
 }
 
@@ -73,59 +70,109 @@ func TestKubectlToolExecute(t *testing.T) {
 	if tr.Data.(executor.Result).Stdout != "ok" {
 		t.Fatalf("result = %+v", tr.Data)
 	}
-}
-
-func TestScaleDeploymentTool(t *testing.T) {
-	r := &fakeWriteRunner{}
-	ts := NewWriteTools(r)
-	tr, err := ts[1].Execute(context.Background(), json.RawMessage(`{"namespace":"production","name":"payment-api","replicas":5}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if r.lastReplicas != 5 {
-		t.Fatalf("replicas = %d", r.lastReplicas)
-	}
-	if ts[1].IsReadOnly(nil) || ts[1].Risk(nil) != model.RiskMedium {
-		t.Fatal("scale 应为非只读 MEDIUM")
-	}
-	if tr.Data.(executor.Result).Stdout != "scaled" {
-		t.Fatalf("result = %+v", tr.Data)
-	}
-	// 非法副本数。
-	tr, err = ts[1].Execute(context.Background(), json.RawMessage(`{"namespace":"n","name":"d","replicas":"abc"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if tr.Data.(map[string]any)["error"] == nil {
-		t.Fatal("非法 replicas 应返回错误")
+	if !strings.Contains(tr.Text, "ok") {
+		t.Fatalf("Text 未填充: %q", tr.Text)
 	}
 }
 
 func TestWriteToolsCount(t *testing.T) {
 	ts := NewWriteTools(&fakeWriteRunner{})
-	if len(ts) != 7 {
-		t.Fatalf("写工具数 = %d, want 7", len(ts))
+	if len(ts) != 1 {
+		t.Fatalf("写工具数 = %d, want 1（只有 kubectlTool）", len(ts))
+	}
+	if ts[0].Name() != "kubectl" {
+		t.Fatalf("唯一写工具 = %q, want kubectl", ts[0].Name())
 	}
 }
 
-func TestWriteToolDescribe(t *testing.T) {
-	ts := NewWriteTools(&fakeWriteRunner{})
-	// ts[1]=scale_deployment
-	cmd, change := ts[1].(CommandDescriber).Describe(json.RawMessage(`{"namespace":"production","name":"payment-api","replicas":5}`))
-	if !strings.Contains(cmd, "kubectl -n production scale deployment/payment-api --replicas=5") ||
-		!strings.Contains(change, "调整 Deployment production/payment-api 副本数为 5") {
-		t.Fatalf("scale describe: %q / %q", cmd, change)
+// errorWriteRunner 返回预设错误。
+type errorWriteRunner struct{ err error }
+
+func (f *errorWriteRunner) RunKubectl(context.Context, string) (executor.Result, error) {
+	return executor.Result{}, f.err
+}
+func (f *errorWriteRunner) ScaleDeployment(context.Context, string, string, int32) (executor.Result, error) {
+	return executor.Result{}, nil
+}
+func (f *errorWriteRunner) PatchDeployment(context.Context, string, string, string) (executor.Result, error) {
+	return executor.Result{}, nil
+}
+func (f *errorWriteRunner) PatchConfigMap(context.Context, string, string, string) (executor.Result, error) {
+	return executor.Result{}, nil
+}
+func (f *errorWriteRunner) RestartRollout(context.Context, string, string) (executor.Result, error) {
+	return executor.Result{}, nil
+}
+func (f *errorWriteRunner) LabelResource(context.Context, string, string, string, string, string) (executor.Result, error) {
+	return executor.Result{}, nil
+}
+func (f *errorWriteRunner) DeletePod(context.Context, string, string, *int64) (executor.Result, error) {
+	return executor.Result{}, nil
+}
+
+// TestKubectlMissingError 确保 kubectl 二进制不存在时返回 SYSTEM_UNAVAILABLE，
+// LLM 能区分"环境缺依赖"和"命令写错"，不会反复重试。
+func TestKubectlMissingError(t *testing.T) {
+	missing := "kubectl: kubectl not found in PATH: exec: kubectl: executable file not found in PATH"
+	r := &errorWriteRunner{err: errors.New(missing)}
+	ts := NewWriteTools(r)
+
+	// 1) kubectl 二进制缺失 → SYSTEM_UNAVAILABLE 友好提示。
+	tr, err := ts[0].Execute(context.Background(), json.RawMessage(`{"command":"kubectl scale deployment x --replicas=2"}`))
+	if err != nil {
+		t.Fatalf("kubectl missing 不应返回 error: %v", err)
 	}
-	// ts[3]=patch_configmap
-	cmd, change = ts[3].(CommandDescriber).Describe(json.RawMessage(`{"namespace":"yanshou-nginx","name":"nginx-config","patch":"{\"data\":{\"default.conf\":\"listen 80;\\nserver_name localhost;\"}}"}`))
-	if !strings.Contains(cmd, "patch configmap/nginx-config") ||
-		!strings.Contains(change, "default.conf") || !strings.Contains(change, "listen 80;") {
-		t.Fatalf("patch_configmap describe: %q / %q", cmd, change)
+	if tr.Text != "SYSTEM_UNAVAILABLE" {
+		t.Fatalf("Text = %q, want SYSTEM_UNAVAILABLE", tr.Text)
 	}
-	// ts[4]=restart_rollout
-	cmd, change = ts[4].(CommandDescriber).Describe(json.RawMessage(`{"namespace":"yanshou-nginx","name":"nginx-deployment"}`))
-	if !strings.Contains(cmd, "rollout restart deployment/nginx-deployment") ||
-		!strings.Contains(change, "滚动重启") {
-		t.Fatalf("restart describe: %q / %q", cmd, change)
+	d, ok := tr.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data 类型错误: %T", tr.Data)
+	}
+	if d["kind"] != "kubectl_binary_missing" {
+		t.Fatalf("Data.kind = %v, want kubectl_binary_missing", d["kind"])
+	}
+	msg, _ := d["message"].(string)
+	if !strings.Contains(msg, "未检测到 kubectl 二进制") {
+		t.Fatalf("message 缺少友好提示: %q", msg)
+	}
+	if !strings.Contains(msg, "scan_cluster") || !strings.Contains(msg, "get_pod") {
+		t.Fatalf("message 应提只读工具继续可用: %q", msg)
+	}
+
+	// 2) 普通命令错误（集群/命令本身问题）→ 正常 ResultError，不是 SYSTEM_UNAVAILABLE。
+	r.err = errors.New("error: deployment x not found")
+	tr, err = ts[0].Execute(context.Background(), json.RawMessage(`{"command":"kubectl scale deployment x --replicas=2"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr.Text == "SYSTEM_UNAVAILABLE" {
+		t.Fatal("普通命令错误不应标记为 SYSTEM_UNAVAILABLE")
+	}
+	if !strings.Contains(tr.Text, "deployment x not found") {
+		t.Fatalf("Text = %q, want error 信息", tr.Text)
+	}
+}
+
+func TestIsKubectlMissingError(t *testing.T) {
+	wantTrue := []string{
+		"kubectl not found in PATH: exec:",
+		"executable file not found in C:\\Windows\\System32",
+		"kubectl: kubectl not found",
+	}
+	for _, s := range wantTrue {
+		if !isKubectlMissingError(s) {
+			t.Fatalf("should match: %q", s)
+		}
+	}
+	wantFalse := []string{
+		"exit code 1: error: deployment not found",
+		"kubectl: failed to create pod",
+		"kubectl: error: must be authenticated",
+	}
+	for _, s := range wantFalse {
+		if isKubectlMissingError(s) {
+			t.Fatalf("should NOT match: %q", s)
+		}
 	}
 }

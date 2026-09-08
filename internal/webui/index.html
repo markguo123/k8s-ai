@@ -108,6 +108,43 @@
   #status { display:none; max-width:860px; margin:8px auto 0; text-align:center; color:var(--accent);
             font-size:12px; font-weight:500; }
   #status.on { display:block; animation:pulse 1.4s ease-in-out infinite; }
+  /* 消息入场动画 */
+  .msg { animation: slideUp .28s ease-out; }
+  @keyframes slideUp { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+  /* 输入框 disabled 状态 */
+  #input:disabled { opacity:.5; cursor:not-allowed; }
+  #input:disabled:focus { outline:none; }
+  /* 发送按钮右侧 spinner */
+  .send-spinner { display:inline-block; width:18px; height:18px; border:2px solid rgba(255,255,255,.3);
+                   border-top-color:#fff; border-radius:50%; animation:spin .6s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  /* 会话时间戳 */
+  .session-item .time { color:#6b7280; font-size:11px; margin-top:1px; }
+  .session-item { flex-wrap:wrap; }
+  .session-item .name-row { display:flex; align-items:center; gap:6px; flex:1; min-width:0; }
+  /* 空会话欢迎页 */
+  .welcome { display:flex; flex-direction:column; align-items:center; justify-content:center;
+             height:100%; text-align:center; gap:20px; padding:40px 20px; animation:fadeIn .4s ease-out; }
+  @keyframes fadeIn { from { opacity:0; } to { opacity:1; } }
+  .welcome .logo { width:72px; height:72px; border-radius:18px; background:linear-gradient(135deg,#2563eb,#7c3aed);
+                    display:flex; align-items:center; justify-content:center; font-size:36px; }
+  .welcome h2 { font-size:24px; font-weight:700; letter-spacing:.5px; }
+  .welcome .tagline { color:var(--muted); font-size:14px; max-width:420px; }
+  .welcome-cards { display:flex; gap:16px; flex-wrap:wrap; justify-content:center; margin-top:12px; max-width:720px; }
+  .welcome-card { width:200px; padding:20px 16px; border:1px solid var(--border); border-radius:14px;
+                  background:var(--panel); cursor:pointer; transition:transform .15s, border-color .15s, box-shadow .15s; }
+  .welcome-card:hover { transform:translateY(-3px); border-color:var(--accent); box-shadow:0 6px 20px rgba(37,99,235,.12); }
+  .welcome-card .icon { font-size:28px; margin-bottom:10px; }
+  .welcome-card .title { font-size:15px; font-weight:600; margin-bottom:4px; }
+  .welcome-card .desc { font-size:12px; color:var(--muted); line-height:1.5; }
+  /* AI 思考 typing indicator */
+  .typing { display:flex; align-items:center; gap:6px; padding:8px 14px; margin-bottom:16px; }
+  .typing .dots { display:flex; gap:4px; }
+  .typing .dots span { width:7px; height:7px; border-radius:50%; background:var(--muted); animation:typingDot 1.3s ease-in-out infinite; }
+  .typing .dots span:nth-child(2) { animation-delay:.2s; }
+  .typing .dots span:nth-child(3) { animation-delay:.4s; }
+  @keyframes typingDot { 0%,60%,100% { opacity:.3; transform:translateY(0); } 30% { opacity:1; transform:translateY(-4px); } }
+  .typing .label { font-size:13px; color:var(--muted); }
 </style>
 </head>
 <body>
@@ -125,6 +162,7 @@
     <div id="inputRow">
       <textarea id="input" placeholder="例如：检查下集群健康状态，或 为什么 payment-api 一直重启？" rows="1"></textarea>
       <button id="send">发送</button>
+      <span id="sendSpinner" class="send-spinner" style="display:none;"></span>
     </div>
     <div id="status">⏳ 正在执行，请稍候…</div>
     <div class="hint">写操作会弹出确认卡片；点击工具卡片可查看执行过程与输出</div>
@@ -155,6 +193,8 @@ async function loadSessions() {
   list.forEach((s) => {
     const item = document.createElement("div");
     item.className = "session-item" + (s.id === currentSession ? " active" : "");
+    const nameRow = document.createElement("div");
+    nameRow.className = "name-row";
     const name = document.createElement("span");
     name.className = "name";
     name.textContent = s.name || s.id;
@@ -164,6 +204,7 @@ async function loadSessions() {
     del.textContent = "✕";
     del.onclick = async (e) => {
       e.stopPropagation();
+      if (!confirm("确定删除会话「" + (s.name || s.id) + "」？")) return;
       if (s.id === currentSession) closeStream();
       await api("/api/sessions/" + encodeURIComponent(s.id), { method: "DELETE" });
       loadSessions();
@@ -188,9 +229,16 @@ async function loadSessions() {
       }
     };
     item.onclick = () => openSession(s.id);
-    item.appendChild(name);
-    item.appendChild(ren);
-    item.appendChild(del);
+    nameRow.appendChild(name);
+    nameRow.appendChild(ren);
+    nameRow.appendChild(del);
+    item.appendChild(nameRow);
+    if (s.lastModified) {
+      const time = document.createElement("div");
+      time.className = "time";
+      time.textContent = formatTime(s.lastModified);
+      item.appendChild(time);
+    }
     box.appendChild(item);
   });
   if (!currentSession) {
@@ -216,11 +264,14 @@ function openSession(id) {
   currentSession = id;
   pendingTools = [];
   inner().innerHTML = "";
+  hideTyping();
+  setBusy(false);
+  showWelcome();
   loadSessions();
   if (!id) return;
   eventSource = new EventSource("/api/sessions/" + encodeURIComponent(id) + "/stream");
   eventSource.onmessage = (ev) => handleEvent(JSON.parse(ev.data));
-  eventSource.onerror = () => { chatBusy = false; };
+  eventSource.onerror = () => { chatBusy = false; setBusy(false); };
 }
 
 function handleEvent(ev) {
@@ -229,6 +280,9 @@ function handleEvent(ev) {
       setStatus(false);
       inner().innerHTML = "";
       pendingTools = [];
+      hideTyping();
+      if (!ev.messages || ev.messages.length === 0) { showWelcome(); setBusy(false); break; }
+      hideWelcome();
       (ev.messages || []).forEach((m) => {
         if (m.role === "user") addMsg("user", m.content);
         else if (m.role === "tool") addToolFromHistory(m);
@@ -236,25 +290,38 @@ function handleEvent(ev) {
       });
       scroll();
       chatBusy = false;
+      setBusy(false);
       break;
     case "text":
-    case "answer":
+      hideWelcome();
+      hideTyping();
       if (ev.text) addMsg("agent", ev.text);
-      if (ev.type === "answer") chatBusy = false;
-      if (ev.type === "answer") setStatus(false);
+      break;
+    case "answer":
+      hideTyping();
+      if (ev.text) addMsg("agent", ev.text);
+      chatBusy = false;
+      setBusy(false);
+      setStatus(false);
       break;
     case "tool-call":
+      hideWelcome();
+      hideTyping();
       if (ev.tool) addToolCard(ev.tool);
       break;
     case "tool-response":
       if (ev.tool) fillToolOutput(ev.tool);
+      showTyping(); // 工具执行完，AI 继续思考
       break;
     case "error":
+      hideTyping();
       if (ev.text) addMsg("error", ev.text);
       chatBusy = false;
+      setBusy(false);
       setStatus(false);
       break;
     case "choice-request":
+      hideTyping();
       if (ev.choice) showApproval(ev.choice);
       setStatus(false); // 等待用户审批
       break;
@@ -406,6 +473,7 @@ function showApproval(choice) {
       await api("/api/sessions/" + encodeURIComponent(currentSession) + "/approve", { method: "POST", body: JSON.stringify({ choice: value }) });
       card.remove();
       setStatus(true); // 审批后继续执行
+      showTyping();
     };
     return b;
   };
@@ -432,10 +500,12 @@ async function send() {
     }
   }
   chatBusy = true;
-  setStatus(true);
+  setBusy(true);
+  hideWelcome();
   addMsg("user", q);
   input.value = "";
   input.style.height = "46px";
+  showTyping();
   try {
     await api("/api/sessions/" + encodeURIComponent(currentSession) + "/send-message", {
       method: "POST", body: JSON.stringify({ query: q, skipPermissions: false }),
@@ -443,6 +513,8 @@ async function send() {
   } catch (e) {
     addMsg("error", e.message);
     chatBusy = false;
+    setBusy(false);
+    hideTyping();
   }
 }
 
@@ -459,6 +531,91 @@ function scroll() {
 function escapeHtml(s) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
           .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+function formatTime(t) {
+  try {
+    const d = new Date(t);
+    const now = new Date();
+    const diff = (now - d) / 1000;
+    if (diff < 60) return "刚刚";
+    if (diff < 3600) return Math.floor(diff / 60) + " 分钟前";
+    if (diff < 86400) return Math.floor(diff / 3600) + " 小时前";
+    if (diff < 604800) return Math.floor(diff / 86400) + " 天前";
+    return d.toLocaleDateString("zh-CN", { month:"short", day:"numeric" });
+  } catch (e) { return ""; }
+}
+
+function setBusy(busy) {
+  const input = $("input");
+  const sendBtn = $("send");
+  const spinner = $("sendSpinner");
+  if (busy) {
+    input.disabled = true;
+    input.placeholder = "AI 正在处理...";
+    sendBtn.disabled = true;
+    spinner.style.display = "inline-block";
+  } else {
+    input.disabled = false;
+    input.placeholder = "例如：检查下集群健康状态，或 为什么 payment-api 一直重启？";
+    sendBtn.disabled = false;
+    spinner.style.display = "none";
+    input.focus();
+  }
+}
+
+function showWelcome() {
+  if (inner().querySelector(".welcome")) return;
+  const w = document.createElement("div");
+  w.className = "welcome";
+  w.innerHTML = `
+    <div class="logo">⛵</div>
+    <h2>k8s-ai</h2>
+    <div class="tagline">Kubernetes AI 智能巡检、故障诊断与自然语言运维 Agent</div>
+    <div class="welcome-cards">
+      <div class="welcome-card" data-q="巡检下集群整体健康状态">
+        <div class="icon">🔍</div>
+        <div class="title">巡检集群</div>
+        <div class="desc">全量规则引擎扫描，秒级定位 Pod / 节点 / 存储 / 网络异常</div>
+      </div>
+      <div class="welcome-card" data-q="test-namespace 下面的服务为什么起不来？">
+        <div class="icon">🩺</div>
+        <div class="title">故障诊断</div>
+        <div class="desc">自然语言描述现象，AI 自动采集证据、关联分析、定位根因</div>
+      </div>
+      <div class="welcome-card" data-q="把 nginx-deployment 副本数扩到 3 个">
+        <div class="icon">🔧</div>
+        <div class="title">执行变更</div>
+        <div class="desc">扩缩容、重启、Patch 等写操作人工确认后安全执行</div>
+      </div>
+    </div>
+  `;
+  w.querySelectorAll(".welcome-card").forEach((card) => {
+    card.onclick = () => {
+      $("input").value = card.dataset.q;
+      $("input").focus();
+    };
+  });
+  inner().appendChild(w);
+}
+
+function hideWelcome() {
+  const w = inner().querySelector(".welcome");
+  if (w) w.remove();
+}
+
+function showTyping() {
+  if (inner().querySelector(".typing")) return;
+  const t = document.createElement("div");
+  t.className = "typing";
+  t.innerHTML = '<div class="dots"><span></span><span></span><span></span></div><span class="label">AI 正在分析...</span>';
+  inner().appendChild(t);
+  scroll();
+}
+
+function hideTyping() {
+  const t = inner().querySelector(".typing");
+  if (t) t.remove();
 }
 
 function markdown(s) {

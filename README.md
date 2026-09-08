@@ -30,8 +30,8 @@ k8s-ai web --addr 127.0.0.1:8081
 
 二期能力：
 
-- **Agent 工具集**：19 个只读工具（Pod/Node/Workload/存储/网络/Events/日志/ConfigMap/节点资源用量）+ 5 个诊断工具（scan_cluster/diagnose_*，复用一期 Scanner/规则/诊断）+ 写工具（patch_configmap/patch_deployment/scale/restart/delete_pod/label/kubectl）
-- **四层意图决策树**：诊断意图→kubectl -o yaml+previous logs+events；浏览意图→结构化摘要工具；ns 级健康→scan_cluster(namespace=X)；集群全景→scan_cluster()+健康检查协议。LLM 按场景在结构化工具和 kubectl+shell 之间自由选择，写操作统一走审批
+- **Agent 工具集**：20 个只读工具（Pod/Node/Workload/存储/网络/Events/日志/ConfigMap/节点资源用量 + 5 个诊断工具 scan_cluster/diagnose_*，复用一期 Scanner/规则/诊断）+ **1 个写工具**（kubectl，唯一入口：LLM 生成完整命令字符串，含 shell 构造走 `bash -c`，无 shell 走 argv 直调）
+- **四层意图决策树**：诊断意图→kubectl -o yaml+previous logs+events；浏览意图→结构化摘要工具；ns 级健康→scan_cluster(namespace=X)；集群全景→scan_cluster()+健康检查协议。读操作全走结构化工具；写操作只有 kubectl 一条路径，LLM 生成完整命令（含 shell 构造），统一走审批
 - **集群健康检查**：节点 → 资源使用（metrics API）→ 命名空间 → Pod → 系统组件 → 警告事件 → 规则评分 + LLM 综合评分双轨
 - **批量审批**：LLM 一轮返回多个写操作时，合并为一次审批面板（逐条展示等效 kubectl 命令 + 风险等级），用户选一次→顺序执行→分别回传结果。借鉴 kubectl-ai
 - **安全执行闭环**：诊断 → 询问"需要我修复吗？" → 用户同意 → 写操作审批卡片（等效 kubectl 命令 + 变更说明 + 风险等级）→ 执行 → 验证
@@ -65,7 +65,7 @@ make build
 ### Docker 镜像
 
 ```bash
-make docker VERSION=v2.0.8
+make docker VERSION=v2.0.9
 ```
 
 镜像基于 distroless static（非 root、小体积），prompts 已内嵌，无需挂载额外文件。

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"k8s.io/client-go/kubernetes/fake"
@@ -236,7 +237,7 @@ func TestChatServiceScanClusterTool(t *testing.T) {
 
 func TestChatServiceWriteApproval(t *testing.T) {
 	fl := &scriptedLLM{responses: []*llm.ChatResponse{
-		{ToolCalls: []llm.ToolCall{{ID: "c1", Name: "scale_deployment", Arguments: json.RawMessage(`{"namespace":"production","name":"payment-api","replicas":5}`)}}},
+		{ToolCalls: []llm.ToolCall{{ID: "c1", Name: "kubectl", Arguments: json.RawMessage(`{"command":"kubectl scale deployment/payment-api -n production --replicas=5"}`)}}},
 		{Content: "已扩容到 5 副本"},
 	}}
 	svc, _, wr := testChatService(t, fl)
@@ -262,7 +263,7 @@ func TestChatServiceWriteApproval(t *testing.T) {
 	if !gotChoice || gotAnswer != "已扩容到 5 副本" {
 		t.Fatalf("choice=%v answer=%q", gotChoice, gotAnswer)
 	}
-	if wr.lastReplicas != 5 {
-		t.Fatalf("写工具未执行: replicas=%d", wr.lastReplicas)
+	if !strings.Contains(wr.lastCommand, "scale") {
+		t.Fatalf("写工具未执行: cmd=%q", wr.lastReplicas)
 	}
 }
