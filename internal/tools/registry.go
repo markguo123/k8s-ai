@@ -36,6 +36,11 @@ func (r *Registry) Lookup(name string) (Tool, bool) {
 	return t, ok
 }
 
+// Remove 删除指定名字的工具；不存在时静默忽略。
+func (r *Registry) Remove(name string) {
+	delete(r.tools, name)
+}
+
 // All 返回全部工具（名字排序，顺序稳定）。
 func (r *Registry) All() []Tool {
 	names := make([]string, 0, len(r.tools))

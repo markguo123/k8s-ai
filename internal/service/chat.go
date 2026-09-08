@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"path/filepath"
+	"strings"
 
 	"github.com/k8s-ai/k8s-ai/internal/agent"
 	"github.com/k8s-ai/k8s-ai/internal/audit"
@@ -151,6 +152,7 @@ func chatWriteRunner(cfg *config.Config) (tools.WriteRunner, error) {
 	}
 	return executor.NewRunner(executor.Options{
 		KubectlBin: bin,
+		Kubeconfig: cfg.Kubernetes.Kubeconfig,
 		MaxBytes:   cfg.Agent.CmdMaxBytes,
 		DenyOps:    cfg.Agent.DenyOps,
 		Clientset:  cs,
@@ -225,11 +227,14 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 			return nil, err
 		}
 	}
+	for _, name := range s.cfg.Agent.DisabledTools {
+		reg.Remove(strings.TrimSpace(name))
+	}
 	events := make(chan ChatEvent, 64)
 	approver := &chatApprover{
 		events:      events,
 		respond:     respond,
-		skip:        req.SkipPermissions,
+		skip:        req.SkipPermissions || s.cfg.Agent.SkipPermissions,
 		autoApprove: !s.cfg.Agent.RequireApproval,
 	}
 	client := s.llmFactory(llm.Options{

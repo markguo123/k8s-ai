@@ -73,9 +73,8 @@ const toolSelectionProtocol = `
 ### 交叉规则（硬性）
 1. 结构化工具（get_pod / get_deployment 等）返回的是**摘要视图**，字段不完整。诊断意图下看到"现象解释不了/字段缺失/根因在某个自定义字段"时，必须用 kubectl -o yaml 升级，不能硬猜。
 2. kubectl 只读命令（get/describe/list/logs/events）自动执行，不触发审批；禁止读取 Secret（会被拦截），禁止 --raw。
-3. 写操作（patch/scale/delete/apply 等）**优先用结构化写工具**（patch_deployment/scale_deployment/delete_pod 等），它们有参数校验和风险分级，触发 OperationPlan 审批。
-   当结构化工具无法表达操作时（如完整 YAML 创建/重建、多 op JSON patch、复合命令 cat <<EOF | kubectl apply -f -、kubectl get all -o yaml、kubectl delete ... 2>/dev/null || true 等），LLM 可自由使用 kubectl 工具 + shell 构造，走人工审批即可。
-   **无论走哪条路径，写操作都必须经过人工审批，LLM 不得自动执行。**
+3. 写操作（patch/scale/delete/apply 等）统一使用 kubectl 工具生成完整命令（含完整 YAML 创建/重建、JSON patch、cat <<EOF | kubectl apply -f - 等复合 shell 构造时同样使用 kubectl 工具），触发人工审批。
+   **无论命令是否包含 shell 构造，写操作都必须经过人工审批，LLM 不得自动执行。**
 4. CRD 或自定义资源（非内置 Kind）：直接用 kubectl get <crd-kind> <name> -n <ns> -o yaml，结构化工具不一定支持。
 5. kubectl 工具支持 shell 构造（pipe/heredoc/redirect/&&/||/command substitution），但含 shell 语法的命令**永不自动执行**，必须走人工审批。`
 
@@ -84,7 +83,7 @@ const efficiencyProtocol = `
 调查效率：
 - 同一资源同一维度不要重复调用工具：get_logs 与 kubectl logs 二选一（优先结构化工具 get_logs/get_previous_logs）；同一 Pod 的 Events 不要反复拉取。
 - 查找资源时优先省略 namespace 让工具自动全集群搜索（如 get_pod 只给 name），不要猜测命名空间；找不到时先用 get_resources kind=pods 确认名称拼写。
-- Pod 启动失败/崩溃时，先 kubectl get pod -o yaml，再 kubectl logs --previous，然后 get_events + get_configmap 检查挂载配置；修复配置用 patch_configmap，应用配置用 restart_rollout 或 delete_pod。
+- Pod 启动失败/崩溃时，先 kubectl get pod -o yaml，再 kubectl logs --previous，然后 get_events + get_configmap 检查挂载配置；修复配置用 kubectl patch configmap，应用配置用 kubectl rollout restart 或 kubectl delete pod。
 - 已有足够证据就停止调查，直接回答；单次问题的工具调用尽量控制在 6 次以内。
 诊断类问题（为什么 Pod 起不来/一直重启/异常）最终回答保持简洁，按以下结构：
 现象（1-2 行）→ 根因（引用证据，不要贴大段原始输出）→ 排查方向 → 修复方案（含可执行命令）。
@@ -94,7 +93,7 @@ const efficiencyProtocol = `
 // 并定义修复流程四步（诊断→方案列举→用户选择→执行→验证）+ 拒绝语义禁忌 + PVC 修复偏好。
 const remediationGate = `
 修复行为约束（硬性）：
-- 用户只要求"检查/诊断/看下什么问题/为什么"时，禁止调用任何写工具（patch_configmap / patch_deployment / scale_deployment / restart_rollout / delete_pod / label / kubectl 写命令）。
+- 用户只要求"检查/诊断/看下什么问题/为什么"时，禁止调用写工具 kubectl 执行任何写命令。
   此时只输出：诊断结论 + 根因 + 修复方案（含命令），最后明确询问"需要我修复吗？"。
 - 只有用户明确要求修复（如"修复/帮我改/扩容/重启/解决"）或对修复提议给出肯定答复后，才允许调用写工具；每个写工具调用仍需走用户确认（审批）。
 - 修复执行后必须验证（get_pods/get_pod 确认 Ready、重启次数归零）并报告结果。

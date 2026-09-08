@@ -32,6 +32,18 @@ func TestRunKubectlSuccess(t *testing.T) {
 	}
 }
 
+func TestRunKubectlSetsKubeconfigEnv(t *testing.T) {
+	bin := fakeKubectl(t, "echo KUBECONFIG=%KUBECONFIG%")
+	r := NewRunner(Options{KubectlBin: bin, Kubeconfig: `C:\k8s\config.yaml`})
+	res, err := r.RunKubectl(context.Background(), "kubectl get pods -n default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Stdout, `KUBECONFIG=C:\k8s\config.yaml`) {
+		t.Fatalf("kubectl 子进程未收到 KUBECONFIG: %q", res.Stdout)
+	}
+}
+
 func TestRunKubectlNonZeroExit(t *testing.T) {
 	bin := fakeKubectl(t, "echo boom\r\nexit /b 3")
 	r := NewRunner(Options{KubectlBin: bin, MaxBytes: 4096})

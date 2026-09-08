@@ -362,7 +362,8 @@ k8s-ai web --addr 127.0.0.1:8081 --config ~/.k8s-ai/config.yaml
 ### 8.4 kubectl 兜底工具
 
 - 通用 `kubectl` 工具需要本机安装 kubectl 并在 PATH（或配置 `kubernetes.kubectl_path`）；
-- 其余结构化工具（get_*/scan_*/diagnose_*/写工具）不依赖 kubectl，走 client-go。
+- kubectl 工具会继承 `kubernetes.kubeconfig`（通过 `KUBECONFIG` 环境变量传入子进程），保证写命令与 client-go 使用同一集群配置；
+- 只读结构化工具（get_*/scan_*/diagnose_*）不依赖 kubectl，走 client-go；写操作统一走 kubectl 工具，因此写操作依赖 kubectl。
 
 ### 8.5 常用二期配置
 
@@ -372,8 +373,9 @@ agent:
   max_tool_calls: 20          # 累计工具调用上限
   tool_calling: native        # native | shim | auto
   require_approval: true      # 写操作默认要求确认
-  skip_permissions: false     # --skip-permissions（自动化显式开启）
+  skip_permissions: false     # 配置级免审批（等效 --skip-permissions）
   deny_ops: []                # 可选硬拦截，如 ["delete namespace"]
+  disabled_tools: []          # 注册后移除指定工具，例如 ["kubectl"] 禁止写入口
   session_dir: ~/.k8s-ai/sessions
   audit_dir: ~/.k8s-ai/audit
 webui:

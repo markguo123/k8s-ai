@@ -61,6 +61,29 @@ func TestParseCommandShellDetected(t *testing.T) {
 	}
 }
 
+func TestParseCommandGlobalFlagBeforeVerb(t *testing.T) {
+	// 动词前的全局 flag 及其独立值不应被误当成 verb。
+	cases := []string{
+		"kubectl -n default get pods",
+		"kubectl --namespace default get pods",
+		"kubectl --context prod get pods",
+		"kubectl -o yaml get pods",
+	}
+	for _, cmd := range cases {
+		pc, err := ParseCommandDetail(cmd)
+		if err != nil {
+			t.Errorf("%q: %v", cmd, err)
+			continue
+		}
+		if pc.IsShell {
+			t.Errorf("%q 不应标记为 shell", cmd)
+		}
+		if len(pc.Argv) < 2 || pc.Argv[0] != "kubectl" {
+			t.Errorf("%q: argv = %v", cmd, pc.Argv)
+		}
+	}
+}
+
 func TestParseCommandRejects(t *testing.T) {
 	rejects := []string{
 		"get pods",
@@ -77,6 +100,22 @@ func TestParseCommandRejects(t *testing.T) {
 	for _, cmd := range rejects {
 		if _, err := ParseCommand(cmd); err == nil {
 			t.Errorf("应拒绝: %q", cmd)
+		}
+	}
+}
+
+func TestParseCommandRejectsInteractiveShell(t *testing.T) {
+	rejects := []string{
+		"kubectl edit deployment/d && echo ok",
+		"kubectl attach pod; echo ok",
+		"kubectl port-forward svc/x 80:80 && echo ok",
+		"kubectl exec -it pod -- sh && echo ok",
+		"kubectl exec -i pod -- sh; echo ok",
+		"echo ok | kubectl edit deployment/d",
+	}
+	for _, cmd := range rejects {
+		if _, err := ParseCommandDetail(cmd); err == nil {
+			t.Errorf("应拒绝 shell 模式下的交互式命令: %q", cmd)
 		}
 	}
 }

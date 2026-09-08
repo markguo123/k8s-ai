@@ -63,7 +63,7 @@ kubectl 动词分类表          # 只借鉴分类思路，改为 k8s-ai 的风�
 
 | 能力 | kubectl-ai | k8s-ai 二期 |
 |---|---|---|
-| 工具执行 | shell 执行 kubectl | kubectl 二进制 argv 直调（无 shell）+ client-go 结构化写工具 |
+| 工具执行 | shell 执行 kubectl | kubectl 二进制 argv 直调（无 shell）；写操作唯一入口为 kubectlTool，含 shell 构造的命令经人工审批后走 `bash -c` |
 | 权限判断 | modifies yes/no/unknown | SAFE→CRITICAL 风险分级 + 人类确认 |
 | 写操作 | 交互确认 / --skip-permissions | 默认确认；`--skip-permissions` 仅自动化显式开启 |
 | 诊断 | 无（纯问答） | 一期 Scanner+Rules+Evidence+Diagnosis 全部 Tool 化 |
@@ -603,14 +603,15 @@ Command Parser（argv 解析，无 shell）→ Verb Allowlist → Risk Assessmen
 
 ## 13.2 kubectl 执行路径（改造 kubectl-ai）
 
-- 通用 `kubectl` Tool：LLM 生成完整 kubectl 命令字符串 → 解析为 argv（字符串切分 + 引号处理，拒绝元字符 `| & ; > < $ () \``）→ 动词白名单校验 → 风险分级 → 审批 → `exec.Command("kubectl", argv...)` 直调二进制 → 输出捕获/截断/脱敏。
-- 禁止：`bash -c`、管道、重定向、子 shell、交互式命令（`exec -it` / `edit` / `attach` / `port-forward` 等拒绝并回传原因）。
+- 通用 `kubectl` Tool：LLM 生成完整 kubectl 命令字符串 → 引号感知切分；无 shell 元字符时解析为 argv → 动词白名单校验 → 风险分级 → 审批 → `exec.Command("kubectl", argv...)` 直调二进制 → 输出捕获/截断/脱敏。
+- 含 shell 元字符（`| & ; > < $ () \``）的命令标记为 shell 模式，必须经人工审批后才执行 `bash -c`；shell 模式同样拒绝交互式命令（`exec -it` / `edit` / `attach` / `port-forward` 等拒绝并回传原因）。
+- Secret / `--raw` 红线使用 `mvdan.cc/sh/v3/syntax` 解析命令后识别，解析失败回退到保守词法扫描；kubectl 子进程通过 `KUBECONFIG` 环境变量继承 `kubernetes.kubeconfig`。
 - 流式命令（`logs -f` / `get -w`）：不在解析层拒绝，由 executor 统一套固定超时（默认 7s，`Options.StreamTimeout` 可配）采样部分输出并标记 `Result.StreamTimeout`，超时不视为错误、不阻塞 Agent Loop（借鉴 kubectl-ai streaming.go）。
 - 输出上限默认 64KB（`agent.cmd_max_bytes`）。
 
-## 13.3 client-go 执行路径（结构化写 Tool）
+## 13.3 client-go 执行路径（预留结构化写能力）
 
-常用写操作提供结构化 Tool，直接走 client-go：
+当前写操作不再暴露独立的结构化 Tool，统一由 kubectlTool 覆盖。原 client-go 结构化写实现保留在 `internal/executor`，作为未来内部自动修复等场景的预留能力：
 
 ```text
 scale_deployment        AppsV1().Deployments(ns).UpdateScale(...)
@@ -619,7 +620,7 @@ restart_rollout         等价 rollout restart（更新 annotation 触发滚动�
 label / annotate        Update(...)
 ```
 
-结构化写 Tool 与 kubectl Tool 共用同一审批与验证流水线。
+这些方法与 kubectl Tool 共用同一审批与验证流水线；当前阶段不直接注册为 LLM 工具。
 
 ## 13.4 绝对底线
 
@@ -927,7 +928,7 @@ agent:
   timeout: 5m
   tool_calling: native        # native | shim | auto
   require_approval: true      # 写操作默认要求确认
-  skip_permissions: false     # --skip-permissions（自动化显式开启）
+  skip_permissions: false     # 配置级免审批（等效 --skip-permissions；自动化显式开启）
   deny_ops: []                # 可选硬拦截（默认空，如 ["delete namespace"]）
   result_max_bytes: 8192
   turn_max_bytes: 32768
@@ -935,13 +936,15 @@ agent:
   history_turns: 20
   session_dir: ~/.k8s-ai/sessions
   audit_dir: ~/.k8s-ai/audit
-  disabled_tools: []
+  disabled_tools: []          # 在注册后移除指定工具（例如 ["kubectl"] 禁止写入口）
 webui:
   addr: 127.0.0.1:8081
 mcp:
   enabled: false
   servers: []
 ```
+
+`agent.skip_permissions: true` 会像 CLI/Web 的 `--skip-permissions` 一样跳过写操作人工确认；`agent.disabled_tools` 会在每次 Chat 装配工具时生效。
 
 ---
 

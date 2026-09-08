@@ -60,6 +60,18 @@ func TestRegistrySchemasSorted(t *testing.T) {
 	}
 }
 
+func TestRegistryRemove(t *testing.T) {
+	r := NewRegistry()
+	if err := r.Register(&stubTool{name: "get_pod"}); err != nil {
+		t.Fatal(err)
+	}
+	r.Remove("get_pod")
+	if _, ok := r.Lookup("get_pod"); ok {
+		t.Fatal("Remove 后仍能 lookup 到工具")
+	}
+	r.Remove("missing") // 不存在应静默忽略
+}
+
 func TestMarshalForLLM(t *testing.T) {
 	out, truncated := MarshalForLLM(ToolResult{
 		Data: map[string]any{"phase": "Running", "secret": "sk-test-secret-value"},

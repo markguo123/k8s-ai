@@ -2,6 +2,28 @@
 
 本项目遵循 docs/VERSIONING.md 的里程碑阶梯约定。
 
+## [v2.0.10] - 2026-09-08
+
+修复高危正确性与安全边界，补齐配置项生效，并同步提示词。
+
+### Fixed
+
+- **提示词移除已删除的结构化写工具**：`prompt.go` 不再引导 LLM 调用 `patch_deployment / scale_deployment / delete_pod / patch_configmap / restart_rollout / label`，写操作统一指向 kubectl 工具。
+- **kubectl 动词解析支持全局 flag 独立值**：`kubectl -n default get pods`、`kubectl --context prod get pods` 等命令不再把 flag 值误判为 verb；风险分级与只读判断同步修正。
+- **shell 模式交互式命令硬拒绝**：`kubectl edit ... && echo`、`kubectl exec -it ... && echo` 等不再因动词位于命令开头而绕过交互命令拦截。
+- **Secret / --raw 红线加固**：`IsForbiddenCommand` 能识别 `sec"ret"`、`$(echo secret)`、`'--raw'` 等引用/替换混淆。
+- **delete 风险分级补 Service**：`kubectl delete service ...` 现在归类为 CRITICAL，与 AGENTS.md 红线一致。
+- **配置项生效**：`agent.skip_permissions` 现在会跳过写操作人工确认；`agent.disabled_tools` 会在 Chat 装配工具时移除指定工具。
+
+### Borrowed from kubectl-ai
+
+- **命令安全分类改用 shell 解析器**：`IsForbiddenCommand` 增加 `mvdan.cc/sh/v3/syntax` 解析路径，先按 AST 识别每个 kubectl 调用中的 Secret/`--raw`，解析失败再回退到轻量词法扫描；比纯字符串匹配更能覆盖引号拼接与命令替换。
+- **kubectl 子进程注入 KUBECONFIG**：executor 把 `kubernetes.kubeconfig` 通过 `KUBECONFIG` 环境变量传给 kubectl，避免写命令与 client-go 使用不同集群配置。
+
+### Tests
+
+- 新增解析层、审批层、registry、service 层测试，覆盖全局 flag 前置、shell 交互命令拦截、Secret 混淆、disabled_tools 与 skip_permissions。
+
 ## [v2.0.9] - 2026-09-08
 
 删除 6 个结构化写工具，写操作统一走 kubectlTool + 执行器 bug 修复 + Web UI 第一批交互优化。

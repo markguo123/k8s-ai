@@ -10,6 +10,7 @@ import (
 // Runner 同时实现 kubectl 执行与 client-go 结构化写操作。
 type Runner struct {
 	bin           string
+	kubeconfig    string
 	maxBytes      int
 	denyOps       []string
 	cs            kubernetes.Interface
@@ -21,6 +22,7 @@ type Runner struct {
 func NewRunner(opts Options) *Runner {
 	r := &Runner{
 		bin:           opts.KubectlBin,
+		kubeconfig:    opts.Kubeconfig,
 		maxBytes:      opts.MaxBytes,
 		denyOps:       opts.DenyOps,
 		cs:            opts.Clientset,

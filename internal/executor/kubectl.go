@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"time"
 
@@ -70,6 +71,10 @@ func (r *Runner) RunKubectl(ctx context.Context, command string) (Result, error)
 	stderr := newCappedBuffer(r.maxBytes)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
+	cmd.Env = os.Environ()
+	if r.kubeconfig != "" {
+		cmd.Env = append(cmd.Env, "KUBECONFIG="+r.kubeconfig)
+	}
 	runErr := cmd.Run()
 	// 流式超时：捕获已收到的部分输出，标记 StreamTimeout，不视为错误。
 	// 仅当父 ctx 未取消、且我们的超时截止才触发，避免吞掉真实取消。

@@ -143,6 +143,61 @@ func TestChatServiceRoundTrip(t *testing.T) {
 	}
 }
 
+func TestChatServiceDisabledTools(t *testing.T) {
+	fl := &scriptedLLM{responses: []*llm.ChatResponse{
+		{ToolCalls: []llm.ToolCall{{ID: "c1", Name: "get_resources", Arguments: json.RawMessage(`{"kind":"nodes"}`)}}},
+		{Content: "done"},
+	}}
+	svc, cfg, _ := testChatService(t, fl)
+	cfg.Agent.DisabledTools = []string{"get_resources"}
+	if _, err := svc.GetOrCreateSession("s1", "", "qwen-plus"); err != nil {
+		t.Fatal(err)
+	}
+	respond := make(chan string, 1)
+	events, err := svc.Chat(context.Background(), ChatRequest{SessionID: "s1", Query: "list nodes"}, respond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotUnknown := false
+	for ev := range events {
+		if ev.Type == ChatEventToolResponse && ev.Tool != nil && strings.Contains(ev.Tool.Result, "unknown tool") {
+			gotUnknown = true
+		}
+	}
+	if !gotUnknown {
+		t.Fatal("disabled tool 应被移除，工具调用应返回 unknown tool")
+	}
+}
+
+func TestChatServiceConfigSkipPermissions(t *testing.T) {
+	fl := &scriptedLLM{responses: []*llm.ChatResponse{
+		{ToolCalls: []llm.ToolCall{{ID: "c1", Name: "kubectl", Arguments: json.RawMessage(`{"command":"kubectl scale deployment/web --replicas=2"}`)}}},
+		{Content: "done"},
+	}}
+	svc, cfg, wr := testChatService(t, fl)
+	cfg.Agent.SkipPermissions = true
+	if _, err := svc.GetOrCreateSession("s1", "", "qwen-plus"); err != nil {
+		t.Fatal(err)
+	}
+	respond := make(chan string, 1)
+	events, err := svc.Chat(context.Background(), ChatRequest{SessionID: "s1", Query: "scale web"}, respond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotChoice := false
+	for ev := range events {
+		if ev.Type == ChatEventChoice {
+			gotChoice = true
+		}
+	}
+	if gotChoice {
+		t.Fatal("config skip_permissions=true 不应发出审批请求")
+	}
+	if wr.lastCommand != "kubectl scale deployment/web --replicas=2" {
+		t.Fatalf("kubectl 命令未执行: %q", wr.lastCommand)
+	}
+}
+
 func TestChatApproverSkip(t *testing.T) {
 	ap := &chatApprover{events: make(chan ChatEvent, 4), skip: true}
 	choice, err := ap.Confirm(context.Background(), "p", nil)

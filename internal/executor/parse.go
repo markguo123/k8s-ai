@@ -64,7 +64,7 @@ func ParseCommandDetail(command string) (ParsedCommand, error) {
 	// shell 模式：命令可能不以 kubectl 开头（如 cat <<EOF | kubectl apply），
 	// 跳过 tokens[0] 检查和动词白名单，但扫描全命令拒绝交互式动词。
 	if isShell {
-		if err := rejectInteractiveAnywhere(command); err != nil {
+		if err := rejectInteractiveAnywhere(tokens); err != nil {
 			return ParsedCommand{}, err
 		}
 		return ParsedCommand{Argv: tokens, IsShell: true}, nil
@@ -89,14 +89,26 @@ func ParseCommandDetail(command string) (ParsedCommand, error) {
 	return ParsedCommand{Argv: tokens, IsShell: false}, nil
 }
 
-// rejectInteractiveAnywhere 在 shell 命令中扫描是否含交互式动词（如 edit/attach/port-forward）。
-// shell 模式下动词可能在命令任意位置（如 cat <<EOF | kubectl edit ...）。
-func rejectInteractiveAnywhere(command string) error {
-	for verb := range rejectedInteractiveVerbs {
-		if strings.Contains(command, " kubectl "+verb+" ") ||
-			strings.Contains(command, " kubectl "+verb+"\t") ||
-			strings.HasSuffix(command, " kubectl "+verb) {
+// rejectInteractiveAnywhere 在 shell 命令 token 中扫描所有 kubectl 调用，
+// 拒绝交互式动词（edit/attach/port-forward 等）与 exec -i/-t。
+// 与旧实现的区别：不再依赖 " kubectl verb " 这种带前导空格的子串，
+// 因此 kubectl 位于命令开头或紧邻 |/&& 等元字符时同样会被拦截。
+func rejectInteractiveAnywhere(tokens []string) error {
+	for i := 0; i < len(tokens); i++ {
+		if tokens[i] != "kubectl" {
+			continue
+		}
+		verb, rest := extractFirstNonFlag(tokens[i+1:])
+		if verb == "" {
+			continue
+		}
+		if rejectedInteractiveVerbs[verb] {
 			return fmt.Errorf("interactive command %q is not supported", verb)
+		}
+		if verb == "exec" {
+			if err := validateFlags(verb, rest); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -179,9 +191,13 @@ func tokenize(command string) (tokens []string, isShell bool, err error) {
 	return tokens, isShell, nil
 }
 
+// extractFirstNonFlag 返回第一个已知 kubectl 动词及其后续参数。
+// 使用已知动词集合而不是"第一个非 flag token"，是为了正确处理
+// `kubectl -n default get pods` / `kubectl --context prod get pods` 这类
+// 动词前出现全局 flag 及其独立值的合法命令。
 func extractFirstNonFlag(tokens []string) (string, []string) {
 	for i, t := range tokens {
-		if !strings.HasPrefix(t, "-") {
+		if allowedVerbs[t] || rejectedInteractiveVerbs[t] {
 			return t, tokens[i+1:]
 		}
 	}

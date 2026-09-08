@@ -30,14 +30,17 @@ func TestIsReadOnlyCommandShellNeverReadOnly(t *testing.T) {
 
 func TestIsForbiddenCommand(t *testing.T) {
 	forbidden := []string{
-		"kubectl get secret -n default",                     // get secret
-		"kubectl get secrets",                               // 复数
-		"kubectl get secret/db-password -o yaml",            // secret/name
-		"kubectl describe secret db-password -n production", // describe
-		"kubectl delete secret db-password",                 // 写也拦（输出/审计不落敏感数据）
+		"kubectl get secret -n default",                          // get secret
+		"kubectl get secrets",                                    // 复数
+		"kubectl get secret/db-password -o yaml",                 // secret/name
+		"kubectl describe secret db-password -n production",      // describe
+		"kubectl delete secret db-password",                      // 写也拦（输出/审计不落敏感数据）
 		"kubectl get --raw /api/v1/namespaces/default/secrets/x", // --raw 绕过
-		"kubectl get --raw=/api/v1/pods",                    // --raw= 形式
-		"kubectl get pods -n SECRET",                        // 大小写不敏感（命名空间极端例，宁严勿漏）
+		"kubectl get --raw=/api/v1/pods",                         // --raw= 形式
+		"kubectl get pods -n SECRET",                             // 大小写不敏感（命名空间极端例，宁严勿漏）
+		`kubectl get sec"ret" -o yaml`,                           // 引号混淆 secret
+		"kubectl get $(echo secret) -o yaml",                     // 命令替换混淆 secret
+		`kubectl get '--raw' /api/v1/pods`,                       // 引号混淆 --raw
 	}
 	for _, cmd := range forbidden {
 		if !IsForbiddenCommand(cmd) {
@@ -51,6 +54,7 @@ func TestIsForbiddenCommand(t *testing.T) {
 		"kubectl describe pod web-0",
 		"kubectl get configmap my-secret-config -n default", // 名字含 secret 但资源是 configmap
 		"kubectl get pods -l app=secret-app",                // label 值含 secret
+		"kubectl get pod my-secret-pod -n default",          // 资源名含 secret 但不是 secret 资源
 		"kubectl top pods -n production",
 		"kubectl delete pod web-0 -n default",
 	}
@@ -67,6 +71,8 @@ func TestClassifyCommand(t *testing.T) {
 		want model.RiskLevel
 	}{
 		{"kubectl get pods -n default", model.RiskSafe},
+		{"kubectl -n default get pods", model.RiskSafe},
+		{"kubectl --context prod get pods", model.RiskSafe},
 		{"kubectl logs pod-1 -n default", model.RiskSafe},
 		{"kubectl scale deployment/payment-api --replicas=5", model.RiskMedium},
 		{"kubectl rollout restart deployment/payment-api", model.RiskMedium},
@@ -75,6 +81,8 @@ func TestClassifyCommand(t *testing.T) {
 		{"kubectl delete pod web-0 -n default", model.RiskHigh},
 		{"kubectl delete deployment/payment-api -n production", model.RiskCritical},
 		{"kubectl delete pvc data -n production", model.RiskCritical},
+		{"kubectl delete service web -n production", model.RiskCritical},
+		{"kubectl delete -n production service web", model.RiskCritical},
 		{"kubectl delete namespace production", model.RiskCritical},
 		{"kubectl exec pod-1 -- ls", model.RiskHigh},
 		{"kubectl edit deployment/payment-api", model.RiskCritical},
@@ -103,6 +111,9 @@ func TestClassifyCommand(t *testing.T) {
 func TestIsReadOnlyCommand(t *testing.T) {
 	if !IsReadOnlyCommand("kubectl get pods") {
 		t.Fatal("get 应为只读")
+	}
+	if !IsReadOnlyCommand("kubectl -n default get pods") {
+		t.Fatal("动词前带 -n 的 get 应为只读")
 	}
 	if IsReadOnlyCommand("kubectl delete pod x") {
 		t.Fatal("delete 不应为只读")

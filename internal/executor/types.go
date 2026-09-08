@@ -11,7 +11,7 @@ import (
 // Result 是一次命令执行的结果。
 type Result struct {
 	Command       string         `json:"command"`
-	Stdout       string         `json:"stdout,omitempty"`
+	Stdout        string         `json:"stdout,omitempty"`
 	Stderr        string         `json:"stderr,omitempty"`
 	ExitCode      int            `json:"exitCode"`
 	Truncated     bool           `json:"truncated,omitempty"`
@@ -23,6 +23,9 @@ type Result struct {
 type Options struct {
 	// KubectlBin kubectl 二进制路径；空 = PATH 查找 "kubectl"。
 	KubectlBin string
+	// Kubeconfig 传给 kubectl 子进程的 KUBECONFIG 环境变量；
+	// 空 = 使用进程默认 kubeconfig 加载规则（与 client-go 保持一致）。
+	Kubeconfig string
 	// MaxBytes 单次命令输出上限（默认 64KB）。
 	MaxBytes int
 	// DenyOps 硬拦截子串（agent.deny_ops）。

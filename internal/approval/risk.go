@@ -49,6 +49,7 @@ var writeRisks = map[string]model.RiskLevel{
 var criticalDeleteResources = map[string]bool{
 	"deployment": true, "deployments": true,
 	"statefulset": true, "statefulsets": true,
+	"service": true, "services": true,
 	"pvc": true, "pvcs": true,
 	"pv": true, "pvs": true,
 	"storageclass": true, "storageclasses": true,
@@ -57,6 +58,30 @@ var criticalDeleteResources = map[string]bool{
 	"clusterrolebinding": true, "clusterrolebindings": true,
 	"secret": true, "secrets": true,
 	"cluster": true,
+}
+
+// valueFlags 是需要独立值的 kubectl flag（解析 resource/subcommand 时跳过其值）。
+// 不追求覆盖 kubectl 全部 flag，只覆盖全局 flag 和 delete/rollout 等分类路径上
+// 可能出现在资源名或子命令之前的常用 flag；含 "=" 的 flag 由调用方直接跳过。
+var valueFlags = map[string]bool{
+	"-n": true, "--namespace": true,
+	"--context": true, "--kubeconfig": true,
+	"--server": true, "--user": true, "--cluster": true,
+	"--token": true, "--as": true, "--as-group": true,
+	"--certificate-authority": true, "--client-certificate": true,
+	"--client-key": true, "--request-timeout": true,
+	"--tls-server-name": true, "--as-uid": true,
+	"--username": true, "--password": true, "--cache-dir": true,
+	"-o": true, "--output": true,
+	"-l": true, "--selector": true, "--field-selector": true,
+	"--template": true, "--sort-by": true, "--label-columns": true,
+	"--since": true, "--since-time": true, "--tail": true,
+	"--grace-period": true, "--timeout": true, "--cascade": true,
+	"--requests": true, "--limits": true, "--replicas": true,
+	"--min": true, "--max": true, "--cpu-percent": true, "--memory-percent": true,
+	"--from": true, "--to": true, "--patch": true, "-p": true,
+	"--patch-file": true, "--type": true, "--for": true,
+	"--kustomize": true, "-k": true, "-f": true, "--filename": true,
 }
 
 // ClassifyCommand 解析 kubectl 命令并给出风险等级。
@@ -167,23 +192,37 @@ func hasDryRun(command string) bool {
 	return false
 }
 
-// extractVerb 提取 kubectl 后的第一个非 flag 动词（及剩余参数）。
+// extractVerb 提取 kubectl 后的第一个已知动词（及剩余参数）。
+// 使用已知动词集合而非"第一个非 flag token"，是为了正确处理
+// `kubectl -n default get pods` / `kubectl --context prod get pods` 这类
+// 动词前出现全局 flag 及其独立值的合法命令。
 func extractVerb(command string) (verb string, rest []string) {
 	fields := strings.Fields(command)
 	for i := 1; i < len(fields); i++ {
 		f := fields[i]
-		if strings.HasPrefix(f, "-") {
-			continue
+		if isKnownVerb(f) {
+			return f, fields[i+1:]
 		}
-		return f, fields[i+1:]
 	}
 	return "", nil
 }
 
+func isKnownVerb(s string) bool {
+	_, isWrite := writeRisks[s]
+	return readOnlyVerbs[s] || isWrite || s == "delete"
+}
+
 func firstNonFlag(fields []string) string {
-	for _, f := range fields {
+	for i := 0; i < len(fields); i++ {
+		f := fields[i]
 		if !strings.HasPrefix(f, "-") {
 			return f
+		}
+		if strings.Contains(f, "=") {
+			continue
+		}
+		if valueFlags[f] && i+1 < len(fields) {
+			i++
 		}
 	}
 	return ""
