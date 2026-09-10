@@ -328,7 +328,9 @@ func (s *chatService) runChat(ctx context.Context, ag *agent.Agent, sess *sessio
 	}
 }
 
-// summarizeToolPrelude 保留工具调用前的短进度说明，过滤可能被误认为最终报告的正文。
+// summarizeToolPrelude 保留工具调用前的短进度说明，避免把真正的诊断文本直接丢掉。
+// 关键点：只过滤明显的状态噪音（空文本、超长文本、Markdown/代码块），不要因为
+// “修复/建议/结论”等词语出现在思考过程中而误伤实际诊断内容。
 func summarizeToolPrelude(text string) string {
 	text = strings.TrimSpace(text)
 	if text == "" || len([]rune(text)) > 160 {
@@ -336,11 +338,6 @@ func summarizeToolPrelude(text string) string {
 	}
 	if strings.Contains(text, "```") || strings.Contains(text, "##") {
 		return ""
-	}
-	for _, keyword := range []string{"根因", "修复", "报告", "结论", "已修复", "验证结果", "建议"} {
-		if strings.Contains(text, keyword) {
-			return ""
-		}
 	}
 	return text
 }

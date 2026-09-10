@@ -195,15 +195,14 @@ func (a *Agent) chatOnce(ctx context.Context, mode string, req llm.ChatRequest) 
 
 func (a *Agent) chatOnceTyped(ctx context.Context, sc llm.TypedStreamClient, req llm.ChatRequest) (*llm.ChatResponse, bool, error) {
 	received := false
-	progressSent := false
 	var pending strings.Builder
 	resp, err := sc.ChatStreamEvents(ctx, req, func(ev llm.StreamEvent) {
 		switch ev.Type {
 		case llm.StreamReasoningDelta:
-			if !progressSent {
-				progressSent = true
-				a.Emit(Message{Source: SourceModel, Type: MessageTypeReasoningDelta, Payload: "正在分析证据"})
+			if ev.Text == "" {
+				return
 			}
+			a.Emit(Message{Source: SourceModel, Type: MessageTypeReasoningDelta, Payload: ev.Text})
 		case llm.StreamContentDelta:
 			if ev.Text == "" {
 				return

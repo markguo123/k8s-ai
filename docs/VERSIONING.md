@@ -2,7 +2,7 @@
 
 ## 当前版本
 
-- **v2.2.2-0910**（2026-09-10）：二期流式体验与稳定性迭代（语义化流事件、短进度保留、工具调用顺序闸门、最终报告收尾、Web 分析过程折叠、失败工具调用收敛、流式参数归一化）。
+- **v2.2.1**（2026-09-10）：二期诊断报告与流式稳定性修复（保留真实 reasoning、移除工具前过度过滤、诊断报告按现象→根因→证据→方案→验证输出、证据不足时优先只读取证、工具失败调用收敛）。
 - **v2.2.0**（2026-09-09）：二期迭代（LLM 流式输出：llm.stream: true、SSE 逐 token 推送、Web UI 增量渲染 appendDelta、ChatEventDelta 事件类型、流式失败自动降级非流式）。
 - **v2.1.0**（2026-09-08）：二期迭代（提示词移除已删除结构化写工具；kubectl 动词解析支持全局 flag 独立值；shell 交互命令硬拒绝；Secret/--raw 红线改用 mvdan shell 解析器加固；delete 风险分级补 Service；skip_permissions/disabled_tools 配置生效；kubectl 子进程注入 KUBECONFIG）。
 - **v2.0.9**（2026-09-08）：二期迭代（写工具从 7→1，删除 6 个结构化写工具统一走 kubectl 唯一路径；Web UI 交互优化：输入框 disabled+spinner、空会话欢迎页、删除确认、会话时间戳、AI 思考 typing indicator）。

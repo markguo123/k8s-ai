@@ -1,6 +1,6 @@
 # k8s-ai
 
-> 当前版本：**v2.2.2-0910**（二期迭代；版本约定见 [docs/VERSIONING.md](docs/VERSIONING.md)，变更见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）
+> 当前版本：**v2.2.1**（二期迭代；版本约定见 [docs/VERSIONING.md](docs/VERSIONING.md)，变更见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）
 
 Kubernetes AI 智能巡检、故障诊断与自然语言运维 Agent
 （一期：只读巡检 + 规则引擎 + 私有大模型诊断 + 报告；二期：`chat` 对话 Agent + `web` 浏览器界面 + 读写操作 + 人工确认）。
@@ -66,7 +66,7 @@ make build
 ### Docker 镜像
 
 ```bash
-make docker VERSION=v2.2.2-0910
+make docker VERSION=v2.2.1
 ```
 
 镜像基于 distroless static（非 root、小体积），prompts 已内嵌，无需挂载额外文件。

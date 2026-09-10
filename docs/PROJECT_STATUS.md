@@ -27,11 +27,11 @@
 - [x] 二期迭代 v2.0.6–v2.0.8：四层意图决策树 + 砍 diagnose\_\* 双重 LLM + Secret 拒读 + 修复流程三拦截 + 放开 shell 构造 + 批量审批 + 拒绝闸门归一化 + 架构测试反转
 - [x] 二期迭代 v2.0.9：写工具从 7→1（删除 6 个结构化写工具，写操作统一走 kubectl 唯一路径）；kubectlTool 补 Text 字段修复 LLM 展示；Web UI 交互优化（输入框 disabled+spinner、空会话欢迎页、删除确认、会话时间戳、AI 思考 typing indicator）
 - [x] 二期迭代 v2.1.0：提示词移除已删除结构化写工具；kubectl 动词解析支持全局 flag 独立值；shell 模式交互命令硬拒绝；Secret/--raw 红线改用 mvdan shell 解析器加固；delete 风险分级补 Service；配置项 skip_permissions/disabled_tools 生效；kubectl 子进程注入 KUBECONFIG
-- [x] 二期迭代 v2.2.2-0910：流式体验与顺序收敛（语义化 content/reasoning 流事件、progress/answer-delta/tool-call/tool-response/answer 分阶段事件、短进度保留、工具前完整报告拦截、最终报告收尾、Web 分析过程折叠、失败工具调用去重、流式参数归一化）
+- [x] 二期迭代 v2.2.1：诊断报告与流式稳定性修复（保留真实 content/reasoning 流事件、progress/answer-delta/tool-call/tool-response/answer 分阶段事件、工具前诊断摘要不过度过滤、最终报告完整性约束、证据不足时优先只读取证、Web 分析过程折叠、失败工具调用去重、流式参数归一化）
 
 ## 进行中
 
-- 无：一期（v1.0.x）与二期（v2.0.x–v2.2.x）均已交付，当前版本 v2.2.2-0910
+- 无：一期（v1.0.x）与二期（v2.0.x–v2.2.x）均已交付，当前版本 v2.2.1
 
 ## 下一步
 

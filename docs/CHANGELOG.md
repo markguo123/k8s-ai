@@ -2,21 +2,24 @@
 
 本项目遵循 docs/VERSIONING.md 的里程碑阶梯约定。
 
-## [v2.2.2-0910] - 2026-09-10
+## [v2.2.1] - 2026-09-10
 
-流式对话体验与工具调用顺序收敛：保留简短执行说明，确保工具调用和最终报告按阶段展示。
+诊断报告完整性与流式对话稳定性修复：保留真实诊断内容，避免工具调用阶段和证据不足时过早收敛到修复方案。
 
 ### Added
 
-- **语义化 LLM 流事件**：区分 `content-delta` 与 `reasoning-delta`；思考内容不直接暴露，只转为安全的阶段摘要。
+- **语义化 LLM 流事件**：区分 `content-delta` 与 `reasoning-delta`，保留真实 reasoning 增量并避免用固定占位文本替代。
 - **阶段化 Chat 事件**：新增 `progress` 与 `answer-delta`，配合 `tool-call`、`tool-response`、`answer` 区分进度、工具活动和最终报告。
 - **Web 分析过程折叠**：分析摘要进入可展开/收起面板，工具执行或最终报告出现后自动收起。
 
 ### Changed
 
 - **工具轮次输出闸门**：带 `tool_calls` 的 LLM 轮次先缓存正文；短说明转为 `progress`，完整报告型正文不提前展示；工具结果之后才允许最终回答增量进入 Web/CLI。
+- **诊断报告协议**：最终回答明确按现象、根因、关键证据、修复方案、验证结果组织，避免排查请求直接收敛为方案列表。
+- **证据不足安全边界**：证据不足时优先继续只读取证；完成必要排查仍无法确认时，明确报告证据缺口，不提前生成写入命令。
 - **流式工具参数归一化**：兼容部分 OpenAI 兼容网关对 `function.arguments` 的二次编码和尾部引号噪声；无法安全恢复时保留参数错误，不盲目执行。
 - **失败工具调用收敛**：同一只读工具与同一参数执行失败后不再原样执行，要求模型更换参数或工具，避免反复失败耗尽工具预算。
+- **工具前文本过滤**：移除对“根因/修复/建议/结论”等关键词的过度过滤，避免误删真实诊断摘要。
 - **终端渲染**：CLI 将回答增量缓存至 `answer`，统一使用 Markdown 渲染器输出，保持与 kubectl-ai 类似的终端报告效果。
 
 ### Fixed
@@ -24,6 +27,7 @@
 - 修复流式聊天中完整报告可能早于工具调用展示的问题。
 - 修复最终回答通过增量与完整 `answer` 双重展示的问题。
 - 修复工具失败后模型重复调用同一工具、最终超过 `max_tool_calls`/`max_iterations` 的问题。
+- 修复流式 reasoning 内容被固定为“正在分析证据”的问题。
 
 ## [v2.2.0] - 2026-09-09
 
@@ -145,7 +149,7 @@ chat 全场景架构优化 + 规则补齐与误报治理 + 安全与诊断解析
   - `DeploymentProgressDeadline`（发布超时时 ProgressDeadlineExceeded 单独报 Medium，比副本不足更精确）。
 - **模型层：chat 按意图分层的工具选择决策树**（internal/agent/prompt.go `toolSelectionProtocol`）：
   - 第一层 诊断意图 → 首选 `kubectl get <资源> -o yaml`（完整视图不漏字段）+ previous logs + events；
-  - 第二层 浏览意图 → 结构化 get_* 摘要工具（省 token）；
+  - 第二层 浏览意图 → 结构化 get\_\* 摘要工具（省 token）；
   - 第三层 命名空间级批量健康 → `scan_cluster namespace=<ns>`（23 规则秒级确定性覆盖）；
   - 第四层 集群全景 → 健康检查协议 + scan_cluster() 全量；
   - 硬性交叉规则：结构化工具=摘要视图（不够时必须升级 YAML）、写操作永不走 kubectl 工具、CRD 走 YAML 兜底。
@@ -155,7 +159,7 @@ chat 全场景架构优化 + 规则补齐与误报治理 + 安全与诊断解析
 - **安全红线：kubectl 链路拒读 Secret + 输出统一脱敏**（internal/approval/policy.go `IsForbiddenCommand` + internal/executor/kubectl.go）：
   - 任何形式的 `get/describe/delete secret(s)` 以及 `secret/name`（大小写不敏感、`--raw / --raw=`）无论审批与否一律拒绝；
   - kubectl stdout/stderr 全路径（含流式超时路径）统一走 `security.Redactor`，明文 env、token、密码等替换为 `[REDACTED]`。
-- **砍 diagnose_* 工具内部双重 LLM**（internal/tools/diagnosis.go `LLM.Enabled=false`）：diagnose_pod / diagnose_node / diagnose_workload 退化为**证据采集器**（秒级），分析由 Agent LLM 一次完成，典型 chat 诊断从 40s+ 降到秒级。
+- **砍 diagnose\_\* 工具内部双重 LLM**（internal/tools/diagnosis.go `LLM.Enabled=false`）：diagnose_pod / diagnose_node / diagnose_workload 退化为**证据采集器**（秒级），分析由 Agent LLM 一次完成，典型 chat 诊断从 40s+ 降到秒级。
 - **模型 & 采集补齐**：PodInfo 补 `Reason`（EvictedPod 判定依据）、`scanner.normalizePod` 采集 `Status.Reason`。
 - **测试**：`TestIsForbiddenCommand`（16 用例：8 拦截 + 8 放行）、`TestRunKubectlForbidsSecretAccess / TestRunKubectlRedactsSensitiveOutput`、`TestSchemaNewFields` 扩充 10 类 confidence 变体 + 6 类 risk 变体断言。
 
@@ -263,7 +267,7 @@ Web UI 支持集群下拉切换本机 ~/.kube/config context；会话模型新�
 - `agent.max_iterations` 默认 10 → 15（对标 kubectl-ai，降低弱模型触发上限概率）。
 - LLM tools 请求/回传 wire 对齐 OpenAI 标准（`{"type":"function","function":{...}}`），兼容 vLLM/Qwen 网关。
 - 注册 client-go 认证插件（k8s.io/client-go/plugin/pkg/client/auth），支持 OIDC 等 kubeconfig 认证。
-- 一期兼容改动：kubernetes 包增加节点 metrics 读取（k8s.io/metrics）、kubernetes.Client NewClientset、scanner.Reader Get*/ConfigMap 扩展。
+- 一期兼容改动：kubernetes 包增加节点 metrics 读取（k8s.io/metrics）、kubernetes.Client NewClientset、scanner.Reader Get\*/ConfigMap 扩展。
 
 ### Fixed
 
@@ -385,4 +389,3 @@ Web UI 支持集群下拉切换本机 ~/.kube/config context；会话模型新�
 ### Security
 
 - 四层只读保证 + AST 架构测试（含 Secrets 禁访）；-race 需 CGO（本机无 gcc，CI/Linux 可跑）
-

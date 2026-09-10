@@ -25,6 +25,11 @@ type streamingLLM struct {
 	response *llm.ChatResponse
 }
 
+type typedStreamingLLM struct {
+	events []llm.StreamEvent
+	resp   *llm.ChatResponse
+}
+
 func (s *streamingLLM) Chat(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
 	return s.response, nil
 }
@@ -32,6 +37,17 @@ func (s *streamingLLM) Chat(context.Context, llm.ChatRequest) (*llm.ChatResponse
 func (s *streamingLLM) ChatStream(_ context.Context, _ llm.ChatRequest, onDelta func(string)) (*llm.ChatResponse, error) {
 	onDelta(s.response.Content)
 	return s.response, nil
+}
+
+func (s *typedStreamingLLM) Chat(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+	return s.resp, nil
+}
+
+func (s *typedStreamingLLM) ChatStreamEvents(_ context.Context, _ llm.ChatRequest, onEvent func(llm.StreamEvent)) (*llm.ChatResponse, error) {
+	for _, ev := range s.events {
+		onEvent(ev)
+	}
+	return s.resp, nil
 }
 
 func (f *fakeLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
@@ -200,6 +216,46 @@ func TestChatOnceEmitsContentWithoutToolCall(t *testing.T) {
 		}
 	default:
 		t.Fatal("无工具调用时应发送最终正文")
+	}
+}
+
+func TestChatOnceTypedEmitsReasoningText(t *testing.T) {
+	a := New(Options{LLM: &typedStreamingLLM{events: []llm.StreamEvent{
+		{Type: llm.StreamReasoningDelta, Text: "先检查 Pod"},
+		{Type: llm.StreamContentDelta, Text: "最终结论"},
+	}, resp: &llm.ChatResponse{Content: "最终结论"}}})
+	_, _, err := a.chatOnce(context.Background(), "native", llm.ChatRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seenReasoning := false
+	seenContent := false
+	for {
+		select {
+		case msg := <-a.Output:
+			switch msg.Type {
+			case MessageTypeReasoningDelta:
+				seenReasoning = true
+				if msg.Payload != "先检查 Pod" {
+					t.Fatalf("reasoning payload = %#v", msg.Payload)
+				}
+			case MessageTypeText:
+				seenContent = true
+				if msg.Payload != "最终结论" {
+					t.Fatalf("content payload = %#v", msg.Payload)
+				}
+			}
+		default:
+			goto done
+		}
+	}
+
+done:
+	if !seenReasoning {
+		t.Fatal("应发出原始 reasoning 文本")
+	}
+	if !seenContent {
+		t.Fatal("应发出最终正文")
 	}
 }
 

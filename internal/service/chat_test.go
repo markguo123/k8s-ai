@@ -25,7 +25,8 @@ func TestSummarizeToolPrelude(t *testing.T) {
 		want string
 	}{
 		{name: "short progress", text: "我来检查下 test 命名空间下面的服务运行情况。", want: "我来检查下 test 命名空间下面的服务运行情况。"},
-		{name: "report conclusion", text: "根因是 PVC 配置错误，下面给出修复方案。", want: ""},
+		{name: "report conclusion", text: "根因是 PVC 配置错误，下面给出修复方案。", want: "根因是 PVC 配置错误，下面给出修复方案。"},
+		{name: "repair wording in progress", text: "我先检查 PVC，确认是 storageClass 错误，随后给出修复方案。", want: "我先检查 PVC，确认是 storageClass 错误，随后给出修复方案。"},
 		{name: "markdown report", text: "## 诊断报告\n服务异常", want: ""},
 		{name: "too long", text: strings.Repeat("检查证据 ", 40), want: ""},
 	}
