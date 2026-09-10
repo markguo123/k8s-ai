@@ -14,6 +14,34 @@ type LLMClient interface {
 	Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error)
 }
 
+// StreamClient 是可选的流式补全能力：Client 实现，业务层按需断言。
+// onDelta 在收到增量文本时同步回调（可能高频）；返回值与 Chat 同构
+// （内容与 ToolCalls 已在流式过程中累积完整），上层循环无需感知流式细节。
+type StreamClient interface {
+	// ChatStream 流式执行一次 Chat 补全；实现内部处理流式协议（SSE）。
+	// 失败时若已有增量输出，返回已累积的部分响应 + 错误；调用方可回退 Chat。
+	ChatStream(ctx context.Context, req ChatRequest, onDelta func(delta string)) (*ChatResponse, error)
+}
+
+// StreamEventType 是流式响应中的语义块类型。
+type StreamEventType string
+
+const (
+	StreamContentDelta   StreamEventType = "content-delta"
+	StreamReasoningDelta StreamEventType = "reasoning-delta"
+)
+
+// StreamEvent 是 LLM 流中的一个语义块。原始思考内容只在客户端内部可见，业务层决定是否摘要展示。
+type StreamEvent struct {
+	Type StreamEventType
+	Text string
+}
+
+// TypedStreamClient 是支持语义流事件的可选客户端能力。
+type TypedStreamClient interface {
+	ChatStreamEvents(ctx context.Context, req ChatRequest, onEvent func(StreamEvent)) (*ChatResponse, error)
+}
+
 // Message 聊天消息。
 type Message struct {
 	Role       string     `json:"role"` // system | user | assistant | tool

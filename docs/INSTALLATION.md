@@ -8,14 +8,14 @@
 
 ## 1. 前置要求
 
-| 项 | 要求 | 说明 |
-|---|---|---|
-| 操作系统 | Windows / Linux / macOS | 二进制或 Docker 镜像均可 |
-| Go（源码构建） | ≥ 1.26（go.mod 指定 1.26.0） | 仅源码构建需要；直接使用镜像不需要 |
-| Kubernetes 集群 | ≥ 1.27（CronJob `timeZone` 字段需要 1.27+） | 已实测 1.28 |
-| 访问凭证 | kubeconfig 或集群内 ServiceAccount | 只读权限即可（见 §4.4） |
-| LLM 网关 | OpenAI Compatible Chat Completions | OpenAI / Qwen / DeepSeek / vLLM / Ollama |
-| Docker（可选） | 构建镜像时需要 | 本机需启动 Docker Desktop/daemon |
+| 项              | 要求                                        | 说明                                     |
+| --------------- | ------------------------------------------- | ---------------------------------------- |
+| 操作系统        | Windows / Linux / macOS                     | 二进制或 Docker 镜像均可                 |
+| Go（源码构建）  | ≥ 1.26（go.mod 指定 1.26.0）                | 仅源码构建需要；直接使用镜像不需要       |
+| Kubernetes 集群 | ≥ 1.27（CronJob `timeZone` 字段需要 1.27+） | 已实测 1.28                              |
+| 访问凭证        | kubeconfig 或集群内 ServiceAccount          | 只读权限即可（见 §4.4）                  |
+| LLM 网关        | OpenAI Compatible Chat Completions          | OpenAI / Qwen / DeepSeek / vLLM / Ollama |
+| Docker（可选）  | 构建镜像时需要                              | 本机需启动 Docker Desktop/daemon         |
 
 ---
 
@@ -70,45 +70,45 @@ docker push registry.example.com/k8s-ai:1.0.0
 
 ```yaml
 kubernetes:
-  kubeconfig: ""      # 留空 = 使用 KUBECONFIG 环境变量或默认 ~/.kube/config
-  context: ""         # kubeconfig 上下文；留空用当前
-  namespace: ""       # 留空 = 全集群；非空 = 默认只扫该命名空间
-  timeout: 30s        # 单次 API 请求超时
-  qps: 20             # API Server 访问 QPS 上限
-  burst: 40           # 突发上限
+  kubeconfig: "" # 留空 = 使用 KUBECONFIG 环境变量或默认 ~/.kube/config
+  context: "" # kubeconfig 上下文；留空用当前
+  namespace: "" # 留空 = 全集群；非空 = 默认只扫该命名空间
+  timeout: 30s # 单次 API 请求超时
+  qps: 20 # API Server 访问 QPS 上限
+  burst: 40 # 突发上限
 
 llm:
-  enabled: true       # 关闭则只出规则结论
-  endpoint: "http://localhost:8000/v1"   # OpenAI Compatible 基础地址（自动拼 /chat/completions）
-  api_key: ""         # 也可用环境变量 K8S_AI_LLM_API_KEY 注入
-  model: "qwen-plus"  # 建议：快速非思考型模型；思考型大模型较慢
+  enabled: true # 关闭则只出规则结论
+  endpoint: "http://localhost:8000/v1" # OpenAI Compatible 基础地址（自动拼 /chat/completions）
+  api_key: "" # 也可用环境变量 K8S_AI_LLM_API_KEY 注入
+  model: "qwen-plus" # 建议：快速非思考型模型；思考型大模型较慢
   temperature: 0.1
   max_tokens: 4096
-  max_input_tokens: 8192    # 单 Finding 上下文上限
-  max_total_tokens: 32768   # 诊断阶段总预算
-  max_findings: 30          # 最多送诊 Finding 数
-  timeout: 120s             # 单次 LLM 调用超时
-  disable_thinking: false   # true=发送 enable_thinking=false（部分网关支持，可显著提速）
+  max_input_tokens: 8192 # 单 Finding 上下文上限
+  max_total_tokens: 32768 # 诊断阶段总预算
+  max_findings: 30 # 最多送诊 Finding 数
+  timeout: 120s # 单次 LLM 调用超时
+  disable_thinking: false # true=发送 enable_thinking=false（部分网关支持，可显著提速）
 
 scan:
-  concurrency: 8            # Phase1 并发
-  phase2_concurrency: 4     # Phase2 日志采集并发
+  concurrency: 8 # Phase1 并发
+  phase2_concurrency: 4 # Phase2 日志采集并发
   collect_logs: true
   collect_previous_logs: true
   collect_events: true
-  max_log_lines: 500        # 每容器日志行数上限
-  max_log_bytes: 65536      # 单容器日志字节上限
-  max_log_line_bytes: 1024  # 单行截断
-  pod_logs_timeout: 30s     # 单 Pod 日志超时
-  timeout: 10m              # 整次扫描超时（LLM 场景建议 10m）
+  max_log_lines: 500 # 每容器日志行数上限
+  max_log_bytes: 65536 # 单容器日志字节上限
+  max_log_line_bytes: 1024 # 单行截断
+  pod_logs_timeout: 30s # 单 Pod 日志超时
+  timeout: 10m # 整次扫描超时（LLM 场景建议 10m）
 
 report:
-  directory: "./reports"    # 报告目录（集群内 CronJob 用 /reports）
+  directory: "./reports" # 报告目录（集群内 CronJob 用 /reports）
   format: markdown
 
 rules:
-  enabled: []               # 非空则只启用这些规则
-  disabled: []              # 禁用指定规则
+  enabled: [] # 非空则只启用这些规则
+  disabled: [] # 禁用指定规则
 ```
 
 ### 3.3 环境变量与优先级
@@ -132,16 +132,16 @@ rules:
 
 `deploy/` 目录包含：
 
-| 文件 | 资源 | 用途 |
-|---|---|---|
-| namespace.yaml | Namespace k8s-ai | 部署命名空间 |
-| serviceaccount.yaml | ServiceAccount k8s-ai | 运行身份 |
-| clusterrole.yaml | ClusterRole k8s-ai-readonly | 只读权限 |
-| clusterrolebinding.yaml | ClusterRoleBinding | SA 绑定只读角色 |
-| configmap.yaml | ConfigMap k8s-ai-config | 非敏感配置 |
-| secret.example.yaml | Secret k8s-ai-llm（示例） | LLM api_key（需替换） |
-| pvc.yaml | PVC k8s-ai-reports | 报告持久化 1Gi |
-| cronjob.yaml | CronJob k8s-ai-daily | 每日 08:00 巡检 |
+| 文件                    | 资源                        | 用途                  |
+| ----------------------- | --------------------------- | --------------------- |
+| namespace.yaml          | Namespace k8s-ai            | 部署命名空间          |
+| serviceaccount.yaml     | ServiceAccount k8s-ai       | 运行身份              |
+| clusterrole.yaml        | ClusterRole k8s-ai-readonly | 只读权限              |
+| clusterrolebinding.yaml | ClusterRoleBinding          | SA 绑定只读角色       |
+| configmap.yaml          | ConfigMap k8s-ai-config     | 非敏感配置            |
+| secret.example.yaml     | Secret k8s-ai-llm（示例）   | LLM api_key（需替换） |
+| pvc.yaml                | PVC k8s-ai-reports          | 报告持久化 1Gi        |
+| cronjob.yaml            | CronJob k8s-ai-daily        | 每日 08:00 巡检       |
 
 > deployment.yaml / service.yaml（Server 模式，一期 1.2）见 §4.7。
 
@@ -215,13 +215,13 @@ kubectl get deploy,svc -n k8s-ai
 
 API：
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | /healthz | 存活探针 |
-| GET | /readyz | 就绪探针 |
-| GET | /version | 版本信息 |
-| POST | /api/v1/scans | 创建异步扫描（body=ScanOptions），返回 scanId；已有任务运行时返回 409 |
-| GET | /api/v1/scans/{id} | 任务状态 pending/running/succeeded/failed + result |
+| 方法 | 路径               | 说明                                                                  |
+| ---- | ------------------ | --------------------------------------------------------------------- |
+| GET  | /healthz           | 存活探针                                                              |
+| GET  | /readyz            | 就绪探针                                                              |
+| GET  | /version           | 版本信息                                                              |
+| POST | /api/v1/scans      | 创建异步扫描（body=ScanOptions），返回 scanId；已有任务运行时返回 409 |
+| GET  | /api/v1/scans/{id} | 任务状态 pending/running/succeeded/failed + result                    |
 
 注意：与 CronJob 共用报告 PVC 时需 RWX 存储类；否则给 Server 单独挂载或不同卷。
 
@@ -251,31 +251,31 @@ kubectl delete -f deploy/namespace.yaml
 
 ### 5.1 命令一览
 
-| 命令 | 说明 |
-|---|---|
-| `k8s-ai scan` | 全集群巡检，默认写 reports/latest.md + latest.json |
-| `k8s-ai scan -n <ns>` | 只巡检某命名空间，终端直出（不写文件） |
-| `k8s-ai scan pod <name> -n <ns>` | 单 Pod 诊断（含关联 Deployment/Service/Node 证据） |
-| `k8s-ai scan --report-mode daily` | 日报模式，追加时间戳文件 |
-| `k8s-ai scan --report-mode none --format json` | 终端输出 JSON（脚本用） |
-| `k8s-ai scan --fail-on HIGH` | 存在 HIGH 及以上退出码 2（CI 用） |
-| `k8s-ai config init / validate` | 生成/校验配置 |
-| `k8s-ai version` | 版本 |
-| `k8s-ai server --addr :8080` | 启动最小化 HTTP 服务（1.2） |
+| 命令                                           | 说明                                               |
+| ---------------------------------------------- | -------------------------------------------------- |
+| `k8s-ai scan`                                  | 全集群巡检，默认写 reports/latest.md + latest.json |
+| `k8s-ai scan -n <ns>`                          | 只巡检某命名空间，终端直出（不写文件）             |
+| `k8s-ai scan pod <name> -n <ns>`               | 单 Pod 诊断（含关联 Deployment/Service/Node 证据） |
+| `k8s-ai scan --report-mode daily`              | 日报模式，追加时间戳文件                           |
+| `k8s-ai scan --report-mode none --format json` | 终端输出 JSON（脚本用）                            |
+| `k8s-ai scan --fail-on HIGH`                   | 存在 HIGH 及以上退出码 2（CI 用）                  |
+| `k8s-ai config init / validate`                | 生成/校验配置                                      |
+| `k8s-ai version`                               | 版本                                               |
+| `k8s-ai server --addr :8080`                   | 启动最小化 HTTP 服务（1.2）                        |
 
 ### 5.2 参数详解
 
-| 参数 | 默认 | 说明 |
-|---|---|---|
-| `--kubeconfig` | 配置或默认 | 指定 kubeconfig |
-| `--context` | 当前 | 指定上下文 |
-| `-n, --namespace` | 全集群 | 目标命名空间 |
-| `--since <dur>` | 无 | 日志时间窗口（如 1h） |
-| `--format` | markdown | 终端完整报告格式 markdown/json/yaml |
-| `--report-mode` | none(目标)/latest(全集群) | none=仅终端 / latest=latest 文件 / daily=加时间戳 |
-| `--verbose` | false | 终端输出完整报告（默认一屏摘要） |
-| `--fail-on <sev>` | 无 | 达到严重级退出码 2 |
-| `--config` | ~/.k8s-ai/config.yaml | 配置文件路径 |
+| 参数              | 默认                      | 说明                                              |
+| ----------------- | ------------------------- | ------------------------------------------------- |
+| `--kubeconfig`    | 配置或默认                | 指定 kubeconfig                                   |
+| `--context`       | 当前                      | 指定上下文                                        |
+| `-n, --namespace` | 全集群                    | 目标命名空间                                      |
+| `--since <dur>`   | 无                        | 日志时间窗口（如 1h）                             |
+| `--format`        | markdown                  | 终端完整报告格式 markdown/json/yaml               |
+| `--report-mode`   | none(目标)/latest(全集群) | none=仅终端 / latest=latest 文件 / daily=加时间戳 |
+| `--verbose`       | false                     | 终端输出完整报告（默认一屏摘要）                  |
+| `--fail-on <sev>` | 无                        | 达到严重级退出码 2                                |
+| `--config`        | ~/.k8s-ai/config.yaml     | 配置文件路径                                      |
 
 ### 5.3 输出解读
 
@@ -299,24 +299,24 @@ CRITICAL 0 | HIGH 2 | MEDIUM 1 | LOW 0 | INFO 0
 
 ### 5.4 故障示例（识别效果）
 
-| 场景 | 工具输出 |
-|---|---|
-| nginx 配置错误 | 日志关键行：`[emerg] host not found in "80x" of the "listen" directive` |
-| OOM | 证据：OOMKilled / exitCode 137 / memory.limit |
-| RocketMQ topic 缺失 | 日志关键行：`panic: StartConsumer fail ... route info not found` |
-| Service 无后端 | 规则：readyEndpoints=0 + selector 匹配数；LLM 结合关联 Pod 崩溃证据定位 |
+| 场景                | 工具输出                                                                |
+| ------------------- | ----------------------------------------------------------------------- |
+| nginx 配置错误      | 日志关键行：`[emerg] host not found in "80x" of the "listen" directive` |
+| OOM                 | 证据：OOMKilled / exitCode 137 / memory.limit                           |
+| RocketMQ topic 缺失 | 日志关键行：`panic: StartConsumer fail ... route info not found`        |
+| Service 无后端      | 规则：readyEndpoints=0 + selector 匹配数；LLM 结合关联 Pod 崩溃证据定位 |
 
 ---
 
 ## 6. 故障排查（运维）
 
-| 现象 | 排查 |
-|---|---|
-| LLM 一直"诊断中" | 思考型大模型单次 1.5-2 分钟属正常；确认 `llm.timeout`/`scan.timeout` 足够（10m）；或换快速模型 / `disable_thinking` |
-| 报告标注"LLM 分析不可用" | LLM 网关不可达/超时/输出校验失败；scan 不失败，规则初步判断已兜底 |
-| CronJob 未执行 | `kubectl describe cronjob -n k8s-ai`；检查 schedule/timeZone 与集群版本（timeZone 需 1.27+） |
-| RBAC 403 | `kubectl auth can-i list pods --as=system:serviceaccount:k8s-ai:k8s-ai -n <ns>`；确认 clusterrolebinding 已应用 |
-| 报告 PVC 满 | `kubectl describe pvc -n k8s-ai`；扩容 storage 或定期清理旧时间戳文件 |
+| 现象                     | 排查                                                                                                                |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| LLM 一直"诊断中"         | 思考型大模型单次 1.5-2 分钟属正常；确认 `llm.timeout`/`scan.timeout` 足够（10m）；或换快速模型 / `disable_thinking` |
+| 报告标注"LLM 分析不可用" | LLM 网关不可达/超时/输出校验失败；scan 不失败，规则初步判断已兜底                                                   |
+| CronJob 未执行           | `kubectl describe cronjob -n k8s-ai`；检查 schedule/timeZone 与集群版本（timeZone 需 1.27+）                        |
+| RBAC 403                 | `kubectl auth can-i list pods --as=system:serviceaccount:k8s-ai:k8s-ai -n <ns>`；确认 clusterrolebinding 已应用     |
+| 报告 PVC 满              | `kubectl describe pvc -n k8s-ai`；扩容 storage 或定期清理旧时间戳文件                                               |
 
 ---
 
@@ -351,7 +351,7 @@ k8s-ai web --addr 127.0.0.1:8081 --config ~/.k8s-ai/config.yaml
 # 打开 http://127.0.0.1:8081
 ```
 
-页面支持：会话列表/新建/删除、SSE 流式回答、工具执行过程（Show output）、写操作审批卡片。
+页面支持：会话列表/新建/删除、SSE 阶段化流式回答、可折叠分析进度、工具执行过程（Show output）、写操作审批卡片；工具调用先于最终报告展示。
 
 ### 8.3 写操作与 RBAC
 
@@ -363,19 +363,19 @@ k8s-ai web --addr 127.0.0.1:8081 --config ~/.k8s-ai/config.yaml
 
 - 通用 `kubectl` 工具需要本机安装 kubectl 并在 PATH（或配置 `kubernetes.kubectl_path`）；
 - kubectl 工具会继承 `kubernetes.kubeconfig`（通过 `KUBECONFIG` 环境变量传入子进程），保证写命令与 client-go 使用同一集群配置；
-- 只读结构化工具（get_*/scan_*/diagnose_*）不依赖 kubectl，走 client-go；写操作统一走 kubectl 工具，因此写操作依赖 kubectl。
+- 只读结构化工具（get*\*/scan*_/diagnose\__）不依赖 kubectl，走 client-go；写操作统一走 kubectl 工具，因此写操作依赖 kubectl。
 
 ### 8.5 常用二期配置
 
 ```yaml
 agent:
-  max_iterations: 15          # LLM 往返上限
-  max_tool_calls: 20          # 累计工具调用上限
-  tool_calling: native        # native | shim | auto
-  require_approval: true      # 写操作默认要求确认
-  skip_permissions: false     # 配置级免审批（等效 --skip-permissions）
-  deny_ops: []                # 可选硬拦截，如 ["delete namespace"]
-  disabled_tools: []          # 注册后移除指定工具，例如 ["kubectl"] 禁止写入口
+  max_iterations: 15 # LLM 往返上限
+  max_tool_calls: 20 # 累计工具调用上限
+  tool_calling: native # native | shim | auto
+  require_approval: true # 写操作默认要求确认
+  skip_permissions: false # 配置级免审批（等效 --skip-permissions）
+  deny_ops: [] # 可选硬拦截，如 ["delete namespace"]
+  disabled_tools: [] # 注册后移除指定工具，例如 ["kubectl"] 禁止写入口
   session_dir: ~/.k8s-ai/sessions
   audit_dir: ~/.k8s-ai/audit
 webui:

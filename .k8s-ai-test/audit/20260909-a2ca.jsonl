@@ -1,0 +1,22 @@
+{"timestamp":"2026-09-09T11:10:10.4165422+08:00","action":"user.input","payload":{"query":"检查下集群test-complex ns下面服务有啥问题？"}}
+{"timestamp":"2026-09-09T11:10:10.4182045+08:00","action":"llm.request","payload":{"messages":2,"mode":"native","tools":28}}
+{"timestamp":"2026-09-09T11:10:14.8052029+08:00","action":"llm.response","payload":{"toolCalls":1,"usage":{"PromptTokens":6105,"CompletionTokens":108,"TotalTokens":6213}}}
+{"timestamp":"2026-09-09T11:10:14.805744+08:00","action":"tool-call.request","payload":{"arguments":{"namespace":"test-complex"},"name":"scan_cluster"}}
+{"timestamp":"2026-09-09T11:10:15.7311477+08:00","action":"tool-call.response","payload":{"error":false,"name":"scan_cluster","truncated":false}}
+{"timestamp":"2026-09-09T11:10:15.7332873+08:00","action":"llm.request","payload":{"messages":4,"mode":"native","tools":28}}
+{"timestamp":"2026-09-09T11:10:29.7179592+08:00","action":"llm.response","payload":{"toolCalls":3,"usage":{"PromptTokens":6630,"CompletionTokens":290,"TotalTokens":6920}}}
+{"timestamp":"2026-09-09T11:10:29.7184683+08:00","action":"tool-call.request","payload":{"arguments":{"name":"app-backend","namespace":"test-complex"},"name":"get_deployment"}}
+{"timestamp":"2026-09-09T11:10:29.7642314+08:00","action":"tool-call.response","payload":{"error":false,"name":"get_deployment","truncated":false}}
+{"timestamp":"2026-09-09T11:10:29.7657882+08:00","action":"tool-call.request","payload":{"arguments":{"namespace":"test-complex"},"name":"get_pods"}}
+{"timestamp":"2026-09-09T11:10:29.8415223+08:00","action":"tool-call.response","payload":{"error":false,"name":"get_pods","truncated":false}}
+{"timestamp":"2026-09-09T11:10:29.8415223+08:00","action":"tool-call.request","payload":{"arguments":{"limit":20,"namespace":"test-complex"},"name":"get_events"}}
+{"timestamp":"2026-09-09T11:10:29.9591976+08:00","action":"tool-call.response","payload":{"error":false,"name":"get_events","truncated":false}}
+{"timestamp":"2026-09-09T11:10:29.9610266+08:00","action":"llm.request","payload":{"messages":8,"mode":"native","tools":28}}
+{"timestamp":"2026-09-09T11:10:52.0076323+08:00","action":"llm.response","payload":{"toolCalls":0,"usage":{"PromptTokens":9142,"CompletionTokens":635,"TotalTokens":9777}}}
+{"timestamp":"2026-09-09T11:16:39.4305936+08:00","action":"user.input","payload":{"query":"端点使用/health试一下"}}
+{"timestamp":"2026-09-09T11:16:39.4321726+08:00","action":"llm.request","payload":{"messages":8,"mode":"native","tools":28}}
+{"timestamp":"2026-09-09T11:16:54.7338481+08:00","action":"llm.response","payload":{"toolCalls":1,"usage":{"PromptTokens":9631,"CompletionTokens":419,"TotalTokens":10050}}}
+{"timestamp":"2026-09-09T11:16:54.7343607+08:00","action":"tool-call.request","payload":{"arguments":{"command":"kubectl get deployment app-backend -n test-complex -o yaml"},"name":"kubectl"}}
+{"timestamp":"2026-09-09T11:16:54.7510069+08:00","action":"tool-call.response","payload":{"error":false,"name":"kubectl","truncated":true}}
+{"timestamp":"2026-09-09T11:16:54.7516313+08:00","action":"llm.request","payload":{"messages":10,"mode":"native","tools":28}}
+{"timestamp":"2026-09-09T11:17:19.3603142+08:00","action":"llm.response","payload":{"toolCalls":0,"usage":{"PromptTokens":9805,"CompletionTokens":570,"TotalTokens":10375}}}

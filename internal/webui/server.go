@@ -40,7 +40,7 @@ func newBroadcaster() *Broadcaster {
 }
 
 func (b *Broadcaster) add() chan []byte {
-	ch := make(chan []byte, 64)
+	ch := make(chan []byte, 256)
 	b.mu.Lock()
 	b.clients[ch] = struct{}{}
 	b.mu.Unlock()

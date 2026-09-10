@@ -1,6 +1,6 @@
 # k8s-ai
 
-> 当前版本：**v2.0.8**（二期迭代；版本约定见 [docs/VERSIONING.md](docs/VERSIONING.md)，变更见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）
+> 当前版本：**v2.2.2-0910**（二期迭代；版本约定见 [docs/VERSIONING.md](docs/VERSIONING.md)，变更见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）
 
 Kubernetes AI 智能巡检、故障诊断与自然语言运维 Agent
 （一期：只读巡检 + 规则引擎 + 私有大模型诊断 + 报告；二期：`chat` 对话 Agent + `web` 浏览器界面 + 读写操作 + 人工确认）。
@@ -30,7 +30,8 @@ k8s-ai web --addr 127.0.0.1:8081
 
 二期能力：
 
-- **Agent 工具集**：20 个只读工具（Pod/Node/Workload/存储/网络/Events/日志/ConfigMap/节点资源用量 + 5 个诊断工具 scan_cluster/diagnose_*，复用一期 Scanner/规则/诊断）+ **1 个写工具**（kubectl，唯一入口：LLM 生成完整命令字符串，含 shell 构造走 `bash -c`，无 shell 走 argv 直调）
+- **流式输出**：`llm.stream: true` 开启 SSE 流式处理；工具前保留简短进度说明，工具调用与结果分阶段展示，最终报告在工具完成后输出；流式失败自动降级为非流式（兼容不支持 stream 的网关）
+- **Agent 工具集**：20 个只读工具（Pod/Node/Workload/存储/网络/Events/日志/ConfigMap/节点资源用量 + 5 个诊断工具 scan*cluster/diagnose*\*，复用一期 Scanner/规则/诊断）+ **1 个写工具**（kubectl，唯一入口：LLM 生成完整命令字符串，含 shell 构造走 `bash -c`，无 shell 走 argv 直调）
 - **四层意图决策树**：诊断意图→kubectl -o yaml+previous logs+events；浏览意图→结构化摘要工具；ns 级健康→scan_cluster(namespace=X)；集群全景→scan_cluster()+健康检查协议。读操作全走结构化工具；写操作只有 kubectl 一条路径，LLM 生成完整命令（含 shell 构造），统一走审批
 - **集群健康检查**：节点 → 资源使用（metrics API）→ 命名空间 → Pod → 系统组件 → 警告事件 → 规则评分 + LLM 综合评分双轨
 - **批量审批**：LLM 一轮返回多个写操作时，合并为一次审批面板（逐条展示等效 kubectl 命令 + 风险等级），用户选一次→顺序执行→分别回传结果。借鉴 kubectl-ai
@@ -65,7 +66,7 @@ make build
 ### Docker 镜像
 
 ```bash
-make docker VERSION=v2.0.9
+make docker VERSION=v2.2.2-0910
 ```
 
 镜像基于 distroless static（非 root、小体积），prompts 已内嵌，无需挂载额外文件。
@@ -96,6 +97,7 @@ k8s-ai scan --fail-on HIGH              # 达到 HIGH 返回退出码 2（CI 用
 | `scan.timeout`                                 | 5m                                | 整次扫描超时（LLM 场景建议 10m）                        |
 | `llm.enabled` / `endpoint` / `model`           | true / localhost:8000 / qwen-plus | 大模型                                                  |
 | `llm.timeout`                                  | 120s                              | 单次 LLM 调用超时（思考型模型建议保持）                 |
+| `llm.stream`                                   | false                             | chat 流式输出（true = SSE 逐 token 推送到终端/Web）     |
 | `report.directory` / `format`                  | ./reports / markdown              | 报告输出                                                |
 
 环境变量：`KUBECONFIG`、`K8S_AI_LLM_ENDPOINT`、`K8S_AI_LLM_API_KEY`、`K8S_AI_LLM_MODEL` 等。
@@ -159,17 +161,17 @@ CronJob 特性：`concurrencyPolicy: Forbid`（不并发）、`restartPolicy: On
 
 ### 安全核对清单
 
-| 检查项           | 保障机制                                      | 验证方式                          |
-| ---------------- | --------------------------------------------- | --------------------------------- |
-| 写操作必须审批   | Approver.Confirm + 风险分级 + 拒绝闸门        | agent 单测（审批/拒绝/硬拦截）     |
-| shell 命令需审批 | `HasShellSyntax()` → `IsReadOnly()=false`    | approval 单测（7 类 shell 构造）  |
-| 不访问 Secret    | 代码禁止 `Secrets()` 调用 + RBAC 不含 secrets | AST 扫描 + fake Action 断言       |
-| 脱敏             | 采集边界 + 报告渲染双重脱敏                   | security 单测 + LLM 请求泄密测试  |
-| api_key 不泄露   | 仅在 Authorization 头 + 错误显式剔除          | llm httptest                      |
-| LLM 不编造       | Evidence ID 校验 + 命令白名单                 | diagnosis 单测                    |
-| 交互式命令拒绝   | deny_ops 硬拒（edit/attach/port-forward 等）  | executor 单测                     |
-| 单资源失败不中断 | collection_errors 隔离                        | scanner 错误隔离测试              |
-| RBAC 清单只读    | 解析 deploy/clusterrole.yaml 断言             | `tests/arch` RBAC 测试            |
+| 检查项           | 保障机制                                      | 验证方式                         |
+| ---------------- | --------------------------------------------- | -------------------------------- |
+| 写操作必须审批   | Approver.Confirm + 风险分级 + 拒绝闸门        | agent 单测（审批/拒绝/硬拦截）   |
+| shell 命令需审批 | `HasShellSyntax()` → `IsReadOnly()=false`     | approval 单测（7 类 shell 构造） |
+| 不访问 Secret    | 代码禁止 `Secrets()` 调用 + RBAC 不含 secrets | AST 扫描 + fake Action 断言      |
+| 脱敏             | 采集边界 + 报告渲染双重脱敏                   | security 单测 + LLM 请求泄密测试 |
+| api_key 不泄露   | 仅在 Authorization 头 + 错误显式剔除          | llm httptest                     |
+| LLM 不编造       | Evidence ID 校验 + 命令白名单                 | diagnosis 单测                   |
+| 交互式命令拒绝   | deny_ops 硬拒（edit/attach/port-forward 等）  | executor 单测                    |
+| 单资源失败不中断 | collection_errors 隔离                        | scanner 错误隔离测试             |
+| RBAC 清单只读    | 解析 deploy/clusterrole.yaml 断言             | `tests/arch` RBAC 测试           |
 
 ## 故障示例
 

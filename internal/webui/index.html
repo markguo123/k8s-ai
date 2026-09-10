@@ -44,6 +44,17 @@
   .msg.user .content { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:10px 14px; }
   .msg.agent .content { width:100%; }
   .msg.error .content { color:var(--danger); }
+  .msg.progress-message .who { color:var(--muted); }
+  .msg.progress-message .content { color:var(--muted); font-size:13px; }
+  .phase-progress { color:var(--muted); font-size:13px; margin:4px 0 12px;
+                    border-left:3px solid var(--accent); background:var(--code-bg); }
+  .phase-progress summary { display:flex; align-items:center; gap:8px; cursor:pointer; list-style:none; padding:8px 12px; }
+  .phase-progress summary::-webkit-details-marker { display:none; }
+  .phase-progress summary::after { content:"⌄"; margin-left:auto; color:var(--muted); transition:transform .2s; }
+  .phase-progress[open] summary::after { transform:rotate(180deg); }
+  .phase-progress .mark { color:var(--accent); font-weight:700; }
+  .phase-progress .progress-list { border-top:1px solid var(--border); padding:6px 12px 8px 30px; }
+  .phase-progress .progress-item { padding:3px 0; }
   .markdown h1,.markdown h2,.markdown h3 { margin:14px 0 6px; line-height:1.3; }
   .markdown h1 { font-size:20px; } .markdown h2 { font-size:17px; } .markdown h3 { font-size:15px; }
   .markdown p { margin:8px 0; }
@@ -292,6 +303,17 @@ function handleEvent(ev) {
       chatBusy = false;
       setBusy(false);
       break;
+    case "delta":
+    case "answer-delta":
+      hideWelcome();
+      hideTyping();
+      if (ev.text) appendDelta(ev.text);
+      break;
+    case "progress":
+      hideWelcome();
+      hideTyping();
+      if (ev.text) showProgress(ev.text);
+      break;
     case "text":
       hideWelcome();
       hideTyping();
@@ -299,7 +321,8 @@ function handleEvent(ev) {
       break;
     case "answer":
       hideTyping();
-      if (ev.text) addMsg("agent", ev.text);
+      if (ev.text) finishStreamedAnswer(ev.text);
+      closeProgress();
       chatBusy = false;
       setBusy(false);
       setStatus(false);
@@ -307,6 +330,8 @@ function handleEvent(ev) {
     case "tool-call":
       hideWelcome();
       hideTyping();
+      closeProgress();
+      promoteStreamToProgress();
       if (ev.tool) addToolCard(ev.tool);
       break;
     case "tool-response":
@@ -346,6 +371,83 @@ function addMsg(kind, text) {
   msg.appendChild(content);
   inner().appendChild(msg);
   scroll();
+}
+
+function finishStreamedAnswer(text) {
+  const msgs = inner().querySelectorAll('.msg.agent[data-streaming="true"]');
+  const last = msgs.length > 0 ? msgs[msgs.length - 1] : null;
+  if (!last) {
+    addMsg("agent", text);
+    return;
+  }
+  if (last._renderTimer) clearTimeout(last._renderTimer);
+  last.dataset.rawText = text;
+  last.dataset.streaming = "false";
+  const content = last.querySelector(".content");
+  if (content) content.innerHTML = markdown(escapeHtml(text));
+  scroll();
+}
+
+function promoteStreamToProgress() {
+  const msgs = inner().querySelectorAll('.msg.agent[data-streaming="true"]');
+  const last = msgs.length > 0 ? msgs[msgs.length - 1] : null;
+  if (!last) return;
+  if (last._renderTimer) clearTimeout(last._renderTimer);
+  last.dataset.streaming = "false";
+  last.classList.add("progress-message");
+  const who = last.querySelector(".who");
+  if (who) who.textContent = "进度";
+}
+
+function showProgress(text) {
+  let panel = inner().querySelector(".phase-progress");
+  if (!panel) {
+    panel = document.createElement("div");
+    panel.className = "phase-progress";
+    panel.open = true;
+    panel.innerHTML = '<summary><span class="mark">●</span><span class="phase-label">分析过程</span></summary><div class="progress-list"></div>';
+    inner().appendChild(panel);
+  }
+  const label = panel.querySelector(".phase-label");
+  if (label) label.textContent = text;
+  const list = panel.querySelector(".progress-list");
+  const previous = list && list.lastElementChild;
+  if (list && (!previous || previous.textContent !== text)) {
+    const item = document.createElement("div");
+    item.className = "progress-item";
+    item.textContent = text;
+    list.appendChild(item);
+  }
+  scroll();
+}
+
+function closeProgress() {
+  const panel = inner().querySelector(".phase-progress");
+  if (panel) panel.open = false;
+}
+
+function appendDelta(text) {
+  // 找到已有的最后一条 agent 消息，追加增量到 content 末尾。
+  const msgs = inner().querySelectorAll(".msg.agent");
+  let last;
+  if (msgs.length > 0) {
+    last = msgs[msgs.length - 1];
+  } else {
+    addMsg("agent", "");
+    last = inner().querySelector(".msg.agent:last-child");
+  }
+  last.dataset.streaming = "true";
+  let raw = last.dataset.rawText || "";
+  raw += text;
+  last.dataset.rawText = raw;
+  // 防抖渲染：50ms 内多次 delta 合并为一次重渲染，避免高频逐 token 全量 markdown 解析。
+  if (last._renderTimer) clearTimeout(last._renderTimer);
+  last._renderTimer = setTimeout(() => {
+    const c = last.querySelector(".content");
+    if (c) c.innerHTML = markdown(escapeHtml(raw));
+    scroll();
+    last._renderTimer = null;
+  }, 50);
 }
 
 function addToolCard(tool) {
@@ -525,6 +627,7 @@ function formatArgs(args) {
 
 function scroll() {
   const c = $("chat");
+  if (c.scrollHeight - c.scrollTop - c.clientHeight > 80) return;
   c.scrollTop = c.scrollHeight;
 }
 

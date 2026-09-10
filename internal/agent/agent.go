@@ -112,17 +112,27 @@ func (a *Agent) audit(ctx context.Context, action string, payload any) {
 	}
 }
 
-// Emit 向消息总线发送消息；通道满时丢弃（UI 消费慢不阻塞 Agent）。
+// Emit 向消息总线发送可合并的消息；通道满时丢弃，调用方不应使用它发送控制事件。
 func (a *Agent) Emit(m Message) {
+	a.prepareMessage(&m)
+	select {
+	case a.Output <- m:
+	default:
+	}
+}
+
+// EmitCritical 可靠发送工具、错误等控制消息。Agent 运行期间总有转发协程消费 Output。
+func (a *Agent) EmitCritical(m Message) {
+	a.prepareMessage(&m)
+	a.Output <- m
+}
+
+func (a *Agent) prepareMessage(m *Message) {
 	if m.ID == "" {
 		m.ID = newID()
 	}
 	if m.Timestamp.IsZero() {
 		m.Timestamp = time.Now()
-	}
-	select {
-	case a.Output <- m:
-	default:
 	}
 }
 

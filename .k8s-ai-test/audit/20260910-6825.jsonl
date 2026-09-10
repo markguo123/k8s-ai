@@ -1,0 +1,13 @@
+{"timestamp":"2026-09-10T15:14:31.9073323+08:00","action":"user.input","payload":{"query":"你帮忙查询下集群的基本信息"}}
+{"timestamp":"2026-09-10T15:14:31.9078583+08:00","action":"llm.request","payload":{"messages":2,"mode":"native","tools":28}}
+{"timestamp":"2026-09-10T15:14:37.4338557+08:00","action":"llm.response","payload":{"stream":true,"toolCalls":4,"usage":{"PromptTokens":6136,"CompletionTokens":203,"TotalTokens":6339}}}
+{"timestamp":"2026-09-10T15:14:37.4344289+08:00","action":"tool-call.request","payload":{"arguments":{},"name":"get_nodes"}}
+{"timestamp":"2026-09-10T15:14:37.8880775+08:00","action":"tool-call.response","payload":{"error":false,"name":"get_nodes","truncated":false}}
+{"timestamp":"2026-09-10T15:14:37.8885909+08:00","action":"tool-call.request","payload":{"arguments":{"kind":"namespaces"},"name":"get_resources"}}
+{"timestamp":"2026-09-10T15:14:38.0117069+08:00","action":"tool-call.response","payload":{"error":false,"name":"get_resources","truncated":false}}
+{"timestamp":"2026-09-10T15:14:38.0122252+08:00","action":"tool-call.request","payload":{"arguments":{},"name":"get_pods"}}
+{"timestamp":"2026-09-10T15:14:38.8525038+08:00","action":"tool-call.response","payload":{"error":false,"name":"get_pods","truncated":false}}
+{"timestamp":"2026-09-10T15:14:38.8745278+08:00","action":"tool-call.request","payload":{"arguments":{},"name":"get_node_usage"}}
+{"timestamp":"2026-09-10T15:14:39.0098347+08:00","action":"tool-call.response","payload":{"error":false,"name":"get_node_usage","truncated":false}}
+{"timestamp":"2026-09-10T15:14:39.0108678+08:00","action":"llm.request","payload":{"messages":7,"mode":"native","tools":28}}
+{"timestamp":"2026-09-10T15:15:06.0785404+08:00","action":"llm.response","payload":{"stream":true,"toolCalls":0,"usage":{"PromptTokens":11601,"CompletionTokens":877,"TotalTokens":12478}}}

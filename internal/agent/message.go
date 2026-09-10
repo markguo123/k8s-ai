@@ -24,6 +24,7 @@ type MessageType string
 
 const (
 	MessageTypeText                 MessageType = "text"
+	MessageTypeReasoningDelta       MessageType = "reasoning-delta"
 	MessageTypeError                MessageType = "error"
 	MessageTypeToolCallRequest      MessageType = "tool-call-request"
 	MessageTypeToolCallResponse     MessageType = "tool-call-response"

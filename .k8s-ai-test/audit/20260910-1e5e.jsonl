@@ -1,0 +1,25 @@
+{"timestamp":"2026-09-10T09:33:12.9720836+08:00","action":"user.input","payload":{"query":"你好 检查下test-complex ns下面的服务啥问题"}}
+{"timestamp":"2026-09-10T09:33:12.9720836+08:00","action":"llm.request","payload":{"messages":2,"mode":"native","tools":28}}
+{"timestamp":"2026-09-10T09:33:16.4801773+08:00","action":"llm.response","payload":{"stream":true,"toolCalls":1,"usage":{"PromptTokens":6030,"CompletionTokens":65,"TotalTokens":6095}}}
+{"timestamp":"2026-09-10T09:33:16.4807246+08:00","action":"tool-call.request","payload":{"arguments":{"namespace":"test-complex"},"name":"scan_cluster"}}
+{"timestamp":"2026-09-10T09:33:17.8915053+08:00","action":"tool-call.response","payload":{"error":false,"name":"scan_cluster","truncated":false}}
+{"timestamp":"2026-09-10T09:33:17.8931912+08:00","action":"llm.request","payload":{"messages":4,"mode":"native","tools":28}}
+{"timestamp":"2026-09-10T09:33:29.7430242+08:00","action":"llm.response","payload":{"stream":true,"toolCalls":3,"usage":{"PromptTokens":6747,"CompletionTokens":358,"TotalTokens":7105}}}
+{"timestamp":"2026-09-10T09:33:29.7430242+08:00","action":"tool-call.request","payload":{"arguments":{"name":"app-backend","namespace":"test-complex"},"name":"get_deployment"}}
+{"timestamp":"2026-09-10T09:33:29.8366169+08:00","action":"tool-call.response","payload":{"error":false,"name":"get_deployment","truncated":false}}
+{"timestamp":"2026-09-10T09:33:29.8371353+08:00","action":"tool-call.request","payload":{"arguments":{"name":"app-backend","namespace":"test-complex"},"name":"get_pod"}}
+{"timestamp":"2026-09-10T09:33:30.1688006+08:00","action":"tool-call.response","payload":{"error":true,"name":"get_pod","truncated":false}}
+{"timestamp":"2026-09-10T09:33:30.1693489+08:00","action":"tool-call.request","payload":{"arguments":{"kind":"Pod","limit":20,"namespace":"test-complex"},"name":"get_events"}}
+{"timestamp":"2026-09-10T09:33:31.1493473+08:00","action":"tool-call.response","payload":{"error":false,"name":"get_events","truncated":false}}
+{"timestamp":"2026-09-10T09:33:31.1504093+08:00","action":"llm.request","payload":{"messages":8,"mode":"native","tools":28}}
+{"timestamp":"2026-09-10T09:33:35.3243873+08:00","action":"llm.response","payload":{"stream":true,"toolCalls":2,"usage":{"PromptTokens":7694,"CompletionTokens":143,"TotalTokens":7837}}}
+{"timestamp":"2026-09-10T09:33:35.3249234+08:00","action":"tool-call.request","payload":{"arguments":{"namespace":"test-complex","pod":"app-backend-79b8774d8c-dfwwn","tailLines":50},"name":"get_logs"}}
+{"timestamp":"2026-09-10T09:33:35.376668+08:00","action":"tool-call.response","payload":{"error":false,"name":"get_logs","truncated":false}}
+{"timestamp":"2026-09-10T09:33:35.3771746+08:00","action":"tool-call.request","payload":{"arguments":{"namespace":"test-complex","pod":"app-backend-79b8774d8c-dfwwn","tailLines":50},"name":"get_previous_logs"}}
+{"timestamp":"2026-09-10T09:33:35.4256358+08:00","action":"tool-call.response","payload":{"error":false,"name":"get_previous_logs","truncated":false}}
+{"timestamp":"2026-09-10T09:33:35.4261529+08:00","action":"llm.request","payload":{"messages":11,"mode":"native","tools":28}}
+{"timestamp":"2026-09-10T09:33:37.9692501+08:00","action":"llm.response","payload":{"stream":true,"toolCalls":1,"usage":{"PromptTokens":11531,"CompletionTokens":40,"TotalTokens":11571}}}
+{"timestamp":"2026-09-10T09:33:37.9692501+08:00","action":"tool-call.request","payload":{"arguments":{"command":"kubectl get deployment app-backend -n test-complex -o yaml"},"name":"kubectl"}}
+{"timestamp":"2026-09-10T09:33:37.9958296+08:00","action":"tool-call.response","payload":{"error":false,"name":"kubectl","truncated":true}}
+{"timestamp":"2026-09-10T09:33:37.9963768+08:00","action":"llm.request","payload":{"messages":13,"mode":"native","tools":28}}
+{"timestamp":"2026-09-10T09:34:00.1568174+08:00","action":"llm.response","payload":{"stream":true,"toolCalls":0,"usage":{"PromptTokens":11678,"CompletionTokens":617,"TotalTokens":12295}}}

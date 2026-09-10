@@ -37,6 +37,7 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 	var usage llm.TokenUsage
 	toolCallsTotal := 0
 	turnBytes := 0
+	failedToolCalls := map[string]int{}
 
 	for iter := 0; iter < a.MaxIterations; iter++ {
 		req := llm.ChatRequest{Messages: msgs}
@@ -46,7 +47,7 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 			req.JSONMode = true
 		}
 		a.audit(ctx, audit.ActionLLMRequest, map[string]any{"mode": mode, "messages": len(msgs), "tools": len(req.Tools)})
-		resp, err := a.LLM.Chat(ctx, req)
+		resp, streamed, err := a.chatOnce(ctx, mode, req)
 		if err != nil {
 			// auto 模式：网关不支持原生 tools 时降级 shim 重试一次。
 			if mode == "native" && a.ToolCalling == "auto" && isUnsupportedToolsError(err) {
@@ -55,15 +56,15 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 				continue
 			}
 			a.audit(ctx, audit.ActionLLMError, map[string]any{"error": err.Error()})
-			a.Emit(Message{Source: SourceAgent, Type: MessageTypeError, Payload: err.Error()})
+			a.EmitCritical(Message{Source: SourceAgent, Type: MessageTypeError, Payload: err.Error()})
 			return "", usage, err
 		}
-		a.audit(ctx, audit.ActionLLMResponse, map[string]any{"usage": resp.Usage, "toolCalls": len(resp.ToolCalls)})
+		a.audit(ctx, audit.ActionLLMResponse, map[string]any{"usage": resp.Usage, "toolCalls": len(resp.ToolCalls), "stream": streamed})
 		usage = addUsage(usage, resp.Usage)
 
 		step, err := a.parseStep(mode, resp)
 		if err != nil {
-			a.Emit(Message{Source: SourceAgent, Type: MessageTypeError, Payload: err.Error()})
+			a.EmitCritical(Message{Source: SourceAgent, Type: MessageTypeError, Payload: err.Error()})
 			return "", usage, err
 		}
 		if step.answer != "" {
@@ -87,14 +88,28 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 			if toolCallsTotal > a.MaxToolCalls {
 				return "", usage, fmt.Errorf("agent exceeded max tool calls (%d)", a.MaxToolCalls)
 			}
+			failureKey := toolCallFailureKey(call)
 			var tr tools.ToolResult
-			if batchDeclined[call.ID] {
+			toolExecuted := false
+			if failedToolCalls[failureKey] > 0 {
+				// 同一工具、同一参数已经失败过，禁止原样重试；
+				// 让 LLM 更换参数或选择替代工具，避免耗尽工具调用预算。
+				tr = tools.ResultError("same tool call already failed; do not retry the identical call, change the arguments or choose another tool")
+			} else if batchDeclined[call.ID] {
 				// 批量拒绝：直接返回拒绝结果，不走 executeTool。
 				key := declineKey(call.Name, call.Arguments)
 				total := a.Session.Declined(key)
 				tr = tools.ResultError(a.formatDeclinedMsg(call.Name, key, total))
 			} else {
+				if tool, ok := a.Tools.Lookup(call.Name); ok {
+					// 只读工具没有审批短路，错误可以安全按签名熔断；
+					// 写工具的审批拒绝仍由原有拒绝计数处理。
+					toolExecuted = tool.IsReadOnly(call.Arguments)
+				}
 				tr = a.executeTool(ctx, call, batchApproved[call.ID])
+			}
+			if toolExecuted && toolResultHasError(tr) {
+				failedToolCalls[failureKey]++
 			}
 			text, truncated := tools.MarshalForLLM(tr, a.ResultMaxBytes)
 			turnBytes += len(text)
@@ -111,7 +126,7 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 				msgs = append(msgs, llm.Message{Role: "user", Content: obs})
 				a.Session.AddMessage(session.Message{Role: "user", Type: "tool-call-response", Name: call.Name, Content: obs})
 			}
-			a.Emit(Message{Source: SourceAgent, Type: MessageTypeToolCallResponse, Payload: map[string]any{
+			a.EmitCritical(Message{Source: SourceAgent, Type: MessageTypeToolCallResponse, Payload: map[string]any{
 				"name": call.Name, "text": text, "truncated": truncated,
 			}})
 			// 单轮上下文预算：超限后停止执行本批剩余工具，让 LLM 基于现有证据回答。
@@ -121,6 +136,94 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 		}
 	}
 	return "", usage, fmt.Errorf("agent exceeded max iterations (%d)", a.MaxIterations)
+}
+
+func toolCallFailureKey(call llm.ToolCall) string {
+	return call.Name + "\x00" + strings.TrimSpace(string(call.Arguments))
+}
+
+func toolResultHasError(result tools.ToolResult) bool {
+	data, ok := result.Data.(map[string]any)
+	if !ok {
+		return false
+	}
+	_, ok = data["error"]
+	return ok
+}
+
+// chatOnce 调用一次 LLM 补全（Agent 循环唯一入口）：
+//   - native 模式且客户端支持流式（llm.StreamClient）→ ChatStream，
+//     content 增量实时 Emit 到消息总线（Source=SourceModel，UI 逐 token 渲染）；
+//   - shim 模式（内部 JSON 协议）不流式，避免向 UI 泄漏中间 JSON；
+//   - 流式失败且尚未发出任何增量 → 回退非流式 Chat（复用其 429/5xx 重试），
+//     保证兼容不支持 stream 的网关。
+//
+// 返回 streamed 标记本次是否走了流式路径（供审计）。
+func (a *Agent) chatOnce(ctx context.Context, mode string, req llm.ChatRequest) (*llm.ChatResponse, bool, error) {
+	if typed, ok := a.LLM.(llm.TypedStreamClient); mode == "native" && ok {
+		return a.chatOnceTyped(ctx, typed, req)
+	}
+	sc, canStream := a.LLM.(llm.StreamClient)
+	if mode != "native" || !canStream {
+		resp, err := a.LLM.Chat(ctx, req)
+		return resp, false, err
+	}
+	received := false
+	var pending strings.Builder
+	resp, err := sc.ChatStream(ctx, req, func(delta string) {
+		if delta == "" {
+			return
+		}
+		received = true
+		pending.WriteString(delta)
+	})
+	if err != nil && !received {
+		// 流式失败且未发出任何增量：回退非流式 Chat（自带重试），避免双倍 LLM 调用。
+		a.audit(ctx, "stream_fallback", map[string]any{"reason": err.Error()})
+		resp, err = a.LLM.Chat(ctx, req)
+		return resp, false, err
+	}
+	if err != nil && received {
+		// 流式中途失败但已发出增量：返回已累积的部分响应（可能有损），不再重试避免重复输出。
+		a.audit(ctx, "stream_partial", map[string]any{"reason": err.Error()})
+	}
+	if resp != nil && len(resp.ToolCalls) == 0 && pending.Len() > 0 {
+		a.Emit(Message{Source: SourceModel, Type: MessageTypeText, Payload: pending.String()})
+	}
+	return resp, true, err
+}
+
+func (a *Agent) chatOnceTyped(ctx context.Context, sc llm.TypedStreamClient, req llm.ChatRequest) (*llm.ChatResponse, bool, error) {
+	received := false
+	progressSent := false
+	var pending strings.Builder
+	resp, err := sc.ChatStreamEvents(ctx, req, func(ev llm.StreamEvent) {
+		switch ev.Type {
+		case llm.StreamReasoningDelta:
+			if !progressSent {
+				progressSent = true
+				a.Emit(Message{Source: SourceModel, Type: MessageTypeReasoningDelta, Payload: "正在分析证据"})
+			}
+		case llm.StreamContentDelta:
+			if ev.Text == "" {
+				return
+			}
+			received = true
+			pending.WriteString(ev.Text)
+		}
+	})
+	if err != nil && !received {
+		a.audit(ctx, "stream_fallback", map[string]any{"reason": err.Error()})
+		resp, err = a.LLM.Chat(ctx, req)
+		return resp, false, err
+	}
+	if err != nil && received {
+		a.audit(ctx, "stream_partial", map[string]any{"reason": err.Error()})
+	}
+	if resp != nil && len(resp.ToolCalls) == 0 && pending.Len() > 0 {
+		a.Emit(Message{Source: SourceModel, Type: MessageTypeText, Payload: pending.String()})
+	}
+	return resp, true, err
 }
 
 // llmStep 是一轮 LLM 输出的解析结果。
@@ -171,7 +274,9 @@ func declineKey(toolName string, args json.RawMessage) string {
 		return toolName + ":" + string(args)
 	}
 	// 提取 command 字段。
-	var raw struct{ Command string `json:"command"` }
+	var raw struct {
+		Command string `json:"command"`
+	}
 	if err := json.Unmarshal(args, &raw); err != nil || raw.Command == "" {
 		return toolName + ":" + string(args)
 	}
@@ -354,7 +459,7 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolCall, batchApprove
 	}
 	var argsView map[string]any
 	_ = json.Unmarshal(call.Arguments, &argsView)
-	a.Emit(Message{Source: SourceAgent, Type: MessageTypeToolCallRequest, Payload: ToolCallEvent{
+	a.EmitCritical(Message{Source: SourceAgent, Type: MessageTypeToolCallRequest, Payload: ToolCallEvent{
 		Name: call.Name, Arguments: argsView,
 	}})
 	a.audit(ctx, audit.ActionToolCallRequest, map[string]any{"name": call.Name, "arguments": argsView})

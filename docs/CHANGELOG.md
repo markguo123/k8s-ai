@@ -1,8 +1,59 @@
-﻿# Changelog
+# Changelog
 
 本项目遵循 docs/VERSIONING.md 的里程碑阶梯约定。
 
-## [v2.0.10] - 2026-09-08
+## [v2.2.2-0910] - 2026-09-10
+
+流式对话体验与工具调用顺序收敛：保留简短执行说明，确保工具调用和最终报告按阶段展示。
+
+### Added
+
+- **语义化 LLM 流事件**：区分 `content-delta` 与 `reasoning-delta`；思考内容不直接暴露，只转为安全的阶段摘要。
+- **阶段化 Chat 事件**：新增 `progress` 与 `answer-delta`，配合 `tool-call`、`tool-response`、`answer` 区分进度、工具活动和最终报告。
+- **Web 分析过程折叠**：分析摘要进入可展开/收起面板，工具执行或最终报告出现后自动收起。
+
+### Changed
+
+- **工具轮次输出闸门**：带 `tool_calls` 的 LLM 轮次先缓存正文；短说明转为 `progress`，完整报告型正文不提前展示；工具结果之后才允许最终回答增量进入 Web/CLI。
+- **流式工具参数归一化**：兼容部分 OpenAI 兼容网关对 `function.arguments` 的二次编码和尾部引号噪声；无法安全恢复时保留参数错误，不盲目执行。
+- **失败工具调用收敛**：同一只读工具与同一参数执行失败后不再原样执行，要求模型更换参数或工具，避免反复失败耗尽工具预算。
+- **终端渲染**：CLI 将回答增量缓存至 `answer`，统一使用 Markdown 渲染器输出，保持与 kubectl-ai 类似的终端报告效果。
+
+### Fixed
+
+- 修复流式聊天中完整报告可能早于工具调用展示的问题。
+- 修复最终回答通过增量与完整 `answer` 双重展示的问题。
+- 修复工具失败后模型重复调用同一工具、最终超过 `max_tool_calls`/`max_iterations` 的问题。
+
+## [v2.2.0] - 2026-09-09
+
+LLM 响应流式输出（chat 流式逐 token 推送 + SSE 降级回退 + Web UI 增量渲染）。
+
+### Added
+
+- **LLM 流式输出支持**：新增 `llm.StreamClient` 接口（`ChatStream`），`internal/llm/client.go` 实现 OpenAI Compatible SSE 流式协议，`internal/llm/stream.go` 解析流式 chunk（content/tool_calls/usage 累积 + content 增量回调）。
+- **`ChatEventDelta` 事件类型**：`internal/service/chat.go` 新增 `ChatEventDelta`，Agent 消息总线中的 `SourceModel` 增量实时转为 `delta` 事件，与 `ChatEventText`（用户输入回显）和 `ChatEventAnswer`（最终回答）区分。
+- **Web UI 增量渲染**：`internal/webui/index.html` 新增 `case "delta"` 处理分支 + `appendDelta()` 函数，流式增量实时追加到最后一条 agent 消息的 content 中，保持 Markdown 实时渲染。
+- **配置项 `llm.stream`**：`internal/config/config.go` 新增 `Stream bool` 字段（默认 `false`），控制 chat 流式开关。
+
+### Changed
+
+- **Agent 循环 `chatOnce` 方法**（`internal/agent/loop.go`）：`native` 模式且 LLM 客户端支持 `StreamClient` 时走 `ChatStream`，content 增量实时 Emit 到消息总线；`shim` 模式保持非流式（避免中间 JSON 泄漏）。
+- **流式失败自动降级**：`ChatStream` 失败且未发出任何增量 → 退回到非流式 `Chat`（复用其 429/5xx 重试），`streamed` 标记据实返回，审计日志准确记录实际路径。
+
+### Fixed
+
+- **`chatOnce` 回退路径 `streamed` 标志**：流式失败降级到非流式 `Chat` 后不再误报 `stream: true`。
+
+### Borrowed from kubectl-ai
+
+- **Web UI delta 增量渲染**：`appendDelta()` 函数设计借鉴 kubectl-ai 的流式消息追加模式（data-raw 属性累积纯文本 → 全量重渲染 → 保持 Markdown 一致性）。
+
+### Tests
+
+- 现有全部测试通过（28 包），`fakeLLM` 未实现 `StreamClient` → `chatOnce` 在测试中自动走非流式，无需修改测试固件。
+
+## [v2.1.0] - 2026-09-08
 
 修复高危正确性与安全边界，补齐配置项生效，并同步提示词。
 

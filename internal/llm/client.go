@@ -20,41 +20,44 @@ var llmRedactor = security.NewRedactor()
 
 // Options 客户端配置。
 type Options struct {
-	Endpoint    string // 例如 http://localhost:8000/v1
-	APIKey      string
-	Model       string
-	Temperature float64
-	MaxTokens   int
-	Timeout     time.Duration // 单次调用超时（默认 120s）
-	MaxRetries  int           // 额外重试次数（默认 2）
-	HTTPClient  *http.Client
+	Endpoint      string // 例如 http://localhost:8000/v1
+	APIKey        string
+	Model         string
+	Temperature   float64
+	MaxTokens     int
+	Timeout       time.Duration // 单次调用超时（默认 120s）
+	MaxRetries    int           // 额外重试次数（默认 2）
+	HTTPClient    *http.Client
+	DisableStream bool // true = ChatStream 退化为非流式（配置 llm.stream=false）
 }
 
 // Client 是 OpenAI Compatible Chat Completions 的实现。
 type Client struct {
-	endpoint    string
-	apiKey      string
-	model       string
-	temperature float64
-	maxTokens   int
-	timeout     time.Duration
-	maxRetries  int
-	http        *http.Client
-	retryBase   time.Duration // 退避基数（测试可调）
+	endpoint      string
+	apiKey        string
+	model         string
+	temperature   float64
+	maxTokens     int
+	timeout       time.Duration
+	maxRetries    int
+	http          *http.Client
+	retryBase     time.Duration // 退避基数（测试可调）
+	disableStream bool
 }
 
 // New 创建客户端并应用默认值。
 func New(opts Options) *Client {
 	c := &Client{
-		endpoint:    strings.TrimRight(opts.Endpoint, "/"),
-		apiKey:      opts.APIKey,
-		model:       opts.Model,
-		temperature: opts.Temperature,
-		maxTokens:   opts.MaxTokens,
-		timeout:     opts.Timeout,
-		maxRetries:  opts.MaxRetries,
-		http:        opts.HTTPClient,
-		retryBase:   200 * time.Millisecond,
+		endpoint:      strings.TrimRight(opts.Endpoint, "/"),
+		apiKey:        opts.APIKey,
+		model:         opts.Model,
+		temperature:   opts.Temperature,
+		maxTokens:     opts.MaxTokens,
+		timeout:       opts.Timeout,
+		maxRetries:    opts.MaxRetries,
+		http:          opts.HTTPClient,
+		retryBase:     200 * time.Millisecond,
+		disableStream: opts.DisableStream,
 	}
 	if c.timeout <= 0 {
 		c.timeout = 120 * time.Second
@@ -75,9 +78,15 @@ type chatRequestBody struct {
 	Temperature        float64         `json:"temperature"`
 	MaxTokens          int             `json:"max_tokens,omitempty"`
 	Stream             bool            `json:"stream"`
+	StreamOptions      *streamOptions  `json:"stream_options,omitempty"`
 	ResponseFormat     *responseFormat `json:"response_format,omitempty"`
 	ChatTemplateKwargs map[string]any  `json:"chat_template_kwargs,omitempty"`
 	Tools              []wireTool      `json:"tools,omitempty"` // 二期 Tool Calling（native 模式）
+}
+
+// streamOptions 请求流式 usage 统计（OpenAI/vLLM 兼容：最后一个 chunk 携带 usage）。
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 // wireTool 是 OpenAI 标准的 tools 数组元素：
@@ -121,32 +130,7 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 	callCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
-	if req.Model == "" {
-		req.Model = c.model
-	}
-	body := chatRequestBody{
-		Model:       req.Model,
-		Messages:    req.Messages,
-		Temperature: c.temperature,
-		Stream:      false,
-	}
-	if req.JSONMode {
-		body.ResponseFormat = &responseFormat{Type: "json_object"}
-	}
-	if req.DisableThinking {
-		body.ChatTemplateKwargs = map[string]any{"enable_thinking": false}
-	}
-	if len(req.Tools) > 0 {
-		body.Tools = toWireTools(req.Tools)
-	}
-	// 单次请求可覆盖 max_tokens（诊断用它压缩生成长度，避免大模型长时间生成）。
-	maxTokens := c.maxTokens
-	if req.MaxTokens > 0 {
-		maxTokens = req.MaxTokens
-	}
-	if maxTokens > 0 {
-		body.MaxTokens = maxTokens
-	}
+	body := c.buildRequestBody(req, false)
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("marshal llm request: %w", err)
@@ -185,6 +169,111 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 		return nil, apiErr // 4xx（除 429）不重试
 	}
 	return nil, lastErr
+}
+
+// buildRequestBody 组装 Chat Completions 请求体（stream 开关决定流式参数）。
+func (c *Client) buildRequestBody(req ChatRequest, stream bool) chatRequestBody {
+	if req.Model == "" {
+		req.Model = c.model
+	}
+	body := chatRequestBody{
+		Model:       req.Model,
+		Messages:    req.Messages,
+		Temperature: c.temperature,
+		Stream:      stream,
+	}
+	if stream {
+		// 请求在最后一个 chunk 携带 usage（OpenAI/vLLM 兼容；不支持者忽略该字段）。
+		body.StreamOptions = &streamOptions{IncludeUsage: true}
+	}
+	if req.JSONMode {
+		body.ResponseFormat = &responseFormat{Type: "json_object"}
+	}
+	if req.DisableThinking {
+		body.ChatTemplateKwargs = map[string]any{"enable_thinking": false}
+	}
+	if len(req.Tools) > 0 {
+		body.Tools = toWireTools(req.Tools)
+	}
+	// 单次请求可覆盖 max_tokens（诊断用它压缩生成长度，避免大模型长时间生成）。
+	maxTokens := c.maxTokens
+	if req.MaxTokens > 0 {
+		maxTokens = req.MaxTokens
+	}
+	if maxTokens > 0 {
+		body.MaxTokens = maxTokens
+	}
+	return body
+}
+
+// ChatStream 流式执行一次补全（StreamClient 接口实现）。
+// 协议：OpenAI Compatible SSE（data: {...} 逐 chunk，[DONE] 结束）。
+// - content 增量经 onDelta 回调（同步、高频）；
+// - tool_calls 按 index 累积（id/name 只在首个分片出现，arguments 分片拼接）；
+// - usage 取最后一个 chunk（需网关支持 include_usage，缺失时为零值）。
+// 错误语义：请求失败或流中断时返回错误；若中断前已收到增量，同时返回已累积的部分响应，
+// 调用方（agent）据此决定是否回退非流式。禁用流式（llm.stream=false）时退化为 Chat + 单次回调。
+func (c *Client) ChatStream(ctx context.Context, req ChatRequest, onDelta func(delta string)) (*ChatResponse, error) {
+	return c.ChatStreamEvents(ctx, req, func(ev StreamEvent) {
+		if ev.Type == StreamContentDelta && onDelta != nil {
+			onDelta(ev.Text)
+		}
+	})
+}
+
+// ChatStreamEvents 流式执行一次补全，并保留内容与思考的语义边界。
+func (c *Client) ChatStreamEvents(ctx context.Context, req ChatRequest, onEvent func(StreamEvent)) (*ChatResponse, error) {
+	if c.disableStream {
+		resp, err := c.Chat(ctx, req)
+		if err == nil && resp != nil && resp.Content != "" && onEvent != nil {
+			onEvent(StreamEvent{Type: StreamContentDelta, Text: resp.Content})
+		}
+		return resp, err
+	}
+	if onEvent == nil {
+		return c.Chat(ctx, req)
+	}
+	callCtx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+
+	raw, err := json.Marshal(c.buildRequestBody(req, true))
+	if err != nil {
+		return nil, fmt.Errorf("marshal llm request: %w", err)
+	}
+	resp, err := c.do(callCtx, raw)
+	if err != nil {
+		// 流式请求失败时尝试一次重试（覆盖网络抖动/瞬时 5xx）。
+		// 重试仍失败则由调用方回退非流式 Chat。
+		select {
+		case <-callCtx.Done():
+			return nil, callCtx.Err()
+		default:
+		}
+		resp, err = c.do(callCtx, raw)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if resp.StatusCode != http.StatusOK {
+		// 429/5xx 重试一次（部分网关流式路径与普通路径共用限流器）。
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			_ = resp.Body.Close()
+			select {
+			case <-callCtx.Done():
+				return nil, callCtx.Err()
+			case <-time.After(c.retryBase):
+			}
+			resp, err = c.do(callCtx, raw)
+			if err != nil {
+				return nil, err
+			}
+			if resp.StatusCode == http.StatusOK {
+				return parseChatStream(resp, onEvent)
+			}
+		}
+		return nil, readAPIError(resp, c.apiKey)
+	}
+	return parseChatStream(resp, onEvent)
 }
 
 // do 发起请求（api_key 只放在 Authorization 头，绝不出现在请求体）。

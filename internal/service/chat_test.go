@@ -18,6 +18,26 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/tools"
 )
 
+func TestSummarizeToolPrelude(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{name: "short progress", text: "我来检查下 test 命名空间下面的服务运行情况。", want: "我来检查下 test 命名空间下面的服务运行情况。"},
+		{name: "report conclusion", text: "根因是 PVC 配置错误，下面给出修复方案。", want: ""},
+		{name: "markdown report", text: "## 诊断报告\n服务异常", want: ""},
+		{name: "too long", text: strings.Repeat("检查证据 ", 40), want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := summarizeToolPrelude(tt.text); got != tt.want {
+				t.Fatalf("summarizeToolPrelude() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // scriptedLLM 是 service 测试用的脚本化 LLM。
 type scriptedLLM struct {
 	responses []*llm.ChatResponse

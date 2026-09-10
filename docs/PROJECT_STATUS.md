@@ -19,20 +19,19 @@
 - [x] P11 加固收尾：大集群压测（PERFORMANCE.md）、四类架构测试确认（含 Secrets 禁访）、安全核对清单、-race 环境说明、INSTALLATION.md 安装部署手册
 - [x] P12 一期 1.2：Server 最小化（healthz/version/异步扫描 API）+ 历史差异数据（新增/持续/恢复，二期 Agent 记忆契约）+ deployment/service 清单
 - [x] 二期 P0–P2：Agent 基础（llm native/shim/auto Tool Calling、agent/tools/session 骨架、chat CLI 交互/单发/stdin/JSON/会话管理）
-- [x] 二期 P3：诊断 Tool 化（scan_cluster / scan_pod / diagnose_*，复用一期 ScanService）
+- [x] 二期 P3：诊断 Tool 化（scan*cluster / scan_pod / diagnose*\*，复用一期 ScanService）
 - [x] 二期 P4：写操作与审批执行（kubectl argv + policy-gated shell + client-go 写、SAFE..CRITICAL 风险分级、y/a/n 确认、--skip-permissions、执行后验证）
 - [x] 二期 P5：Web UI（k8s-ai web：REST + SSE 流式、会话侧栏、Markdown 渲染、审批卡片、工具过程展示）
 - [x] 二期 P6：收尾（审计落盘脱敏、MCP 接口预留、RBAC 写权限示例、CREDITS/E2E_SMOKE/文档、版本 v2.0.0）
-- [x] 二期迭代 v2.0.1–v2.0.8：
-  - v2.0.1：终端 Markdown/readline、流式命令超时采样、dry-run/rollout 风险分级修正
-  - v2.0.2–v2.0.5：web 集群配置讨论、chat 横幅优化、会话重命名、Linux 静态编译
-  - v2.0.6：四层意图决策树 + 砍 diagnose_* 双重 LLM + Secret 拒读 + kubectl 输出脱敏 + confidence/risk 归一化 + 新增 4 条规则至 23 条
-  - v2.0.7：修复流程优化（多选方案必须先澄清 + 拒绝 2 次硬拦截 + 替代方案引导 + 四步标准化）
-  - v2.0.8：放开 shell 构造 + 批量审批（借鉴 kubectl-ai）+ 拒绝闸门命令归一化 + prompt 决策树扩展 + 架构测试反转
+- [x] 二期迭代 v2.0.1–v2.0.5：web 集群配置讨论、终端 Markdown/readline、chat 横幅、会话重命名、Linux 静态编译、dry-run/rollout 风险分级修正、流式命令超时采样
+- [x] 二期迭代 v2.0.6–v2.0.8：四层意图决策树 + 砍 diagnose\_\* 双重 LLM + Secret 拒读 + 修复流程三拦截 + 放开 shell 构造 + 批量审批 + 拒绝闸门归一化 + 架构测试反转
+- [x] 二期迭代 v2.0.9：写工具从 7→1（删除 6 个结构化写工具，写操作统一走 kubectl 唯一路径）；kubectlTool 补 Text 字段修复 LLM 展示；Web UI 交互优化（输入框 disabled+spinner、空会话欢迎页、删除确认、会话时间戳、AI 思考 typing indicator）
+- [x] 二期迭代 v2.1.0：提示词移除已删除结构化写工具；kubectl 动词解析支持全局 flag 独立值；shell 模式交互命令硬拒绝；Secret/--raw 红线改用 mvdan shell 解析器加固；delete 风险分级补 Service；配置项 skip_permissions/disabled_tools 生效；kubectl 子进程注入 KUBECONFIG
+- [x] 二期迭代 v2.2.2-0910：流式体验与顺序收敛（语义化 content/reasoning 流事件、progress/answer-delta/tool-call/tool-response/answer 分阶段事件、短进度保留、工具前完整报告拦截、最终报告收尾、Web 分析过程折叠、失败工具调用去重、流式参数归一化）
 
 ## 进行中
 
-- 无：一期（v1.0.x）与二期（v2.0.x）均已交付，当前版本 v2.0.8
+- 无：一期（v1.0.x）与二期（v2.0.x–v2.2.x）均已交付，当前版本 v2.2.2-0910
 
 ## 下一步
 

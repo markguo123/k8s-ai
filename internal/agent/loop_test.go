@@ -21,6 +21,19 @@ type fakeLLM struct {
 	captured  [][]llm.Message
 }
 
+type streamingLLM struct {
+	response *llm.ChatResponse
+}
+
+func (s *streamingLLM) Chat(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+	return s.response, nil
+}
+
+func (s *streamingLLM) ChatStream(_ context.Context, _ llm.ChatRequest, onDelta func(string)) (*llm.ChatResponse, error) {
+	onDelta(s.response.Content)
+	return s.response, nil
+}
+
 func (f *fakeLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 	f.captured = append(f.captured, req.Messages)
 	if f.errIdx < len(f.errors) {
@@ -158,6 +171,38 @@ drainDone:
 	}
 }
 
+func TestChatOnceDoesNotEmitContentBeforeToolCall(t *testing.T) {
+	a := New(Options{LLM: &streamingLLM{response: &llm.ChatResponse{
+		Content:   "不应提前显示的报告",
+		ToolCalls: []llm.ToolCall{call("c1", "get_pod", `{}`)},
+	}}})
+	_, _, err := a.chatOnce(context.Background(), "native", llm.ChatRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case message := <-a.Output:
+		t.Fatalf("带工具调用的正文不应提前发送: %+v", message)
+	default:
+	}
+}
+
+func TestChatOnceEmitsContentWithoutToolCall(t *testing.T) {
+	a := New(Options{LLM: &streamingLLM{response: &llm.ChatResponse{Content: "最终报告"}}})
+	_, _, err := a.chatOnce(context.Background(), "native", llm.ChatRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case message := <-a.Output:
+		if message.Payload != "最终报告" {
+			t.Fatalf("正文事件 = %+v", message)
+		}
+	default:
+		t.Fatal("无工具调用时应发送最终正文")
+	}
+}
+
 func TestChatMaxIterations(t *testing.T) {
 	fl := &fakeLLM{responses: []*llm.ChatResponse{
 		toolCallResp(call("c1", "get_pod", `{}`)),
@@ -189,6 +234,28 @@ func TestChatMaxToolCalls(t *testing.T) {
 	}
 	if executed != 2 {
 		t.Fatalf("executed = %d", executed)
+	}
+}
+
+func TestChatDoesNotRepeatFailedToolCall(t *testing.T) {
+	executed := 0
+	fl := &fakeLLM{responses: []*llm.ChatResponse{
+		toolCallResp(call("c1", "get_pod", `{"name":"bad"}`)),
+		toolCallResp(call("c2", "get_pod", `{"name":"bad"}`)),
+		{Content: "无法继续，参数需要修正。"},
+	}}
+	a, _ := testAgent(t, fl, []tools.Tool{
+		&stubTool{name: "get_pod", readonly: true, executed: &executed, fail: context.Canceled},
+	}, nil)
+	answer, _, err := a.Chat(context.Background(), "检查 bad")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer != "无法继续，参数需要修正。" {
+		t.Fatalf("answer = %q", answer)
+	}
+	if executed != 1 {
+		t.Fatalf("失败工具不应重复执行，executed = %d", executed)
 	}
 }
 

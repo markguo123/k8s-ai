@@ -151,6 +151,13 @@ func runChatOnce(cmd *cobra.Command, chat service.ChatService, sessionID, query 
 	md := newMarkdownRenderer()
 	for ev := range events {
 		switch ev.Type {
+		case service.ChatEventDelta:
+			// 非交互模式：流式增量直接追加到 answer（最终一起输出）。
+			if ev.Text != "" {
+				if ev.Text != "" {
+					answer += ev.Text
+				}
+			}
 		case service.ChatEventAnswer:
 			answer = ev.Text
 			if ev.Usage != nil {
@@ -324,8 +331,17 @@ func renderMarkdown(md *glamour.TermRenderer, text string) string {
 
 // renderEvents 渲染一轮对话的事件流；审批事件回读用户输入。
 func renderEvents(events <-chan service.ChatEvent, respond chan<- string, in chatInput, md *glamour.TermRenderer, w, errW io.Writer) {
+	streamedAnswer := ""
 	for ev := range events {
 		switch ev.Type {
+		case service.ChatEventDelta, service.ChatEventAnswerDelta:
+			// 终端保留流式接收，但延迟到 answer 事件统一做 Markdown 渲染，
+			// 保持与 kubectl-ai 类似的完整报告效果。
+			streamedAnswer += ev.Text
+		case service.ChatEventProgress:
+			if ev.Text != "" {
+				fmt.Fprintf(w, "  · %s\n", ev.Text)
+			}
 		case service.ChatEventText:
 			// 用户输入回显（原文，不做 Markdown 渲染）。
 			if ev.Text != "" {
@@ -333,10 +349,15 @@ func renderEvents(events <-chan service.ChatEvent, respond chan<- string, in cha
 			}
 		case service.ChatEventAnswer:
 			// 最终回答以 Markdown 渲染（表格/列表/代码块等），前置空行与工具调用分隔。
-			if ev.Text != "" {
-				fmt.Fprintln(w)
-				fmt.Fprintln(w, renderMarkdown(md, ev.Text))
+			answer := ev.Text
+			if answer == "" {
+				answer = streamedAnswer
 			}
+			if answer != "" {
+				fmt.Fprintln(w)
+				fmt.Fprintln(w, renderMarkdown(md, answer))
+			}
+			streamedAnswer = ""
 		case service.ChatEventToolCall:
 			if ev.Tool != nil {
 				fmt.Fprintf(w, "  ↳ [Tool] %s %s\n", ev.Tool.Name, formatArgs(ev.Tool.Arguments))

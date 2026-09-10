@@ -50,6 +50,7 @@ type LLMConfig struct {
 	MaxFindings     int           `mapstructure:"max_findings"`
 	Timeout         time.Duration `mapstructure:"timeout"`
 	DisableThinking bool          `mapstructure:"disable_thinking"` // 关闭思考模式（Qwen/vLLM chat_template_kwargs），网关不支持则忽略或报错
+	Stream          bool          `mapstructure:"stream"` // chat 流式输出（true = SSE 逐 token 推送到终端/Web）
 }
 
 // ScanConfig controls collection behaviour (FR-004, FR-022, FR-024).
@@ -183,6 +184,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("llm.max_total_tokens", 32768)
 	v.SetDefault("llm.max_findings", 30)
 	v.SetDefault("llm.timeout", 120*time.Second)
+	v.SetDefault("llm.disable_thinking", false)
+	v.SetDefault("llm.stream", false)
 
 	v.SetDefault("scan.concurrency", 8)
 	v.SetDefault("scan.phase2_concurrency", 4)

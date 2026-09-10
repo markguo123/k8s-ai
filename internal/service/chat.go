@@ -24,10 +24,13 @@ type ChatEventType string
 
 const (
 	ChatEventState        ChatEventType = "state"
-	ChatEventText         ChatEventType = "text"
+	ChatEventText         ChatEventType = "text"         // 用户输入回显（CLI 交互模式）
+	ChatEventDelta        ChatEventType = "delta"        // 兼容旧客户端的 LLM 增量事件
+	ChatEventProgress     ChatEventType = "progress"     // 阶段进度摘要，不展示原始思维链
+	ChatEventAnswerDelta  ChatEventType = "answer-delta" // 最终回答增量
 	ChatEventToolCall     ChatEventType = "tool-call"
 	ChatEventToolResponse ChatEventType = "tool-response"
-	ChatEventAnswer       ChatEventType = "answer"
+	ChatEventAnswer       ChatEventType = "answer" // 最终回答（携带全文，流式气泡以此收尾）
 	ChatEventError        ChatEventType = "error"
 	ChatEventChoice       ChatEventType = "choice-request"
 )
@@ -238,12 +241,13 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 		autoApprove: !s.cfg.Agent.RequireApproval,
 	}
 	client := s.llmFactory(llm.Options{
-		Endpoint:    s.cfg.LLM.Endpoint,
-		APIKey:      s.cfg.LLM.APIKey,
-		Model:       s.cfg.LLM.Model,
-		Temperature: s.cfg.LLM.Temperature,
-		MaxTokens:   s.cfg.LLM.MaxTokens,
-		Timeout:     s.cfg.LLM.Timeout,
+		Endpoint:      s.cfg.LLM.Endpoint,
+		APIKey:        s.cfg.LLM.APIKey,
+		Model:         s.cfg.LLM.Model,
+		Temperature:   s.cfg.LLM.Temperature,
+		MaxTokens:     s.cfg.LLM.MaxTokens,
+		Timeout:       s.cfg.LLM.Timeout,
+		DisableStream: !s.cfg.LLM.Stream, // llm.stream=false：ChatStream 退化为非流式
 	})
 	recorder := s.newAuditRecorder(sess.ID)
 	ag := agent.New(agent.Options{
@@ -281,10 +285,33 @@ func (s *chatService) runChat(ctx context.Context, ag *agent.Agent, sess *sessio
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		var pendingAnswer strings.Builder
+		hadToolCall := false
 		for m := range ag.Output {
 			if ev, ok := translateEvent(m); ok {
-				events <- ev
+				switch ev.Type {
+				case ChatEventAnswerDelta, ChatEventDelta:
+					// 先缓存回答增量。若后续发现本轮实际包含工具调用，
+					// 这段内容只能是工具前的中间说明，不能提前展示为报告。
+					pendingAnswer.WriteString(ev.Text)
+				case ChatEventToolCall:
+					if progress := summarizeToolPrelude(pendingAnswer.String()); progress != "" {
+						events <- ChatEvent{Type: ChatEventProgress, Text: progress}
+					}
+					hadToolCall = true
+					pendingAnswer.Reset()
+					events <- ev
+				case ChatEventToolResponse:
+					events <- ev
+					// 工具结果之后进入新的 LLM 回答轮次，允许最终报告增量通过。
+					hadToolCall = false
+				default:
+					events <- ev
+				}
 			}
+		}
+		if !hadToolCall && pendingAnswer.Len() > 0 {
+			events <- ChatEvent{Type: ChatEventAnswerDelta, Text: pendingAnswer.String()}
 		}
 	}()
 	answer, usage, chatErr := ag.Chat(ctx, req.Query)
@@ -301,11 +328,34 @@ func (s *chatService) runChat(ctx context.Context, ag *agent.Agent, sess *sessio
 	}
 }
 
+// summarizeToolPrelude 保留工具调用前的短进度说明，过滤可能被误认为最终报告的正文。
+func summarizeToolPrelude(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" || len([]rune(text)) > 160 {
+		return ""
+	}
+	if strings.Contains(text, "```") || strings.Contains(text, "##") {
+		return ""
+	}
+	for _, keyword := range []string{"根因", "修复", "报告", "结论", "已修复", "验证结果", "建议"} {
+		if strings.Contains(text, keyword) {
+			return ""
+		}
+	}
+	return text
+}
+
 // translateEvent 把 Agent 消息总线事件转成服务层事件。
 func translateEvent(m agent.Message) (ChatEvent, bool) {
 	switch m.Type {
 	case agent.MessageTypeText:
+		// SourceModel = LLM 流式增量；SourceUser = 用户输入回显（CLI 交互模式）。
+		if m.Source == agent.SourceModel {
+			return ChatEvent{Type: ChatEventAnswerDelta, Text: toString(m.Payload)}, true
+		}
 		return ChatEvent{Type: ChatEventText, Text: toString(m.Payload)}, true
+	case agent.MessageTypeReasoningDelta:
+		return ChatEvent{Type: ChatEventProgress, Text: toString(m.Payload)}, true
 	case agent.MessageTypeError:
 		return ChatEvent{Type: ChatEventError, Text: toString(m.Payload)}, true
 	case agent.MessageTypeAgentState:

@@ -3,14 +3,14 @@
 > 版本：v3.0
 > 日期：2026-08-23
 > 状态：已确认并实施完成（v2.0.1，2026-08-24）
-> 关联：docs/DEVELOPMENT_PLAN_二期.md（开发计划）、AGENTS.md、docs/design/ARCHITECTURE.md、docs/design/ADR.md
+> 关联：docs/DEVELOPMENT*PLAN*二期.md（开发计划）、AGENTS.md、docs/design/ARCHITECTURE.md、docs/design/ADR.md
 
 ## 修订记录
 
-| 版本 | 日期 | 说明 |
-|---|---|---|
-| v1.0 | 2026-08-12 | 原始二期需求（49 节） |
-| v2.0 | 2026-08-21 | 基于 kubectl-ai 设计复盘重组为章节化需求，补充接口契约/配置/验收 |
+| 版本 | 日期       | 说明                                                                                                        |
+| ---- | ---------- | ----------------------------------------------------------------------------------------------------------- |
+| v1.0 | 2026-08-12 | 原始二期需求（49 节）                                                                                       |
+| v2.0 | 2026-08-21 | 基于 kubectl-ai 设计复盘重组为章节化需求，补充接口契约/配置/验收                                            |
 | v3.0 | 2026-08-23 | 按四点澄清修订：读写不限制 + 人类确认、充分照抄 kubectl-ai、一期能力全继承（tools 不重复开发）、新增 Web UI |
 
 ---
@@ -61,16 +61,16 @@ kubectl 动词分类表          # 只借鉴分类思路，改为 k8s-ai 的风�
 
 ## 0.4 与 kubectl-ai 的对照
 
-| 能力 | kubectl-ai | k8s-ai 二期 |
-|---|---|---|
-| 工具执行 | shell 执行 kubectl | kubectl 二进制 argv 直调（无 shell）；写操作唯一入口为 kubectlTool，含 shell 构造的命令经人工审批后走 `bash -c` |
-| 权限判断 | modifies yes/no/unknown | SAFE→CRITICAL 风险分级 + 人类确认 |
-| 写操作 | 交互确认 / --skip-permissions | 默认确认；`--skip-permissions` 仅自动化显式开启 |
-| 诊断 | 无（纯问答） | 一期 Scanner+Rules+Evidence+Diagnosis 全部 Tool 化 |
-| 执行后 | 不验证 | Plan → Execute → Verify 闭环，失败继续调查 |
-| 数据安全 | 原始数据进 LLM/落盘 | 截断 + 脱敏 + 不可信定界 + 审计零敏感值 |
-| UI | terminal/tui/web | terminal（chat CLI）+ web（k8s-ai web） |
-| 会话 | memory/filesystem | memory/filesystem + Web 会话管理 |
+| 能力     | kubectl-ai                    | k8s-ai 二期                                                                                                     |
+| -------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| 工具执行 | shell 执行 kubectl            | kubectl 二进制 argv 直调（无 shell）；写操作唯一入口为 kubectlTool，含 shell 构造的命令经人工审批后走 `bash -c` |
+| 权限判断 | modifies yes/no/unknown       | SAFE→CRITICAL 风险分级 + 人类确认                                                                               |
+| 写操作   | 交互确认 / --skip-permissions | 默认确认；`--skip-permissions` 仅自动化显式开启                                                                 |
+| 诊断     | 无（纯问答）                  | 一期 Scanner+Rules+Evidence+Diagnosis 全部 Tool 化                                                              |
+| 执行后   | 不验证                        | Plan → Execute → Verify 闭环，失败继续调查                                                                      |
+| 数据安全 | 原始数据进 LLM/落盘           | 截断 + 脱敏 + 不可信定界 + 审计零敏感值                                                                         |
+| UI       | terminal/tui/web              | terminal（chat CLI）+ web（k8s-ai web）                                                                         |
+| 会话     | memory/filesystem             | memory/filesystem + Web 会话管理                                                                                |
 
 ---
 
@@ -312,6 +312,18 @@ session-picker-request  # 会话选择
 agent-state             # 状态变化事件（Web SSE 消费）
 ```
 
+ChatService/Web SSE 还提供阶段化事件：
+
+```text
+progress                # 简短阶段摘要；不暴露原始思维链
+answer-delta            # 无工具调用的最终回答增量
+tool-call               # 工具开始执行
+tool-response           # 工具结果（脱敏后）
+answer                  # 最终回答收尾与完整文本
+```
+
+顺序约束：带工具调用的 LLM 轮次只能保留简短进度说明，完整报告不得提前展示；工具结果和必要验证完成后，才允许 `answer-delta`/`answer` 输出最终报告。
+
 ## 5.2 AgentState（借鉴 kubectl-ai）
 
 ```text
@@ -432,21 +444,21 @@ diagnose_workload  # Deployment/StatefulSet/DaemonSet 及其 Pod 链
 
 ## 8.2 一期能力继承矩阵（tools 不重复开发）
 
-| 一期模块 | 二期转化 |
-|---|---|
-| kubernetes.Client（Reader） | 全部只读 Tool 的底层；补齐 GetStatefulSet/GetDaemonset/GetReplicaSet/GetEndpoints/GetPVC/GetPV/GetStorageClass/GetNamespace/GetEvents |
-| scanner.Phase1/Phase2 | get_pods / get_resources / scan_cluster / scan_pod / 日志类 Tool 的上限与并发机制 |
-| correlation | diagnose_* 的关联补全（owner/Node/PVC/Service/EndpointSlice） |
-| rule.Engine + registry | scan_cluster / scan_pod / diagnose_* 的 Finding 生成 |
-| evidence | 诊断 Tool 证据链输出 |
-| diagnosis（LLM 编排/校验/降级） | diagnose_* 的 LLM 诊断与降级 |
-| incident + correlation | diagnose_workload 故障链聚合 |
-| history + latest.json | scan_cluster 的 Agent 记忆（新增/持续/恢复） |
-| report（评分/渲染） | chat JSON 输出、scan_cluster 结果摘要 |
-| security（Redactor） | ToolResult / 会话 / 审计统一脱敏 |
-| model 类型（Finding/Diagnosis/Incident/RiskLevel/Command） | 全部复用，不重建 |
-| config（优先级/校验） | 扩展 agent/webui/mcp 配置节 |
-| service.ScanService | scan_cluster Tool 直接调用 Run |
+| 一期模块                                                   | 二期转化                                                                                                                              |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| kubernetes.Client（Reader）                                | 全部只读 Tool 的底层；补齐 GetStatefulSet/GetDaemonset/GetReplicaSet/GetEndpoints/GetPVC/GetPV/GetStorageClass/GetNamespace/GetEvents |
+| scanner.Phase1/Phase2                                      | get_pods / get_resources / scan_cluster / scan_pod / 日志类 Tool 的上限与并发机制                                                     |
+| correlation                                                | diagnose\_\* 的关联补全（owner/Node/PVC/Service/EndpointSlice）                                                                       |
+| rule.Engine + registry                                     | scan*cluster / scan_pod / diagnose*\* 的 Finding 生成                                                                                 |
+| evidence                                                   | 诊断 Tool 证据链输出                                                                                                                  |
+| diagnosis（LLM 编排/校验/降级）                            | diagnose\_\* 的 LLM 诊断与降级                                                                                                        |
+| incident + correlation                                     | diagnose_workload 故障链聚合                                                                                                          |
+| history + latest.json                                      | scan_cluster 的 Agent 记忆（新增/持续/恢复）                                                                                          |
+| report（评分/渲染）                                        | chat JSON 输出、scan_cluster 结果摘要                                                                                                 |
+| security（Redactor）                                       | ToolResult / 会话 / 审计统一脱敏                                                                                                      |
+| model 类型（Finding/Diagnosis/Incident/RiskLevel/Command） | 全部复用，不重建                                                                                                                      |
+| config（优先级/校验）                                      | 扩展 agent/webui/mcp 配置节                                                                                                           |
+| service.ScanService                                        | scan_cluster Tool 直接调用 Run                                                                                                        |
 
 ---
 
@@ -466,7 +478,7 @@ diagnose_workload  # Deployment/StatefulSet/DaemonSet 及其 Pod 链
 
 ```yaml
 agent:
-  tool_calling: native   # native | shim | auto
+  tool_calling: native # native | shim | auto
 ```
 
 `auto`：先 native，网关不支持（400/参数错误）时降级 shim 并记录审计事件。
@@ -497,9 +509,9 @@ LLM（native tools 或 shim JSON）
 
 ```yaml
 agent:
-  max_iterations: 10    # LLM 往返上限
-  max_tool_calls: 20    # 累计 Tool 调用上限
-  timeout: 5m           # 单次用户消息总预算
+  max_iterations: 10 # LLM 往返上限
+  max_tool_calls: 20 # 累计 Tool 调用上限
+  timeout: 5m # 单次用户消息总预算
 ```
 
 错误隔离：
@@ -523,8 +535,8 @@ agent:
 
 ```yaml
 agent:
-  require_approval: true     # 写操作默认要求确认
-  skip_permissions: false    # CLI flag --skip-permissions（自动化显式开启，等效 kubectl-ai）
+  require_approval: true # 写操作默认要求确认
+  skip_permissions: false # CLI flag --skip-permissions（自动化显式开启，等效 kubectl-ai）
 ```
 
 - 交互模式（terminal / web）：写操作发送 `user-choice-request`，用户选择 y / a / n 后执行。
@@ -604,7 +616,7 @@ Command Parser（argv 解析，无 shell）→ Verb Allowlist → Risk Assessmen
 ## 13.2 kubectl 执行路径（改造 kubectl-ai）
 
 - 通用 `kubectl` Tool：LLM 生成完整 kubectl 命令字符串 → 引号感知切分；无 shell 元字符时解析为 argv → 动词白名单校验 → 风险分级 → 审批 → `exec.Command("kubectl", argv...)` 直调二进制 → 输出捕获/截断/脱敏。
-- 含 shell 元字符（`| & ; > < $ () \``）的命令标记为 shell 模式，必须经人工审批后才执行 `bash -c`；shell 模式同样拒绝交互式命令（`exec -it` / `edit` / `attach` / `port-forward` 等拒绝并回传原因）。
+- 含 shell 元字符（`| & ; > < $ () \``）的命令标记为 shell 模式，必须经人工审批后才执行 `bash -c`；shell 模式同样拒绝交互式命令（`exec -it`/`edit`/`attach`/`port-forward` 等拒绝并回传原因）。
 - Secret / `--raw` 红线使用 `mvdan.cc/sh/v3/syntax` 解析命令后识别，解析失败回退到保守词法扫描；kubectl 子进程通过 `KUBECONFIG` 环境变量继承 `kubernetes.kubeconfig`。
 - 流式命令（`logs -f` / `get -w`）：不在解析层拒绝，由 executor 统一套固定超时（默认 7s，`Options.StreamTimeout` 可配）采样部分输出并标记 `Result.StreamTimeout`，超时不视为错误、不阻塞 Agent Loop（借鉴 kubectl-ai streaming.go）。
 - 输出上限默认 64KB（`agent.cmd_max_bytes`）。
@@ -695,9 +707,14 @@ file                # ~/.k8s-ai/sessions/<id>.json（脱敏落盘）
   "lastModified": "...",
   "state": "done",
   "messages": [
-    {"role": "user", "type": "text", "content": "..."},
-    {"role": "assistant", "type": "text", "content": "..."},
-    {"role": "tool", "type": "tool-call-response", "name": "get_pod", "content": "..."}
+    { "role": "user", "type": "text", "content": "..." },
+    { "role": "assistant", "type": "text", "content": "..." },
+    {
+      "role": "tool",
+      "type": "tool-call-response",
+      "name": "get_pod",
+      "content": "..."
+    }
   ],
   "approvedWrites": []
 }
@@ -711,11 +728,19 @@ file                # ~/.k8s-ai/sessions/<id>.json（脱敏落盘）
   "answer": "最终回答",
   "confidence": 0.94,
   "toolCalls": [
-    {"name": "get_pod", "arguments": {"namespace": "production", "name": "payment-api"}, "truncated": false}
+    {
+      "name": "get_pod",
+      "arguments": { "namespace": "production", "name": "payment-api" },
+      "truncated": false
+    }
   ],
-  "diagnosis": {"rootCause": "...", "evidenceChain": ["..."], "remediation": ["..."]},
-  "plan": {"command": "kubectl ...", "risk": "MEDIUM", "executed": false},
-  "usage": {"promptTokens": 0, "completionTokens": 0}
+  "diagnosis": {
+    "rootCause": "...",
+    "evidenceChain": ["..."],
+    "remediation": ["..."]
+  },
+  "plan": { "command": "kubectl ...", "risk": "MEDIUM", "executed": false },
+  "usage": { "promptTokens": 0, "completionTokens": 0 }
 }
 ```
 
@@ -740,7 +765,7 @@ internal/webui
 
 - `AgentManager`：sessionID → Agent，支持多会话并发。
 - `SessionManager`：Web 与会话共享同一 Store。
-- SSE：`GET /api/sessions/{id}/stream` 推送 agent-state / text / tool-call / user-choice-request。
+- SSE：`GET /api/sessions/{id}/stream` 推送 state/text/progress/tool-call/tool-response/answer-delta/answer/error/choice-request 等阶段事件。
 - 审批：`POST /api/sessions/{id}/choose-option` 回传 y / a / n。
 
 ## 16.3 REST API
@@ -774,10 +799,10 @@ POST   /api/sessions/{id}/choose-option  # 审批/选项响应
 
 ```yaml
 agent:
-  result_max_bytes: 8192     # 单次 ToolResult 上限
-  turn_max_bytes: 32768      # 单轮累积 Tool 结果上限
-  cmd_max_bytes: 65536       # kubectl 输出上限
-  history_turns: 20          # 保留最近 N 轮
+  result_max_bytes: 8192 # 单次 ToolResult 上限
+  turn_max_bytes: 32768 # 单轮累积 Tool 结果上限
+  cmd_max_bytes: 65536 # kubectl 输出上限
+  history_turns: 20 # 保留最近 N 轮
 llm:
   max_input_tokens: 8192
   max_total_tokens: 32768
@@ -926,17 +951,17 @@ agent:
   max_iterations: 10
   max_tool_calls: 20
   timeout: 5m
-  tool_calling: native        # native | shim | auto
-  require_approval: true      # 写操作默认要求确认
-  skip_permissions: false     # 配置级免审批（等效 --skip-permissions；自动化显式开启）
-  deny_ops: []                # 可选硬拦截（默认空，如 ["delete namespace"]）
+  tool_calling: native # native | shim | auto
+  require_approval: true # 写操作默认要求确认
+  skip_permissions: false # 配置级免审批（等效 --skip-permissions；自动化显式开启）
+  deny_ops: [] # 可选硬拦截（默认空，如 ["delete namespace"]）
   result_max_bytes: 8192
   turn_max_bytes: 32768
   cmd_max_bytes: 65536
   history_turns: 20
   session_dir: ~/.k8s-ai/sessions
   audit_dir: ~/.k8s-ai/audit
-  disabled_tools: []          # 在注册后移除指定工具（例如 ["kubectl"] 禁止写入口）
+  disabled_tools: [] # 在注册后移除指定工具（例如 ["kubectl"] 禁止写入口）
 webui:
   addr: 127.0.0.1:8081
 mcp:
@@ -950,22 +975,22 @@ mcp:
 
 # 25. 测试矩阵
 
-| 领域 | 测试项 |
-|---|---|
-| Tool Calling | native 请求/响应解析、shim JSON action、非法 schema、空参数、多轮 |
-| 只读 Tool | 18 个工具（fake clientset）、输入校验、截断、脱敏、超时、错误隔离 |
-| kubectl Tool | argv 解析（引号/无元字符）、动词白名单、交互命令拒绝、输出上限、fake kubectl 二进制 |
-| 写 Tool | client-go fake 的 scale/patch/restart、ApprovedWrites 生命周期 |
-| 诊断 Tool | scan_cluster/diagnose_* 复用一期逻辑、结果契约、LLM 降级 |
-| Agent Loop | max_iterations/max_tool_calls/timeout、空响应、LLM 错误、工具错误继续 |
-| 审批 | require_approval、y/a/n、skip_permissions、deny_ops、非交互拒绝 |
-| 执行验证 | rollout status、Pod Ready、restartCount、失败继续调查 |
-| Session | memory/file CRUD、恢复、ApprovedWrites、脱敏落盘 |
-| Web UI | SSE 流、会话 CRUD、send-message、choose-option、页面加载 |
-| Prompt Injection | 日志注入指令不生效、诱导写操作被拦截 |
-| Redaction | 审计/会话/LLM 请求零敏感值 |
-| 架构 | 无 bash -c、executor 外无写方法、依赖方向、Secret 禁入 LLM |
-| 回归 | 一期全部测试通过（go test ./... / go vet ./...） |
+| 领域             | 测试项                                                                              |
+| ---------------- | ----------------------------------------------------------------------------------- |
+| Tool Calling     | native 请求/响应解析、shim JSON action、非法 schema、空参数、多轮                   |
+| 只读 Tool        | 18 个工具（fake clientset）、输入校验、截断、脱敏、超时、错误隔离                   |
+| kubectl Tool     | argv 解析（引号/无元字符）、动词白名单、交互命令拒绝、输出上限、fake kubectl 二进制 |
+| 写 Tool          | client-go fake 的 scale/patch/restart、ApprovedWrites 生命周期                      |
+| 诊断 Tool        | scan*cluster/diagnose*\* 复用一期逻辑、结果契约、LLM 降级                           |
+| Agent Loop       | max_iterations/max_tool_calls/timeout、空响应、LLM 错误、工具错误继续               |
+| 审批             | require_approval、y/a/n、skip_permissions、deny_ops、非交互拒绝                     |
+| 执行验证         | rollout status、Pod Ready、restartCount、失败继续调查                               |
+| Session          | memory/file CRUD、恢复、ApprovedWrites、脱敏落盘                                    |
+| Web UI           | SSE 流、会话 CRUD、send-message、choose-option、页面加载                            |
+| Prompt Injection | 日志注入指令不生效、诱导写操作被拦截                                                |
+| Redaction        | 审计/会话/LLM 请求零敏感值                                                          |
+| 架构             | 无 bash -c、executor 外无写方法、依赖方向、Secret 禁入 LLM                          |
+| 回归             | 一期全部测试通过（go test ./... / go vet ./...）                                    |
 
 ---
 
@@ -986,7 +1011,7 @@ mcp:
 
 # 27. 实施顺序
 
-对应 docs/DEVELOPMENT_PLAN_二期.md：
+对应 docs/DEVELOPMENT*PLAN*二期.md：
 
 ```text
 P0 基础底座（llm 双模式 + 包骨架 + 配置 + AGENTS.md/架构测试更新）

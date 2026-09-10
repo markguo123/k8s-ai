@@ -29,6 +29,8 @@
 | 终端 Markdown 渲染 + readline 输入 | pkg/ui/terminal.go（glamour + chzyer/readline） | internal/cli/chat.go |
 | 流式命令超时采样（logs -f / get -w） | pkg/tools/streaming.go DetectKubectlStreaming | internal/executor（kubectl.go IsStreaming + RunKubectl 超时） |
 | rollout 子命令只读/写细分 + --dry-run 降级只读 | pkg/tools/kubectl_filter.go readOnlyOps/writeOps | internal/approval/risk.go classifyCommand |
+| 命令安全分类改用 mvdan shell 解析器（Secret/--raw 红线识别） | pkg/tools/kubectl_filter.go | internal/executor/parse.go IsForbiddenCommand（mvdan.cc/sh/v3/syntax AST 解析路径 + 词法扫描回退） |
+| kubectl 子进程注入 KUBECONFIG | pkg/tools/kubectl_tool.go | internal/executor/kubectl.go RunKubectl（Env KUBECONFIG 继承 kubernetes.kubeconfig） |
 
 ## 其他
 

@@ -1,7 +1,7 @@
 # k8s-ai 技术指导手册
 
 > 面向读者：产品经理 / 运维负责人 / 项目决策者（不需要懂 Go）。
-> 本文基于**代码实际状态（截至 v2.0.8，2026-09-07，一期 1.1 + 1.2 与二期 Agent 全部完成）**编写；每完成一个阶段都会刷新第二章与第五章。
+> 本文基于**代码实际状态（截至 v2.2.2-0910，2026-09-10，一期 1.1 + 1.2 与二期 Agent 全部完成）**编写；每完成一个阶段都会刷新第二章与第五章。
 
 ---
 
@@ -21,40 +21,45 @@ k8s-ai 是一个 Kubernetes 集群的"只读体检医生"：运维人员执行�
 
 > 说明：按代码实际状态编写；P3-P11（一期 1.1）与 P12（一期 1.2：Server + 历史差异数据）均已完成。
 
-### 二期（v2.0.0–v2.0.8）：自然语言 Agent（chat / web）
+### 二期（v2.0.0–v2.2.0）：自然语言 Agent（chat / web）
 
 **核心能力：**
 
-| 能力 | 说明 |
-|---|---|
-| `k8s-ai chat` | 终端自然语言对话：交互/单发/stdin/JSON，会话持久化（--session 等） |
-| `k8s-ai web` | 浏览器 chat：多会话 + SSE 流式 + 工具执行过程（Show output）+ 审批卡片 |
-| Agent 工具集 | 19 个只读工具 + 5 个诊断工具（复用一期）+ 7 个写工具 |
-| 集群健康检查 | 节点 → 资源使用（metrics API）→ 命名空间 → Pod → 系统组件 → 警告事件 → 双评分 |
-| 安全执行闭环 | 诊断 → 询问"需要我修复吗？" → 审批（等效 kubectl 命令+变更+风险等级）→ 执行 → 验证；批量审批支持一轮多写操作合并确认 |
-| 拒绝闸门 | 同一写操作被拒绝 2 次后硬拦截；kubectl 命令归一化（忽略 --force/--grace-period 等修饰性 flag）防绕过 |
-| Shell 构造 | chat 模式允许 pipe/heredoc/redirect/&&/|| 等，但含写操作的 shell 命令必须走审批，shell 命令永不自动执行 |
-| 审计 | 用户输入/LLM/工具/审批/执行事件落盘（脱敏） |
-| MCP 预留 | Client 接口 + 注册表适配器骨架（v1 不连接外部服务器） |
+| 能力          | 说明                                                                                                                 |
+| ------------- | -------------------------------------------------------------------------------------------------------------------- | --- | --------------------------------------------------------------------------- |
+| `k8s-ai chat` | 终端自然语言对话：交互/单发/stdin/JSON，会话持久化（--session 等）                                                   |
+| `k8s-ai web`  | 浏览器 chat：多会话 + SSE 流式 + 工具执行过程（Show output）+ 审批卡片                                               |
+| Agent 工具集  | 20 个只读工具 + 5 个诊断工具（复用一期）+ 1 个写工具（kubectl 唯一入口，删 6 个结构化写工具）                        |
+| 集群健康检查  | 节点 → 资源使用（metrics API）→ 命名空间 → Pod → 系统组件 → 警告事件 → 双评分                                        |
+| 安全执行闭环  | 诊断 → 询问"需要我修复吗？" → 审批（等效 kubectl 命令+变更+风险等级）→ 执行 → 验证；批量审批支持一轮多写操作合并确认 |
+| 拒绝闸门      | 同一写操作被拒绝 2 次后硬拦截；kubectl 命令归一化（忽略 --force/--grace-period 等修饰性 flag）防绕过                 |
+| Shell 构造    | chat 模式允许 pipe/heredoc/redirect/&&/                                                                              |     | 等，含 shell 构造命令必须经人工审批后才执行 bash -c，shell 命令永不自动执行 |
+| 审计          | 用户输入/LLM/工具/审批/执行事件落盘（脱敏）                                                                          |
+| 流式输出      | `llm.stream: true` 开启 SSE 流式处理；支持语义事件、阶段进度、工具调用顺序控制，失败自动降级非流式                   |
+| 安全加固      | Secret/--raw 红线改用 mvdan shell 解析器（引号拼接/命令替换全覆盖）；kubectl 子进程注入 KUBECONFIG 对齐集群配置      |
+| MCP 预留      | Client 接口 + 注册表适配器骨架（v1 不连接外部服务器）                                                                |
 
 **关键机制：**
 
-- 双模式 Tool Calling：native（OpenAI 标准 wire）+ shim（JSON action 协议）+ auto 自动降级；
+- 双模式 Tool Calling：native（OpenAI 标准 wire）+ shim（JSON action 协议）+ auto 自动降级；native 模式支持 LLM 流式（ChatStream/ChatStreamEvents → Agent 轮次判断 → ChatEvent → SSE/Web 渲染）；
+- **流式阶段顺序**：LLM 的 `content-delta` 与 `reasoning-delta` 先由 Agent 识别；带 `tool_calls` 的轮次只保留短进度说明，完整正文不提前展示；工具事件按 `tool-call → tool-response` 推送；无工具调用的最终轮次才推送 `answer-delta`，最后由 `answer` 收尾。Web 端将分析摘要放入可折叠面板，CLI 缓存增量后统一 Markdown 渲染。
+- **流式可靠性**：工具参数在累积完成后做 JSON 归一化；同一只读工具和同一参数执行失败后不原样重试，避免模型循环调用耗尽 `max_tool_calls`/`max_iterations`；不安全的参数不会被自动猜测修复。
 - `get_pod` 支持省略 namespace 全集群查找 + 前缀匹配，避免模型猜命名空间；
 - 写工具投喂 LLM 前 Text+Data 一起输出（避免摘要覆盖数据导致模型循环）；
 - 修复行为门禁：诊断类提问禁止调用写工具，先给结论并询问。
+- 写工具精简为 1 个（kubectlTool）：删除 6 个结构化写工具（scale_deployment/patch_deployment/restart_rollout/label/delete_pod/patch_configmap），写操作统一由 LLM 生成完整 kubectl 命令走审批执行。
 
 ### P1 核心扫描（真实可用）
 
 **能扫哪些资源：**
 
-| 类别 | 覆盖内容 |
-|---|---|
-| 计算 | Pod、Node |
-| 工作负载 | Deployment / ReplicaSet / StatefulSet / DaemonSet / Job / CronJob |
-| 存储 | PVC / PV / StorageClass / VolumeAttachment |
-| 网络 | Service / EndpointSlice / Ingress / NetworkPolicy |
-| 基础 | Namespace、Events（每命名空间一次拉取） |
+| 类别     | 覆盖内容                                                                                  |
+| -------- | ----------------------------------------------------------------------------------------- |
+| 计算     | Pod、Node                                                                                 |
+| 工作负载 | Deployment / ReplicaSet / StatefulSet / DaemonSet / Job / CronJob                         |
+| 存储     | PVC / PV / StorageClass / VolumeAttachment                                                |
+| 网络     | Service / EndpointSlice / Ingress / NetworkPolicy                                         |
+| 基础     | Namespace、Events（每命名空间一次拉取）                                                   |
 | 系统组件 | CoreDNS、kube-proxy、CNI、metrics-server、Ingress Controller、CSI（动态发现，不假设存在） |
 
 **能发现哪些典型异常：**
@@ -191,17 +196,18 @@ flowchart LR
 
 配置文件默认在 `~/.k8s-ai/config.yaml`（`k8s-ai config init` 生成），以下是最重要的几个开关：
 
-| 配置 | 默认值 | 含义 |
-|---|---|---|
-| scan.concurrency | 8 | 全量扫描并行度（越高越快，越费 API Server） |
-| scan.phase2_concurrency | 4 | 深度采集（日志）并行度 |
-| scan.max_log_lines | 500 | 每个容器最多拉多少行日志 |
-| scan.max_log_bytes | 64 KiB | 单个容器日志字节上限（防超大日志） |
-| scan.timeout | 5m | 整次扫描总超时（LLM 场景建议 10m） |
-| llm.enabled / endpoint / model | true / http://localhost:8000/v1 / qwen-plus | 大模型开关、地址、模型 |
-| llm.timeout | 120s | 单次 LLM 调用超时（思考型模型建议保持） |
-| kubernetes.qps / burst | 20 / 40 | 对 API Server 的访问限速（防压垮集群） |
-| report.directory | ./reports | 报告输出目录 |
+| 配置                           | 默认值                                      | 含义                                          |
+| ------------------------------ | ------------------------------------------- | --------------------------------------------- |
+| scan.concurrency               | 8                                           | 全量扫描并行度（越高越快，越费 API Server）   |
+| scan.phase2_concurrency        | 4                                           | 深度采集（日志）并行度                        |
+| scan.max_log_lines             | 500                                         | 每个容器最多拉多少行日志                      |
+| scan.max_log_bytes             | 64 KiB                                      | 单个容器日志字节上限（防超大日志）            |
+| scan.timeout                   | 5m                                          | 整次扫描总超时（LLM 场景建议 10m）            |
+| llm.enabled / endpoint / model | true / http://localhost:8000/v1 / qwen-plus | 大模型开关、地址、模型                        |
+| llm.timeout                    | 120s                                        | 单次 LLM 调用超时（思考型模型建议保持）       |
+| llm.stream                     | false                                       | chat 是否启用 SSE 流式；关闭时使用非流式 Chat |
+| kubernetes.qps / burst         | 20 / 40                                     | 对 API Server 的访问限速（防压垮集群）        |
+| report.directory               | ./reports                                   | 报告输出目录                                  |
 
 命令行还能临时覆盖：`--namespace`/`-n`（只扫某个命名空间）、`--since`（只看最近 N 小时日志）、`--fail-on`（达到指定严重级就返回失败退出码）、`--report-mode none|latest|daily`（报告目的地）、`--format markdown|json|yaml`（终端报告格式）、`--verbose`（终端输出完整报告）；单 Pod：`k8s-ai scan pod <name> -n <ns>`。
 
@@ -233,7 +239,7 @@ flowchart LR
 
 ### 已完成的二期能力
 
-- **二期（v2.0.0–v2.0.8）**：chat Agent / Tool Calling / 会话记忆 / 审批执行（按 PROJECT_SPEC_二期.md）；v2.0.6–v2.0.8 迭代：四层意图决策树、放开 shell 构造、批量审批、拒绝闸门命令归一化
+- **二期（v2.0.0–v2.2.0）**：chat Agent / Tool Calling / 会话记忆 / 审批执行（按 PROJECT*SPEC*二期.md）；v2.0.6–v2.0.8 迭代：四层意图决策树、放开 shell 构造、批量审批、拒绝闸门命令归一化
 
 ### 尚未开始的能力
 
@@ -262,7 +268,7 @@ flowchart LR
 
 - **P12（已完成）**：Server 最小化（healthz/version/异步扫描 API）+ 历史差异数据（二期 Agent 记忆契约）
 - **一期终版达成**：1.1（巡检/排查/分析/报告/部署）+ 1.2（Server/历史对比）全部交付
-- **二期（v2.0.0–v2.0.8）**：`k8s-ai chat` 自然语言 Agent、Tool Calling、会话记忆（复用 latest.json 历史差异数据）、安全审批与执行（含批量审批 + 拒绝闸门 + shell 构造受控放开）。
+- **二期（v2.0.0–v2.2.0）**：`k8s-ai chat` 自然语言 Agent、Tool Calling、会话记忆（复用 latest.json 历史差异数据）、安全审批与执行（含批量审批 + 拒绝闸门 + shell 构造受控放开）。
 
 ---
 
@@ -278,17 +284,17 @@ flowchart LR
 
 ## 附录 B：术语表
 
-| 术语 | 大白话 |
-|---|---|
-| Scan | 一次完整的集群巡检 |
-| Phase1 | 第一遍"快照"：把集群资源全量列一遍 |
-| Phase2 | 第二遍"取证"：只对异常对象拉日志 |
-| Finding | 一条被判定出的异常（如"payment-api CrashLoopBackOff"） |
-| Evidence | 支撑这条异常的实锤证据（重启次数、退出码、日志关键行等） |
-| HealthScore | 集群健康评分（100 分制，按异常严重级扣分） |
-| Correlated | 由同一个根因连带出来的下游异常（评分只扣一次） |
-| 历史对比 | 与上一轮巡检按指纹对比：新增 / 持续 / 恢复（二期 Agent 记忆契约） |
-| collection_errors | 采集失败清单（如某个 Pod 日志没权限），不影响整次扫描 |
+| 术语              | 大白话                                                            |
+| ----------------- | ----------------------------------------------------------------- |
+| Scan              | 一次完整的集群巡检                                                |
+| Phase1            | 第一遍"快照"：把集群资源全量列一遍                                |
+| Phase2            | 第二遍"取证"：只对异常对象拉日志                                  |
+| Finding           | 一条被判定出的异常（如"payment-api CrashLoopBackOff"）            |
+| Evidence          | 支撑这条异常的实锤证据（重启次数、退出码、日志关键行等）          |
+| HealthScore       | 集群健康评分（100 分制，按异常严重级扣分）                        |
+| Correlated        | 由同一个根因连带出来的下游异常（评分只扣一次）                    |
+| 历史对比          | 与上一轮巡检按指纹对比：新增 / 持续 / 恢复（二期 Agent 记忆契约） |
+| collection_errors | 采集失败清单（如某个 Pod 日志没权限），不影响整次扫描             |
 
 ## 附录 C：给决策者的安全承诺
 
