@@ -1,8 +1,8 @@
-﻿@REM Windows CMD 构建脚本：版本注入 + 编译二进制（Windows + Linux）
+@REM Windows CMD 构建脚本：版本注入 + 编译二进制（Windows + Linux）
 @echo off
 setlocal
 
-set "VERSION=v2.2.1"
+set "VERSION=v2.3.0"
 set "BIN_DIR=bin"
 set "BINARY=k8s-ai"
 set "MODULE=github.com/k8s-ai/k8s-ai"

@@ -1,0 +1,6 @@
+{"timestamp":"2026-09-11T18:27:04.8777742+08:00","action":"user.input","payload":{"query":"hi"}}
+{"timestamp":"2026-09-11T18:27:04.8777742+08:00","action":"llm.request","payload":{"messages":2,"mode":"native","tools":28}}
+{"timestamp":"2026-09-11T18:27:11.027953+08:00","action":"llm.response","payload":{"stream":true,"toolCalls":0,"usage":{"PromptTokens":6207,"CompletionTokens":135,"TotalTokens":6342}}}
+{"timestamp":"2026-09-11T18:49:03.7781173+08:00","action":"user.input","payload":{"query":"年后"}}
+{"timestamp":"2026-09-11T18:49:03.7786592+08:00","action":"llm.request","payload":{"messages":4,"mode":"native","tools":28}}
+{"timestamp":"2026-09-11T18:49:07.6952805+08:00","action":"llm.response","payload":{"stream":true,"toolCalls":0,"usage":{"PromptTokens":6315,"CompletionTokens":119,"TotalTokens":6434}}}

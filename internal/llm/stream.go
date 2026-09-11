@@ -86,14 +86,21 @@ func (a *streamAccumulator) response() *ChatResponse {
 // 只接受可验证的 JSON；无法安全恢复时原样返回，让工具层明确报告参数错误。
 func normalizeToolArguments(raw json.RawMessage) json.RawMessage {
 	text := strings.TrimSpace(string(raw))
-	if text == "" || json.Valid([]byte(text)) {
+	if text == "" {
 		return json.RawMessage(text)
 	}
 
-	// 某些网关会把 JSON 参数再编码成 JSON 字符串。
-	var encoded string
-	if json.Unmarshal([]byte(text), &encoded) == nil && json.Valid([]byte(encoded)) {
-		return json.RawMessage(encoded)
+	// 某些网关会把 JSON 参数再编码成 JSON 字符串（以引号开头）。
+	if strings.HasPrefix(text, `"`) {
+		var encoded string
+		if json.Unmarshal([]byte(text), &encoded) == nil && json.Valid([]byte(encoded)) {
+			return json.RawMessage(encoded)
+		}
+	}
+
+	// 已经是合法 JSON（对象或数组），直接返回。
+	if json.Valid([]byte(text)) {
+		return json.RawMessage(text)
 	}
 
 	// 兼容对象后附加空引号噪声，例如 `{}""`。只在首个 JSON 值
