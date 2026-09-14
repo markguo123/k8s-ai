@@ -1712,6 +1712,7 @@ let eventSource = null;
 let chatBusy = false;
 let pendingTools = [];
 let toolCallCount = 0;
+const currentSessionStorageKey = "k8s-ai-current-session";
 
 const $ = (id) => document.getElementById(id);
 const inner = () => document.querySelector("#chat .inner");
@@ -1890,32 +1891,23 @@ async function loadSessions() {
 
   if (!currentSession) {
 
-    if (list.length > 0) {
+    const savedSession =
+      sessionStorage.getItem(
+        currentSessionStorageKey
+      );
 
-      openSession(list[0].id);
+    if (
+      savedSession &&
+      list.some((s) => s.id === savedSession)
+    ) {
+
+      openSession(savedSession);
 
     } else {
 
-      try {
-
-        const d = await api(
-          "/api/sessions",
-          {
-            method: "POST",
-            body: JSON.stringify({})
-          }
-        );
-
-        openSession(d.id);
-
-      } catch (e) {
-
-        addMsg(
-          "error",
-          "创建会话失败: " + e.message
-        );
-
-      }
+      sessionStorage.removeItem(
+        currentSessionStorageKey
+      );
 
     }
 
@@ -1940,6 +1932,21 @@ function openSession(id) {
   closeStream();
 
   currentSession = id;
+
+  if (id) {
+
+    sessionStorage.setItem(
+      currentSessionStorageKey,
+      id
+    );
+
+  } else {
+
+    sessionStorage.removeItem(
+      currentSessionStorageKey
+    );
+
+  }
 
   pendingTools = [];
 
@@ -3869,7 +3876,7 @@ function showWelcome() {
         <h2>
           让 Kubernetes<br>
           <span class="gradient-text">
-            从现象走向结论
+            开口说话
           </span>
         </h2>
 
@@ -4419,6 +4426,8 @@ $("sidebarToggle").onclick =
 
 $("sidebarOverlay").onclick =
   closeSidebar;
+
+showWelcome();
 
 loadSessions().catch(
   (e) =>

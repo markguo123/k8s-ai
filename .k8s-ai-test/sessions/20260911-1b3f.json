@@ -27,8 +27,20 @@
       "type": "text",
       "content": "你好！你的消息似乎不完整。\n\n请问你是想在年后：\n- 📊 检查集群健康状态？\n- 🔍 诊断某些 Pod/服务异常？\n- 📋 查看集群资源使用情况？\n- 🛠️ 其他 Kubernetes 相关操作？\n\n请告诉我具体需求，我来帮你处理！",
       "timestamp": "2026-09-11T18:49:07.6952805+08:00"
+    },
+    {
+      "role": "user",
+      "type": "text",
+      "content": "介绍下自己",
+      "timestamp": "2026-09-14T18:10:50.5572816+08:00"
+    },
+    {
+      "role": "assistant",
+      "type": "text",
+      "content": "你好！我是 **k8s-ai**，一个 Kubernetes SRE Agent。\n\n## 基本信息\n- **开发者**：中电金信 郭康虎\n- **身份**：Kubernetes SRE Agent\n- **能力**：通过 Tools 调查和操作 Kubernetes 集群\n\n## 我能帮你做什么\n\n### 🔍 诊断类\n- Pod 为什么起不来/一直重启/CrashLoopBackOff\n- Deployment/StatefulSet 副本不就绪\n- 节点 NotReady/资源不足/调度失败\n- PVC Pending/存储绑定问题\n- Service 无流量/无法访问\n\n### 📊 查看类\n- 集群健康状态检查\n- 节点/Pod/Service/PVC 等资源状态\n- 资源使用量（CPU/内存）\n- 日志与事件查看\n\n### 🛠️ 修复类\n- 提供修复方案（Patch/Rollout/Restart 等）\n- 协助执行修复操作（需用户确认）\n- 验证修复结果\n\n## 使用原则\n- ✅ 只读操作自动执行\n- ⚠️ 写操作需用户确认后执行\n- 📋 基于真实 Evidence 判断，不编造数据\n- 🇨🇳 中文回答，简洁准确\n\n请问有什么需要我帮忙的吗？",
+      "timestamp": "2026-09-14T18:11:04.6247467+08:00"
     }
   ],
   "createdAt": "2026-09-11T18:24:33.7050622+08:00",
-  "lastModified": "2026-09-11T18:49:07.6958323+08:00"
+  "lastModified": "2026-09-14T18:11:04.6247467+08:00"
 }
