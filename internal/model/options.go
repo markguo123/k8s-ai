@@ -208,17 +208,17 @@ type ScanProgress interface {
 
 // LLMOptions 是 LLM 诊断的执行参数（FR-015/FR-016）。
 type LLMOptions struct {
-	Enabled         bool
-	Endpoint        string
-	APIKey          string
-	Model           string
-	Temperature     float64
-	MaxTokens       int
-	MaxInputTokens  int // 单 Finding 上下文上限（默认 8192）
-	MaxTotalTokens  int // 诊断阶段总预算（默认 32768）
-	MaxFindings     int // 最多送诊 Finding 数（默认 30，自适应下调）
-	Timeout         time.Duration
-	DisableThinking bool // 关闭思考模式（Qwen/vLLM chat_template_kwargs.enable_thinking=false）
+	Enabled        bool
+	Endpoint       string
+	APIKey         string
+	Model          string
+	Temperature    float64
+	MaxTokens      int
+	MaxInputTokens int // 单 Finding 上下文上限（默认 8192）
+	MaxTotalTokens int // 诊断阶段总预算（默认 32768）
+	MaxFindings    int // 最多送诊 Finding 数（默认 30，自适应下调）
+	Timeout        time.Duration
+	Thinking       map[string]string // 标准思考参数，例如 {type: enabled}
 
 	// Progress 是 LLM 诊断级的进度回调。ScanService 会把上层
 	// ScanProgress 传入这里来驱动"单个 Incident 开始/结束"事件。

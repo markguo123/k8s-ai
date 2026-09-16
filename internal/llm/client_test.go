@@ -188,8 +188,8 @@ func TestChatContextCancel(t *testing.T) {
 	}
 }
 
-// TestChatDisableThinking 验证 DisableThinking 会发送 chat_template_kwargs。
-func TestChatDisableThinking(t *testing.T) {
+// TestChatThinking 验证 Thinking 配置会原样发送。
+func TestChatThinking(t *testing.T) {
 	var gotBody string
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
@@ -198,12 +198,12 @@ func TestChatDisableThinking(t *testing.T) {
 		_, _ = w.Write([]byte(okResponse("ok")))
 	})
 	if _, err := c.Chat(context.Background(), ChatRequest{
-		Messages:        []Message{{Role: "user", Content: "x"}},
-		DisableThinking: true,
+		Messages: []Message{{Role: "user", Content: "x"}},
+		Thinking: map[string]string{"type": "disabled"},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(gotBody, `"chat_template_kwargs":{"enable_thinking":false}`) {
-		t.Fatalf("缺少 chat_template_kwargs: %s", gotBody)
+	if !strings.Contains(gotBody, `"thinking":{"type":"disabled"}`) {
+		t.Fatalf("缺少 thinking 参数: %s", gotBody)
 	}
 }

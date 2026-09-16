@@ -26,6 +26,8 @@ type streamChunk struct {
 		Delta struct {
 			Content          string                `json:"content"`
 			ReasoningContent string                `json:"reasoning_content"`
+			Reasoning        string                `json:"reasoning"`
+			Thinking         string                `json:"thinking"`
 			ToolCalls        []streamToolCallDelta `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
@@ -123,7 +125,7 @@ func normalizeToolArguments(raw json.RawMessage) json.RawMessage {
 
 // parseChatStream 解析 200 流式响应：逐行读 SSE data 行，累积 content/tool_calls/usage，
 // content 增量同步回调 onDelta。流中断（网络错误/非法 chunk）时返回已累积响应 + 错误。
-func parseChatStream(resp *http.Response, onEvent func(StreamEvent)) (*ChatResponse, error) {
+func parseChatStream(resp *http.Response, onEvent func(StreamEvent), reasoningFields []string) (*ChatResponse, error) {
 	defer resp.Body.Close()
 	acc := newStreamAccumulator()
 	sc := bufio.NewScanner(io.LimitReader(resp.Body, 8<<20))
@@ -161,8 +163,9 @@ func parseChatStream(resp *http.Response, onEvent func(StreamEvent)) (*ChatRespo
 				onEvent(StreamEvent{Type: StreamContentDelta, Text: ch.Delta.Content})
 			}
 		}
-		if ch.Delta.ReasoningContent != "" && onEvent != nil {
-			onEvent(StreamEvent{Type: StreamReasoningDelta, Text: ch.Delta.ReasoningContent})
+		reasoning := firstReasoning(ch.Delta.ReasoningContent, ch.Delta.Reasoning, ch.Delta.Thinking, reasoningFields)
+		if reasoning != "" && onEvent != nil {
+			onEvent(StreamEvent{Type: StreamReasoningDelta, Text: reasoning})
 		}
 		for _, tc := range chunk.Choices[0].Delta.ToolCalls {
 			acc.addToolCall(tc)
@@ -177,4 +180,21 @@ func parseChatStream(resp *http.Response, onEvent func(StreamEvent)) (*ChatRespo
 		return out, fmt.Errorf("llm response content is empty")
 	}
 	return out, nil
+}
+
+func firstReasoning(content, reasoning, thinking string, fields []string) string {
+	values := map[string]string{
+		"reasoning_content": content,
+		"reasoning":         reasoning,
+		"thinking":          thinking,
+	}
+	if len(fields) == 0 {
+		fields = []string{"reasoning_content", "reasoning", "thinking"}
+	}
+	for _, field := range fields {
+		if text := values[field]; text != "" {
+			return text
+		}
+	}
+	return ""
 }

@@ -39,24 +39,27 @@ type KubernetesConfig struct {
 
 // LLMConfig controls the OpenAI-compatible endpoint (FR-015).
 type LLMConfig struct {
-	Enabled         bool          `mapstructure:"enabled"`
-	Endpoint        string        `mapstructure:"endpoint"`
-	APIKey          string        `mapstructure:"api_key"`
-	Model           string        `mapstructure:"model"`
-	Temperature     float64       `mapstructure:"temperature"`
-	MaxTokens       int           `mapstructure:"max_tokens"`
-	MaxInputTokens  int           `mapstructure:"max_input_tokens"`
-	MaxTotalTokens  int           `mapstructure:"max_total_tokens"`
-	MaxFindings     int           `mapstructure:"max_findings"`
-	Timeout         time.Duration `mapstructure:"timeout"`
-	DisableThinking bool          `mapstructure:"disable_thinking"` // 关闭思考模式（Qwen/vLLM chat_template_kwargs），网关不支持则忽略或报错
-	Stream          bool          `mapstructure:"stream"` // chat 流式输出（true = SSE 逐 token 推送到终端/Web）
+	Enabled         bool              `mapstructure:"enabled"`
+	Endpoint        string            `mapstructure:"endpoint"`
+	APIKey          string            `mapstructure:"api_key"`
+	Model           string            `mapstructure:"model"`
+	Temperature     float64           `mapstructure:"temperature"`
+	MaxTokens       int               `mapstructure:"max_tokens"`
+	MaxInputTokens  int               `mapstructure:"max_input_tokens"`
+	MaxTotalTokens  int               `mapstructure:"max_total_tokens"`
+	MaxFindings     int               `mapstructure:"max_findings"`
+	Timeout         time.Duration     `mapstructure:"timeout"`
+	Stream          bool              `mapstructure:"stream"`           // chat 流式输出（true = SSE 逐 token 推送到终端/Web）
+	Thinking        map[string]string `mapstructure:"thinking"`         // 标准思考参数，例如 {type: enabled}
+	ReasoningFields []string          `mapstructure:"reasoning_fields"` // 可选：SSE delta 中的思考字段名
 }
 
 // ScanConfig controls collection behaviour (FR-004, FR-022, FR-024).
 type ScanConfig struct {
-	Concurrency         int           `mapstructure:"concurrency"`
-	Phase2Concurrency   int           `mapstructure:"phase2_concurrency"`
+	Concurrency       int               `mapstructure:"concurrency"`
+	Phase2Concurrency int               `mapstructure:"phase2_concurrency"`
+	Thinking          map[string]string `mapstructure:"thinking"` // 一期 Scan 的思考参数，例如 {type: enabled}
+
 	CollectLogs         bool          `mapstructure:"collect_logs"`
 	CollectPreviousLogs bool          `mapstructure:"collect_previous_logs"`
 	CollectEvents       bool          `mapstructure:"collect_events"`
@@ -184,11 +187,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("llm.max_total_tokens", 32768)
 	v.SetDefault("llm.max_findings", 30)
 	v.SetDefault("llm.timeout", 120*time.Second)
-	v.SetDefault("llm.disable_thinking", false)
-	v.SetDefault("llm.stream", false)
+	v.SetDefault("llm.stream", true)
 
 	v.SetDefault("scan.concurrency", 8)
 	v.SetDefault("scan.phase2_concurrency", 4)
+
 	v.SetDefault("scan.collect_logs", true)
 	v.SetDefault("scan.collect_previous_logs", true)
 	v.SetDefault("scan.collect_events", true)

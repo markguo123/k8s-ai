@@ -36,7 +36,9 @@ func newWebCmd(deps Dependencies) *cobra.Command {
 				Handler:           webui.New(deps.NewChat(cfg), cfg.LLM.Model).Handler(),
 				ReadHeaderTimeout: 10 * time.Second,
 			}
-			slog.Info("k8s-ai web listening", "addr", addr, "url", "http://"+addr)
+			slog.Info("k8s-ai web listening", "addr", addr, "url", "http://"+addr,
+				"config_stream", cfg.LLM.Stream,
+				"model", cfg.LLM.Model)
 			errCh := make(chan error, 1)
 			go func() { errCh <- srv.ListenAndServe() }()
 			select {

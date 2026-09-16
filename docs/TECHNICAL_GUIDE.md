@@ -1,7 +1,7 @@
 # k8s-ai 技术指导手册
 
 > 面向读者：产品经理 / 运维负责人 / 项目决策者（不需要懂 Go）。
-> 本文基于**代码实际状态（截至 v2.2.1，2026-09-10，一期 1.1 + 1.2 与二期 Agent 全部完成）**编写；每完成一个阶段都会刷新第二章与第五章。
+> 本文基于**代码实际状态（截至 v2.3.2，2026-09-16，一期 1.1 + 1.2 与二期 Agent 全部完成）**编写；每完成一个阶段都会刷新第二章与第五章。
 
 ---
 
@@ -21,7 +21,7 @@ k8s-ai 是一个 Kubernetes 集群的"只读体检医生"：运维人员执行�
 
 > 说明：按代码实际状态编写；P3-P11（一期 1.1）与 P12（一期 1.2：Server + 历史差异数据）均已完成。
 
-### 二期（v2.0.0–v2.2.1）：自然语言 Agent（chat / web）
+### 二期（v2.0.0–v2.3.2）：自然语言 Agent（chat / web）
 
 **核心能力：**
 
@@ -205,7 +205,9 @@ flowchart LR
 | scan.timeout                   | 5m                                          | 整次扫描总超时（LLM 场景建议 10m）            |
 | llm.enabled / endpoint / model | true / http://localhost:8000/v1 / qwen-plus | 大模型开关、地址、模型                        |
 | llm.timeout                    | 120s                                        | 单次 LLM 调用超时（思考型模型建议保持）       |
-| llm.stream                     | false                                       | chat 是否启用 SSE 流式；关闭时使用非流式 Chat |
+| llm.stream                     | true                                        | chat 是否启用 SSE 流式；关闭时使用非流式 Chat |
+| llm.thinking                   | `{type: enabled}`                           | chat 标准思考参数（OpenAI 兼容网关）         |
+| scan.thinking                  | `{type: enabled}`                           | 一期 Scan 诊断思考参数                       |
 | kubernetes.qps / burst         | 20 / 40                                     | 对 API Server 的访问限速（防压垮集群）        |
 | report.directory               | ./reports                                   | 报告输出目录                                  |
 
@@ -239,7 +241,7 @@ flowchart LR
 
 ### 已完成的二期能力
 
-- **二期（v2.0.0–v2.2.1）**：chat Agent / Tool Calling / 会话记忆 / 审批执行（按 PROJECT*SPEC*二期.md）；v2.0.6–v2.0.8 迭代：四层意图决策树、放开 shell 构造、批量审批、拒绝闸门命令归一化；v2.2.1 修复诊断报告不完整、reasoning 丢失、工具前过度过滤和证据不足时提前生成写操作的问题
+- **二期（v2.0.0–v2.3.2）**：chat Agent / Tool Calling / 会话记忆 / 审批执行（按 PROJECT*SPEC*二期.md）；v2.0.6–v2.0.8 迭代：四层意图决策树、放开 shell 构造、批量审批、拒绝闸门命令归一化；v2.2.1 修复诊断报告不完整、reasoning 丢失、工具前过度过滤和证据不足时提前生成写操作的问题；v2.3.2 重构为标准 OpenAI `thinking` 参数并增强思考过程展示
 
 ### 尚未开始的能力
 
@@ -254,7 +256,7 @@ flowchart LR
 - **日志证据保留尾部**：上下文与报告中的日志取末尾（panic/错误通常在最后），不再从头截断
 - **配置类修复建议**：诊断上下文携带 Pod 引用的 ConfigMap/Secret 名称（仅名称不读数据），LLM 会优先给出针对性命令（实测 nginx `listen 80x` → `kubectl edit configmap`；PVC 缺失 → `kubectl get pvc` 确认）
 - **Incident 架构**：Finding → Correlation → Incident → LLM，同一故障链一次诊断；派生症状（Deployment 副本不足/Service 无 Endpoint）折叠为影响范围、不重复扣分；健康评分只统计根因；LLM 输出含 confidenceLevel/causalChain/uncertainty
-- **速度对比 kubectl-ai**：一期是"批量单次"诊断（一次长 JSON 输出），思考型大模型解码慢所以慢；二期 chat 将采用 kubectl-ai 式"小步工具调用 + 短输出 + 流式"，速度可对齐。已提供 `llm.disable_thinking` 开关（Qwen/vLLM 惯例），但当前网关（10.62.64.38）实测忽略该字段；**一期模型选型建议**：巡检/排查/分析用更快的非思考型模型（如 qwen-turbo/flash），思考型大模型（Qwen3.5-397B）留给二期 chat
+- **速度对比 kubectl-ai**：一期是"批量单次"诊断（一次长 JSON 输出），思考型大模型解码慢所以慢；二期 chat 将采用 kubectl-ai 式"小步工具调用 + 短输出 + 流式"，速度可对齐。思考控制已改为标准 OpenAI 参数：`llm.thinking`（chat）与 `scan.thinking`（一期 Scan）分别配置 `type: enabled|disabled`；**一期模型选型建议**：巡检/排查/分析用更快的非思考型模型（如 qwen-turbo/flash），思考型大模型（Qwen3.5-397B）留给二期 chat
 
 ### 硬限制（一期红线）
 
@@ -268,7 +270,7 @@ flowchart LR
 
 - **P12（已完成）**：Server 最小化（healthz/version/异步扫描 API）+ 历史差异数据（二期 Agent 记忆契约）
 - **一期终版达成**：1.1（巡检/排查/分析/报告/部署）+ 1.2（Server/历史对比）全部交付
-- **二期（v2.0.0–v2.2.1）**：`k8s-ai chat` 自然语言 Agent、Tool Calling、会话记忆（复用 latest.json 历史差异数据）、安全审批与执行（含批量审批 + 拒绝闸门 + shell 构造受控放开）；诊断请求优先输出现象、根因、证据、方案和验证，证据不足时继续只读取证。
+- **二期（v2.0.0–v2.3.2）**：`k8s-ai chat` 自然语言 Agent、Tool Calling、会话记忆（复用 latest.json 历史差异数据）、安全审批与执行（含批量审批 + 拒绝闸门 + shell 构造受控放开）；诊断请求优先输出现象、根因、证据、方案和验证，证据不足时继续只读取证。
 
 ---
 

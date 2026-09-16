@@ -359,12 +359,77 @@ body {
    分析过程时间线
    ═══════════════════════════════════════════════════════ */
 
+.turn-timeline {
+  position: relative;
+  margin: var(--space-md) 0;
+  padding-left: 28px;
+}
+
+.turn-timeline::before {
+  content: "";
+  position: absolute;
+  left: 10px;
+  top: 14px;
+  bottom: 12px;
+  width: 2px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to bottom,
+    var(--accent),
+    var(--border)
+  );
+}
+
+.turn-timeline > .process-step {
+  position: relative;
+  margin: 0 0 16px;
+  overflow: visible;
+}
+
+.turn-timeline > .process-step:last-child {
+  margin-bottom: 0;
+}
+
+.turn-timeline > .process-step::before {
+  content: "";
+  position: absolute;
+  left: -24px;
+  top: 9px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--panel);
+  border: 2px solid var(--border);
+  z-index: 1;
+}
+
+.turn-timeline > .reasoning-step::before {
+  border-color: var(--accent);
+  background: var(--accent-light);
+}
+
+.turn-timeline > .tool-step::before {
+  border-color: var(--warn);
+  background: var(--warn-light);
+}
+
+.turn-timeline > .final-step::before {
+  border-color: var(--ok);
+  background: var(--ok-light);
+}
+
+.turn-timeline > .intermediate-step::before {
+  border-color: var(--muted);
+  background: var(--border-light);
+}
+
 .phase-progress {
   margin: var(--space-md) 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--panel);
   overflow: hidden;
+  box-shadow: var(--shadow-sm);
 }
 
 .phase-progress summary {
@@ -390,7 +455,7 @@ body {
 
 .phase-progress summary::after {
   content: "⌄";
-  margin-left: auto;
+  margin-left: 10px;
   color: var(--muted);
   transition: transform .2s;
   font-size: 14px;
@@ -406,18 +471,37 @@ body {
   border-radius: 50%;
   background: var(--accent);
   flex-shrink: 0;
+  transition: background .2s;
+}
+
+.phase-progress[data-done="true"] .mark {
+  background: var(--ok);
 }
 
 .phase-progress .phase-count {
   color: var(--muted);
   font-weight: 400;
   font-size: 12px;
-  margin-left: 4px;
+}
+
+.phase-progress .phase-status {
+  margin-left: auto;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.phase-progress[data-done="true"] .phase-status {
+  color: var(--ok);
 }
 
 .phase-progress .progress-list {
   border-top: 1px solid var(--border);
-  padding: 8px 16px 12px;
+  padding: 12px 16px 14px;
+  max-height: 280px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .phase-progress .progress-item {
@@ -428,6 +512,35 @@ body {
   font-size: 13px;
   color: var(--text-secondary);
   line-height: 1.5;
+}
+
+.phase-progress .progress-text {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  border-radius: 4px;
+}
+
+.phase-progress .progress-item.active .progress-text {
+  background: linear-gradient(
+    90deg,
+    var(--accent-light),
+    rgba(129, 140, 248, 0)
+  );
+  padding: 2px 6px;
+}
+
+.phase-progress .progress-item.active .progress-text::after {
+  content: "▍";
+  display: inline-block;
+  margin-left: 2px;
+  color: var(--accent);
+  text-shadow: 0 0 8px var(--accent);
+  animation: cursor-blink 1s steps(2, start) infinite;
 }
 
 .phase-progress .progress-item::before {
@@ -549,6 +662,16 @@ body {
 
   50% {
     opacity: .35;
+  }
+}
+
+@keyframes cursor-blink {
+  0%,100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0;
   }
 }
 
@@ -1712,10 +1835,29 @@ let eventSource = null;
 let chatBusy = false;
 let pendingTools = [];
 let toolCallCount = 0;
+let currentTimeline = null;
 const currentSessionStorageKey = "k8s-ai-current-session";
 
 const $ = (id) => document.getElementById(id);
 const inner = () => document.querySelector("#chat .inner");
+
+function processRoot(create) {
+  if (!currentTimeline && create) {
+    currentTimeline =
+      document.createElement("div");
+
+    currentTimeline.className =
+      "turn-timeline";
+
+    inner().appendChild(currentTimeline);
+  }
+
+  return currentTimeline || inner();
+}
+
+function resetTimeline() {
+  currentTimeline = null;
+}
 
 /* ═══════════════════════════════════════════════════════
    API & Session Management
@@ -2006,6 +2148,8 @@ function handleEvent(ev) {
 
       toolCallCount = 0;
 
+      resetTimeline();
+
       hideTyping();
 
       if (
@@ -2027,6 +2171,8 @@ function handleEvent(ev) {
 
         if (m.role === "user") {
 
+          resetTimeline();
+
           addMsg(
             "user",
             m.content
@@ -2036,6 +2182,12 @@ function handleEvent(ev) {
 
           addToolFromHistory(m);
 
+        } else if (m.type === "reasoning") {
+
+          showProgress(m.content);
+
+          closeProgress();
+
         } else {
 
           addReport(m.content);
@@ -2043,6 +2195,8 @@ function handleEvent(ev) {
         }
 
       });
+
+      resetTimeline();
 
       scroll();
 
@@ -2078,6 +2232,18 @@ function handleEvent(ev) {
 
       break;
 
+    case "reasoning-delta":
+
+      hideWelcome();
+
+      hideTyping();
+
+      if (ev.text) {
+        showProgress(ev.text);
+      }
+
+      break;
+
     case "text":
 
       hideWelcome();
@@ -2100,6 +2266,8 @@ function handleEvent(ev) {
 
       closeProgress();
 
+      resetTimeline();
+
       chatBusy = false;
 
       setBusy(false);
@@ -2113,6 +2281,8 @@ function handleEvent(ev) {
       hideWelcome();
 
       hideTyping();
+
+      processRoot(true);
 
       closeProgress();
 
@@ -2275,9 +2445,13 @@ function addMsg(kind, text) {
 
 function addReport(text) {
 
+  const root =
+    processRoot(true);
+
   const msg = document.createElement("div");
 
-  msg.className = "msg report";
+  msg.className =
+    "msg report process-step final-step";
 
   const who = document.createElement("div");
 
@@ -2298,7 +2472,7 @@ function addReport(text) {
 
   msg.appendChild(content);
 
-  inner().appendChild(msg);
+  root.appendChild(msg);
 
   scroll();
 
@@ -2353,8 +2527,11 @@ function addErrorCard(text) {
 
 function finishStreamedAnswer(text) {
 
+  const root =
+    processRoot(false);
+
   const msgs =
-    inner().querySelectorAll(
+    root.querySelectorAll(
       '.msg.agent[data-streaming="true"]'
     );
 
@@ -2383,6 +2560,10 @@ function finishStreamedAnswer(text) {
 
   last.classList.add("report");
 
+  last.classList.add("process-step");
+
+  last.classList.add("final-step");
+
   const who =
     last.querySelector(".who");
 
@@ -2408,8 +2589,11 @@ function finishStreamedAnswer(text) {
 
 function promoteStreamToProgress() {
 
+  const root =
+    processRoot(false);
+
   const msgs =
-    inner().querySelectorAll(
+    root.querySelectorAll(
       '.msg.agent[data-streaming="true"]'
     );
 
@@ -2432,6 +2616,14 @@ function promoteStreamToProgress() {
     "progress-message"
   );
 
+  last.classList.remove(
+    "final-step"
+  );
+
+  last.classList.add(
+    "intermediate-step"
+  );
+
   const who =
     last.querySelector(".who");
 
@@ -2447,8 +2639,11 @@ function promoteStreamToProgress() {
 
 function showProgress(text) {
 
+  const root =
+    processRoot(true);
+
   let panel =
-    inner().querySelector(
+    root.querySelector(
       ".phase-progress"
     );
 
@@ -2458,7 +2653,7 @@ function showProgress(text) {
       document.createElement("details");
 
     panel.className =
-      "phase-progress";
+      "phase-progress process-step reasoning-step";
 
     panel.open = true;
 
@@ -2466,13 +2661,18 @@ function showProgress(text) {
       '<summary>' +
       '<span class="mark"></span>' +
       '<span class="phase-label">分析过程</span>' +
-      '<span class="phase-count">(0)</span>' +
+      '<span class="phase-status">分析中</span>' +
+      '<span class="phase-count"></span>' +
       '</summary>' +
       '<div class="progress-list"></div>';
 
-    inner().appendChild(panel);
+    root.appendChild(panel);
 
   }
+
+  panel.open = true;
+
+  delete panel.dataset.done;
 
   const label =
     panel.querySelector(
@@ -2480,7 +2680,16 @@ function showProgress(text) {
     );
 
   if (label) {
-    label.textContent = text;
+    label.textContent = "分析过程";
+  }
+
+  const status =
+    panel.querySelector(
+      ".phase-status"
+    );
+
+  if (status) {
+    status.textContent = "分析中";
   }
 
   const list =
@@ -2493,42 +2702,42 @@ function showProgress(text) {
       ".phase-count"
     );
 
-  const prev =
+  let item =
     list.querySelector(
       ".progress-item.active"
     );
 
-  if (prev) {
-    prev.classList.remove("active");
+  if (!item) {
+    item = document.createElement("div");
+    item.className = "progress-item active";
+
+    const textEl =
+      document.createElement("span");
+
+    textEl.className =
+      "progress-text";
+
+    item.appendChild(textEl);
+    list.appendChild(item);
   }
 
-  if (
-    list &&
-    (
-      !list.lastElementChild ||
-      list.lastElementChild.textContent !== text
-    )
-  ) {
+  const textEl =
+    item.querySelector(
+      ".progress-text"
+    );
 
-    const item =
-      document.createElement("div");
+  if (textEl) {
+    textEl.textContent += text;
+  }
 
-    item.className =
-      "progress-item active";
+  if (count) {
+    const total =
+      list.children.length;
 
-    item.textContent = text;
-
-    list.appendChild(item);
-
-    if (count) {
-
-      count.textContent =
-        "(" +
-        list.children.length +
-        ")";
-
-    }
-
+    count.textContent =
+      total > 1
+        ? "(" + total + " 步)"
+        : "";
   }
 
   scroll();
@@ -2537,14 +2746,27 @@ function showProgress(text) {
 
 function closeProgress() {
 
+  const root =
+    processRoot(false);
+
   const panel =
-    inner().querySelector(
+    root.querySelector(
       ".phase-progress"
     );
 
   if (panel) {
 
     panel.open = false;
+    panel.dataset.done = "true";
+
+    const status =
+      panel.querySelector(
+        ".phase-status"
+      );
+
+    if (status) {
+      status.textContent = "已收起";
+    }
 
     const last =
       panel.querySelector(
@@ -2565,8 +2787,11 @@ function closeProgress() {
 
 function appendDelta(text) {
 
+  const root =
+    processRoot(true);
+
   const msgs =
-    inner().querySelectorAll(
+    root.querySelectorAll(
       '.msg.agent[data-streaming="true"]'
     );
 
@@ -2580,7 +2805,8 @@ function appendDelta(text) {
     const msg =
       document.createElement("div");
 
-    msg.className = "msg agent";
+    msg.className =
+      "msg agent process-step final-step";
 
     msg.dataset.streaming = "true";
 
@@ -2600,7 +2826,7 @@ function appendDelta(text) {
 
     msg.appendChild(content);
 
-    inner().appendChild(msg);
+    root.appendChild(msg);
 
     last = msg;
 
@@ -2646,8 +2872,11 @@ function appendDelta(text) {
 
 function updateToolSummary() {
 
+  const root =
+    processRoot(true);
+
   let bar =
-    inner().querySelector(
+    root.querySelector(
       ".tool-summary-bar"
     );
 
@@ -2660,32 +2889,32 @@ function updateToolSummary() {
       "tool-summary-bar";
 
     const first =
-      inner().querySelector(
+      root.querySelector(
         ".tool-card"
       );
 
     if (first) {
 
-      inner().insertBefore(
+      root.insertBefore(
         bar,
         first
       );
 
     } else {
 
-      inner().appendChild(bar);
+      root.appendChild(bar);
 
     }
 
   }
 
   const completed =
-    inner().querySelectorAll(
+    root.querySelectorAll(
       ".tool-card.completed, .tool-card.error"
     ).length;
 
   const executing =
-    inner().querySelectorAll(
+    root.querySelectorAll(
       ".tool-card.executing"
     ).length;
 
@@ -2717,7 +2946,7 @@ function buildToolCard(tool, isHistory) {
     document.createElement("div");
 
   card.className =
-    "tool-card " +
+    "tool-card process-step tool-step " +
     (
       isHistory
         ? "completed"
@@ -2866,13 +3095,16 @@ function buildToolCard(tool, isHistory) {
 
 function addToolCard(tool) {
 
+  const root =
+    processRoot(true);
+
   const card =
     buildToolCard(
       tool,
       false
     );
 
-  inner().appendChild(card);
+  root.appendChild(card);
 
   pendingTools.push(card);
 
@@ -2975,6 +3207,9 @@ function fillToolOutput(tool) {
 
 function addToolFromHistory(m) {
 
+  const root =
+    processRoot(true);
+
   const card =
     buildToolCard(
       {
@@ -2984,7 +3219,7 @@ function addToolFromHistory(m) {
       true
     );
 
-  inner().appendChild(card);
+  root.appendChild(card);
 
 }
 
@@ -3182,6 +3417,8 @@ async function send() {
   input.value = "";
 
   input.style.height = "48px";
+
+  resetTimeline();
 
   showTyping(
     "AI 正在分析…"

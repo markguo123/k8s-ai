@@ -2,6 +2,9 @@
 
 ## 当前版本
 
+- **v2.3.2**（2026-09-16）：标准思考参数与思考过程展示修复（OpenAI `thinking` 参数、`reasoning-delta` 事件、Web 折叠思考展示、终端轻量状态提示、scan/chat 思考参数分离）。
+- **v2.3.1**（2026-09-14）：Web UI 会话体验优化（sessionStorage 记忆活跃会话、欢迎页文案与首屏体验优化）。
+- **v2.3.0**（2026-09-11）：Web UI 运维诊断流程可视化重构（诊断报告卡片、分析过程折叠、工具调用摘要、错误卡片折叠、中文本地化、响应式适配）。
 - **v2.2.1**（2026-09-10）：二期诊断报告与流式稳定性修复（保留真实 reasoning、移除工具前过度过滤、诊断报告按现象→根因→证据→方案→验证输出、证据不足时优先只读取证、工具失败调用收敛）。
 - **v2.2.0**（2026-09-09）：二期迭代（LLM 流式输出：llm.stream: true、SSE 逐 token 推送、Web UI 增量渲染 appendDelta、ChatEventDelta 事件类型、流式失败自动降级非流式）。
 - **v2.1.0**（2026-09-08）：二期迭代（提示词移除已删除结构化写工具；kubectl 动词解析支持全局 flag 独立值；shell 交互命令硬拒绝；Secret/--raw 红线改用 mvdan shell 解析器加固；delete 风险分级补 Service；skip_permissions/disabled_tools 配置生效；kubectl 子进程注入 KUBECONFIG）。

@@ -2,7 +2,7 @@
 
 - 版本：v1.0
 - 日期：2026-08-23
-- 状态：已完成（v2.2.1，2026-09-10）
+- 状态：已完成（v2.3.2，2026-09-16）
 - 关联文档：PROJECT*SPEC*二期.md（v3.0）、AGENTS.md、docs/design/ARCHITECTURE.md、docs/design/ADR.md
 
 ## 修订记录
@@ -29,6 +29,7 @@
 | v2.7 | 2026-09-08 |        | v2.1.0：提示词移除已删除结构化写工具；kubectl 动词解析支持全局 flag 独立值；shell 交互命令硬拒绝；Secret/--raw 红线改用 mvdan shell 解析器加固；delete 风险分级补 Service；skip_permissions/disabled_tools 配置生效；kubectl 子进程注入 KUBECONFIG                                                     |
 | v2.8 | 2026-09-09 |        | v2.2.0：LLM 流式输出（llm.stream: true、SSE 逐 token 推送、Web UI 增量渲染 appendDelta）；流式失败自动降级到非流式；ChatEventDelta 事件类型                                                                                                                                                            |
 | v2.9 | 2026-09-10 |        | v2.2.1：保留真实 reasoning 与诊断摘要、工具调用顺序闸门、最终报告完整性约束、证据不足时优先只读取证、Web 分析过程折叠、失败工具调用去重、流式参数归一化                                                                                                                                                |
+| v2.10 | 2026-09-16 |        | v2.3.0–v2.3.2：Web UI 流程可视化与会话体验优化；OpenAI 标准思考参数重构（llm.thinking / scan.thinking）、reasoning-delta 事件、Web 思考展示与流程时间线、终端轻量状态提示、配置模板修复                                                                                                              |
 
 ## 0. 进度状态（2026-09-09）
 
@@ -50,6 +51,7 @@
 [x] v2.0.9 迭代          已完成（2026-09-08）：写工具从 7→1（删除 6 个结构化写工具，写操作统一走 kubectl）；Web UI 交互优化（输入框 disabled+spinner、空会话欢迎页、删除确认、AI 思考 typing indicator）；kubectlTool 补 Text 字段
 [x] v2.1.0 迭代          已完成（2026-09-08）：提示词移除已删除结构化写工具；kubectl 动词解析支持全局 flag 独立值；shell 交互命令硬拒绝；Secret/--raw 红线改用 mvdan shell 解析器加固；delete 风险分级补 Service；skip_permissions/disabled_tools 配置生效；kubectl 子进程注入 KUBECONFIG
 [x] v2.2.1 迭代           已完成（2026-09-10）：保留真实 reasoning 与诊断摘要、工具调用顺序闸门、最终报告完整性约束、证据不足时优先只读取证、Web 分析过程折叠、失败工具调用去重、流式参数归一化
+[x] v2.3.0–v2.3.2 迭代    已完成（2026-09-16）：Web UI 流程可视化与会话体验优化；OpenAI 标准思考参数重构、reasoning-delta 事件、Web 思考展示与流程时间线、终端轻量状态提示、配置模板修复
 ```
 
 ---

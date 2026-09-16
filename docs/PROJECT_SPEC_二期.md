@@ -316,6 +316,7 @@ ChatService/Web SSE 还提供阶段化事件：
 
 ```text
 progress                # 简短阶段摘要；不暴露原始思维链
+reasoning-delta         # 原始思考增量（仅供 Web 折叠展示）
 answer-delta            # 无工具调用的最终回答增量
 tool-call               # 工具开始执行
 tool-response           # 工具结果（脱敏后）
@@ -765,7 +766,7 @@ internal/webui
 
 - `AgentManager`：sessionID → Agent，支持多会话并发。
 - `SessionManager`：Web 与会话共享同一 Store。
-- SSE：`GET /api/sessions/{id}/stream` 推送 state/text/progress/tool-call/tool-response/answer-delta/answer/error/choice-request 等阶段事件。
+- SSE：`GET /api/sessions/{id}/stream` 推送 state/text/progress/reasoning-delta/tool-call/tool-response/answer-delta/answer/error/choice-request 等阶段事件。
 - 审批：`POST /api/sessions/{id}/choose-option` 回传 y / a / n。
 
 ## 16.3 REST API

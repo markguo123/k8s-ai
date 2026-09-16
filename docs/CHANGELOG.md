@@ -2,6 +2,29 @@
 
 本项目遵循 docs/VERSIONING.md 的里程碑阶梯约定。
 
+## [v2.3.2] - 2026-09-16
+
+标准思考参数与思考过程展示修复。
+
+### Changed
+
+- **OpenAI 标准思考参数**：移除 `llm.disable_thinking`，请求体改为标准 `thinking` 字段，例如 `{type: enabled}`；`llm.thinking` 控制 chat，`scan.thinking` 控制一期 Scan 诊断
+- **流式思考字段兼容**：流式解析支持 `reasoning_content` / `reasoning` / `thinking`，可通过 `llm.reasoning_fields` 调整识别顺序
+- **Web 思考展示**：新增 `reasoning-delta` 事件，Web 端在“分析过程”折叠面板中实时展示思考文本，并增加状态、滚动、等宽字体与流式光标反馈
+- **Web 流程时间线**：同一轮对话中的“思考 / 工具执行 / 最终结论”纳入左侧竖向时间线，增强过程可观测性（后续版本继续优化视觉）
+- **终端思考展示**：终端不逐 token 输出原始思维链，改为一次性显示“分析中...”状态，最终答案仍按 Markdown 渲染
+
+### Fixed
+
+- 修复 `scan.thinking` 配置字段缺失导致的编译失败
+- 修复 `config init` 模板中文注释乱码
+- 修复思考消息持久化位置，确保插入到当前轮次最终回答之前
+
+### Tests
+
+- `go test ./...` 通过
+- `go vet ./...` 通过
+
 ## [v2.3.1] - 2026-09-14
 
 Web UI 会话体验优化。

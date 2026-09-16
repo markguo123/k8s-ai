@@ -89,13 +89,13 @@ type ToolSpec struct {
 
 // ChatRequest 一次 Chat 补全请求。
 type ChatRequest struct {
-	Model           string
-	Messages        []Message
-	Temperature     float64
-	MaxTokens       int
-	JSONMode        bool       // true = 请求 response_format json_object（OpenAI 兼容网关普遍支持）
-	DisableThinking bool       // true = 发送 chat_template_kwargs.enable_thinking=false（Qwen/vLLM）
-	Tools           []ToolSpec // 二期预留；一期恒为 nil
+	Model       string
+	Messages    []Message
+	Temperature float64
+	MaxTokens   int
+	JSONMode    bool              // true = 请求 response_format json_object（OpenAI 兼容网关普遍支持）
+	Thinking    map[string]string // 标准思考参数，例如 {type: enabled}
+	Tools       []ToolSpec        // 二期预留；一期恒为 nil
 }
 
 // ChatResponse 一次 Chat 补全响应。

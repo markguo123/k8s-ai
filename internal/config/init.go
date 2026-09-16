@@ -28,11 +28,15 @@ llm:
   max_total_tokens: 32768
   max_findings: 30
   timeout: 120s
-  disable_thinking: false   # true 时发送 enable_thinking=false（需网关支持，可显著提速）
+  stream: true              # Web chat 需要通过 SSE 接收 reasoning_content 并折叠展示
+  thinking:
+    type: enabled           # 标准思考参数：enabled | disabled
 
 scan:
   concurrency: 8
   phase2_concurrency: 4
+  thinking:
+    type: enabled           # 一期 Scan 思考控制：enabled | disabled
   collect_logs: true
   collect_previous_logs: true
   collect_events: true

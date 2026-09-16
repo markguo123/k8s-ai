@@ -15,6 +15,7 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/llm"
 	"github.com/k8s-ai/k8s-ai/internal/model"
 	"github.com/k8s-ai/k8s-ai/internal/scanner"
+	"github.com/k8s-ai/k8s-ai/internal/session"
 	"github.com/k8s-ai/k8s-ai/internal/tools"
 )
 
@@ -36,6 +37,35 @@ func TestSummarizeToolPrelude(t *testing.T) {
 				t.Fatalf("summarizeToolPrelude() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestPersistReasoningInsertsBeforeLatestAssistant(t *testing.T) {
+	sess := &session.Session{Messages: []session.Message{
+		{Role: "user", Type: "text", Content: "u1"},
+		{Role: "assistant", Type: "text", Content: "a1"},
+		{Role: "user", Type: "text", Content: "u2"},
+		{Role: "assistant", Type: "text", Content: "a2"},
+	}}
+	persistReasoning(sess, "思考过程")
+	if len(sess.Messages) != 5 {
+		t.Fatalf("messages = %+v", sess.Messages)
+	}
+	if sess.Messages[3].Type != "reasoning" || sess.Messages[3].Content != "思考过程" {
+		t.Fatalf("reasoning message = %+v", sess.Messages[3])
+	}
+	if sess.Messages[4].Content != "a2" {
+		t.Fatalf("latest assistant position = %+v", sess.Messages)
+	}
+}
+
+func TestTranslateReasoningDeltaEvent(t *testing.T) {
+	ev, ok := translateEvent(agent.Message{Type: agent.MessageTypeReasoningDelta, Payload: "思考"})
+	if !ok {
+		t.Fatal("reasoning delta 应被翻译")
+	}
+	if ev.Type != ChatEventReasoningDelta || ev.Text != "思考" {
+		t.Fatalf("event = %+v", ev)
 	}
 }
 

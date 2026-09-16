@@ -70,6 +70,7 @@ func realLLM(o model.LLMOptions) llm.LLMClient {
 		Temperature: o.Temperature,
 		MaxTokens:   o.MaxTokens,
 		Timeout:     o.Timeout,
+		Thinking:    o.Thinking,
 	})
 }
 

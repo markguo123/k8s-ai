@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"math/rand"
 	"net/http"
 	"strconv"
@@ -20,44 +21,50 @@ var llmRedactor = security.NewRedactor()
 
 // Options 客户端配置。
 type Options struct {
-	Endpoint      string // 例如 http://localhost:8000/v1
-	APIKey        string
-	Model         string
-	Temperature   float64
-	MaxTokens     int
-	Timeout       time.Duration // 单次调用超时（默认 120s）
-	MaxRetries    int           // 额外重试次数（默认 2）
-	HTTPClient    *http.Client
-	DisableStream bool // true = ChatStream 退化为非流式（配置 llm.stream=false）
+	Endpoint        string // 例如 http://localhost:8000/v1
+	APIKey          string
+	Model           string
+	Temperature     float64
+	MaxTokens       int
+	Timeout         time.Duration // 单次调用超时（默认 120s）
+	MaxRetries      int           // 额外重试次数（默认 2）
+	HTTPClient      *http.Client
+	Thinking        map[string]string // 标准 thinking 参数，例如 {type: enabled}
+	ReasoningFields []string          // SSE delta 中的思考字段名
+	DisableStream   bool              // true = ChatStream 退化为非流式（配置 llm.stream=false）
 }
 
 // Client 是 OpenAI Compatible Chat Completions 的实现。
 type Client struct {
-	endpoint      string
-	apiKey        string
-	model         string
-	temperature   float64
-	maxTokens     int
-	timeout       time.Duration
-	maxRetries    int
-	http          *http.Client
-	retryBase     time.Duration // 退避基数（测试可调）
-	disableStream bool
+	endpoint        string
+	apiKey          string
+	model           string
+	temperature     float64
+	maxTokens       int
+	timeout         time.Duration
+	maxRetries      int
+	http            *http.Client
+	retryBase       time.Duration // 退避基数（测试可调）
+	disableStream   bool
+	thinking        map[string]string
+	reasoningFields []string
 }
 
 // New 创建客户端并应用默认值。
 func New(opts Options) *Client {
 	c := &Client{
-		endpoint:      strings.TrimRight(opts.Endpoint, "/"),
-		apiKey:        opts.APIKey,
-		model:         opts.Model,
-		temperature:   opts.Temperature,
-		maxTokens:     opts.MaxTokens,
-		timeout:       opts.Timeout,
-		maxRetries:    opts.MaxRetries,
-		http:          opts.HTTPClient,
-		retryBase:     200 * time.Millisecond,
-		disableStream: opts.DisableStream,
+		endpoint:        strings.TrimRight(opts.Endpoint, "/"),
+		apiKey:          opts.APIKey,
+		model:           opts.Model,
+		temperature:     opts.Temperature,
+		maxTokens:       opts.MaxTokens,
+		timeout:         opts.Timeout,
+		maxRetries:      opts.MaxRetries,
+		http:            opts.HTTPClient,
+		retryBase:       200 * time.Millisecond,
+		disableStream:   opts.DisableStream,
+		thinking:        opts.Thinking,
+		reasoningFields: opts.ReasoningFields,
 	}
 	if c.timeout <= 0 {
 		c.timeout = 120 * time.Second
@@ -73,15 +80,15 @@ func New(opts Options) *Client {
 
 // chatRequestBody 是 Chat Completions 请求体。
 type chatRequestBody struct {
-	Model              string          `json:"model"`
-	Messages           []Message       `json:"messages"`
-	Temperature        float64         `json:"temperature"`
-	MaxTokens          int             `json:"max_tokens,omitempty"`
-	Stream             bool            `json:"stream"`
-	StreamOptions      *streamOptions  `json:"stream_options,omitempty"`
-	ResponseFormat     *responseFormat `json:"response_format,omitempty"`
-	ChatTemplateKwargs map[string]any  `json:"chat_template_kwargs,omitempty"`
-	Tools              []wireTool      `json:"tools,omitempty"` // 二期 Tool Calling（native 模式）
+	Model          string            `json:"model"`
+	Messages       []Message         `json:"messages"`
+	Temperature    float64           `json:"temperature"`
+	MaxTokens      int               `json:"max_tokens,omitempty"`
+	Stream         bool              `json:"stream"`
+	StreamOptions  *streamOptions    `json:"stream_options,omitempty"`
+	ResponseFormat *responseFormat   `json:"response_format,omitempty"`
+	Thinking       map[string]string `json:"thinking,omitempty"`
+	Tools          []wireTool        `json:"tools,omitempty"` // 二期 Tool Calling（native 模式）
 }
 
 // streamOptions 请求流式 usage 统计（OpenAI/vLLM 兼容：最后一个 chunk 携带 usage）。
@@ -189,8 +196,10 @@ func (c *Client) buildRequestBody(req ChatRequest, stream bool) chatRequestBody 
 	if req.JSONMode {
 		body.ResponseFormat = &responseFormat{Type: "json_object"}
 	}
-	if req.DisableThinking {
-		body.ChatTemplateKwargs = map[string]any{"enable_thinking": false}
+	if len(req.Thinking) > 0 {
+		body.Thinking = maps.Clone(req.Thinking)
+	} else if len(c.thinking) > 0 {
+		body.Thinking = maps.Clone(c.thinking)
 	}
 	if len(req.Tools) > 0 {
 		body.Tools = toWireTools(req.Tools)
@@ -268,12 +277,12 @@ func (c *Client) ChatStreamEvents(ctx context.Context, req ChatRequest, onEvent 
 				return nil, err
 			}
 			if resp.StatusCode == http.StatusOK {
-				return parseChatStream(resp, onEvent)
+				return parseChatStream(resp, onEvent, c.reasoningFields)
 			}
 		}
 		return nil, readAPIError(resp, c.apiKey)
 	}
-	return parseChatStream(resp, onEvent)
+	return parseChatStream(resp, onEvent, c.reasoningFields)
 }
 
 // do 发起请求（api_key 只放在 Authorization 头，绝不出现在请求体）。
@@ -301,6 +310,7 @@ func parseChatResponse(resp *http.Response) (*ChatResponse, error) {
 			Message struct {
 				Content          string `json:"content"`
 				ReasoningContent string `json:"reasoning_content"`
+				Reasoning        string `json:"reasoning"`
 				ToolCalls        []struct {
 					ID       string `json:"id"`
 					Type     string `json:"type"`
@@ -326,7 +336,7 @@ func parseChatResponse(resp *http.Response) (*ChatResponse, error) {
 	toolCalls := parseToolCalls(out.Choices[0].Message.ToolCalls)
 	// 思考型模型（如 Qwen3）可能只返回 reasoning_content，content 为空。
 	if strings.TrimSpace(out.Choices[0].Message.Content) == "" && len(toolCalls) == 0 {
-		if out.Choices[0].Message.ReasoningContent != "" {
+		if out.Choices[0].Message.ReasoningContent != "" || out.Choices[0].Message.Reasoning != "" {
 			return nil, fmt.Errorf("llm response content is empty (reasoning only; max_tokens may be too small)")
 		}
 		return nil, fmt.Errorf("llm response content is empty")

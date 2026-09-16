@@ -15,7 +15,7 @@ func TestParseChatStreamSeparatesReasoningAndContent(t *testing.T) {
 	}, "\n")
 	var events []StreamEvent
 	resp := &http.Response{Body: io.NopCloser(strings.NewReader(body))}
-	result, err := parseChatStream(resp, func(event StreamEvent) { events = append(events, event) })
+	result, err := parseChatStream(resp, func(event StreamEvent) { events = append(events, event) }, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

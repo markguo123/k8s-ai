@@ -131,7 +131,7 @@ func (d *diagnoser) diagnoseOne(ctx context.Context, c findingContext, client ll
 	// 解析/校验失败：修复重试一次。
 	repair := append(msgs, llm.Message{Role: "user", Content: "上次输出不符合要求的 JSON 格式。请只输出符合 schema 的 JSON，不要包含任何解释。"})
 	counters.call()
-	resp, chatErr := client.Chat(ctx, llm.ChatRequest{Messages: repair, MaxTokens: d.diagnosisMaxTokens(), DisableThinking: d.opts.DisableThinking})
+	resp, chatErr := client.Chat(ctx, llm.ChatRequest{Messages: repair, MaxTokens: d.diagnosisMaxTokens(), Thinking: d.opts.Thinking})
 	if chatErr != nil {
 		counters.fail()
 		if ctx.Err() != nil {
@@ -149,7 +149,7 @@ func (d *diagnoser) diagnoseOne(ctx context.Context, c findingContext, client ll
 // tryDiagnose 调用一次 LLM；网络/服务端失败直接降级，解析失败返回错误由上层重试。
 func (d *diagnoser) tryDiagnose(ctx context.Context, client llm.LLMClient, msgs []llm.Message, f model.Finding, counters *summaryCounters) (model.Diagnosis, error) {
 	counters.call()
-	resp, err := client.Chat(ctx, llm.ChatRequest{Messages: msgs, MaxTokens: d.diagnosisMaxTokens(), DisableThinking: d.opts.DisableThinking})
+	resp, err := client.Chat(ctx, llm.ChatRequest{Messages: msgs, MaxTokens: d.diagnosisMaxTokens(), Thinking: d.opts.Thinking})
 	if err != nil {
 		counters.fail()
 		if ctx.Err() != nil {

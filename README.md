@@ -1,6 +1,6 @@
 # k8s-ai
 
-> 当前版本：**v2.3.1**（二期迭代；版本约定见 [docs/VERSIONING.md](docs/VERSIONING.md)，变更见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）
+> 当前版本：**v2.3.2**（二期迭代；版本约定见 [docs/VERSIONING.md](docs/VERSIONING.md)，变更见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）
 
 Kubernetes AI 智能巡检、故障诊断与自然语言运维 Agent
 （一期：只读巡检 + 规则引擎 + 私有大模型诊断 + 报告；二期：`chat` 对话 Agent + `web` 浏览器界面 + 读写操作 + 人工确认）。
@@ -31,6 +31,7 @@ k8s-ai web --addr 127.0.0.1:8081
 二期能力：
 
 - **流式输出**：`llm.stream: true` 开启 SSE 流式处理；工具前保留简短进度说明，工具调用与结果分阶段展示，最终报告在工具完成后输出；流式失败自动降级为非流式（兼容不支持 stream 的网关）
+- **Web 流程时间线**：同一轮对话中的思考、工具执行、最终结论按竖向时间线展示，过程状态更清晰
 - **Agent 工具集**：20 个只读工具（Pod/Node/Workload/存储/网络/Events/日志/ConfigMap/节点资源用量 + 5 个诊断工具 scan*cluster/diagnose*\*，复用一期 Scanner/规则/诊断）+ **1 个写工具**（kubectl，唯一入口：LLM 生成完整命令字符串，含 shell 构造走 `bash -c`，无 shell 走 argv 直调）
 - **四层意图决策树**：诊断意图→kubectl -o yaml+previous logs+events；浏览意图→结构化摘要工具；ns 级健康→scan_cluster(namespace=X)；集群全景→scan_cluster()+健康检查协议。读操作全走结构化工具；写操作只有 kubectl 一条路径，LLM 生成完整命令（含 shell 构造），统一走审批
 - **集群健康检查**：节点 → 资源使用（metrics API）→ 命名空间 → Pod → 系统组件 → 警告事件 → 规则评分 + LLM 综合评分双轨
@@ -66,7 +67,7 @@ make build
 ### Docker 镜像
 
 ```bash
-make docker VERSION=v2.2.1
+make docker VERSION=v2.3.2
 ```
 
 镜像基于 distroless static（非 root、小体积），prompts 已内嵌，无需挂载额外文件。
@@ -97,7 +98,9 @@ k8s-ai scan --fail-on HIGH              # 达到 HIGH 返回退出码 2（CI 用
 | `scan.timeout`                                 | 5m                                | 整次扫描超时（LLM 场景建议 10m）                        |
 | `llm.enabled` / `endpoint` / `model`           | true / localhost:8000 / qwen-plus | 大模型                                                  |
 | `llm.timeout`                                  | 120s                              | 单次 LLM 调用超时（思考型模型建议保持）                 |
-| `llm.stream`                                   | false                             | chat 流式输出（true = SSE 逐 token 推送到终端/Web）     |
+| `llm.stream`                                   | true                              | chat 流式输出（true = SSE 逐 token 推送到终端/Web）     |
+| `llm.thinking`                                 | `{type: enabled}`                 | chat 标准思考参数（OpenAI 兼容网关）                    |
+| `scan.thinking`                                | `{type: enabled}`                 | 一期 Scan 诊断思考参数                                  |
 | `report.directory` / `format`                  | ./reports / markdown              | 报告输出                                                |
 
 环境变量：`KUBECONFIG`、`K8S_AI_LLM_ENDPOINT`、`K8S_AI_LLM_API_KEY`、`K8S_AI_LLM_MODEL` 等。
@@ -106,7 +109,7 @@ k8s-ai scan --fail-on HIGH              # 达到 HIGH 返回退出码 2（CI 用
 
 - 巡检诊断建议用**快速的非思考型模型**（如 qwen-turbo/flash），单 Finding 秒级返回；
 - 思考型大模型（如 Qwen3.5-397B）单次诊断约 1.5–2 分钟，需配合 `llm.timeout ≥ 120s`、`scan.timeout 10m`；
-- 网关支持时可用 `llm.disable_thinking: true`（发送 `chat_template_kwargs.enable_thinking=false`）提速；
+- 思考控制已迁移为标准 OpenAI 参数：`llm.thinking.type: enabled|disabled`；一期扫描诊断使用 `scan.thinking.type` 独立控制；
 - LLM 不可用/超时自动降级为"规则初步判断 + 日志关键行"，scan 不失败。
 
 ## HTTP API（1.2）

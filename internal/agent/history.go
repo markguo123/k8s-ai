@@ -27,6 +27,9 @@ func historyToMessages(msgs []session.Message, maxTurns int) []llm.Message {
 	}
 	out := make([]llm.Message, 0, len(msgs)-start)
 	for _, m := range msgs[start:] {
+		if m.Type == "reasoning" {
+			continue
+		}
 		switch m.Role {
 		case "tool":
 			out = append(out, llm.Message{Role: "tool", ToolCallID: m.ToolCallID, Content: m.Content})

@@ -88,11 +88,15 @@ llm:
   max_total_tokens: 32768 # 诊断阶段总预算
   max_findings: 30 # 最多送诊 Finding 数
   timeout: 120s # 单次 LLM 调用超时
-  disable_thinking: false # true=发送 enable_thinking=false（部分网关支持，可显著提速）
+  stream: true # chat 流式输出（true = SSE 逐 token 推送到终端/Web）
+  thinking:
+    type: enabled # 标准思考参数：enabled | disabled
 
 scan:
   concurrency: 8 # Phase1 并发
   phase2_concurrency: 4 # Phase2 日志采集并发
+  thinking:
+    type: enabled # 一期 Scan 思考控制：enabled | disabled
   collect_logs: true
   collect_previous_logs: true
   collect_events: true
@@ -312,7 +316,7 @@ CRITICAL 0 | HIGH 2 | MEDIUM 1 | LOW 0 | INFO 0
 
 | 现象                     | 排查                                                                                                                |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------- |
-| LLM 一直"诊断中"         | 思考型大模型单次 1.5-2 分钟属正常；确认 `llm.timeout`/`scan.timeout` 足够（10m）；或换快速模型 / `disable_thinking` |
+| LLM 一直"诊断中"         | 思考型大模型单次 1.5-2 分钟属正常；确认 `llm.timeout`/`scan.timeout` 足够（10m）；或换快速模型 / 设置 `llm.thinking.type: disabled` 或 `scan.thinking.type: disabled` |
 | 报告标注"LLM 分析不可用" | LLM 网关不可达/超时/输出校验失败；scan 不失败，规则初步判断已兜底                                                   |
 | CronJob 未执行           | `kubectl describe cronjob -n k8s-ai`；检查 schedule/timeZone 与集群版本（timeZone 需 1.27+）                        |
 | RBAC 403                 | `kubectl auth can-i list pods --as=system:serviceaccount:k8s-ai:k8s-ai -n <ns>`；确认 clusterrolebinding 已应用     |
@@ -351,7 +355,7 @@ k8s-ai web --addr 127.0.0.1:8081 --config ~/.k8s-ai/config.yaml
 # 打开 http://127.0.0.1:8081
 ```
 
-页面支持：会话列表/新建/删除、SSE 阶段化流式回答、可折叠分析进度、工具执行过程（Show output）、写操作审批卡片；工具调用先于最终报告展示。
+页面支持：会话列表/新建/删除、SSE 阶段化流式回答、可折叠分析进度、思考/工具执行/最终结论流程时间线、工具执行过程（Show output）、写操作审批卡片；工具调用先于最终报告展示。
 
 ### 8.3 写操作与 RBAC
 

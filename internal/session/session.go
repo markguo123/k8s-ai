@@ -7,7 +7,7 @@ import "time"
 // Message 是会话中持久化的一条消息（落盘前统一脱敏）。
 type Message struct {
 	Role       string    `json:"role"`                 // user | assistant | tool
-	Type       string    `json:"type"`                 // text | tool-call-response | error | ...
+	Type       string    `json:"type"`                 // text | reasoning | tool-call-response | error | ...
 	Name       string    `json:"name,omitempty"`       // tool 消息的工具名
 	ToolCallID string    `json:"toolCallId,omitempty"` // native Tool Calling 的调用 ID（恢复会话回传必需）
 	Content    string    `json:"content"`
@@ -16,17 +16,17 @@ type Message struct {
 
 // Session 是一个对话会话。
 type Session struct {
-	ID             string            `json:"id"`
-	Name           string            `json:"name"`
-	Cluster        string            `json:"cluster,omitempty"`
-	Namespace      string            `json:"namespace,omitempty"`
-	Model          string            `json:"model,omitempty"`
-	State          string            `json:"state,omitempty"` // AgentState 快照（避免包依赖环）
-	Messages       []Message         `json:"messages"`
-	ApprovedWrites []string          `json:"approvedWrites,omitempty"` // 本次会话已授权的写操作
-	DeclinedWrites map[string]int    `json:"declinedWrites,omitempty"` // 本次会话拒绝过的写操作 key→次数（用于≥2 次硬拦截）
-	CreatedAt      time.Time         `json:"createdAt"`
-	LastModified   time.Time         `json:"lastModified"`
+	ID             string         `json:"id"`
+	Name           string         `json:"name"`
+	Cluster        string         `json:"cluster,omitempty"`
+	Namespace      string         `json:"namespace,omitempty"`
+	Model          string         `json:"model,omitempty"`
+	State          string         `json:"state,omitempty"` // AgentState 快照（避免包依赖环）
+	Messages       []Message      `json:"messages"`
+	ApprovedWrites []string       `json:"approvedWrites,omitempty"` // 本次会话已授权的写操作
+	DeclinedWrites map[string]int `json:"declinedWrites,omitempty"` // 本次会话拒绝过的写操作 key→次数（用于≥2 次硬拦截）
+	CreatedAt      time.Time      `json:"createdAt"`
+	LastModified   time.Time      `json:"lastModified"`
 }
 
 // AddMessage 追加消息并刷新 LastModified。
