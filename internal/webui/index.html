@@ -16,27 +16,30 @@
    ═══════════════════════════════════════════════════════ */
 
 :root {
-  --bg: #f5f6f8;
-  --panel: #ffffff;
-  --sidebar: #1a1f2e;
-  --sidebar-hover: rgba(255,255,255,.06);
-  --sidebar-active: rgba(99,102,241,.22);
+  color-scheme: dark;
+  --bg: #0a0d14;
+  --panel: #131720;
+  --panel-2: #1a1f2e;
+  --sidebar: #0f1219;
+  --sidebar-hover: rgba(255,255,255,.05);
+  --sidebar-active: rgba(99,102,241,.18);
   --sidebar-text: #c9cdd4;
   --sidebar-muted: #6b7280;
-  --text: #111827;
-  --text-secondary: #374151;
-  --muted: #6b7280;
-  --accent: #4f46e5;
-  --accent-light: #eef2ff;
-  --border: #e5e7eb;
-  --border-light: #f3f4f6;
-  --code-bg: #f8f9fb;
-  --ok: #059669;
-  --ok-light: #ecfdf5;
-  --warn: #d97706;
-  --warn-light: #fffbeb;
-  --danger: #dc2626;
-  --danger-light: #fef2f2;
+  --text: #e5e7eb;
+  --text-secondary: #d1d5db;
+  --muted: #9ca3af;
+  --accent: #6366f1;
+  --accent-2: #8b5cf6;
+  --accent-light: rgba(99,102,241,.12);
+  --border: #232838;
+  --border-light: #1a1f2e;
+  --code-bg: #0d1017;
+  --ok: #10b981;
+  --ok-light: rgba(16,185,129,.12);
+  --warn: #f59e0b;
+  --warn-light: rgba(245,158,11,.12);
+  --danger: #ef4444;
+  --danger-light: rgba(239,68,68,.12);
 
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
@@ -51,32 +54,40 @@
   --radius-md: 10px;
   --radius-lg: 14px;
 
-  --shadow-sm: 0 1px 2px rgba(0,0,0,.04);
-  --shadow-md: 0 4px 12px rgba(0,0,0,.06);
-  --shadow-lg: 0 8px 24px rgba(0,0,0,.08);
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.22);
+  --shadow-md: 0 4px 12px rgba(0,0,0,.3);
+  --shadow-lg: 0 8px 24px rgba(0,0,0,.4);
 }
 
-@media (prefers-color-scheme: dark) {
+@media (prefers-color-scheme: light) {
   :root {
-    --bg: #0f1117;
-    --panel: #1a1d27;
-    --sidebar: #12141c;
-    --sidebar-hover: rgba(255,255,255,.04);
-    --sidebar-active: rgba(99,102,241,.18);
-    --text: #e5e7eb;
-    --text-secondary: #d1d5db;
-    --muted: #9ca3af;
-    --accent: #818cf8;
-    --accent-light: rgba(129,140,248,.1);
-    --border: #2a2d3a;
-    --border-light: #1f2230;
-    --code-bg: #15171f;
-    --ok-light: rgba(5,150,105,.1);
-    --warn-light: rgba(217,119,6,.1);
-    --danger-light: rgba(220,38,38,.1);
-    --shadow-sm: 0 1px 2px rgba(0,0,0,.2);
-    --shadow-md: 0 4px 12px rgba(0,0,0,.3);
-    --shadow-lg: 0 8px 24px rgba(0,0,0,.4);
+    color-scheme: light;
+    --bg: #f5f6f8;
+    --panel: #ffffff;
+    --panel-2: #f8fafc;
+    --sidebar: #1a1f2e;
+    --sidebar-hover: rgba(255,255,255,.06);
+    --sidebar-active: rgba(99,102,241,.22);
+    --sidebar-text: #c9cdd4;
+    --sidebar-muted: #6b7280;
+    --text: #111827;
+    --text-secondary: #374151;
+    --muted: #6b7280;
+    --accent: #4f46e5;
+    --accent-2: #7c3aed;
+    --accent-light: #eef2ff;
+    --border: #e5e7eb;
+    --border-light: #f3f4f6;
+    --code-bg: #f8f9fb;
+    --ok: #059669;
+    --ok-light: #ecfdf5;
+    --warn: #d97706;
+    --warn-light: #fffbeb;
+    --danger: #dc2626;
+    --danger-light: #fef2f2;
+    --shadow-sm: 0 1px 2px rgba(0,0,0,.04);
+    --shadow-md: 0 4px 12px rgba(0,0,0,.06);
+    --shadow-lg: 0 8px 24px rgba(0,0,0,.08);
   }
 }
 
@@ -96,7 +107,9 @@ body {
 }
 
 body {
-  background: var(--bg);
+  background:
+    radial-gradient(circle at 15% 20%, var(--accent-light), transparent 38%),
+    var(--bg);
   color: var(--text);
   font-family: var(--font-sans);
   font-size: 15px;
@@ -253,6 +266,58 @@ body {
   margin: 0 auto;
 }
 
+.session-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: calc(100% - 32px);
+  max-width: 880px;
+  margin: 16px auto 0;
+  padding: 10px 16px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-sm);
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
+.session-status .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse 1.2s infinite;
+  flex: none;
+}
+
+.session-status.done .dot {
+  background: var(--ok);
+  animation: none;
+}
+
+.session-status.waiting .dot {
+  background: var(--warn);
+  animation: pulse 1.2s infinite;
+}
+
+.session-status .label {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-secondary);
+}
+
+.session-status .counters {
+  flex: none;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.session-status .counters .num {
+  color: var(--accent-2);
+  font-weight: 600;
+}
+
 /* ═══════════════════════════════════════════════════════
    Messages
    ═══════════════════════════════════════════════════════ */
@@ -290,12 +355,13 @@ body {
 .msg.user .content {
   display: inline-block;
   text-align: left;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  border: none;
+  border-radius: 13px 13px 4px 13px;
   padding: 12px 16px;
   max-width: 85%;
-  box-shadow: var(--shadow-sm);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(99, 102, 241, .25);
 }
 
 .msg.agent .content {
@@ -332,14 +398,18 @@ body {
 }
 
 .msg.report .content {
-  background: var(--panel);
+  background: linear-gradient(
+    135deg,
+    var(--accent-light),
+    rgba(139, 92, 246, .04)
+  );
   border: 1px solid var(--border);
-  border-left: 4px solid var(--accent);
+  border-left: 3px solid var(--accent);
   border-radius: var(--radius-lg);
   padding: var(--space-lg) var(--space-xl);
   box-shadow: var(--shadow-md);
-  font-size: 15.5px;
-  line-height: 1.8;
+  font-size: 14.5px;
+  line-height: 1.75;
 }
 
 .msg.report .who {
@@ -351,8 +421,15 @@ body {
 }
 
 .msg.report .who::before {
-  content: "📋";
-  font-size: 14px;
+  content: "诊断报告";
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .5px;
+  color: var(--accent);
+  background: var(--accent-light);
+  border: 1px solid rgba(99, 102, 241, .22);
+  border-radius: 999px;
+  padding: 2px 9px;
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -360,74 +437,107 @@ body {
    ═══════════════════════════════════════════════════════ */
 
 .turn-timeline {
-  position: relative;
   margin: var(--space-md) 0;
-  padding-left: 28px;
-}
-
-.turn-timeline::before {
-  content: "";
-  position: absolute;
-  left: 10px;
-  top: 14px;
-  bottom: 12px;
-  width: 2px;
-  border-radius: 2px;
-  background: linear-gradient(
-    to bottom,
-    var(--accent),
-    var(--border)
-  );
 }
 
 .turn-timeline > .process-step {
-  position: relative;
   margin: 0 0 16px;
-  overflow: visible;
 }
 
 .turn-timeline > .process-step:last-child {
   margin-bottom: 0;
 }
 
-.turn-timeline > .process-step::before {
-  content: "";
-  position: absolute;
-  left: -24px;
-  top: 9px;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
+/* 顶部横向阶段步进器：Reasoning → Tools → Result，每轮重置 */
+.turn-stepper {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin: 0 0 var(--space-md);
+  padding: 10px 14px;
   background: var(--panel);
-  border: 2px solid var(--border);
-  z-index: 1;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
 }
 
-.turn-timeline > .reasoning-step::before {
-  border-color: var(--accent);
-  background: var(--accent-light);
+.turn-stepper-title {
+  flex: none;
+  margin-right: 14px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
 }
 
-.turn-timeline > .tool-step::before {
-  border-color: var(--warn);
-  background: var(--warn-light);
+.turn-stepper .step {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  transition: color .2s;
 }
 
-.turn-timeline > .final-step::before {
+.turn-stepper .step-dot {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  background: var(--border-light);
+  color: var(--muted);
+  transition: all .2s;
+}
+
+.turn-stepper .step.done {
+  color: var(--text-secondary);
+}
+
+.turn-stepper .step.done .step-dot {
+  color: var(--ok);
   border-color: var(--ok);
   background: var(--ok-light);
 }
 
-.turn-timeline > .intermediate-step::before {
-  border-color: var(--muted);
-  background: var(--border-light);
+.turn-stepper .step.active {
+  color: var(--text);
+}
+
+.turn-stepper .step.active .step-dot {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-light);
+  box-shadow: 0 0 0 4px var(--accent-light);
+}
+
+.turn-stepper .step-connector {
+  height: 2px;
+  flex: 1;
+  min-width: 20px;
+  margin: 0 10px;
+  border-radius: 2px;
+  background: var(--border);
+  transition: background .2s;
+}
+
+.turn-stepper .step-connector.done {
+  background: var(--ok);
 }
 
 .phase-progress {
   margin: var(--space-md) 0;
   border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
   border-radius: var(--radius-md);
-  background: var(--panel);
+  background: var(--panel-2);
   overflow: hidden;
   box-shadow: var(--shadow-sm);
 }
@@ -466,16 +576,27 @@ body {
 }
 
 .phase-progress .mark {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--accent);
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background: var(--accent-light);
+  color: var(--accent);
+  display: grid;
+  place-items: center;
   flex-shrink: 0;
+  font-size: 9px;
+  font-weight: 700;
+  font-family: var(--font-mono);
   transition: background .2s;
 }
 
+.phase-progress .mark::before {
+  content: "AI";
+}
+
 .phase-progress[data-done="true"] .mark {
-  background: var(--ok);
+  background: var(--ok-light);
+  color: var(--ok);
 }
 
 .phase-progress .phase-count {
@@ -498,6 +619,7 @@ body {
 
 .phase-progress .progress-list {
   border-top: 1px solid var(--border);
+  border-left: 2px solid var(--accent-light);
   padding: 12px 16px 14px;
   max-height: 280px;
   overflow-y: auto;
@@ -529,7 +651,7 @@ body {
   background: linear-gradient(
     90deg,
     var(--accent-light),
-    rgba(129, 140, 248, 0)
+    rgba(99, 102, 241, 0)
   );
   padding: 2px 6px;
 }
@@ -587,7 +709,7 @@ body {
 .tool-card {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: var(--panel);
+  background: var(--panel-2);
   margin: 8px 0;
   overflow: hidden;
   transition: border-color .2s, box-shadow .2s;
@@ -900,23 +1022,6 @@ body {
   font-size: 12px;
 }
 
-#status {
-  display: none;
-  max-width: 880px;
-  margin: 8px auto 0;
-  text-align: center;
-  color: var(--accent);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-#status.on {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  animation: pulse 1.4s ease-in-out infinite;
-}
 
 /* ═══════════════════════════════════════════════════════
    Markdown 渲染
@@ -1082,9 +1187,9 @@ pre code {
   background:
     radial-gradient(
       circle,
-      rgba(79,70,229,.13) 0%,
-      rgba(79,70,229,.06) 42%,
-      rgba(79,70,229,0) 72%
+      rgba(99,102,241,.13) 0%,
+      rgba(99,102,241,.06) 42%,
+      rgba(99,102,241,0) 72%
     );
   filter: blur(2px);
 }
@@ -1793,6 +1898,16 @@ pre code {
 
 <main id="main">
 
+  <div id="sessionStatus" class="session-status" aria-live="polite">
+    <span class="dot"></span>
+    <span class="label" id="sessionStatusLabel">就绪</span>
+    <span class="counters">
+      思考 <span class="num" id="sessionThinkCount">0</span>
+      · 工具 <span class="num" id="sessionToolCount">0</span>
+      · 耗时 <span class="num" id="sessionElapsed">0.0s</span>
+    </span>
+  </div>
+
   <div id="chat">
     <div class="inner"></div>
   </div>
@@ -1813,10 +1928,6 @@ pre code {
 
     </div>
 
-    <div id="status">
-      <span class="status-dot"></span>
-      <span class="status-text">正在执行…</span>
-    </div>
 
     <div class="hint">
       写操作会弹出确认卡片 · 点击工具卡片查看执行过程与输出 · Enter 发送 / Shift+Enter 换行
@@ -1836,6 +1947,11 @@ let chatBusy = false;
 let pendingTools = [];
 let toolCallCount = 0;
 let currentTimeline = null;
+let runThinkCount = 0;
+let runToolCount = 0;
+let runElapsed = 0;
+let runStartAt = 0;
+let runStatusTimer = null;
 const currentSessionStorageKey = "k8s-ai-current-session";
 
 const $ = (id) => document.getElementById(id);
@@ -1849,6 +1965,8 @@ function processRoot(create) {
     currentTimeline.className =
       "turn-timeline";
 
+    currentTimeline.appendChild(buildStepper());
+
     inner().appendChild(currentTimeline);
   }
 
@@ -1857,6 +1975,151 @@ function processRoot(create) {
 
 function resetTimeline() {
   currentTimeline = null;
+}
+
+function uiLang() {
+  return /^zh/i.test(document.documentElement.lang || "")
+    ? "zh"
+    : "en";
+}
+
+function stageLabel(key) {
+  const labels = {
+    reasoning: { zh: "推理", en: "Reasoning" },
+    tools: { zh: "工具", en: "Tools" },
+    result: { zh: "结果", en: "Result" }
+  };
+
+  return labels[key][uiLang()];
+}
+
+function buildStepper() {
+  const stepper = document.createElement("div");
+
+  stepper.className = "turn-stepper";
+  stepper.setAttribute("role", "list");
+  stepper.dataset.stage = "0";
+
+  const title = document.createElement("span");
+
+  title.className = "turn-stepper-title";
+  title.textContent = uiLang() === "zh" ? "执行阶段" : "Run";
+  stepper.appendChild(title);
+
+  ["reasoning", "tools", "result"].forEach((key, index) => {
+    if (index > 0) {
+      const connector = document.createElement("div");
+
+      connector.className = "step-connector";
+      stepper.appendChild(connector);
+    }
+
+    const step = document.createElement("div");
+
+    step.className = "step";
+    step.setAttribute("role", "listitem");
+
+    const dot = document.createElement("span");
+
+    dot.className = "step-dot";
+    dot.textContent = String(index + 1);
+
+    const label = document.createElement("span");
+
+    label.className = "step-label";
+    label.textContent = stageLabel(key);
+
+    step.appendChild(dot);
+    step.appendChild(label);
+    stepper.appendChild(step);
+  });
+
+  return stepper;
+}
+
+function setTurnStage(stage) {
+  const root = currentTimeline || inner();
+  const stepper = root.querySelector(".turn-stepper");
+
+  if (!stepper) {
+    return;
+  }
+
+  const order = {
+    reasoning: 1,
+    tools: 2,
+    result: 3,
+    done: 4
+  };
+
+  const desired =
+    typeof stage === "number"
+      ? stage
+      : order[stage] || 0;
+
+  const next =
+    Math.max(
+      Number(stepper.dataset.stage || "0"),
+      desired
+    );
+
+  stepper.dataset.stage = String(next);
+
+  stepper.querySelectorAll(".step").forEach((step, index) => {
+    const number = index + 1;
+    const completed = next >= 4 || number < next;
+    const active = next < 4 && number === next;
+
+    step.classList.toggle("done", completed);
+    step.classList.toggle("active", active);
+
+    if (active) {
+      step.setAttribute("aria-current", "step");
+    } else {
+      step.removeAttribute("aria-current");
+    }
+
+    const dot = step.querySelector(".step-dot");
+
+    if (dot) {
+      dot.textContent = completed ? "✓" : String(number);
+    }
+  });
+
+  stepper.querySelectorAll(".step-connector").forEach((connector, index) => {
+    connector.classList.toggle(
+      "done",
+      next >= 4 || index + 1 < next
+    );
+  });
+}
+
+function markAllTurnsDone() {
+  document.querySelectorAll(".turn-timeline").forEach((root) => {
+    const stepper = root.querySelector(".turn-stepper");
+
+    if (!stepper) {
+      return;
+    }
+
+    stepper.dataset.stage = "4";
+
+    stepper.querySelectorAll(".step").forEach((step) => {
+      step.classList.add("done");
+      step.classList.remove("active");
+      step.removeAttribute("aria-current");
+
+      const dot = step.querySelector(".step-dot");
+
+      if (dot) {
+        dot.textContent = "✓";
+      }
+    });
+
+    stepper.querySelectorAll(".step-connector").forEach((connector) => {
+      connector.classList.add("done");
+    });
+  });
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -2126,6 +2389,8 @@ function openSession(id) {
 
     setBusy(false);
 
+    stopRunStatus("done", "连接中断");
+
   };
 
 }
@@ -2140,7 +2405,9 @@ function handleEvent(ev) {
 
     case "history":
 
-      setStatus(false);
+      stopRunStatus("done", "就绪");
+
+      resetRunCounters();
 
       inner().innerHTML = "";
 
@@ -2196,6 +2463,8 @@ function handleEvent(ev) {
 
       });
 
+      markAllTurnsDone();
+
       resetTimeline();
 
       scroll();
@@ -2208,6 +2477,16 @@ function handleEvent(ev) {
 
     case "delta":
 
+      hideWelcome();
+
+      hideTyping();
+
+      if (ev.text) {
+        appendDelta(ev.text);
+      }
+
+      break;
+
     case "answer-delta":
 
       hideWelcome();
@@ -2216,6 +2495,7 @@ function handleEvent(ev) {
 
       if (ev.text) {
         appendDelta(ev.text);
+        setTurnStage("result");
       }
 
       break;
@@ -2228,6 +2508,8 @@ function handleEvent(ev) {
 
       if (ev.text) {
         showProgress(ev.text);
+        setTurnStage("reasoning");
+        setRunStatus("LLM 分析中", "running");
       }
 
       break;
@@ -2240,6 +2522,8 @@ function handleEvent(ev) {
 
       if (ev.text) {
         showProgress(ev.text);
+        setTurnStage("reasoning");
+        setRunStatus("LLM 分析中", "running");
       }
 
       break;
@@ -2264,7 +2548,11 @@ function handleEvent(ev) {
         finishStreamedAnswer(ev.text);
       }
 
+      setTurnStage("done");
+
       closeProgress();
+
+      collapseCompletedToolCards();
 
       resetTimeline();
 
@@ -2272,7 +2560,7 @@ function handleEvent(ev) {
 
       setBusy(false);
 
-      setStatus(false);
+      stopRunStatus("done", "分析完成");
 
       break;
 
@@ -2284,11 +2572,22 @@ function handleEvent(ev) {
 
       processRoot(true);
 
-      closeProgress();
+      setTurnStage("tools");
 
       promoteStreamToProgress();
 
       toolCallCount++;
+
+      runToolCount++;
+
+      updateRunCounters();
+
+      setRunStatus(
+        ev.tool
+          ? "执行工具：" + commandText(ev.tool)
+          : "执行工具",
+        "running"
+      );
 
       updateToolSummary();
 
@@ -2303,6 +2602,8 @@ function handleEvent(ev) {
       if (ev.tool) {
         fillToolOutput(ev.tool);
       }
+
+      setRunStatus("分析工具结果", "running");
 
       showTyping("AI 正在分析…");
 
@@ -2320,7 +2621,7 @@ function handleEvent(ev) {
 
       setBusy(false);
 
-      setStatus(false);
+      stopRunStatus("done", "执行出错");
 
       break;
 
@@ -2332,7 +2633,7 @@ function handleEvent(ev) {
         showApproval(ev.choice);
       }
 
-      setStatus(false);
+      setRunStatus("等待审批…", "waiting");
 
       showTyping(
         "等待审批…",
@@ -2351,9 +2652,132 @@ function handleEvent(ev) {
 
 function setStatus(on) {
 
-  const el = $("status");
+  setRunStatus(
+    on ? "AI 正在分析…" : "就绪",
+    on ? "running" : "done"
+  );
 
-  el.classList.toggle("on", on);
+}
+
+function setRunStatus(label, state) {
+
+  const bar = $("sessionStatus");
+
+  if (!bar) {
+    return;
+  }
+
+  const labelEl =
+    $("sessionStatusLabel");
+
+  if (labelEl) {
+    labelEl.textContent = label;
+  }
+
+  bar.classList.toggle(
+    "done",
+    state === "done"
+  );
+
+  bar.classList.toggle(
+    "waiting",
+    state === "waiting"
+  );
+
+  bar.classList.toggle(
+    "running",
+    state === "running"
+  );
+
+}
+
+function resetRunCounters() {
+
+  runThinkCount = 0;
+  runToolCount = 0;
+  runElapsed = 0;
+
+  updateRunCounters();
+
+  const elapsed = $("sessionElapsed");
+
+  if (elapsed) {
+    elapsed.textContent = "0.0s";
+  }
+
+}
+
+function updateRunCounters() {
+
+  const think = $("sessionThinkCount");
+  const tool = $("sessionToolCount");
+
+  if (think) {
+    think.textContent = String(runThinkCount);
+  }
+
+  if (tool) {
+    tool.textContent = String(runToolCount);
+  }
+
+}
+
+function startRunStatus(label) {
+
+  resetRunCounters();
+
+  runStartAt = Date.now();
+
+  setRunStatus(
+    label || "AI 正在分析…",
+    "running"
+  );
+
+  if (runStatusTimer) {
+    clearInterval(runStatusTimer);
+  }
+
+  runStatusTimer =
+    setInterval(() => {
+
+      runElapsed =
+        (Date.now() - runStartAt) / 1000;
+
+      const elapsed =
+        $("sessionElapsed");
+
+      if (elapsed) {
+        elapsed.textContent =
+          runElapsed.toFixed(1) + "s";
+      }
+
+    }, 100);
+
+}
+
+function stopRunStatus(state, label) {
+
+  if (runStatusTimer) {
+    clearInterval(runStatusTimer);
+    runStatusTimer = null;
+  }
+
+  if (runStartAt) {
+    runElapsed =
+      (Date.now() - runStartAt) / 1000;
+
+    const elapsed = $("sessionElapsed");
+
+    if (elapsed) {
+      elapsed.textContent =
+        runElapsed.toFixed(1) + "s";
+    }
+  }
+
+  setRunStatus(
+    label || (state === "done" ? "就绪" : "AI 正在分析…"),
+    state || "done"
+  );
 
 }
 
@@ -2457,7 +2881,7 @@ function addReport(text) {
 
   who.className = "who";
 
-  who.textContent = "诊断报告";
+  who.textContent = "";
 
   const content = document.createElement("div");
 
@@ -2568,7 +2992,7 @@ function finishStreamedAnswer(text) {
     last.querySelector(".who");
 
   if (who) {
-    who.textContent = "诊断报告";
+    who.textContent = "";
   }
 
   const content =
@@ -2719,6 +3143,11 @@ function showProgress(text) {
 
     item.appendChild(textEl);
     list.appendChild(item);
+
+    if (runStatusTimer) {
+      runThinkCount++;
+      updateRunCounters();
+    }
   }
 
   const textEl =
@@ -3196,12 +3625,65 @@ function fillToolOutput(tool) {
       "\n…[TRUNCATED]";
   }
 
+  const toggle =
+    card.querySelector(
+      ".tool-toggle"
+    );
+
+  if (toggle) {
+    const setOpen = (open) => {
+      card.classList.toggle("open", open);
+      toggle.classList.toggle("open", open);
+
+      toggle.querySelector(
+        "span"
+      ).textContent =
+        open ? "收起" : "展开";
+    };
+
+    setOpen(true);
+  }
+
   pendingTools.splice(
     idx,
     1
   );
 
   updateToolSummary();
+
+}
+
+function collapseCompletedToolCards() {
+
+  document
+    .querySelectorAll(
+      ".tool-card.open:not(.error)"
+    )
+    .forEach((card) => {
+
+      const toggle =
+        card.querySelector(
+          ".tool-toggle"
+        );
+
+      card.classList.remove("open");
+
+      if (toggle) {
+
+        toggle.classList.remove("open");
+
+        const label =
+          toggle.querySelector(
+            "span"
+          );
+
+        if (label) {
+          label.textContent = "展开";
+        }
+
+      }
+
+    });
 
 }
 
@@ -3420,6 +3902,10 @@ async function send() {
 
   resetTimeline();
 
+  pendingTools = [];
+  toolCallCount = 0;
+  startRunStatus("AI 正在分析…");
+
   showTyping(
     "AI 正在分析…"
   );
@@ -3452,6 +3938,8 @@ async function send() {
     setBusy(false);
 
     hideTyping();
+
+    stopRunStatus("done", "发送失败");
 
   }
 
@@ -4064,7 +4552,7 @@ function showWelcome() {
               y1="173"
               x2="140"
               y2="173"
-              stroke="#818cf8"
+              stroke="#6366f1"
               stroke-width="3"
               stroke-linecap="round"
             />

@@ -315,8 +315,8 @@ agent-state             # 状态变化事件（Web SSE 消费）
 ChatService/Web SSE 还提供阶段化事件：
 
 ```text
-progress                # 简短阶段摘要；不暴露原始思维链
-reasoning-delta         # 原始思考增量（仅供 Web 折叠展示）
+progress                # 阶段进度摘要（可见输出，保持简短）
+reasoning-delta         # 模型隐藏思考增量（实时推给 Web“分析过程”面板展示）
 answer-delta            # 无工具调用的最终回答增量
 tool-call               # 工具开始执行
 tool-response           # 工具结果（脱敏后）

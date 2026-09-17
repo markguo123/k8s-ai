@@ -27,8 +27,8 @@ const (
 	ChatEventState          ChatEventType = "state"
 	ChatEventText           ChatEventType = "text"            // 用户输入回显（CLI 交互模式）
 	ChatEventDelta          ChatEventType = "delta"           // 兼容旧客户端的 LLM 增量事件
-	ChatEventReasoningDelta ChatEventType = "reasoning-delta" // 原始思考增量（仅供 Web 折叠展示）
-	ChatEventProgress       ChatEventType = "progress"        // 阶段进度摘要，不展示原始思维链
+	ChatEventReasoningDelta ChatEventType = "reasoning-delta" // 模型隐藏思考增量（实时推给 Web“分析过程”面板展示）
+	ChatEventProgress       ChatEventType = "progress"        // 阶段进度摘要（可见输出的简短说明）
 	ChatEventAnswerDelta    ChatEventType = "answer-delta"    // 最终回答增量
 	ChatEventToolCall       ChatEventType = "tool-call"
 	ChatEventToolResponse   ChatEventType = "tool-response"

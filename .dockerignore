@@ -1,5 +1,7 @@
 bin/
 reports/
+test/
+tmp/
 .git/
 docs/
 *.md

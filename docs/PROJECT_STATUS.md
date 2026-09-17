@@ -29,10 +29,11 @@
 - [x] 二期迭代 v2.1.0：提示词移除已删除结构化写工具；kubectl 动词解析支持全局 flag 独立值；shell 模式交互命令硬拒绝；Secret/--raw 红线改用 mvdan shell 解析器加固；delete 风险分级补 Service；配置项 skip_permissions/disabled_tools 生效；kubectl 子进程注入 KUBECONFIG
 - [x] 二期迭代 v2.2.1：诊断报告与流式稳定性修复（保留真实 content/reasoning 流事件、progress/answer-delta/tool-call/tool-response/answer 分阶段事件、工具前诊断摘要不过度过滤、最终报告完整性约束、证据不足时优先只读取证、Web 分析过程折叠、失败工具调用去重、流式参数归一化）
 - [x] 二期迭代 v2.3.0–v2.3.2：Web UI 流程可视化与会话体验优化；OpenAI 标准思考参数重构（`llm.thinking` / `scan.thinking`）、`reasoning-delta` 事件、Web 思考展示增强、终端轻量状态提示、配置模板修复
+- [x] 二期迭代 v2.4.0：Web 纯前端产品化升级（暗色主题、顶部状态条与耗时计数、横向阶段步进器、诊断报告视觉升级）；思考框全程动态展开、最终报告完成后自动折叠；工具卡取消固定 1.4s 延时 peek、拿到结果即展开并保持
 
 ## 进行中
 
-- 无：一期（v1.0.x）与二期（v2.0.x–v2.3.x）均已交付，当前版本 v2.3.2
+- 无：一期（v1.0.x）与二期（v2.0.x–v2.3.x）均已交付，当前版本 v2.4.0
 
 ## 下一步
 

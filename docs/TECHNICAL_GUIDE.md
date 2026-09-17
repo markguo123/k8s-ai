@@ -1,7 +1,7 @@
 # k8s-ai 技术指导手册
 
 > 面向读者：产品经理 / 运维负责人 / 项目决策者（不需要懂 Go）。
-> 本文基于**代码实际状态（截至 v2.3.2，2026-09-16，一期 1.1 + 1.2 与二期 Agent 全部完成）**编写；每完成一个阶段都会刷新第二章与第五章。
+> 本文基于**代码实际状态（截至 v2.4.0，2026-09-17，一期 1.1 + 1.2 与二期 Agent 全部完成）**编写；每完成一个阶段都会刷新第二章与第五章。
 
 ---
 
@@ -21,7 +21,7 @@ k8s-ai 是一个 Kubernetes 集群的"只读体检医生"：运维人员执行�
 
 > 说明：按代码实际状态编写；P3-P11（一期 1.1）与 P12（一期 1.2：Server + 历史差异数据）均已完成。
 
-### 二期（v2.0.0–v2.3.2）：自然语言 Agent（chat / web）
+### 二期（v2.0.0–v2.4.0）：自然语言 Agent（chat / web）
 
 **核心能力：**
 
@@ -42,7 +42,7 @@ k8s-ai 是一个 Kubernetes 集群的"只读体检医生"：运维人员执行�
 **关键机制：**
 
 - 双模式 Tool Calling：native（OpenAI 标准 wire）+ shim（JSON action 协议）+ auto 自动降级；native 模式支持 LLM 流式（ChatStream/ChatStreamEvents → Agent 轮次判断 → ChatEvent → SSE/Web 渲染）；
-- **流式阶段顺序**：LLM 的 `content-delta` 与 `reasoning-delta` 先由 Agent 识别；带 `tool_calls` 的轮次只保留短进度说明，完整正文不提前展示；工具事件按 `tool-call → tool-response` 推送；无工具调用的最终轮次才推送 `answer-delta`，最后由 `answer` 收尾。Web 端将分析摘要放入可折叠面板，CLI 缓存增量后统一 Markdown 渲染。
+- **流式阶段顺序**：LLM 的 `content-delta` 与 `reasoning-delta` 先由 Agent 识别；带 `tool_calls` 的轮次只保留短进度说明，完整正文不提前展示；工具事件按 `tool-call → tool-response` 推送；无工具调用的最终轮次才推送 `answer-delta`，最后由 `answer` 收尾。Web 端在“分析过程”面板实时展示模型隐藏思考（推理期间全程展开，最终报告输出完成后自动折叠），工具卡拿到结果即展开并保持、报告完成后折叠；CLI 终端仅显示轻量状态，缓存增量后统一 Markdown 渲染。
 - **流式可靠性**：工具参数在累积完成后做 JSON 归一化；同一只读工具和同一参数执行失败后不原样重试，避免模型循环调用耗尽 `max_tool_calls`/`max_iterations`；不安全的参数不会被自动猜测修复。
 - `get_pod` 支持省略 namespace 全集群查找 + 前缀匹配，避免模型猜命名空间；
 - 写工具投喂 LLM 前 Text+Data 一起输出（避免摘要覆盖数据导致模型循环）；
@@ -241,7 +241,7 @@ flowchart LR
 
 ### 已完成的二期能力
 
-- **二期（v2.0.0–v2.3.2）**：chat Agent / Tool Calling / 会话记忆 / 审批执行（按 PROJECT*SPEC*二期.md）；v2.0.6–v2.0.8 迭代：四层意图决策树、放开 shell 构造、批量审批、拒绝闸门命令归一化；v2.2.1 修复诊断报告不完整、reasoning 丢失、工具前过度过滤和证据不足时提前生成写操作的问题；v2.3.2 重构为标准 OpenAI `thinking` 参数并增强思考过程展示
+- **二期（v2.0.0–v2.4.0）**：chat Agent / Tool Calling / 会话记忆 / 审批执行（按 PROJECT*SPEC*二期.md）；v2.0.6–v2.0.8 迭代：四层意图决策树、放开 shell 构造、批量审批、拒绝闸门命令归一化；v2.2.1 修复诊断报告不完整、reasoning 丢失、工具前过度过滤和证据不足时提前生成写操作的问题；v2.3.2 重构为标准 OpenAI `thinking` 参数并增强思考过程展示；v2.4.0 Web 纯前端产品化升级（暗色主题、顶部状态条、横向阶段步进器、思考全程展示）
 
 ### 尚未开始的能力
 
@@ -270,7 +270,7 @@ flowchart LR
 
 - **P12（已完成）**：Server 最小化（healthz/version/异步扫描 API）+ 历史差异数据（二期 Agent 记忆契约）
 - **一期终版达成**：1.1（巡检/排查/分析/报告/部署）+ 1.2（Server/历史对比）全部交付
-- **二期（v2.0.0–v2.3.2）**：`k8s-ai chat` 自然语言 Agent、Tool Calling、会话记忆（复用 latest.json 历史差异数据）、安全审批与执行（含批量审批 + 拒绝闸门 + shell 构造受控放开）；诊断请求优先输出现象、根因、证据、方案和验证，证据不足时继续只读取证。
+- **二期（v2.0.0–v2.4.0）**：`k8s-ai chat` 自然语言 Agent、Tool Calling、会话记忆（复用 latest.json 历史差异数据）、安全审批与执行（含批量审批 + 拒绝闸门 + shell 构造受控放开）；诊断请求优先输出现象、根因、证据、方案和验证，证据不足时继续只读取证。
 
 ---
 

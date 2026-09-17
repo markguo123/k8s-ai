@@ -28,7 +28,7 @@ llm:
   max_total_tokens: 32768
   max_findings: 30
   timeout: 120s
-  stream: true              # Web chat 需要通过 SSE 接收 reasoning_content 并折叠展示
+  stream: true              # Web chat 需要通过 SSE 接收 reasoning_content 并实时展示在“分析过程”面板
   thinking:
     type: enabled           # 标准思考参数：enabled | disabled
 
