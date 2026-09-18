@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	resourceTypes = 17 // Phase1 的资源类型 list 任务数（不含 events）
+	resourceTypes = 22 // Phase1 的资源类型 list 任务数（不含 events，含 Secret 元数据）
 	nsCount       = 50
 	podsPerNS     = 20
 )

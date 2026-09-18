@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -23,30 +24,56 @@ type Rule interface {
 }
 
 // Registry 规则注册表，支持按配置启停（FR-013）。
+// Registry 规则注册表，支持按配置启停（FR-013）与按元数据过滤（P7.1）。
 type Registry interface {
 	Register(r Rule)
+	RegisterWithMeta(r Rule, meta RuleMeta) error
 	All() []Rule
 	ByName(name string) Rule
 	Filtered(enabled, disabled []string) []Rule
+	Meta(name string) (RuleMeta, bool)
+	AllWithMeta() []RuleWithMeta
+	FilterWithMeta(filter RuleMetaFilter) []RuleWithMeta
 }
 
 type registry struct {
 	rules []Rule
+	meta  map[string]RuleMeta
 }
 
 // NewRegistry 创建空注册表。
 func NewRegistry() Registry {
-	return &registry{}
+	return &registry{meta: make(map[string]RuleMeta)}
 }
 
+// Register 以默认元数据注册规则（P7.1 兼容保留）。
 func (r *registry) Register(x Rule) {
-	r.rules = append(r.rules, x)
+	_ = r.RegisterWithMeta(x, RuleMeta{})
 }
 
+// RegisterWithMeta 注册规则并注入结构化元数据（SPEC §28.1）。
+// 重复注册同一 Name 的规则时，仅更新该规则的元数据，不重复加入列表。
+func (r *registry) RegisterWithMeta(x Rule, meta RuleMeta) error {
+	m := normalizeMeta(x, meta)
+	if err := validateMeta(x, m); err != nil {
+		return err
+	}
+	if r.meta == nil {
+		r.meta = make(map[string]RuleMeta)
+	}
+	if _, dup := r.meta[x.Name()]; !dup {
+		r.rules = append(r.rules, x)
+	}
+	r.meta[x.Name()] = m
+	return nil
+}
+
+// All 返回全部已注册规则。
 func (r *registry) All() []Rule {
 	return r.rules
 }
 
+// ByName 按规则名查找规则。
 func (r *registry) ByName(name string) Rule {
 	for _, x := range r.rules {
 		if x.Name() == name {
@@ -54,6 +81,48 @@ func (r *registry) ByName(name string) Rule {
 		}
 	}
 	return nil
+}
+
+// Meta 返回规则名对应的元数据。
+func (r *registry) Meta(name string) (RuleMeta, bool) {
+	m, ok := r.meta[name]
+	return m, ok
+}
+
+// AllWithMeta 返回全部已注册规则及其元数据。
+func (r *registry) AllWithMeta() []RuleWithMeta {
+	out := make([]RuleWithMeta, 0, len(r.rules))
+	for _, x := range r.rules {
+		if m, ok := r.meta[x.Name()]; ok {
+			out = append(out, RuleWithMeta{Rule: x, Meta: m})
+		}
+	}
+	return out
+}
+
+// FilterWithMeta 按元数据过滤规则；滤波器零值字段视为通配。
+func (r *registry) FilterWithMeta(filter RuleMetaFilter) []RuleWithMeta {
+	var out []RuleWithMeta
+	for _, x := range r.rules {
+		m, ok := r.meta[x.Name()]
+		if !ok {
+			continue
+		}
+		if filter.Category != "" && m.Category != filter.Category {
+			continue
+		}
+		if filter.Kind != "" && m.Kind != filter.Kind {
+			continue
+		}
+		if filter.RuleType != "" && m.RuleType != filter.RuleType {
+			continue
+		}
+		if filter.Severity != "" && m.SeverityBase != filter.Severity {
+			continue
+		}
+		out = append(out, RuleWithMeta{Rule: x, Meta: m})
+	}
+	return out
 }
 
 func (r *registry) Filtered(enabled, disabled []string) []Rule {
@@ -79,11 +148,12 @@ type Engine interface {
 
 type engine struct {
 	registry Registry
+	docs     DocProvider
 }
 
 // NewEngine 创建引擎。
 func NewEngine(r Registry) Engine {
-	return &engine{registry: r}
+	return &engine{registry: r, docs: NewDocumentProvider()}
 }
 
 func (e *engine) Evaluate(ctx context.Context, snapshot *model.ClusterSnapshot, index *model.CorrelationIndex, opts model.ScanOptions) []*model.Finding {
@@ -100,10 +170,30 @@ func (e *engine) Evaluate(ctx context.Context, snapshot *model.ClusterSnapshot, 
 			return findings
 		default:
 		}
-		findings = append(findings, r.Evaluate(rctx)...)
+		start := time.Now()
+		got := r.Evaluate(rctx)
+		slog.Debug("rule: evaluate complete",
+			"rule", r.Name(), "hits", len(got), "elapsed_ms", time.Since(start).Milliseconds())
+		findings = append(findings, got...)
 	}
 	// 跨规则后处理：节点级根因标记下游 Pod 异常为 Correlated（评分去重）。
 	markCorrelated(index, findings)
+	// P7.7/P7.8：按规则元数据注入 Category/Kind/Suggestion（报告聚合用），
+	// 开启 --with-doc 时再附带字段文档（仅静态资源，不发 API 请求）。
+	for _, f := range findings {
+		m, ok := e.registry.Meta(f.Rule)
+		if !ok {
+			continue
+		}
+		f.Category = m.Category
+		f.Kind = m.Kind
+		f.Suggestion = m.RuleType == RuleTypeSuggestion
+		if opts.WithDoc && m.DocRef != "" {
+			if d, ok := e.docs.Lookup(m.DocRef); ok {
+				f.Doc = d.Text()
+			}
+		}
+	}
 	return findings
 }
 
@@ -403,6 +493,18 @@ func AllDefault() []Rule {
 		DaemonSetReplicaRule{},
 		DeploymentProgressDeadlineRule{},
 		JobFailedRule{},
+		CronJobSuspendedRule{},
+		DeploymentOverReplicasRule{},
+		NetworkPolicyNoDefaultDenyRule{},
+		IngressHostConflictRule{},
+		VolumeAttachmentStuckRule{},
+		StorageClassNoProvisionerRule{},
+		ContainerHealthTimeoutRule{},
+		HpaReplicasMismatchRule{},
+		HpaScaleTargetMissingRule{},
+		PdbBlockingRule{},
+		RbacOverPrivilegedRule{},
+		ConfigRefNotFoundRule{},
 	}
 }
 

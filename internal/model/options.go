@@ -180,6 +180,7 @@ type ScanOptions struct {
 	ReportDirectory string
 	ReportFormat    string
 	ReportMode      string
+	WithDoc         bool // P7.7 是否附带规则字段文档（--with-doc，默认为 false 不增加输出）
 
 	// Rules 启停（FR-013）。
 	RulesEnabled  []string

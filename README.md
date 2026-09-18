@@ -1,6 +1,6 @@
 # k8s-ai
 
-> 当前版本：**v2.4.0**（二期迭代；版本约定见 [docs/VERSIONING.md](docs/VERSIONING.md)，变更见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）
+> 当前版本：**v2.5.0**（二期迭代；版本约定见 [docs/VERSIONING.md](docs/VERSIONING.md)，变更见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）
 
 Kubernetes AI 智能巡检、故障诊断与自然语言运维 Agent
 （一期：只读巡检 + 规则引擎 + 私有大模型诊断 + 报告；二期：`chat` 对话 Agent + `web` 浏览器界面 + 读写操作 + 人工确认）。
@@ -10,7 +10,7 @@ Kubernetes AI 智能巡检、故障诊断与自然语言运维 Agent
 k8s-ai 让运维人员执行一次 `k8s-ai scan`，就能快速知道集群哪里有问题、为什么、影响什么、应该怎么排查和怎么修：
 
 - **全集群巡检**：Pod / Node / Workload / Storage / Network / 系统组件 / Events
-- **异常自动发现**：23 条内置规则（CrashLoopBackOff、OOMKilled、ImagePullBackOff、PendingPod、NodeNotReady、PVC Pending、Service 无 Endpoint、副本不匹配、Job Failed、EvictedPod、HighRestartCount、DaemonSetReplica、DeploymentProgressDeadline 等）
+- **异常自动发现**：35 条内置规则（原有 23 条 + 新增 HPA 副本不匹配/目标缺失、PDB 阻断、RBAC 越权、ConfigRef 缺失、CronJob 挂起、默认拒绝网络策略、Ingress 主机冲突、超副本、存储卷挂载卡住、StorageClass 无 Provisioner、容器健康超时等 12 条）
 - **证据链**：每个异常带真实证据（状态字段 / Events / 日志），LLM 只能基于证据分析
 - **LLM 诊断**：OpenAI 兼容接口（OpenAI / Qwen / DeepSeek / vLLM / Ollama），输出根因、影响、排查/修复/验证命令（只展示，不执行）
 - **报告**：Markdown + JSON（latest / 时间戳 / 终端一屏摘要），健康评分
@@ -67,7 +67,7 @@ make build
 ### Docker 镜像
 
 ```bash
-make docker VERSION=v2.4.0
+make docker VERSION=v2.5.0
 ```
 
 镜像基于 distroless static（非 root、小体积），prompts 已内嵌，无需挂载额外文件。
@@ -150,13 +150,13 @@ CronJob 特性：`concurrencyPolicy: Forbid`（不并发）、`restartPolicy: On
 
 ### RBAC
 
-`deploy/clusterrole.yaml` 只授权只读动词（get/list/watch + pods/log get），不含 secrets、pods/exec、metrics。架构测试会解析清单断言只读约束。
+`deploy/clusterrole.yaml` 只授权只读动词（get/list/watch + pods/log get）；secrets 仅元数据/键级读取，不含 pods/exec、metrics。架构测试会解析清单断言只读约束。
 
 ## 安全
 
 - **审批是唯一安全门**：只读操作自动执行；写操作（含 shell 构造）必须人工确认；shell 命令永不自动执行（不被 `--skip-permissions` 豁免）
 - **放开 shell 构造**：chat 模式允许 pipe/heredoc/redirect/`&&`/`||`/command substitution，但含写操作的 shell 命令必须走审批；交互式命令（edit/attach/port-forward/proxy/run/cp/debug）仍硬拒
-- **永不读取 Secret**；日志/Events/ConfigMap/注解视为不可信数据，先脱敏再使用
+- **Secret 内容值永不进入采集/LLM/会话/审计**（元数据/键级可读）；日志/Events/ConfigMap/注解视为不可信数据，先脱敏再使用
 - **双重脱敏**：采集边界 + 报告渲染；`api_key` 只在 Authorization 头，错误消息显式剔除
 - **LLM 无自动执行能力**：写操作必须审批后执行；LLM 不是权限主体，真实边界来自 Kubernetes RBAC
 - **拒绝闸门**：同一写操作被拒绝 2 次后硬拦截；kubectl 命令归一化防绕过
@@ -168,7 +168,7 @@ CronJob 特性：`concurrencyPolicy: Forbid`（不并发）、`restartPolicy: On
 | ---------------- | --------------------------------------------- | -------------------------------- |
 | 写操作必须审批   | Approver.Confirm + 风险分级 + 拒绝闸门        | agent 单测（审批/拒绝/硬拦截）   |
 | shell 命令需审批 | `HasShellSyntax()` → `IsReadOnly()=false`     | approval 单测（7 类 shell 构造） |
-| 不访问 Secret    | 代码禁止 `Secrets()` 调用 + RBAC 不含 secrets | AST 扫描 + fake Action 断言      |
+| 不读 Secret 内容    | Secret 内容值禁止 + RBAC 仅元数据/键级读取 | AST 扫描 + fake Action 断言      |
 | 脱敏             | 采集边界 + 报告渲染双重脱敏                   | security 单测 + LLM 请求泄密测试 |
 | api_key 不泄露   | 仅在 Authorization 头 + 错误显式剔除          | llm httptest                     |
 | LLM 不编造       | Evidence ID 校验 + 命令白名单                 | diagnosis 单测                   |

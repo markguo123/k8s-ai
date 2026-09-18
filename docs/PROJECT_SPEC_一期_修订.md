@@ -158,7 +158,7 @@
 **FR-018 脱敏**
 
 验收：
-- 程序永不读取 Secret 对象（RBAC 不含 secrets，代码无对应调用）。
+- 程序永不读取 Secret 内容值（RBAC 仅元数据/键级读取，内容值零进入证据/LLM/会话/审计）。
 - 采集边界脱敏：token/password/api key/authorization/cookie/private key 等模式在进入 Evidence 前替换为 `[REDACTED]`。
 - 关键词脱敏：ConfigMap 数据默认不采集；仅当明确与 Finding 相关时按敏感键（password/secret/token/key/credential）脱敏后使用。
 - 报告渲染时二次脱敏；`api_key` 永不落日志。

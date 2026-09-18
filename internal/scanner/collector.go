@@ -9,10 +9,13 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	policyv1 "k8s.io/api/policy/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	storagev1 "k8s.io/api/storage/v1"
 
 	"github.com/k8s-ai/k8s-ai/internal/model"
@@ -192,6 +195,44 @@ func (s *snapCollector) addNetworkPolicies(items []networkingv1.NetworkPolicy) {
 	}
 }
 
+func (s *snapCollector) addHpas(items []autoscalingv2.HorizontalPodAutoscaler) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range items {
+		s.snap.Hpas = append(s.snap.Hpas, normalizeHPA(items[i]))
+	}
+}
+
+func (s *snapCollector) addPdbs(items []policyv1.PodDisruptionBudget) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range items {
+		s.snap.Pdbs = append(s.snap.Pdbs, normalizePDB(items[i]))
+	}
+}
+
+func (s *snapCollector) addClusterRoles(items []rbacv1.ClusterRole) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range items {
+		s.snap.ClusterRoles = append(s.snap.ClusterRoles, normalizeClusterRole(items[i]))
+	}
+}
+
+func (s *snapCollector) addConfigMaps(items []corev1.ConfigMap) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range items {
+		s.snap.ConfigMaps = append(s.snap.ConfigMaps, normalizeConfigMap(items[i]))
+	}
+}
+
+func (s *snapCollector) addSecrets(items []model.SecretInfo) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.snap.Secrets = append(s.snap.Secrets, items...)
+}
+
 // addEvents 将事件按 involvedObject.UID 写入本地索引（ADR-010），
 // 后续规则与证据按 UID O(1) 查询，避免按 Pod 逐条请求 events。
 func (s *snapCollector) addEvents(items []corev1.Event) {
@@ -288,7 +329,7 @@ func (c *collector) Phase1(ctx context.Context, opts model.ScanOptions) (*model.
 	return snap, nil
 }
 
-// resourceTasks 返回 16 类资源的 list 任务（不含 events）。
+// resourceTasks 返回 21 类资源的 list 任务（不含 events，含 Secret 元数据）。
 func (c *collector) resourceTasks(collect *snapCollector, opts model.ScanOptions) []phase1Task {
 	ns := opts.Namespace
 	return []phase1Task{
@@ -418,6 +459,46 @@ func (c *collector) resourceTasks(collect *snapCollector, opts model.ScanOptions
 				return err
 			}
 			collect.addNetworkPolicies(items)
+			return nil
+		}},
+		{operation: "list_hpa", kind: "HPA", fn: func(ctx context.Context) error {
+			items, err := c.reader.ListHPA(ctx, ns)
+			if err != nil {
+				return err
+			}
+			collect.addHpas(items)
+			return nil
+		}},
+		{operation: "list_pdb", kind: "PDB", fn: func(ctx context.Context) error {
+			items, err := c.reader.ListPDB(ctx, ns)
+			if err != nil {
+				return err
+			}
+			collect.addPdbs(items)
+			return nil
+		}},
+		{operation: "list_cluster_roles", kind: "ClusterRole", fn: func(ctx context.Context) error {
+			items, err := c.reader.ListClusterRoles(ctx)
+			if err != nil {
+				return err
+			}
+			collect.addClusterRoles(items)
+			return nil
+		}},
+		{operation: "list_config_maps", kind: "ConfigMap", fn: func(ctx context.Context) error {
+			items, err := c.reader.ListConfigMaps(ctx, ns)
+			if err != nil {
+				return err
+			}
+			collect.addConfigMaps(items)
+			return nil
+		}},
+		{operation: "list_secret_meta", kind: "Secret", fn: func(ctx context.Context) error {
+			items, err := c.reader.ListSecretMeta(ctx, ns)
+			if err != nil {
+				return err
+			}
+			collect.addSecrets(items)
 			return nil
 		}},
 	}

@@ -83,7 +83,7 @@ os/exec（生产代码）
 k8s.io/client-go/kubernetes/fake（生产代码）
 dynamic.Interface（一期禁止，避免任意动词）
 client-go 的 Create/Update/Patch/Delete/Apply/Scale/Exec 方法调用
-secrets 资源访问
+Secret 内容值读取（元数据/键级读取仅限 internal/kubernetes 只读门面）
 ```
 
 ## 6. 总体架构图

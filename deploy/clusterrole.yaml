@@ -1,5 +1,5 @@
-# k8s-ai 一期只读 RBAC：只有 get/list/watch + pods/log get。
-# 不含 secrets、pods/exec、metrics；不授任何写动词（ADR-009 / SECURITY.md）。
+# k8s-ai 只读 RBAC：get/list/watch + pods/log get + secrets 元数据/键级读取（get/list/watch）。
+# 不授任何写动词；不含 pods/exec、pods/portforward、pods/attach、metrics（ADR-009 / SECURITY.md）。
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -9,6 +9,10 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: [namespaces, pods, nodes, services, endpoints, events, configmaps]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    # secrets 仅用于元数据/键级读取（ListSecretMeta），内容值永不出采集边界
+    resources: [secrets]
     verbs: [get, list, watch]
   - apiGroups: [""]
     resources: [pods/log]

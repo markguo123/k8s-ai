@@ -6,10 +6,13 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	policyv1 "k8s.io/api/policy/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -331,7 +334,11 @@ func normalizeJob(j batchv1.Job) model.WorkloadInfo {
 // normalizeCronJob 归一化 CronJob。
 // normalizeCronJob 归一化 CronJob（当前 client-go 版本无 status.conditions 字段）。
 func normalizeCronJob(cj batchv1.CronJob) model.WorkloadInfo {
-	return workloadInfo("CronJob", cj.Namespace, cj.Name, string(cj.UID), nil, nil, nil, nil, nil, labelSelector(cj.Spec.JobTemplate.Spec.Selector), ownerRefs(cj.OwnerReferences, cj.Namespace))
+	info := workloadInfo("CronJob", cj.Namespace, cj.Name, string(cj.UID), nil, nil, nil, nil, nil, labelSelector(cj.Spec.JobTemplate.Spec.Selector), ownerRefs(cj.OwnerReferences, cj.Namespace))
+	if cj.Spec.Suspend != nil {
+		info.Suspend = *cj.Spec.Suspend
+	}
+	return info
 }
 
 // normalizePVC 归一化 PVC 状态，并保留绑定 PV 与 StorageClass 关联（P3.2）。
@@ -381,6 +388,9 @@ func normalizeVolumeAttachment(va storagev1.VolumeAttachment) model.StorageInfo 
 	if va.Status.AttachError != nil {
 		info.Reason = va.Status.AttachError.Message
 	}
+		if !va.CreationTimestamp.IsZero() {
+		info.CreatedAt = va.CreationTimestamp.UTC().Format(time.RFC3339)
+	}
 	return info
 }
 
@@ -398,17 +408,23 @@ func normalizeIngress(ing networkingv1.Ingress) model.IngressInfo {
 		if rule.HTTP == nil {
 			continue
 		}
-		for _, p := range rule.HTTP.Paths {
-			if p.Backend.Service == nil {
+		for _, path := range rule.HTTP.Paths {
+			if path.Backend.Service == nil {
 				continue
 			}
 			port := "?"
-			if p.Backend.Service.Port.Number != 0 {
-				port = strconv.Itoa(int(p.Backend.Service.Port.Number))
-			} else if p.Backend.Service.Port.Name != "" {
-				port = p.Backend.Service.Port.Name
+			if path.Backend.Service.Port.Number != 0 {
+				port = strconv.Itoa(int(path.Backend.Service.Port.Number))
+			} else if path.Backend.Service.Port.Name != "" {
+				port = path.Backend.Service.Port.Name
 			}
-			info.Backends = append(info.Backends, fmt.Sprintf("%s/%s:%s", ing.Namespace, p.Backend.Service.Name, port))
+			backend := fmt.Sprintf("%s/%s:%s", ing.Namespace, path.Backend.Service.Name, port)
+			info.Backends = append(info.Backends, backend)
+			p := path.Path
+			if p == "" {
+				p = "/"
+			}
+			info.Rules = append(info.Rules, model.IngressRuleInfo{Host: rule.Host, Path: p, Backend: backend})
 		}
 	}
 	return info
@@ -419,7 +435,74 @@ func normalizeNetworkPolicy(np networkingv1.NetworkPolicy) model.NetworkPolicyIn
 	return model.NetworkPolicyInfo{
 		Ref:         ref("NetworkPolicy", np.Namespace, np.Name, string(np.UID)),
 		PodSelector: labelSelector(&np.Spec.PodSelector),
+		PolicyTypes: policyTypes(np.Spec.PolicyTypes),
 	}
+}
+
+func policyTypes(pts []networkingv1.PolicyType) []string {
+	out := make([]string, 0, len(pts))
+	for _, pt := range pts {
+		out = append(out, string(pt))
+	}
+	return out
+}
+
+// normalizeHPA 归一化水平 Pod 自动伸缩（autoscaling/v2，P7.5）。
+func normalizeHPA(hpa autoscalingv2.HorizontalPodAutoscaler) model.HpaInfo {
+	target := ""
+	if hpa.Spec.ScaleTargetRef.Name != "" {
+		target = hpa.Spec.ScaleTargetRef.Kind + "/" + hpa.Spec.ScaleTargetRef.Name
+	}
+	return model.HpaInfo{
+		Ref:             ref("HPA", hpa.Namespace, hpa.Name, string(hpa.UID)),
+		MinReplicas:     hpa.Spec.MinReplicas,
+		MaxReplicas:     hpa.Spec.MaxReplicas,
+		ScaleTarget:     target,
+		DesiredReplicas: hpa.Status.DesiredReplicas,
+		CurrentReplicas: hpa.Status.CurrentReplicas,
+	}
+}
+
+// normalizePDB 归一化 Pod 驱逐预算（policy/v1，P7.5）。
+func normalizePDB(pdb policyv1.PodDisruptionBudget) model.PdbInfo {
+	info := model.PdbInfo{
+		Ref:    ref("PDB", pdb.Namespace, pdb.Name, string(pdb.UID)),
+		Selector: labelSelector(pdb.Spec.Selector),
+		DisruptionsAllowed: pdb.Status.DisruptionsAllowed,
+	}
+	if pdb.Spec.MinAvailable != nil {
+		info.MinAvailable = pdb.Spec.MinAvailable.String()
+	}
+	if pdb.Spec.MaxUnavailable != nil {
+		info.MaxUnavailable = pdb.Spec.MaxUnavailable.String()
+	}
+	return info
+}
+
+// normalizeClusterRole 归一化 RBAC ClusterRole 元数据（rbac/v1，P7.5，只读）。
+func normalizeClusterRole(cr rbacv1.ClusterRole) model.ClusterRoleInfo {
+	rules := make([]model.PolicyRuleInfo, 0, len(cr.Rules))
+	for _, rule := range cr.Rules {
+		rules = append(rules, model.PolicyRuleInfo{
+			APIGroups: rule.APIGroups,
+			Resources: rule.Resources,
+			Verbs:     rule.Verbs,
+		})
+	}
+	return model.ClusterRoleInfo{
+		Ref:   ref("ClusterRole", "", cr.Name, string(cr.UID)),
+		Rules: rules,
+	}
+}
+
+// normalizeConfigMap 仅提取 ConfigMap 名称作为存在性集合（不读数据，P7.6）。
+func normalizeConfigMap(cm corev1.ConfigMap) model.ResourceRef {
+	return ref("ConfigMap", cm.Namespace, cm.Name, "")
+}
+
+// normalizeSecret 仅提取 Secret 名称作为存在性集合（绝不读取数据，P7.6）。
+func normalizeSecret(sec corev1.Secret) model.ResourceRef {
+	return ref("Secret", sec.Namespace, sec.Name, "")
 }
 
 // normalizeEvent 归一化事件并保留 involvedObject 用于本地索引（ADR-010）。

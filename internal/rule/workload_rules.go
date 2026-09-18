@@ -156,3 +156,52 @@ func (r JobFailedRule) Evaluate(ctx *RuleContext) []*model.Finding {
 	}
 	return out
 }
+
+// CronJobSuspendedRule CronJob 被长期挂起（spec.suspend=true）。
+type CronJobSuspendedRule struct{}
+
+func (CronJobSuspendedRule) Name() string    { return "CronJobSuspended" }
+func (CronJobSuspendedRule) NeedsLogs() bool { return false }
+
+func (r CronJobSuspendedRule) Evaluate(ctx *RuleContext) []*model.Finding {
+	var out []*model.Finding
+	for i := range ctx.Snapshot.Workloads {
+		w := &ctx.Snapshot.Workloads[i]
+		if w.Ref.Kind != "CronJob" || !w.Suspend {
+			continue
+		}
+		src := w.Ref.Kind + "/" + w.Ref.Name + "/spec"
+		ev := []model.Evidence{
+			evidence.ObjectField(src, "suspend", "true"),
+		}
+		out = append(out, newFinding(ctx, r, w.Ref, "CronJob 被长期挂起（suspend=true）", model.SeverityLow, ev))
+	}
+	return out
+}
+
+// DeploymentOverReplicasRule Deployment 实际 Pod 数超过期望副本数（冗余实例）。
+type DeploymentOverReplicasRule struct{}
+
+func (DeploymentOverReplicasRule) Name() string    { return "DeploymentOverReplicas" }
+func (DeploymentOverReplicasRule) NeedsLogs() bool { return false }
+
+func (r DeploymentOverReplicasRule) Evaluate(ctx *RuleContext) []*model.Finding {
+	var out []*model.Finding
+	for i := range ctx.Snapshot.Workloads {
+		w := &ctx.Snapshot.Workloads[i]
+		if w.Ref.Kind != "Deployment" || w.DesiredReplicas == nil || *w.DesiredReplicas <= 0 {
+			continue
+		}
+		podCount := len(ctx.Index.PodsOfWorkload(w.Ref.Key()))
+		if podCount <= int(*w.DesiredReplicas) {
+			continue
+		}
+		src := w.Ref.Kind + "/" + w.Ref.Name
+		ev := []model.Evidence{
+			evidence.ObjectField(src+"/spec", "desiredReplicas", fmt.Sprint(*w.DesiredReplicas)),
+			evidence.Derived(src, "runningPods", fmt.Sprint(podCount)),
+		}
+		out = append(out, newFinding(ctx, r, w.Ref, fmt.Sprintf("Deployment 实际 Pod 数 %d 超过期望副本数 %d（冗余实例）", podCount, *w.DesiredReplicas), model.SeverityLow, ev))
+	}
+	return out
+}

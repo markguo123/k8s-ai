@@ -9,7 +9,7 @@
 | 威胁 | 场景 | 防御 |
 |---|---|---|
 | 越权写入 | 代码/LLM 触发 create/update/patch/delete | RBAC + 代码只读门面 + AST 测试 |
-| 凭据泄露 | Secret/日志/注解/env 中的密码进 LLM 或报告 | 永不读 Secret + 采集边界脱敏 + 泄密测试 |
+| 凭据泄露 | Secret/日志/注解/env 中的密码进 LLM 或报告 | Secret 内容值零进入 + 采集边界脱敏（仅元数据级读取）+ 泄密测试 |
 | Prompt Injection | 日志/Events/ConfigMap/注解包含恶意指令 | 视为不可信数据 + 输出校验 + 无执行能力 |
 | 编造证据 | LLM 引用不存在的资源/证据 | Evidence ID 校验 + 命令白名单 |
 | 命令误执行 | 误将 LLM 输出当命令执行 | 无执行器、无 os/exec |
@@ -20,7 +20,7 @@
 ```mermaid
 flowchart TB
     subgraph L1["L1 RBAC（部署层）"]
-        RBAC["ClusterRole: 仅 get/list/watch + pods/log get<br/>无 secrets / 无 create-update-patch-delete"]
+        RBAC["ClusterRole: 仅 get/list/watch + pods/log get<br/>secrets 仅元数据/键级读取（内容值禁止）<br/>无 create-update-patch-delete"]
     end
     subgraph L2["L2 代码层"]
         RDR["Reader 接口<br/>只暴露 List/Get/GetLogs"]
@@ -71,11 +71,11 @@ rules:
 ```
 
 要点：
-- **不含 secrets、pods/exec、pods/portforward、pods/attach**。
+- **不含 pods/exec、pods/portforward、pods/attach；secrets 仅授予元数据/键级读取（内容值禁止）**。
 - 不含 `metrics.k8s.io`（1.1 不读指标，ADR-012）。
 - 一期实际只用 get/list；保留 watch 仅为二期兼容（ADR-009）。
 - ClusterRole 是全集群只读，README 必须说明信任边界；单 namespace 部署时支持 `kubernetes.namespace` 过滤模式（对应小范围 Role）。
-- 架构测试解析本 YAML，断言 verbs ⊆ {get, list, watch} 且 resources 不含 secrets/exec。
+- 架构测试解析本 YAML，断言 verbs ⊆ {get, list, watch}；resources 不含 exec/portforward/attach（secrets 允许但仅元数据级读取）。
 
 ## 4. Reader / Collector 能力矩阵
 
@@ -88,7 +88,8 @@ rules:
 | 任意 get（dynamic） | 否 | 否 | 禁止 |
 | create/update/patch/delete | 否 | 否 | 代码中不存在 |
 | scale/rollout/exec/portforward | 否 | 否 | 不存在 |
-| 读 Secret | 否 | 否 | RBAC + 代码双重禁止 |
+| 读 Secret 元数据/键级（键名/类型/immutable） | 是 | 经 Reader | 仅 internal/kubernetes 只读门面 |
+| 读 Secret 内容值 | 否 | 否 | RBAC + 代码双重禁止（证据/LLM/会话/审计零进入） |
 
 ## 5. 禁止项清单（架构测试断言）
 
@@ -98,7 +99,7 @@ rules:
   - import k8s.io/client-go/kubernetes/fake（仅测试）
   - dynamic.Interface / discovery 之外的任意动词客户端
   - 调用 client-go 的 Create/Update/Patch/Delete/Apply/Replace/Scale/Exec
-  - 访问 secrets 资源（任何 client 方法）
+  - 读取 Secret 内容值（StringData 等值字段，任何 client 方法）；元数据/键级读取仅限 internal/kubernetes 只读门面
   - 调用 CommandExecutor.Execute（无实现）
 ```
 

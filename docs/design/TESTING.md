@@ -38,9 +38,9 @@
 
 | 类别 | 位置 | 断言 |
 |---|---|---|
-| 只读 | readonly_test.go | AST：无写方法调用、无 os/exec、无 dynamic、**禁止 `Secrets()` 访问**、依赖方向 |
-| RBAC | rbac_test.go | 解析 deploy/clusterrole.yaml：verbs ⊆ {get,list,watch}、无 secrets/exec、无 metrics |
-| 泄密 | llm/client_test.go + kubernetes/client_test.go | LLM 请求体/错误不泄露 api_key；k8s 动作不含 secrets |
+| 只读 | readonly_test.go | AST：无写方法调用、无 os/exec、无 dynamic、`Secrets()` 仅限 internal/kubernetes 只读门面、禁止读内容值、依赖方向 |
+| RBAC | rbac_test.go | 解析 deploy/clusterrole.yaml：verbs ⊆ {get,list,watch}、无 exec/portforward/attach、无 metrics（secrets 允许元数据级） |
+| 泄密 | llm/client_test.go + kubernetes/client_test.go | LLM 请求体/错误不泄露 api_key；k8s 动作不含 Secret 内容值 |
 | 请求量 | scanner/collector_test.go | Phase1 请求数 = 资源类型数 + namespace 数，无 N+1 |
 
 ### 3.1 AST 只读扫描
@@ -52,7 +52,8 @@
 - 无 import k8s.io/client-go/kubernetes/fake
 - 无 dynamic.Interface 使用
 - 无 clientset 方法调用：Create/Update/Patch/Delete/Apply/Replace/Scale/Exec
-- 无对 secrets 资源的任何调用
+  - 元数据/键级 Secret 采集（ListSecretMeta）仅允许 internal/kubernetes 只读门面，键名排序、内容值零出现（client_test.go TestListSecretMetaStripsData）
+- Secret 内容值零读取（元数据/键级读取仅限 internal/kubernetes）
 - 无 CommandExecutor.Execute 调用
 ```
 
@@ -62,7 +63,7 @@
 
 ```text
 verbs ⊆ {get, list, watch}
-resources 不含 secrets、pods/exec、pods/portforward、pods/attach
+resources 不含 pods/exec、pods/portforward、pods/attach（secrets 仅元数据级读取）
 无 metrics.k8s.io（1.1）
 ```
 

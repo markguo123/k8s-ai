@@ -1,0 +1,117 @@
+[
+  {
+    "field": "metadata.deletionTimestamp",
+    "description": "资源进入删除流程的时间戳。非空表示正在被标记删除，可用于卡 Terminating 判定。",
+    "link": "https://kubernetes.io/docs/reference/kubernetes-api/common-definitions/object-meta/"
+  },
+  {
+    "field": "spec.nodeName",
+    "description": "Pod 期望调度到的节点名。为空表示尚未被调度（Pending），是调度失败定位的第一字段。",
+    "link": "https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/"
+  },
+  {
+    "field": "spec.podSelector",
+    "description": "选择器定义要匹配的 Pod 标签。NetworkPolicy 场景下缺省可能放行或收紧流量。",
+    "link": "https://kubernetes.io/docs/reference/kubernetes-api/policy-resources/network-policy-v1/"
+  },
+  {
+    "field": "spec.replicas",
+    "description": "工作负载期望的副本数。与 Ready/Available 不一致通常表示滚动发布中或调度/拉取异常。",
+    "link": "https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/deployment-v1/"
+  },
+  {
+    "field": "spec.selector",
+    "description": "Service / Deployment 的选择器。Service 无匹配后端时导致 Endpoints 为空。",
+    "link": "https://kubernetes.io/docs/reference/kubernetes-api/service-resources/service-v1/"
+  },
+  {
+    "field": "spec.suspend",
+    "description": "CronJob 是否暂停调度（true 表示不触发 Job）。长期为 true 通常是误配置或人工暂停未恢复。",
+    "link": "https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/cronjob-v1/"
+  },
+  {
+    "field": "spec.scaleTargetRef",
+    "description": "HPA 引用要伸缩的工作负载（Kind/name）。指向不存在的资源会导致 HPA 无法生效。",
+    "link": "https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/horizontalpodautoscaler-v2/"
+  },
+  {
+    "field": "spec.rules[].http.paths[].path",
+    "description": "Ingress 的 HTTP 路由路径。路径冲突或后端缺失会导致 404/502。",
+    "link": "https://kubernetes.io/docs/reference/kubernetes-api/service-resources/ingress-v1/"
+  },
+  {
+    "field": "spec.rules[].http.paths[].backend.service",
+    "description": "Ingress 后端指向的 Service。后端不存在或不健康时流量无法到达应用。",
+    "link": "https://kubernetes.io/docs/reference/kubernetes-api/service-resources/ingress-v1/"
+  },
+  {
+    "field": "spec.volumes[].configMap",
+    "description": "Pod 卷引用的 ConfigMap。引用不存在时容器创建失败（suggestion 提示配置来源）。",
+    "link": "https://kubernetes.io/docs/reference/kubernetes-api/config-and-storage-resources/volume-v1/"
+  },
+  {
+    "field": "spec.volumes[].persistentVolumeClaim",
+    "description": "Pod 卷引用的 PVC。PVC 未绑定或节点能力不足会卡在 Pending/ContainerCreating。",
+    "link": "https://kubernetes.io/docs/reference/kubernetes-api/config-and-storage-resources/volume-v1/"
+  },
+  {
+    "field": "provisioner",
+    "description": "StorageClass 的存储提供程序。为空表示未配置 Provisioner，动态供给不可用。",
+    "link": "https://kubernetes.io/docs/reference/kubernetes-api/config-and-storage-resources/storage-class-v1/"
+  },
+  {
+    "field": "rules[].verbs",
+    "description": "RBAC 规则允许的操作集合。含通配符（*）即为过度授权，存在安全风险。",
+    "link": "https://kubernetes.io/docs/reference/access-authn-authz/rbac/"
+  },
+  {
+    "field": "status.phase",
+    "description": "对象当前生命周期阶段。Pod Pending/Evicted 等异常阶段多与调度或资源有关。",
+    "link": "https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/"
+  },
+  {
+    "field": "status.attached",
+    "description": "VolumeAttachment 是否已挂载到节点。长期为 false 通常表示驱动或卷故障。",
+    "link": "https://kubernetes.io/docs/reference/kubernetes-api/config-and-storage-resources/volume-attachment-v1/"
+  },
+  {
+    "field": "status.conditions[].type",
+    "description": "对象的一组状态条件类型（Ready/DiskPressure 等）。异常条件即问题根因。",
+    "link": "https://kubernetes.io/docs/reference/kubernetes-api/common-definitions/condition/"
+  },
+  {
+    "field": "status.containerStatuses[].state.waiting",
+    "description": "容器处于 Waiting 状态的原因（ImagePullBackOff/CrashLoopBackOff 等），是容器无法运行的第一线索。",
+    "link": "https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/"
+  },
+  {
+    "field": "status.containerStatuses[].lastState.terminated",
+    "description": "容器上次终止状态（含退出码/原因），OOMKilled、非 0 退出码可用于根因定位。",
+    "link": "https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/"
+  },
+  {
+    "field": "status.containerStatuses[].restartCount",
+    "description": "容器重启次数。持续增长或超过阈值说明不稳定循环（探针/崩溃）。",
+    "link": "https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/"
+  },
+  {
+    "field": "status.containerStatuses[].ready",
+    "description": "容器就绪状态。长期未就绪通常是探针失败或依赖未就绪。",
+    "link": "https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/"
+  },
+  {
+    "field": "status.desiredNumberScheduled",
+    "description": "DaemonSet 期望在每个节点运行的实例数。与就绪数不一致说明部分节点失败。",
+    "link": "https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/daemonset-v1/"
+  },
+  {
+    "field": "status.desiredReplicas",
+    "description": "HPA 当前期望的副本数。与当前实际副本不一致说明弹性伸缩进行中或故障。",
+    "link": "https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/horizontalpodautoscaler-v2/"
+  },
+  {
+    "field": "status.disruptionsAllowed",
+    "description": "PDB 当前允许被驱逐的 Pod 数。为 0 时节点排水/维护会被卡住。",
+    "link": "https://kubernetes.io/docs/reference/kubernetes-api/policy-resources/poddisruptionbudget-v1/"
+  }
+]

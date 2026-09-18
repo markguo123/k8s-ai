@@ -6,15 +6,21 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/k8s-ai/k8s-ai/internal/model"
+
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	policyv1 "k8s.io/api/policy/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -292,6 +298,30 @@ func (c *Client) ListNetworkPolicies(ctx context.Context, namespace string) ([]n
 	return list.Items, nil
 }
 
+func (c *Client) ListHPA(ctx context.Context, namespace string) ([]autoscalingv2.HorizontalPodAutoscaler, error) {
+	list, err := c.clientset.AutoscalingV2().HorizontalPodAutoscalers(allOrNs(namespace)).List(ctx, listOpts())
+	if err != nil {
+		return nil, fmt.Errorf("list hpa: %w", err)
+	}
+	return list.Items, nil
+}
+
+func (c *Client) ListPDB(ctx context.Context, namespace string) ([]policyv1.PodDisruptionBudget, error) {
+	list, err := c.clientset.PolicyV1().PodDisruptionBudgets(allOrNs(namespace)).List(ctx, listOpts())
+	if err != nil {
+		return nil, fmt.Errorf("list pdb: %w", err)
+	}
+	return list.Items, nil
+}
+
+func (c *Client) ListClusterRoles(ctx context.Context) ([]rbacv1.ClusterRole, error) {
+	list, err := c.clientset.RbacV1().ClusterRoles().List(ctx, listOpts())
+	if err != nil {
+		return nil, fmt.Errorf("list cluster roles: %w", err)
+	}
+	return list.Items, nil
+}
+
 func (c *Client) ListEvents(ctx context.Context, namespace string) ([]corev1.Event, error) {
 	list, err := c.clientset.CoreV1().Events(allOrNs(namespace)).List(ctx, listOpts())
 	if err != nil {
@@ -316,6 +346,31 @@ func (c *Client) GetConfigMap(ctx context.Context, namespace, name string) (*cor
 		return nil, fmt.Errorf("get configmap %s/%s: %w", namespace, name, err)
 	}
 	return cm, nil
+}
+
+// ListSecretMeta 按命名空间列出 Secret 的元数据与键名集合（不含任何 data 内容值，P7.6）。
+// 采集边界即剥离 data 值，仅暴露名称/类型/键集/immutable；Secret 内容值绝不进入证据/LLM/会话/审计（AGENTS.md LLM Safety）。
+func (c *Client) ListSecretMeta(ctx context.Context, namespace string) ([]model.SecretInfo, error) {
+	list, err := c.clientset.CoreV1().Secrets(allOrNs(namespace)).List(ctx, listOpts())
+	if err != nil {
+		return nil, fmt.Errorf("list secrets: %w", err)
+	}
+	out := make([]model.SecretInfo, 0, len(list.Items))
+	for i := range list.Items {
+		s := &list.Items[i]
+		keys := make([]string, 0, len(s.Data))
+		for k := range s.Data {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		out = append(out, model.SecretInfo{
+			Ref:       model.ResourceRef{Kind: "Secret", Namespace: s.Namespace, Name: s.Name},
+			Type:      string(s.Type),
+			Keys:      keys,
+			Immutable: s.Immutable != nil && *s.Immutable,
+		})
+	}
+	return out, nil
 }
 
 func (c *Client) GetPod(ctx context.Context, namespace, name string) (*corev1.Pod, error) {

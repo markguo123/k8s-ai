@@ -2,6 +2,28 @@
 
 本项目遵循 docs/VERSIONING.md 的里程碑阶梯约定。
 
+## [v2.5.0] - 2026-09-18
+
+P7 扫描能力补全与规则池扩展（借鉴 k8sgpt 规则池思路：A/B/C 12 条规则 + 规则元数据体系 + DocProvider + 报告聚合）。
+
+### Added
+
+- **规则元数据体系**：`RuleMeta` 与 `Registry.RegisterWithMeta`，现有全部规则补齐元数据（rule_id / category / kind / severity_base / needs_logs / doc_ref），支持按 category / kind 过滤（SPEC §28.1）
+- **A 级规则（4 条）**：`CronJobSuspended` 挂起、`NetworkPolicyNoDefaultDeny` 缺默认拒绝、`IngressHostConflict` 主机冲突、`DeploymentOverReplicas` 超副本
+- **B 级规则（3 条）**：`VolumeAttachmentStuck` 卷挂载卡住、`StorageClassNoProvisioner` 无 Provisioner、`ContainerHealthTimeout` 容器健康超时
+- **C 级采集与规则（5 条）**：新增 `ListHPA`（autoscaling/v2）/ `ListPDB`（policy/v1）/ `ListClusterRoles`（rbac/v1）Reader；`HpaReplicasMismatch` / `HpaScaleTargetMissing` / `PdbBlocking` / `RbacOverPrivileged` / `ConfigRefNotFound`
+- **DocProvider**：按需 lazy 加载 + 内存缓存 + 静态 JSON 兜底，`--with-doc` 开关可用且默认不增加 API 请求
+- **报告聚合**：按 category / kind 聚合，suggestion 可单独过滤，server / web / CLI 复用同一模型
+
+### Notes
+
+- 规则结论与健康评分口径不降级；新增 `ListSecretMeta`（internal/kubernetes 只读门面）后，`ConfigRefNotFound` 可校验 Secret/ConfigMap 引用存在性（仅元数据/键级，内容值零进入）；安全红线收紧为“Secret 内容值永不进入 evidence / LLM / 会话 / 审计”
+
+### Tests
+
+- `go test ./...` 通过
+- `go vet ./...` 通过
+
 ## [v2.4.0] - 2026-09-17
 
 Web 纯前端产品化升级（暗色主题 + 顶部状态条 + 横向阶段步进器 + 过程时间线 + 诊断报告视觉升级，承接 v2.3.2「后续版本继续优化视觉」）。

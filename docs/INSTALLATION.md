@@ -191,7 +191,7 @@ kubectl exec -n k8s-ai $POD -- cat /reports/latest.md | head -50
 
 ### 4.4 RBAC 说明（deploy/clusterrole.yaml）
 
-- 只授权 `get/list/watch` + `pods/log get`；**不含** secrets、pods/exec、pods/portforward、metrics；
+- 只授权 `get/list/watch` + `pods/log get`；secrets 仅元数据/键级读取（内容值禁止）；**不含** pods/exec、pods/portforward、metrics；
 - 一期为全集群只读 ClusterRole（ClusterRoleBinding）；如需最小化，可改为仅巡检特定 namespace 的 Role；
 - 清单由架构测试解析断言（`go test ./tests/arch/`），误加写权限会测试失败。
 

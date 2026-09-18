@@ -65,3 +65,52 @@ func allMatchingPodsFresh(ctx *RuleContext, svc *model.ServiceInfo) bool {
 	}
 	return true
 }
+
+// NetworkPolicyNoDefaultDenyRule 命名空间缺少默认拒绝（default-deny）NetworkPolicy。
+// 目标：识别未配置默认拒绝入口/出口策略的命名空间（安全最佳实践建议）。
+type NetworkPolicyNoDefaultDenyRule struct{}
+
+func (NetworkPolicyNoDefaultDenyRule) Name() string    { return "NetworkPolicyNoDefaultDeny" }
+func (NetworkPolicyNoDefaultDenyRule) NeedsLogs() bool { return false }
+
+func (r NetworkPolicyNoDefaultDenyRule) Evaluate(ctx *RuleContext) []*model.Finding {
+	var out []*model.Finding
+	if len(ctx.Snapshot.NetworkPolicies) == 0 {
+		return out
+	}
+	// 仅纳入存在工作负载的命名空间（无 Pod 时默认拒绝无意义）。
+	nsWithPods := map[string]bool{}
+	for _, pr := range ctx.Snapshot.Pods {
+		nsWithPods[pr.Ref.Namespace] = true
+	}
+	deny := map[string]bool{} // namespace -> 存在覆盖全 Pod 的默认拒绝策略
+	for i := range ctx.Snapshot.NetworkPolicies {
+		if isDefaultDeny(&ctx.Snapshot.NetworkPolicies[i]) {
+			deny[ctx.Snapshot.NetworkPolicies[i].Ref.Namespace] = true
+		}
+	}
+	for ns := range nsWithPods {
+		if systemNamespace(ns) || deny[ns] {
+			continue
+		}
+		ev := []model.Evidence{
+			evidence.Derived("NetworkPolicy", "defaultDeny", "missing"),
+		}
+		out = append(out, newFinding(ctx, r, model.ResourceRef{Kind: "Namespace", Name: ns}, "命名空间缺少默认拒绝（default-deny）NetworkPolicy", model.SeverityLow, ev))
+	}
+	return out
+}
+
+// isDefaultDeny 判断策略是否覆盖全命名空间（空 PodSelector 即选中所有 Pod）。
+func isDefaultDeny(nx *model.NetworkPolicyInfo) bool {
+	return len(nx.PodSelector) == 0
+}
+
+// systemNamespace 系统命名空间不纳入默认拒绝建议。
+func systemNamespace(ns string) bool {
+	switch ns {
+	case "kube-system", "kube-public", "kube-node-lease", "kube-flannel", "kube-apiserver":
+		return true
+	}
+	return false
+}

@@ -167,7 +167,7 @@ func TestMarkdownRenderPod(t *testing.T) {
 func TestRenderTerminal(t *testing.T) {
 	r := testResult()
 	s := RenderTerminal(r)
-	for _, want := range []string{"k8s-ai scan", "集群健康度：", "█", "CRITICAL 1", "重点问题", "系统组件"} {
+	for _, want := range []string{"k8s-ai scan", "集群健康度", "█", "CRITICAL 1", "重点问题", "系统组件"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("终端摘要缺少 %q", want)
 		}
@@ -305,7 +305,7 @@ func TestRenderIncidents(t *testing.T) {
 		}
 	}
 	term := RenderTerminal(r)
-	if !strings.Contains(term, "关联（派生）：副本不足；无 Endpoint") {
+	if !strings.Contains(term, "**关联（派生）**：副本不足；无 Endpoint") {
 		t.Fatalf("终端缺少派生折叠: %q", term)
 	}
 }
@@ -324,7 +324,7 @@ func TestRenderRemediationDirection(t *testing.T) {
 	if !strings.Contains(string(s), "修复方案") || !strings.Contains(string(s), "确认 PVC 是否应存在") {
 		t.Fatalf("报告缺少修复方案文字: %s", s)
 	}
-	if !strings.Contains(RenderTerminal(r), "建议：确认 PVC 是否应存在") {
+	if !strings.Contains(RenderTerminal(r), "**建议**：确认 PVC 是否应存在") {
 		t.Fatal("终端缺少修复建议文字")
 	}
 }
@@ -350,7 +350,7 @@ func TestRenderRemediationText(t *testing.T) {
 		}
 	}
 	term := RenderTerminal(r)
-	if !strings.Contains(term, "建议：先确认 PVC 是否存在") || !strings.Contains(term, "修复指令：kubectl -n prod get pvc data") {
+	if !strings.Contains(term, "**建议**：先确认 PVC 是否存在") || !strings.Contains(term, "**修复指令**：kubectl -n prod get pvc data") {
 		t.Fatalf("终端缺少文字+命令: %q", term)
 	}
 }

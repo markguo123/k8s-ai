@@ -2,6 +2,7 @@ package rule
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/k8s-ai/k8s-ai/internal/evidence"
 	"github.com/k8s-ai/k8s-ai/internal/model"
@@ -107,6 +108,65 @@ func (r FailedMountRule) Evaluate(ctx *RuleContext) []*model.Finding {
 			sev = model.SeverityHigh
 		}
 		out = append(out, newFinding(ctx, r, p.Ref, "存储卷挂载失败（FailedMount）", sev, evs))
+	}
+	return out
+}
+// volumeAttachStuckAge 判定 VolumeAttachment 卡住的最小时长（创建后长时间仍未 Attached）。
+const volumeAttachStuckAge = 2 * time.Minute
+
+// VolumeAttachmentStuckRule VolumeAttachment 长时间未 Attached（CSI 挂载卡住）。
+// 存在 AttachError 时立即命中；否则按创建时长超过阈值判定，避免启动瞬间误报。
+type VolumeAttachmentStuckRule struct{}
+
+func (VolumeAttachmentStuckRule) Name() string    { return "VolumeAttachmentStuck" }
+func (VolumeAttachmentStuckRule) NeedsLogs() bool { return false }
+
+func (r VolumeAttachmentStuckRule) Evaluate(ctx *RuleContext) []*model.Finding {
+	var out []*model.Finding
+	for i := range ctx.Snapshot.Storage {
+		st := &ctx.Snapshot.Storage[i]
+		if st.Kind != "VolumeAttachment" || st.Status == "Attached" {
+			continue
+		}
+		stuck := st.Reason != "" // AttachError 已存在
+		if !stuck {
+			if age, ok := ageSince(st.CreatedAt, ctx.Now); ok && age >= volumeAttachStuckAge {
+				stuck = true
+			}
+		}
+		if !stuck {
+			continue
+		}
+		evs := []model.Evidence{
+			evidence.ObjectField("VolumeAttachment/"+st.Ref.Name+"/status.attached", "attached", "false"),
+		}
+		if st.Reason != "" {
+			evs = append(evs, evidence.ObjectField("VolumeAttachment/"+st.Ref.Name+"/status.attachError", "message", st.Reason))
+		}
+		evs = append(evs, podEventEvidence(ctx, st.Ref)...)
+		out = append(out, newFinding(ctx, r, st.Ref, "VolumeAttachment 长时间未 Attached（挂载卡住）", model.SeverityMedium, evs))
+	}
+	return out
+}
+
+// StorageClassNoProvisionerRule StorageClass 未配置 provisioner（无法动态供给存储）。
+// 仅对 provisioner 为空的类判定；kubernetes.io/no-provisioner 表示显式本地存储类，跳过。
+type StorageClassNoProvisionerRule struct{}
+
+func (StorageClassNoProvisionerRule) Name() string    { return "StorageClassNoProvisioner" }
+func (StorageClassNoProvisionerRule) NeedsLogs() bool { return false }
+
+func (r StorageClassNoProvisionerRule) Evaluate(ctx *RuleContext) []*model.Finding {
+	var out []*model.Finding
+	for i := range ctx.Snapshot.Storage {
+		st := &ctx.Snapshot.Storage[i]
+		if st.Kind != "StorageClass" || st.Driver != "" || st.Driver == "kubernetes.io/no-provisioner" {
+			continue
+		}
+		ev := []model.Evidence{
+			evidence.ObjectField("StorageClass/"+st.Ref.Name+"/provisioner", "provisioner", "missing"),
+		}
+		out = append(out, newFinding(ctx, r, st.Ref, "StorageClass 未配置 provisioner", model.SeverityLow, ev))
 	}
 	return out
 }

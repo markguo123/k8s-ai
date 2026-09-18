@@ -55,8 +55,11 @@ func New() ScanService {
 // newService 允许测试注入客户端工厂。
 func newService(factory func(model.ScanOptions) (*kubernetes.Client, error), llmFactory func(model.LLMOptions) llm.LLMClient) ScanService {
 	reg := rule.NewRegistry()
-	for _, r := range rule.AllDefault() {
-		reg.Register(r)
+	for _, rw := range rule.AllDefaultWithMeta() {
+		if err := reg.RegisterWithMeta(rw.Rule, rw.Meta); err != nil {
+			// 元数据兜底由 normalizeMeta 保证合法，此处不应失败；仍做防御性处理。
+			reg.Register(rw.Rule)
+		}
 	}
 	return &scanService{engine: rule.NewEngine(reg), registry: reg, newClient: factory, newLLM: llmFactory}
 }

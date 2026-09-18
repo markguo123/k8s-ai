@@ -1,8 +1,8 @@
-# 项目开发任务：k8s-ai 二期（需求规格 v3.0）
+# 项目开发任务：k8s-ai 二期（需求规格 v4.0）
 
-> 版本：v3.0
-> 日期：2026-08-23
-> 状态：已确认并实施完成（v2.0.1，2026-08-24）
+> 版本：v4.0
+> 日期：2026-09-18
+> 状态：v3.0 已实施完成；§28 为新增需求草案（2026-09-18）
 > 关联：docs/DEVELOPMENT*PLAN*二期.md（开发计划）、AGENTS.md、docs/design/ARCHITECTURE.md、docs/design/ADR.md
 
 ## 修订记录
@@ -12,6 +12,7 @@
 | v1.0 | 2026-08-12 | 原始二期需求（49 节）                                                                                       |
 | v2.0 | 2026-08-21 | 基于 kubectl-ai 设计复盘重组为章节化需求，补充接口契约/配置/验收                                            |
 | v3.0 | 2026-08-23 | 按四点澄清修订：读写不限制 + 人类确认、充分照抄 kubectl-ai、一期能力全继承（tools 不重复开发）、新增 Web UI |
+| v4.0 | 2026-09-18 | 新增扫描能力补全与规则池扩展需求（§28）；方法论 skill 化明确不在本版范围；评审后调整：MirrorPod 改为 DeploymentOverReplicas、ConfigRefNotFound 降为 suggestion 并延后、C 级规则延后到后续迭代 |
 
 ---
 
@@ -1023,3 +1024,111 @@ P4 写操作与审批执行（kubectl argv + client-go + 审批 + 验证）
 P5 Web UI（k8s-ai web：SSE + 会话管理 + 审批卡片）
 P6 收尾（审计、MCP 接口、RBAC、文档、全量测试）
 ```
+
+---
+
+# 28. 扫描能力补全与规则池扩展（v4.0 新增需求）
+
+## 28.0 目标与范围
+
+- 一期规则池共 **23 条**（CORE 健康/副本类），聚焦 CrashLoopBackOff、ImagePullBackOff、Node*Pressure、PVCPending、ServiceNoEndpoint、副本数/进度等；
+  缺少 **HPA / PDB / 配置与安全建议（suggestion）** 类规则。
+- 借鉴成熟项目 k8sgpt 的做法补全：k8sgpt 当前有 **31 个 analyzer**（14 核心 + 17 附加，不含集成），
+  其规则池设计、按字段注入官方 API 文档（GetApiDocV2）、AI 结果缓存、集成扩展等点值得学习。
+- 本版只覆盖 **k8s-ai 自身的扫描与规则池**能力；规则池做成“方法论 Skill”供其他工具调用属于另一条线，明确**不在本版范围**；
+  k8s-ai 自身是否承接 Skill 能力另行规划，本版不展开。
+
+## 28.1 规则元数据规范（新增）
+
+- 现状：Rule 接口仅 Name() / NeedsLogs() / Evaluate()；severity 在每条规则内硬编码（如 newFinding(..., model.SeverityMedium, ...)），
+  没有统一的 rule_id / category / kind / doc_ref 等元数据。
+- 目标：为每条规则补充结构化元数据，并将规则分为两类：
+
+| 类型       | 说明                                             | 退出物                         |
+| ---------- | ------------------------------------------------ | ------------------------------ |
+| detection  | 检测类，集群存在明确异常                         | Finding（进入 Correlation 流程） |
+| suggestion | 建议/优化类，无异常但可改进（缺省/宽松配置等）   | 建议项，默认低优先级或单独聚合 |
+
+- 新增元数据字段：
+
+| 字段            | 说明                                                              | 示例                             |
+| --------------- | ----------------------------------------------------------------- | -------------------------------- |
+| rule_id         | 稳定唯一 ID，报告/过滤/引用使用                                    | WORKLOAD_HPA_REPLICAS_MISMATCH  |
+| category        | 问题域，报告按此聚合                                               | Workload / Storage / Network / Security / Config / Reliability |
+| kind            | 关联资源 Kind                                                     | HorizontalPodAutoscaler         |
+| severity_base   | 基准严重级；仍受 FR-011 SeverityPolicy 动态调整（互为基线不覆盖） | Medium                           |
+| needs_logs      | 命中后是否触发 Phase2 深度日志采集                                | false                            |
+| doc_ref         | 关联的 K8s API 字段路径（供文档增强，可空）                       | spec.scaleTargetRef.kind         |
+
+- 元数据用途：规则池可按 category / kind / severity 查询与过滤；报告按域聚合；LLM 诊断提示词携带 doc_ref 提升准确性。
+
+- **元数据注入方式**：采用**注册时注入**（`Registry.RegisterWithMeta(rule, metadata)`），不扩展 `Rule` 接口。理由：
+  - 避免改动所有现有规则实现（23 条规则逐一加 `Metadata()` 方法侵入性过大）；
+  - 元数据与规则逻辑解耦，规则只负责检测，元数据由注册层统一管理；
+  - `Registry` 新增 `RuleMeta` 结构体和 `RegisterWithMeta(Rule, RuleMeta) error` 方法，内部维护 `map[string]RuleMeta`；
+  - 现有 `Register(Rule)` 保留兼容，自动生成默认元数据（rule_id = Name(), category = "General", severity_base 从规则内部推断）。
+
+## 28.2 规则补全清单（按成本分级）
+
+> 依据：采集器（internal/scanner/collector.go）目前采集 16 类资源 + Events = 17 类，
+> 已含 Pods/Nodes/Deployments/ReplicaSets/StatefulSets/DaemonSets/Jobs/CronJobs/PVC/PV/StorageClass/VolumeAttachment/Ingress/NetworkPolicy/Service/EndpointSlice。
+
+### 28.2.1 A 级：复用现有采集（成本最低）
+
+| 规则                     | 判定目标                                           | 采集/归一化差距                                | 参考             |
+| ------------------------ | -------------------------------------------------- | ---------------------------------------------- | ---------------- |
+| CronJobSuspended         | .spec.suspend=true 长期挂起                          | 复用 normalizeCronJob，需补 spec.suspend 字段  | k8sgpt cronjob.go |
+| NetworkPolicyNoDefaultDeny | 命名空间无默认拒绝 NetPol                           | 复用 NetPol 采集，需扩展归一化记录 policyTypes  | k8sgpt netpol.go  |
+| IngressHostConflict      | 同一 Ingress 内 host 重复 / 多 host+同后端路径冲突   | 复用 Ingress 采集，无采集改动                  |                  |
+| DeploymentOverReplicas   | Pod 数量超过 Deployment 期望副本数（冗余实例）       | 复用 Pod + Deployment 采集，无采集改动         |                  |
+
+### 28.2.2 B 级：小幅调整采集结构
+
+| 规则                        | 判定目标                                           | 采集/归一化差距                       |
+| --------------------------- | -------------------------------------------------- | -------------------------------------- |
+| VolumeAttachmentStuck       | VolumeAttachment 长时间未 Attached                 | 已采 Detached，需补时间/状态判定字段    |
+| StorageClassNoProvisioner   | StorageClass 未配置 provisioner                    | 已采 Driver，当前缺规则                 |
+| ContainerHealthTimeout      | 就绪/存活探针长期未通过（副本数足但状态陈旧）       | 复用 Pod 状态，小改归一化              |
+
+### 28.2.3 C 级：新增采集类型（本版实现）
+
+> 评审结论：C 级规则需要新增 Reader 方法（ListHPA / ListPDB / ListClusterRoles），涉及 scanner 采集器扩展 + 归一化逻辑，工作量接近 A+B 级总和。
+> 本版决策：A/B/C 级统一在本版实现（合计 12 条规则），C 级不另行延后。
+
+| 规则                   | 判定目标                                            | 采集改动                                  | 状态   |
+| ---------------------- | --------------------------------------------------- | ----------------------------------------- | ------ |
+| HpaReplicasMismatch    | 期望副本 ≠ 当前副本且持续（指标取不到等）           | 新增 ListHPA（autoscaling/v2，集群级）    | 本版   |
+| HpaScaleTargetMissing  | spec.scaleTargetRef 指向不存在/无选择器的资源        | 同上                                      | 本版   |
+| PdbBlocking            | Pod 驱逐被 PDB minAvailable/maxUnavailable 卡死      | 新增 ListPDB（policy/v1）                | 本版   |
+| RbacOverPrivileged     | ClusterRole 使用通配符（*）或 verbs 全放行           | 新增 ListClusterRoles 等（rbac/v1，只读检查元数据） | 本版   |
+| ConfigRefNotFound      | 容器/Ingress/Vol 引用不存在的 ConfigMap/Secret       | 批量 List ConfigMap/Secret，内存比对引用  | 本版（降为 suggestion） |
+
+- 说明：
+  - RBAC/ConfigMap 类以元数据级只读检查为限，不深读资源体、不触碰 Secret 内容，符合 AGENTS.md 安全红线。
+  - Secret 引用存在性校验通过 internal/kubernetes 只读门面的 `ListSecretMeta`（仅键名/类型/immutable，内容值零进入 evidence/LLM/会话/审计），与红线一致。
+  - ConfigRefNotFound 实现复杂度高（需遍历所有容器 env/volume 引用），且 Pod 数量多时 API 请求量大，降为 suggestion 类型。
+
+## 28.3 扫描功能优化
+
+### 28.3.1 字段级文档增强（借鉴 k8sgpt GetApiDocV2）
+- 目标：规则命中时，按 doc_ref 拉取对应 K8s API 字段说明并并入 evidence/Finding，提升 LLM 诊断输入质量。
+- 落地：抽象 DocProvider 接口注入规则层；实现默认 **lazy 加载（命中才取）**，--with-doc 可开关，默认不额外增加 API Server 请求；
+  内网/离线可提供静态 JSON 字段映射。
+
+### 28.3.2 规则注册表增强
+- 元数据随 Rule 注册进 Registry；支持按 category / kind / severity 过滤，CLI/config 可单独启停（延续现有 RulesEnabled / RulesDisabled 机制）。
+
+### 28.3.3 报告聚合
+- 报告按 category / kind 聚合（当前为扁平 Finding 列表）；提供“仅建议类（suggestion）”过滤开关，服务端/Web 复用同一报告模型。
+
+### 28.3.4 规则性能分析（可选）
+- 记录单规则耗时与命中数，输出到 verbose/debug 日志，定位高成本扫描规则。
+
+## 28.4 本版验收标准（DoD）
+
+1. §28.1 元数据落地：现有 23 条规则补齐 rule_id / category / severity_base / needs_logs / doc_ref（doc_ref 可空），Registry 可过滤。
+2. 新增规则共 12 条：A 级 4、B 级 3、C 级 5，均有单元测试与 evidence 路径；C 级含 ListHPA / ListPDB / ListClusterRoles 新增采集。
+3. DocProvider / --with-doc 可按需开关，默认不增加额外 API 请求；内网静态映射可用。
+4. 报告按 category 聚合，suggestion 可单独过滤；server/web/CLI 复用同一模型。
+5. 新增采集仅通过 internal/scanner reader 与 internal/executor 边界，架构测试守护；go test ./... / go vet ./... 全绿。
+6. 文档同步：CHANGELOG / README / TECHNICAL_GUIDE 更新；本项目范围不含"方法论 Skill 化"内容。

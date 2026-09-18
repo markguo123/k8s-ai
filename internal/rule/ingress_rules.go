@@ -53,3 +53,40 @@ func parseBackend(b string) (ns, svc string, ok bool) {
 	}
 	return ns, svc, svc != ""
 }
+
+// IngressHostConflictRule 同一 Ingress 内 host 重复或多 host 下同路径路由冲突。
+type IngressHostConflictRule struct{}
+
+func (IngressHostConflictRule) Name() string    { return "IngressHostConflict" }
+func (IngressHostConflictRule) NeedsLogs() bool { return false }
+
+func (r IngressHostConflictRule) Evaluate(ctx *RuleContext) []*model.Finding {
+	var out []*model.Finding
+	for i := range ctx.Snapshot.Ingresses {
+		ing := &ctx.Snapshot.Ingresses[i]
+		conflicts := ingressConflicts(ing.Rules)
+		if len(conflicts) == 0 {
+			continue
+		}
+		ev := []model.Evidence{
+			evidence.ObjectField("Ingress/"+ing.Ref.Name+"/spec.rules", "conflict", strings.Join(conflicts, "; ")),
+		}
+		out = append(out, newFinding(ctx, r, ing.Ref, "Ingress 路由冲突："+strings.Join(conflicts, "；"), model.SeverityMedium, ev))
+	}
+	return out
+}
+
+// ingressConflicts 检测同一 Ingress 内 (host,path) 到不同后端的路由冲突。
+// 同名 host 出现多次且映射不同后端即视为冲突；不同 host 的虚拟主机路由不算冲突。
+func ingressConflicts(rules []model.IngressRuleInfo) []string {
+	var conflicts []string
+	backendByHP := map[string]string{}
+	for _, ru := range rules {
+		hp := ru.Host + ru.Path
+		if b, ok := backendByHP[hp]; ok && b != ru.Backend {
+			conflicts = append(conflicts, "host "+ru.Host+" path "+ru.Path+" 映射到不同后端 "+b+" 与 "+ru.Backend)
+		}
+		backendByHP[hp] = ru.Backend
+	}
+	return conflicts
+}

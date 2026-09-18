@@ -30,9 +30,12 @@ var forbiddenMethodCalls = []string{
 	"Create", "Update", "Patch", "Delete", "Apply", "Replace", "Scale", "Exec", "PortForward",
 }
 
-// forbiddenSecretsCall 在任何包都禁止：Secret 数据读取只能走 kubectl 二进制
-// （executor 内），client-go 的 Secrets() 方法永不使用（AGENTS.md LLM Safety）。
-const forbiddenSecretsCall = "Secrets"
+// Secret 内容值红线（AGENTS.md LLM Safety）：
+//  - StringData 是 corev1.Secret 的原始内容值（写入）字段，生产代码任何位置都禁止触碰；
+//  - Secret 元数据/键级读取只允许发生在只读门面 internal/kubernetes（采集边界剥离 data 值，
+//    只向应用暴露名称/类型/键集合，内容值不进入证据/LLM/会话/审计）。
+const forbiddenSecretValueField = "StringData"
+const secretReadAllowedPkg = "kubernetes"
 
 // mutationAllowedPkg 是允许 client-go 写方法的生产包（相对 internal/ 的包路径）。
 const mutationAllowedPkg = "executor"
@@ -104,6 +107,11 @@ func isShellCommandCall(call *ast.CallExpr) bool {
 	return false
 }
 
+// inSecretBoundary 判断包是否为只读门面 internal/kubernetes（含其子包）。
+func inSecretBoundary(pkg string) bool {
+	return pkg == secretReadAllowedPkg || strings.HasPrefix(pkg, secretReadAllowedPkg+"/")
+}
+
 func TestProductionCodeReadOnly(t *testing.T) {
 	walkProductionGoFiles(t, func(path string) {
 		pkg := relPkg(path)
@@ -143,8 +151,13 @@ func TestProductionCodeReadOnly(t *testing.T) {
 				return true
 			}
 			name := sel.Sel.Name
-			if name == forbiddenSecretsCall {
-				t.Errorf("%s: forbidden method call Secrets (Secret data never via client-go)", path)
+			// Secret 内容值红线：禁止触碰 corev1.Secret 原始值字段 StringData。
+			if name == forbiddenSecretValueField {
+				t.Errorf("%s: forbidden field %s (Secret content values must never enter evidence/LLM/session/audit)", path, forbiddenSecretValueField)
+			}
+			// Secret 元数据/键级读取仅允许在只读门面 internal/kubernetes；其余包一律禁止调用 Secrets()。
+			if name == "Secrets" && !inSecretBoundary(pkg) {
+				t.Errorf("%s: Secret metadata/key reads are only allowed in internal/%s", path, secretReadAllowedPkg)
 			}
 			// 只对 import client-go/api 的文件做写方法检查，避免误伤自有接口
 			// （如 session.Store 的 Create/Update/Delete）。

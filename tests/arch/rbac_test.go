@@ -24,8 +24,9 @@ type rbacManifest struct {
 	Rules []rbacRule `yaml:"rules"`
 }
 
-// TestRBACReadOnly 解析 deploy/clusterrole.yaml，断言默认清单保持只读
-// （二期写权限示例以注释形式提供，不进入默认 ClusterRole；SECURITY.md §3）。
+// TestRBACReadOnly 解析 deploy/clusterrole.yaml，断言默认清单保持只读：
+// verbs 限于 {get,list,watch}；resources 不含 pods/exec、pods/portforward、pods/attach 与写能力。
+// Secret 在二期放行为“元数据/键级读取”，故允许 secrets 的 get/list/watch（仍只读，SECURITY.md §3）。
 func TestRBACReadOnly(t *testing.T) {
 	raw, err := os.ReadFile("../../deploy/clusterrole.yaml")
 	if err != nil {
@@ -46,7 +47,8 @@ func TestRBACReadOnly(t *testing.T) {
 			}
 		}
 		for _, res := range rule.Resources {
-			if res == "secrets" || strings.Contains(res, "/exec") || strings.Contains(res, "/portforward") || strings.Contains(res, "/attach") {
+			// Secret 允许只读（get/list/watch，由 verbs 校验保证）；仅禁止执行/端口转发/附加等能力。
+			if strings.Contains(res, "/exec") || strings.Contains(res, "/portforward") || strings.Contains(res, "/attach") || strings.Contains(res, "/exec/") {
 				t.Errorf("发现禁止资源 %q", res)
 			}
 		}

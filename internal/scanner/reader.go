@@ -6,10 +6,13 @@ import (
 	"context"
 
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	policyv1 "k8s.io/api/policy/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	storagev1 "k8s.io/api/storage/v1"
 
 	"github.com/k8s-ai/k8s-ai/internal/model"
@@ -38,6 +41,9 @@ type Reader interface {
 	ListVolumeAttachments(ctx context.Context) ([]storagev1.VolumeAttachment, error)
 	ListIngresses(ctx context.Context, namespace string) ([]networkingv1.Ingress, error)
 	ListNetworkPolicies(ctx context.Context, namespace string) ([]networkingv1.NetworkPolicy, error)
+	ListHPA(ctx context.Context, namespace string) ([]autoscalingv2.HorizontalPodAutoscaler, error)
+	ListPDB(ctx context.Context, namespace string) ([]policyv1.PodDisruptionBudget, error)
+	ListClusterRoles(ctx context.Context) ([]rbacv1.ClusterRole, error)
 	ListEvents(ctx context.Context, namespace string) ([]corev1.Event, error)
 
 	// Targeted reads are reserved for Phase 2 tools; Phase 1 does not use them.
@@ -55,6 +61,8 @@ type Reader interface {
 	GetStorageClass(ctx context.Context, name string) (*storagev1.StorageClass, error)
 	GetConfigMap(ctx context.Context, namespace, name string) (*corev1.ConfigMap, error)
 	ListConfigMaps(ctx context.Context, namespace string) ([]corev1.ConfigMap, error)
+	// ListSecretMeta 只读 Secret 元数据与键名集合，不含任何 data 内容值（AGENTS.md LLM Safety）。
+	ListSecretMeta(ctx context.Context, namespace string) ([]model.SecretInfo, error)
 
 	// GetPodLogs returns capped log bytes for a container (FR-022).
 	GetPodLogs(ctx context.Context, namespace, pod, container string, opts model.LogOptions) ([]byte, error)

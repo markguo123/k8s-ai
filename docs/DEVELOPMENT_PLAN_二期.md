@@ -2,7 +2,7 @@
 
 - 版本：v1.0
 - 日期：2026-08-23
-- 状态：已完成（v2.4.0，2026-09-17）
+- 状态：已完成（v2.5.0，2026-09-18）
 - 关联文档：PROJECT*SPEC*二期.md（v3.0）、AGENTS.md、docs/design/ARCHITECTURE.md、docs/design/ADR.md
 
 ## 修订记录
@@ -31,7 +31,7 @@
 | v2.9 | 2026-09-10 |        | v2.2.1：保留真实 reasoning 与诊断摘要、工具调用顺序闸门、最终报告完整性约束、证据不足时优先只读取证、Web 分析过程折叠、失败工具调用去重、流式参数归一化                                                                                                                                                |
 | v2.10 | 2026-09-16 |        | v2.3.0–v2.3.2：Web UI 流程可视化与会话体验优化；OpenAI 标准思考参数重构（llm.thinking / scan.thinking）、reasoning-delta 事件、Web 思考展示与流程时间线、终端轻量状态提示、配置模板修复                                                                                                              |
 | v2.11 | 2026-09-17 |        | v2.4.0：Web 纯前端产品化升级（暗色主题、顶部状态条与耗时计数、横向阶段步进器、过程时间线、报告视觉升级）；思考框全程动态展开、报告完成后自动折叠；工具卡取消 1.4s 延时 peek                                                                                                              |
-
+| v2.12 | 2026-09-18 |        | v2.5.0：P7 扫描能力补全与规则池扩展（A/B/C 12 条规则 + 规则元数据 + DocProvider/--with-doc + 报告聚合；健康评分与规则结论不降级） |
 ## 0. 进度状态（2026-09-09）
 
 ```text
@@ -264,3 +264,116 @@ tests/arch/readonly_test.go            # 二期边界更新
 文档：README、INSTALLATION、TECHNICAL_GUIDE、CREDITS、CHANGELOG、版本
 部署：deploy/ RBAC 写权限示例（默认注释）、web 部署示例
 ```
+
+---
+
+## 9. P7 扫描能力补全与规则池扩展（v4.0 新增，2026-09-18）
+
+目标：借鉴 k8sgpt 补全规则池，新增规则元数据体系，提升扫描覆盖面与报告质量。
+
+### 9.1 阶段范围
+
+依据 PROJECT_SPEC_二期.md §28：
+
+- **A 级规则（4 条）**：复用现有采集类型，仅个别归一化结构补字段（spec.suspend / policyTypes）
+  - CronJobSuspended
+  - NetworkPolicyNoDefaultDeny
+  - IngressHostConflict
+  - DeploymentOverReplicas
+- **B 级规则（3 条）**：小幅调整采集归一化
+  - VolumeAttachmentStuck
+  - StorageClassNoProvisioner
+  - ContainerHealthTimeout
+- **C 级规则（5 条）**：本版实现，新增 ListHPA / ListPDB / ListClusterRoles 采集（HPA/PDB/RBAC/ConfigRef 类）
+- **基础设施**：规则元数据、DocProvider、报告聚合
+
+### 9.2 任务拆分
+
+| #    | 任务                                                                 | 产出/验收                                                                 | 预估   |
+| ---- | -------------------------------------------------------------------- | ------------------------------------------------------------------------- | ------ |
+| P7.1 | 规则元数据基础设施：RuleMeta 结构体、Registry.RegisterWithMeta 方法  | internal/rule/meta.go + 单测；现有 Register() 兼容保留                    | 1d     |
+| P7.2 | 现有 23 条规则补齐元数据：rule_id / category / severity_base / needs_logs / doc_ref | 每条规则注册时携带 RuleMeta；Registry 可按 category/kind 过滤 | 1d |
+| P7.3 | A 级规则实现（4 条）：CronJobSuspended / NetworkPolicyNoDefaultDeny / IngressHostConflict / DeploymentOverReplicas（含所需归一化补字段 spec.suspend / policyTypes） | 规则实现 + 单测 + evidence 路径验证 | 2d |
+| P7.4 | B 级规则实现（3 条）+ 采集归一化调整：VolumeAttachmentStuck / StorageClassNoProvisioner / ContainerHealthTimeout | 规则实现 + scanner 归一化扩展 + 单测 | 1.5d |
+| P7.5 | C 级采集扩展：ListHPA（autoscaling/v2）/ ListPDB（policy/v1）/ ListClusterRoles（rbac/v1）Reader + 归一化 | internal/scanner reader 扩展 + 单测（fake client） | 2d |
+| P7.6 | C 级规则实现（5 条）：HpaReplicasMismatch / HpaScaleTargetMissing / PdbBlocking / RbacOverPrivileged / ConfigRefNotFound | 规则实现 + 单测 + evidence 路径验证 | 2d |
+| P7.7 | DocProvider 接口与实现：lazy 加载 + 内存缓存 + 静态 JSON 兜底        | internal/rule/docprovider.go + 单测；--with-doc 开关可用                  | 1d     |
+| P7.8 | 报告聚合增强：按 category / kind 聚合；suggestion 单独过滤开关       | internal/report 扩展 + 单测；server/web/CLI 复用同一模型                  | 1d     |
+| P7.9 | 规则性能分析（可选）：记录单规则耗时与命中数，输出到 debug 日志      | 规则引擎扩展 + 日志输出                                                   | 0.5d   |
+| P7.10 | 测试与文档：全量测试 + 架构测试 + CHANGELOG/README/TECHNICAL_GUIDE 更新 | go test / go vet 全绿；文档同步                                         | 1.5d  |
+
+### 9.3 排期估算
+
+| 阶段  | 内容                           | 预估（人日） | 累计  |
+| ----- | ------------------------------ | ------------ | ----- |
+| P7.1  | 规则元数据基础设施             | 1            | 1     |
+| P7.2  | 现有规则补齐元数据             | 1            | 2     |
+| P7.3  | A 级规则实现（4 条）           | 2            | 4     |
+| P7.4  | B 级规则实现（3 条）+ 采集调整 | 1.5          | 5.5   |
+| P7.5  | C 级采集扩展（新 Reader）       | 2            | 7.5   |
+| P7.6  | C 级规则实现（5 条）           | 2            | 9.5   |
+| P7.7  | DocProvider 接口与实现         | 1            | 10.5  |
+| P7.8  | 报告聚合增强                   | 1            | 11.5  |
+| P7.9  | 规则性能分析（可选）           | 0.5          | 12    |
+| P7.10 | 测试与文档                     | 1.5          | 13.5  |
+
+合计约 **13.5 人日**，按 5 天/周约 **2.7 周**；加缓冲按 **3.5 周**排。
+
+### 9.4 里程碑
+
+| 里程碑 | 对应任务  | 可演示成果                                                                 |
+| ------ | --------- | -------------------------------------------------------------------------- |
+| M7.1   | P7.1–P7.2 | 规则元数据体系可用，Registry 可按 category/kind 过滤                        |
+| M7.2   | P7.3–P7.4 | A/B 级 7 条规则命中并输出 Finding                                            |
+| M7.3   | P7.5–P7.6 | HPA/PDB/RBAC/ConfigRef 采集与 C 级规则（5 条）可用                           |
+| M7.4   | P7.7–P7.8 | DocProvider 按需加载字段文档；报告支持 suggestion 过滤                      |
+| M7.5   | P7.9–P7.10 | 性能分析（可选）+ 全量测试通过，文档更新，v2.5.0 发布                        |
+
+### 9.5 出口标准
+
+```text
+go test ./...   绿（P7 新增 + 一期/二期回归）
+go vet ./...    绿
+架构测试        绿（新增采集仅通过 scanner reader 边界）
+规则元数据      现有 23 条补齐元数据；新增 12 条（A 级 4 + B 级 3 + C 级 5）均有元数据
+报告聚合        按 category 聚合可用，suggestion 可单独过滤
+DocProvider     --with-doc 开关可用，默认不增加 API 请求
+文档            CHANGELOG / README / TECHNICAL_GUIDE 更新
+```
+
+### 9.6 关键测试文件
+
+```text
+internal/rule/meta_test.go              # RuleMeta 注册与过滤
+internal/rule/cronjob_suspended_test.go # A 级规则
+internal/rule/netpol_default_deny_test.go
+internal/rule/ingress_conflict_test.go
+internal/rule/deployment_over_replicas_test.go
+internal/rule/volume_attachment_test.go # B 级规则
+internal/rule/storageclass_test.go
+internal/rule/container_health_test.go
+internal/rule/hpa_mismatch_test.go    # C 级规则
+internal/rule/hpa_scale_target_test.go
+internal/rule/pdb_blocking_test.go
+internal/rule/rbac_over_privileged_test.go
+internal/rule/configref_test.go
+internal/scanner/hpa_reader_test.go   # ListHPA 采集
+internal/rule/docprovider_test.go       # DocProvider 缓存与加载
+internal/report/aggregate_test.go       # 报告聚合
+```
+
+### 9.7 风险与应对
+
+| 风险                         | 应对                                                                 |
+| ---------------------------- | -------------------------------------------------------------------- |
+| 现有规则元数据补齐工作量大   | P7.2 单独 1d，逐条补齐；默认 Register() 自动生成兜底元数据           |
+| B 级采集归一化改动影响一期   | 归一化扩展向后兼容；一期测试回归覆盖                                 |
+| 新增 C 级 Reader 涉及 client-go/集群差异 | 集群级 List 一次拉取，单测用本地 fake client；RBAC/ConfigRef 仅元数据级只读      |
+| DocProvider 静态 JSON 维护成本 | 首版仅提供核心字段（Pod/Deployment/Node），后续按需扩展              |
+| 报告聚合改动影响 server/web  | 报告模型向后兼容；新增字段可选，旧客户端不受影响                     |
+
+### 9.8 后续迭代规划（本版之外）
+
+本版（v4.0）已统一完成 A/B/C 级规则（合计 12 条），无延后规则；规则元数据、报告聚合、DocProvider 一并落地。
+后续迭代聚焦 Phase 3 预留方向：可观测性集成（Prometheus/Grafana）、更多会话后端、DocProvider 静态字段库扩充。
+

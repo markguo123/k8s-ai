@@ -31,6 +31,7 @@ func registerScanFlags(cmd *cobra.Command, f *scanFlags) {
 	cmd.Flags().StringP("namespace", "n", "", "namespace to scan (default: all namespaces)")
 	cmd.Flags().DurationVar(&f.since, "since", 0, "only fetch logs newer than this duration (e.g. 1h)")
 	cmd.Flags().BoolVar(&f.verbose, "verbose", false, "print the full report instead of the one-screen summary")
+	cmd.Flags().Bool("with-doc", false, "attach K8s API field docs to findings (default off, no API requests)")
 }
 
 // newScanCmd 全集群/命名空间扫描。
@@ -96,6 +97,9 @@ func runScan(deps Dependencies, cmd *cobra.Command, podTarget string, f *scanFla
 	default:
 		opts.ReportMode = "latest"
 	}
+	if v, err := cmd.Flags().GetBool("with-doc"); err == nil {
+		opts.WithDoc = v
+	}
 	if f.failOn != "" {
 		sev, err := model.ParseSeverity(f.failOn)
 		if err != nil {
@@ -116,9 +120,15 @@ func runScan(deps Dependencies, cmd *cobra.Command, podTarget string, f *scanFla
 	if err != nil {
 		return err
 	}
-	// 默认输出一屏摘要（markdown 且非 --verbose）；否则输出完整报告。
+	// 默认输出一屏摘要（markdown 且非 --verbose），TTY 下用 glamour 渲染成
+	// 带色彩的 Markdown，管道/重定向保留原始 Markdown 源码；否则输出完整报告。
 	if opts.ReportFormat == "markdown" && !f.verbose {
-		fmt.Fprint(out, report.RenderTerminal(result))
+		summary := report.RenderTerminal(result)
+		if isTerminal(os.Stdout) {
+			fmt.Fprint(out, renderMarkdown(newMarkdownRenderer(), summary))
+		} else {
+			fmt.Fprint(out, summary)
+		}
 	} else {
 		data, err := report.RendererFor(opts.ReportFormat).Render(result)
 		if err != nil {

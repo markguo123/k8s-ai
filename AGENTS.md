@@ -68,8 +68,9 @@ troubleshooting and operations, subject to the following rules:
     approver.
   * Interactive/blocking kubectl commands (edit/attach/port-forward/proxy/
     run/cp/debug, exec -i/-t) remain hard-rejected.
-  * Secret access and `--raw` red lines remain in force for both shell and
-    non-shell commands.
+  * Secret content (value) access and `--raw` red lines remain in force for
+    both shell and non-shell commands; read-only metadata/key-level Secret reads
+    via the internal/kubernetes read facade are allowed.
 - kubectl and shell execution happen only in `internal/executor`: parsed-
   argv execution against the kubectl binary remains the default; the
   policy-gated shell path is used only after human approval in interactive
@@ -81,7 +82,9 @@ troubleshooting and operations, subject to the following rules:
 
 ## LLM Safety
 
-Never send Kubernetes Secret data to the LLM.
+Never send Kubernetes Secret content values to the LLM.
+
+Secret 元数据/键级读取允许（internal/scanner/reader → internal/kubernetes 只读门面，仅键名/类型/immutable）；内容值永不进入 evidence / LLM 请求 / 会话文件 / 审计文件。
 
 Sensitive information must be redacted before LLM requests, session files and
 audit files.
@@ -161,7 +164,9 @@ those in Phase 2 beyond the reserved interfaces.
 
 ## LLM Safety
 
-Never send Kubernetes Secret data to the LLM.
+Never send Kubernetes Secret content values to the LLM.
+
+Secret 元数据/键级读取允许（internal/scanner/reader → internal/kubernetes 只读门面，仅键名/类型/immutable）；内容值永不进入 evidence / LLM 请求 / 会话文件 / 审计文件。
 
 Sensitive information must be redacted before LLM requests.
 

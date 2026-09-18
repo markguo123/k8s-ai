@@ -2,6 +2,7 @@ package kubernetes
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -54,9 +55,6 @@ func TestReadOnlyActions(t *testing.T) {
 		default:
 			t.Fatalf("read-only violation: verb %q on resource %q", a.GetVerb(), a.GetResource().Resource)
 		}
-		if a.GetResource().Resource == "secrets" {
-			t.Fatal("secrets must never be accessed")
-		}
 	}
 }
 
@@ -96,5 +94,37 @@ func TestTruncateLogs(t *testing.T) {
 	single := model.TruncateLogs([]byte(strings.Repeat("x", 5000)), 100, 1024)
 	if len(single) != 5000 {
 		t.Fatalf("单条超长行应完整保留: %d", len(single))
+	}
+}
+// TestListSecretMetaStripsData 验证 ListSecretMeta 只暴露元数据与键名，
+// Secret 内容值在采集边界剥离，绝不进入应用/证据/LLM/会话/审计（AGENTS.md LLM Safety）。
+func TestListSecretMetaStripsData(t *testing.T) {
+	cs := fake.NewSimpleClientset(
+		&corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "db-secret", Namespace: "default"},
+			Type:       corev1.SecretTypeOpaque,
+			Data: map[string][]byte{
+				"username": []byte("admin"),
+				"password": []byte("s3cr3t-pass"),
+			},
+		},
+	)
+	c := NewClientWithClientset(cs)
+	metas, err := c.ListSecretMeta(context.Background(), "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metas) != 1 {
+		t.Fatalf("secrets = %d, want 1", len(metas))
+	}
+	sec := metas[0]
+	if sec.Ref.Kind != "Secret" || sec.Ref.Name != "db-secret" || sec.Ref.Namespace != "default" {
+		t.Fatalf("meta ref = %+v", sec.Ref)
+	}
+	if len(sec.Keys) != 2 || sec.Keys[0] != "password" || sec.Keys[1] != "username" {
+		t.Fatalf("keys = %v, want [password username]", sec.Keys)
+	}
+	if strings.Contains(fmt.Sprintf("%+v", sec), "s3cr3t-pass") || strings.Contains(fmt.Sprintf("%+v", sec), "admin") {
+		t.Fatal("Secret 内容值不得出现在元数据中")
 	}
 }

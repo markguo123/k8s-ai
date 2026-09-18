@@ -16,7 +16,7 @@
 - [x] P9.1 提前实现：`scan pod <name> -n <ns>` 单 Pod 巡检报告（Scope 标注、证据链、日志）；命名空间/单 Pod 报告范围修复
 - [x] P10 前体检与 P0 修复：JSON 契约字段小写化、证据链 E-ID 一致性（enrich 先于 result 拷贝）、Duration 含 LLM 耗时、Makefile lint 修正
 - [x] P10 部署交付：Dockerfile（distroless 非 root）、deploy/ RBAC+ConfigMap+Secret 示例+PVC+CronJob、RBAC 清单测试、README、Makefile docker 目标
-- [x] P11 加固收尾：大集群压测（PERFORMANCE.md）、四类架构测试确认（含 Secrets 禁访）、安全核对清单、-race 环境说明、INSTALLATION.md 安装部署手册
+- [x] P11 加固收尾：大集群压测（PERFORMANCE.md）、四类架构测试确认（含 Secrets 仅元数据级）、安全核对清单、-race 环境说明、INSTALLATION.md 安装部署手册
 - [x] P12 一期 1.2：Server 最小化（healthz/version/异步扫描 API）+ 历史差异数据（新增/持续/恢复，二期 Agent 记忆契约）+ deployment/service 清单
 - [x] 二期 P0–P2：Agent 基础（llm native/shim/auto Tool Calling、agent/tools/session 骨架、chat CLI 交互/单发/stdin/JSON/会话管理）
 - [x] 二期 P3：诊断 Tool 化（scan*cluster / scan_pod / diagnose*\*，复用一期 ScanService）
@@ -30,10 +30,11 @@
 - [x] 二期迭代 v2.2.1：诊断报告与流式稳定性修复（保留真实 content/reasoning 流事件、progress/answer-delta/tool-call/tool-response/answer 分阶段事件、工具前诊断摘要不过度过滤、最终报告完整性约束、证据不足时优先只读取证、Web 分析过程折叠、失败工具调用去重、流式参数归一化）
 - [x] 二期迭代 v2.3.0–v2.3.2：Web UI 流程可视化与会话体验优化；OpenAI 标准思考参数重构（`llm.thinking` / `scan.thinking`）、`reasoning-delta` 事件、Web 思考展示增强、终端轻量状态提示、配置模板修复
 - [x] 二期迭代 v2.4.0：Web 纯前端产品化升级（暗色主题、顶部状态条与耗时计数、横向阶段步进器、诊断报告视觉升级）；思考框全程动态展开、最终报告完成后自动折叠；工具卡取消固定 1.4s 延时 peek、拿到结果即展开并保持
+- [x] 二期迭代 v2.5.0：P7 扫描能力补全与规则池扩展（A/B/C 12 条规则 + 规则元数据体系 + DocProvider/--with-doc + 报告聚合）
 
 ## 进行中
 
-- 无：一期（v1.0.x）与二期（v2.0.x–v2.3.x）均已交付，当前版本 v2.4.0
+- 无：一期（v1.0.x）与二期（v2.0.x–v2.3.x）均已交付，当前版本 v2.5.0
 
 ## 下一步
 

@@ -81,7 +81,7 @@ func logStat(value string) string {
 	return fmt.Sprintf("（%d 行）", n)
 }
 
-// RenderTerminal 终端一屏摘要：健康条、严重级计数、Top 重点问题、系统组件、采集错误。
+// RenderTerminal 终端一屏摘要（Markdown）：健康条、严重级计数、Top 重点问题、系统组件、采集错误。
 func RenderTerminal(r *model.ScanResult) string {
 	var b strings.Builder
 	scope := "cluster"
@@ -94,19 +94,20 @@ func RenderTerminal(r *model.ScanResult) string {
 		scope = "namespace " + r.Meta.Namespace
 		healthLabel = "命名空间健康度"
 	}
-	fmt.Fprintf(&b, "k8s-ai scan　Scope: %s\n", scope)
-	fmt.Fprintf(&b, "%s：%d/%d  %s\n", healthLabel, r.HealthScore.Score, r.HealthScore.Max, scoreBar(r.HealthScore.Score, r.HealthScore.Max))
-	fmt.Fprintf(&b, "%s\n", severityCountsLine(r.Findings))
+	fmt.Fprintf(&b, "# k8s-ai scan\n\n")
+	fmt.Fprintf(&b, "- **Scope**：%s\n", scope)
+	fmt.Fprintf(&b, "- **%s**：%d/%d  %s\n", healthLabel, r.HealthScore.Score, r.HealthScore.Max, scoreBar(r.HealthScore.Score, r.HealthScore.Max))
+	fmt.Fprintf(&b, "- **严重级**：%s\n", severityCountsLine(r.Findings))
 	if r.History != nil {
-		fmt.Fprintf(&b, "历史对比：新增 %d / 持续 %d / 恢复 %d\n", len(r.History.Added), len(r.History.Continued), len(r.History.Recovered))
+		fmt.Fprintf(&b, "- 历史对比：新增 %d / 持续 %d / 恢复 %d\n", len(r.History.Added), len(r.History.Continued), len(r.History.Recovered))
 	}
 
 	if len(r.Incidents) > 0 {
 		// Incident 聚合：一个故障链一行根因，派生问题折叠展示。
-		b.WriteString("\n重点问题：\n")
-		shown := 0
+		b.WriteString("\n## 重点问题\n\n")
+		printed := 0
 		for _, inc := range r.Incidents {
-			if shown >= 10 {
+			if printed >= 10 {
 				break
 			}
 			var rootF *model.Finding
@@ -119,15 +120,18 @@ func RenderTerminal(r *model.ScanResult) string {
 			if rootF == nil {
 				continue
 			}
+			if printed > 0 {
+				b.WriteString("\n")
+			}
 			renderTerminalFinding(&b, *rootF, diagnosisFor(r, inc.Root.ID))
 			if len(inc.Members) > 0 {
 				titles := make([]string, 0, len(inc.Members))
 				for _, m := range inc.Members {
 					titles = append(titles, m.Title)
 				}
-				fmt.Fprintf(&b, "　关联（派生）：%s\n", strings.Join(titles, "；"))
+				fmt.Fprintf(&b, "  - **关联（派生）**：%s\n", strings.Join(titles, "；"))
 			}
-			shown++
+			printed++
 		}
 		// 未归入 Incident（或已展示的根因/成员）的独立 Finding 追加展示。
 		printedIDs := map[string]bool{}
@@ -141,18 +145,25 @@ func RenderTerminal(r *model.ScanResult) string {
 			if printedIDs[f.ID] {
 				continue
 			}
+			if printed > 0 {
+				b.WriteString("\n")
+			}
 			renderTerminalFinding(&b, f, diagnosisFor(r, f.ID))
+			printed++
 		}
 	} else {
 		// 兼容：无 Incident（如测试桩）时按 Finding 展示。
 		top := topFindings(r.Findings, 10)
 		if len(top) > 0 {
-			b.WriteString("\n重点问题：\n")
-			for _, f := range top {
+			b.WriteString("\n## 重点问题\n\n")
+			for i, f := range top {
+				if i > 0 {
+					b.WriteString("\n")
+				}
 				renderTerminalFinding(&b, f, diagnosisFor(r, f.ID))
 			}
 			if len(r.Findings) > len(top) {
-				fmt.Fprintf(&b, "… 还有 %d 个问题，详见报告或 --verbose\n", len(r.Findings)-len(top))
+				fmt.Fprintf(&b, "  - … 还有 %d 个问题，详见报告或 --verbose\n", len(r.Findings)-len(top))
 			}
 		} else {
 			b.WriteString("\n未发现异常。\n")
@@ -160,7 +171,7 @@ func RenderTerminal(r *model.ScanResult) string {
 	}
 
 	if len(r.Components) > 0 {
-		var parts []string
+		b.WriteString("\n## 系统组件\n\n")
 		for _, c := range r.Components {
 			icon := "❌"
 			switch {
@@ -171,12 +182,11 @@ func RenderTerminal(r *model.ScanResult) string {
 			default:
 				icon = "✅"
 			}
-			parts = append(parts, icon+" "+c.Name)
+			fmt.Fprintf(&b, "- %s %s\n", icon, c.Name)
 		}
-		fmt.Fprintf(&b, "\n系统组件：%s\n", strings.Join(parts, "  "))
 	}
 	if len(r.CollectionErrors) > 0 {
-		fmt.Fprintf(&b, "\n采集错误：%d 条\n", len(r.CollectionErrors))
+		fmt.Fprintf(&b, "\n- **采集错误**：%d 条\n", len(r.CollectionErrors))
 	}
 	return b.String()
 }
@@ -214,7 +224,7 @@ func topFindings(findings []model.Finding, n int) []model.Finding {
 
 // renderTerminalFinding 单条重点问题：图标 + 现象 + 根因 + 首条修复建议。
 func renderTerminalFinding(b *strings.Builder, f model.Finding, diag *model.Diagnosis) {
-	fmt.Fprintf(b, "%s %s %s/%s：%s\n", severityIcon(f.Severity), f.Severity, f.Resource.Namespace, f.Resource.Name, f.Title)
+	fmt.Fprintf(b, "- **%s %s** %s/%s：%s\n", severityIcon(f.Severity), f.Severity, f.Resource.Namespace, f.Resource.Name, f.Title)
 	var facts []string
 	logNote := ""
 	logValue := ""
@@ -227,40 +237,40 @@ func renderTerminalFinding(b *strings.Builder, f model.Finding, diag *model.Diag
 			continue
 		}
 		if len(facts) < 3 {
-			facts = append(facts, e.Key+"="+e.Value)
+			facts = append(facts, e.Key+"="+capValue(e.Value, 100))
 		}
 	}
 	if len(facts) > 0 {
-		fmt.Fprintf(b, "　现象：%s\n", strings.Join(facts, "；"))
+		fmt.Fprintf(b, "  - **现象**：%s\n", strings.Join(facts, "；"))
 	}
 	if logNote != "" {
 		if hl := logHighlight(logValue); hl != "" {
-			fmt.Fprintf(b, "　%s：%s\n", logNote, hl)
+			fmt.Fprintf(b, "  - **%s**：%s\n", logNote, hl)
 		} else {
-			fmt.Fprintf(b, "　%s\n", logNote)
+			fmt.Fprintf(b, "  - **%s**\n", logNote)
 		}
 	}
 	if diag != nil {
 		if diag.LLMUsed {
-			fmt.Fprintf(b, "　根因：%s\n", diag.RootCause)
+			fmt.Fprintf(b, "  - **根因**：%s\n", diag.RootCause)
 			text := diag.RemediationText
 			if text == "" {
 				text = diag.RemediationDirection
 			}
 			if text != "" {
-				fmt.Fprintf(b, "　建议：%s\n", text)
+				fmt.Fprintf(b, "  - **建议**：%s\n", text)
 			}
 			for i, c := range diag.Remediation {
 				if i >= summaryMaxRemediationCommands {
-					fmt.Fprintf(b, "　… 其余 %d 条修复指令见 --verbose 完整输出\n", len(diag.Remediation)-summaryMaxRemediationCommands)
+					fmt.Fprintf(b, "  - … 其余 %d 条修复指令见 --verbose 完整输出\n", len(diag.Remediation)-summaryMaxRemediationCommands)
 					break
 				}
-				fmt.Fprintf(b, "　修复指令：%s（风险 %s）\n", c.Text, c.Risk)
+				fmt.Fprintf(b, "  - **修复指令**：%s（风险 %s）\n", c.Text, c.Risk)
 			}
 		} else if diag.RootCause != "" {
-			fmt.Fprintf(b, "　初步判断（规则）：%s\n", diag.RootCause)
+			fmt.Fprintf(b, "  - **初步判断（规则）**：%s\n", diag.RootCause)
 			if diag.RemediationDirection != "" {
-				fmt.Fprintf(b, "　修复方向（规则）：%s\n", diag.RemediationDirection)
+				fmt.Fprintf(b, "  - **修复方向（规则）**：%s\n", diag.RemediationDirection)
 			}
 		}
 	}
@@ -278,6 +288,15 @@ func diagnosisFor(r *model.ScanResult, findingID string) *model.Diagnosis {
 
 // logHighlight 取日志中最有用的一行：优先命中关键字（panic/error/emerg 等），
 // 否则取最后一行（错误通常在末尾）；限长 160 供终端摘要显示。
+// capValue 截断过长的终端摘要证据值，避免现象行换行密集。
+func capValue(v string, n int) string {
+	runes := []rune(v)
+	if len(runes) > n {
+		return string(runes[:n]) + "…"
+	}
+	return v
+}
+
 func logHighlight(value string) string {
 	lines := strings.Split(strings.TrimRight(value, "\n"), "\n")
 	for _, l := range lines {
