@@ -111,6 +111,7 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 			if toolExecuted && toolResultHasError(tr) {
 				failedToolCalls[failureKey]++
 			}
+			ok := toolResultOK(tr)
 			text, truncated := tools.MarshalForLLM(tr, a.ResultMaxBytes)
 			turnBytes += len(text)
 			budgetExceeded := turnBytes > a.TurnMaxBytes
@@ -120,14 +121,14 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 			}
 			if mode == "native" {
 				msgs = append(msgs, llm.Message{Role: "tool", ToolCallID: call.ID, Content: toolContent})
-				a.Session.AddMessage(session.Message{Role: "tool", Type: "tool-call-response", Name: call.Name, ToolCallID: call.ID, Content: toolContent})
+				a.Session.AddMessage(session.Message{Role: "tool", Type: "tool-call-response", Name: call.Name, ToolCallID: call.ID, Content: toolContent, Arguments: call.Arguments, Data: tr.Data, Ok: &ok})
 			} else {
 				obs := fmt.Sprintf("工具 %s 返回：\n%s", call.Name, toolContent)
 				msgs = append(msgs, llm.Message{Role: "user", Content: obs})
-				a.Session.AddMessage(session.Message{Role: "user", Type: "tool-call-response", Name: call.Name, Content: obs})
+				a.Session.AddMessage(session.Message{Role: "user", Type: "tool-call-response", Name: call.Name, Content: obs, Arguments: call.Arguments, Data: tr.Data, Ok: &ok})
 			}
 			a.EmitCritical(Message{Source: SourceAgent, Type: MessageTypeToolCallResponse, Payload: map[string]any{
-				"name": call.Name, "text": text, "truncated": truncated,
+				"name": call.Name, "text": text, "truncated": truncated, "ok": ok, "summary": tr.Text, "data": tr.Data,
 			}})
 			// 单轮上下文预算：超限后停止执行本批剩余工具，让 LLM 基于现有证据回答。
 			if budgetExceeded {
@@ -149,6 +150,20 @@ func toolResultHasError(result tools.ToolResult) bool {
 	}
 	_, ok = data["error"]
 	return ok
+}
+
+// toolResultOK 判断工具执行是否成功：无 error 键，且排除“环境缺 kubectl 二进制”
+// 场景（该场景无 error 键但确实失败，前端若只看 error 会误判成功）。
+func toolResultOK(result tools.ToolResult) bool {
+	if toolResultHasError(result) {
+		return false
+	}
+	if data, ok := result.Data.(map[string]any); ok {
+		if kind, _ := data["kind"].(string); kind == "kubectl_binary_missing" {
+			return false
+		}
+	}
+	return true
 }
 
 // chatOnce 调用一次 LLM 补全（Agent 循环唯一入口）：
@@ -459,7 +474,7 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolCall, batchApprove
 	var argsView map[string]any
 	_ = json.Unmarshal(call.Arguments, &argsView)
 	a.EmitCritical(Message{Source: SourceAgent, Type: MessageTypeToolCallRequest, Payload: ToolCallEvent{
-		Name: call.Name, Arguments: argsView,
+		Name: call.Name, Arguments: argsView, Risk: string(t.Risk(call.Arguments)),
 	}})
 	a.audit(ctx, audit.ActionToolCallRequest, map[string]any{"name": call.Name, "arguments": argsView})
 

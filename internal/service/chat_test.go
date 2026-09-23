@@ -165,6 +165,7 @@ func TestChatServiceRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	gotToolCall := false
+	gotToolOk := false
 	gotAnswer := ""
 	var gotUsage *llm.TokenUsage
 	for ev := range events {
@@ -173,13 +174,17 @@ func TestChatServiceRoundTrip(t *testing.T) {
 			if ev.Tool != nil && ev.Tool.Name == "get_resources" {
 				gotToolCall = true
 			}
+		case ChatEventToolResponse:
+			if ev.Tool != nil && ev.Tool.Ok != nil && *ev.Tool.Ok {
+				gotToolOk = true
+			}
 		case ChatEventAnswer:
 			gotAnswer = ev.Text
 			gotUsage = ev.Usage
 		}
 	}
-	if !gotToolCall || gotAnswer != "集群有 1 个节点" {
-		t.Fatalf("toolCall=%v answer=%q", gotToolCall, gotAnswer)
+	if !gotToolCall || !gotToolOk || gotAnswer != "集群有 1 个节点" {
+		t.Fatalf("toolCall=%v toolOk=%v answer=%q", gotToolCall, gotToolOk, gotAnswer)
 	}
 	if gotUsage == nil || gotUsage.TotalTokens != 5 {
 		t.Fatalf("usage = %+v", gotUsage)

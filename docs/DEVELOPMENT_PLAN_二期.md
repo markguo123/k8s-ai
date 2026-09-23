@@ -2,7 +2,7 @@
 
 - 版本：v1.0
 - 日期：2026-08-23
-- 状态：已完成（v2.5.0，2026-09-18）
+- 状态：已完成（v2.6.0，2026-09-20）
 - 关联文档：PROJECT*SPEC*二期.md（v3.0）、AGENTS.md、docs/design/ARCHITECTURE.md、docs/design/ADR.md
 
 ## 修订记录
@@ -32,6 +32,8 @@
 | v2.10 | 2026-09-16 |        | v2.3.0–v2.3.2：Web UI 流程可视化与会话体验优化；OpenAI 标准思考参数重构（llm.thinking / scan.thinking）、reasoning-delta 事件、Web 思考展示与流程时间线、终端轻量状态提示、配置模板修复                                                                                                              |
 | v2.11 | 2026-09-17 |        | v2.4.0：Web 纯前端产品化升级（暗色主题、顶部状态条与耗时计数、横向阶段步进器、过程时间线、报告视觉升级）；思考框全程动态展开、报告完成后自动折叠；工具卡取消 1.4s 延时 peek                                                                                                              |
 | v2.12 | 2026-09-18 |        | v2.5.0：P7 扫描能力补全与规则池扩展（A/B/C 12 条规则 + 规则元数据 + DocProvider/--with-doc + 报告聚合；健康评分与规则结论不降级） |
+| v2.13 | 2026-09-20 |        | v2.5.1：scan 终端报告渲染分层优化（块级标题 + 表格 + 代码块，替换单一巨大无序列表；internal/report/summary.go 的 RenderTerminal） |
+| v2.14 | 2026-09-20 |        | v2.6.0：Web 工具卡片结构化渲染（Data.kind 驱动：Pod/Event/Node 等表格化展示；kubectl 仅特例显示原命令，结构化工具显示 `[工具名] 参数`）+ 会话持久化补全（arguments/data 落库，刷新后命令/参数/结果表格不丢失；internal/session/session.go、internal/agent/loop.go、internal/service/chat.go、internal/webui/index.html） |
 ## 0. 进度状态（2026-09-09）
 
 ```text

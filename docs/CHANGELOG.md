@@ -2,6 +2,37 @@
 
 本项目遵循 docs/VERSIONING.md 的里程碑阶梯约定。
 
+## [v2.6.0] - 2026-09-20
+
+Web 工具卡片结构化渲染与会话持久化补全（Data.kind 驱动工具结果表格/键值展示；kubectl 工具卡仅展示原始命令；arguments/data/ok 落库并随 SSE 回传）。
+
+### Added
+
+- **工具结果结构化渲染**：`internal/webui/index.html` 新增 `renderToolStructured`，由 `Data.kind` 驱动；List 类型（PodList/EventList/NodeUsageList 等）用表头映射 + 表格渲染，单一对象（如 Pod）用键值表 + containers/conditions/events 子表展示。
+- **kubectl 命令特例**：kubectl 工具卡片只展示原始命令文本，避免把 kubectl 原命令再包装成 `[kubectl] JSON`；结构化工具显示 `[工具名] 参数`。
+- **会话持久化补全**：`internal/session/session.go` Message 增加 `arguments`/`data`/`ok`；`internal/agent/loop.go` 落库并输出 `summary`/`data`/`ok`；刷新后命令、参数与结果表格不丢失。
+
+### Changed
+
+- **SSE 工具结果字段**：`internal/service/chat.go` 的 `ChatToolCallView` 增加 `risk`/`summary`/`ok`/`data`，`ok` 作为工具成功与否的权威标记。
+
+### Tests
+
+- `go test ./...` 通过
+- `go vet ./...` 通过
+
+## [v2.5.1] - 2026-09-20
+
+scan 终端报告渲染分层优化（`internal/report/summary.go` 的 `RenderTerminal`）。
+
+### Changed
+
+- **终端摘要分层**：`RenderTerminal` 输出从单一巨大无序列表改为块级标题 + 表格 + 代码块 + 修复建议列表，scan 终端一屏摘要更易扫读。
+
+### Tests
+
+- `go test ./internal/report/` 通过
+
 ## [v2.5.0] - 2026-09-18
 
 P7 扫描能力补全与规则池扩展（借鉴 k8sgpt 规则池思路：A/B/C 12 条规则 + 规则元数据体系 + DocProvider + 报告聚合）。

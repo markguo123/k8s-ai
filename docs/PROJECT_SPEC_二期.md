@@ -1124,6 +1124,24 @@ P6 收尾（审计、MCP 接口、RBAC、文档、全量测试）
 ### 28.3.4 规则性能分析（可选）
 - 记录单规则耗时与命中数，输出到 verbose/debug 日志，定位高成本扫描规则。
 
+### 28.3.5 scan 终端报告渲染分层（优化）
+- 目标：解决 `k8s-ai scan` 终端一屏摘要（internal/report/summary.go 的 `RenderTerminal`）输出为「单一巨大无序列表」、文字拥挤不直观的问题。
+- 落地：与 chat 共用同一 `newMarkdownRenderer()` + `renderMarkdown()`，把 `RenderTerminal` 组装成合法 GFM markdown，按分层结构输出：
+  - 顶部键值用 Markdown 表格（`| 项 | 值 |`），单元格内竖线转义（`escapeTableCell`）；
+  - 每条 finding 用块级标题 `### N. {emoji} {LEVEL} · {ns}/{name}` + 空行自然分层（告别缩进列表）；
+  - 现象、日志证据用 ```text``` 代码块承载（逐行拆分，不再同一行 `；` 堆叠），代码块自带底色分层；
+  - 根因 / 建议 / 初步判断用 `**标签**：值`（冒号放加粗外，避免 glamour 露字面星号）；
+  - 修复指令改为 `**修复指令**` 标题 + 反引号命令列表（风险标注跟随）；关联（派生）改为标题 + 无序列表。
+### 28.3.6 Web 工具卡片结构化渲染与会话持久化（优化）
+- 目标：chat 模式下工具卡目前仅显示纯文本/扁平结果，且工具调用参数与结构化结果在刷新浏览器后丢失。
+- 落地：
+  - 结构化渲染由 `Data.kind` 驱动（internal/webui/index.html 的 `renderToolStructured`）：List 类型（PodList/PodCandidates/NodeUsageList/EventList/EndpointSliceList/PersistentVolumeClaimList/ServiceList/NamespaceList）用 `TL_COLUMN_LABELS` 表头映射 + 表格 `renderToolDataTable` 渲染；单一对象（如 Pod）用键值表 `renderToolKv` + containers/conditions/events 子表；`Data.names` 用名称列表。
+  - 自由文本按内容嗅探（`renderToolFreeText`）：以 `apiVersion:` 开头或含缩进键值 → YAML 代码块（`renderYamlBlock`，键/值/数字/注释/标点分色）；时间戳或 panic/FATAL → 日志块（`renderLogsBlock`，时间戳/级别着色）；否则普通文本。不可信数据一律先 `escapeHtml`。
+  - kubectl 保持特例：仅当 LLM 实际执行 kubectl 时才显示原命令（`commandText`），结构化工具显示 `[工具名] (key=value)`；auto-peek 行为不变。
+  - 会话持久化：internal/session/session.go 的 `Message` 增加 `arguments`（json.RawMessage）与 `data` 字段；internal/agent/loop.go 落库时写入 `call.Arguments` / `tr.Data`；internal/service/chat.go 的 `ChatToolCallView` 增加 `data` 字段——仅用于 UI 回放展示，不参与 LLM 载荷（`MarshalForLLM` 与脱敏链路不变）。
+  - 历史恢复：`addToolFromHistory` 透传 arguments/data；`commandText`/`formatArgs` 兼容字符串化 JSON（`parseJsonLoose`），刷新后命令、参数与结果表格不丢失。
+- 约束：LLM 载荷零变化（arguments/data 仅读回放、永不喂 LLM）；结构化信息喂给 LLM 的正确性不变（此前已定论不把工具输出整体转 kubectl 格式）。
+
 ## 28.4 本版验收标准（DoD）
 
 1. §28.1 元数据落地：现有 23 条规则补齐 rule_id / category / severity_base / needs_logs / doc_ref（doc_ref 可空），Registry 可过滤。

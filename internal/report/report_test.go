@@ -259,7 +259,7 @@ func TestMarkdownHistorySection(t *testing.T) {
 			t.Errorf("历史段落缺少 %q", want)
 		}
 	}
-	if !strings.Contains(RenderTerminal(r), "历史对比：新增 1 / 持续 1 / 恢复 1") {
+	if !strings.Contains(RenderTerminal(r), "新增 1 / 持续 1 / 恢复 1") {
 		t.Fatal("终端摘要缺少历史对比计数")
 	}
 }
@@ -305,7 +305,7 @@ func TestRenderIncidents(t *testing.T) {
 		}
 	}
 	term := RenderTerminal(r)
-	if !strings.Contains(term, "**关联（派生）**：副本不足；无 Endpoint") {
+	if !strings.Contains(term, "**关联（派生）**") || !strings.Contains(term, "- 副本不足") || !strings.Contains(term, "- 无 Endpoint") {
 		t.Fatalf("终端缺少派生折叠: %q", term)
 	}
 }
@@ -350,7 +350,7 @@ func TestRenderRemediationText(t *testing.T) {
 		}
 	}
 	term := RenderTerminal(r)
-	if !strings.Contains(term, "**建议**：先确认 PVC 是否存在") || !strings.Contains(term, "**修复指令**：kubectl -n prod get pvc data") {
+	if !strings.Contains(term, "**建议**：先确认 PVC 是否存在") || !strings.Contains(term, "**修复指令**") || !strings.Contains(term, "`kubectl -n prod get pvc data`（风险 SAFE）") {
 		t.Fatalf("终端缺少文字+命令: %q", term)
 	}
 }

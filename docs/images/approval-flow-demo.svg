@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 500" style="background:#1e1e1e">
+  <defs>
+    <style>
+      .terminal-text { font-family: 'Consolas', 'Monaco', monospace; font-size: 13px; }
+      .user { fill: #4ec9b0; }
+      .ai { fill: #569cd6; }
+      .tool { fill: #dcdcaa; }
+      .tool-result { fill: #ce9178; }
+      .thinking { fill: #808080; font-style: italic; }
+      .normal { fill: #d4d4d4; }
+      .header { fill: #c586c0; font-weight: bold; }
+      .approval { fill: #f48771; font-weight: bold; }
+      .success { fill: #4ec9b0; font-weight: bold; }
+    </style>
+  </defs>
+
+  <!-- Terminal Window Frame -->
+  <rect x="0" y="0" width="900" height="30" fill="#2d2d30"/>
+  <circle cx="15" cy="15" r="6" fill="#ff5f56"/>
+  <circle cx="35" cy="15" r="6" fill="#ffbd2e"/>
+  <circle cx="55" cy="15" r="6" fill="#27c93f"/>
+  <text x="450" y="20" font-family="Arial" font-size="13" fill="#cccccc" text-anchor="middle">Terminal - 安全执行闭环示例</text>
+
+  <!-- User Question -->
+  <text x="20" y="60" class="terminal-text user">❯ payment-api 内存不足，帮我扩容到 512Mi</text>
+
+  <!-- AI Analysis -->
+  <text x="20" y="85" class="terminal-text ai">🤖 我来帮你扩容 payment-api 的内存限制到 512Mi</text>
+
+  <!-- Plan Display -->
+  <text x="20" y="110" class="terminal-text header">📋 执行计划:</text>
+  <text x="40" y="130" class="terminal-text normal">kubectl patch deployment payment-api -p</text>
+  <text x="40" y="150" class="terminal-text normal">  '{"spec":{"template":{"spec":{"containers":[{"name":"api",</text>
+  <text x="40" y="170" class="terminal-text normal">  "resources":{"limits":{"memory":"512Mi"}}}]}}}}'</text>
+
+  <!-- Approval Request -->
+  <text x="20" y="200" class="terminal-text approval">⚠️  需要你的确认 (风险等级: MEDIUM)</text>
+  <text x="40" y="220" class="terminal-text normal">操作: Patch Deployment (修改资源限制)</text>
+  <text x="40" y="240" class="terminal-text normal">目标: payment-api (production namespace)</text>
+  <text x="40" y="260" class="terminal-text normal">变更: memory limit 256Mi → 512Mi</text>
+  <text x="40" y="280" class="terminal-text normal">影响: 触发 Pod 滚动更新，服务短暂不可用</text>
+
+  <text x="20" y="310" class="terminal-text approval">是否执行? [y]es / [n]o / [a]ll:</text>
+
+  <!-- User Approval -->
+  <text x="20" y="335" class="terminal-text user">y</text>
+
+  <!-- Execution -->
+  <text x="20" y="360" class="terminal-text tool">🔧 [Tool] kubectl</text>
+  <text x="40" y="380" class="terminal-text tool-result">   Executing: kubectl patch deployment payment-api ...</text>
+  <text x="40" y="400" class="terminal-text success">   ✓ deployment.apps/payment-api patched</text>
+
+  <!-- Verification -->
+  <text x="20" y="425" class="terminal-text tool">🔧 [Tool] get_deployment (验证)</text>
+  <text x="40" y="445" class="terminal-text tool-result">   payment-api: 3/3 Ready | Memory Limit: 512Mi ✓</text>
+
+  <!-- Success -->
+  <text x="20" y="475" class="terminal-text success">✅ 修复完成！payment-api 内存已扩容到 512Mi，所有副本正常运行</text>
+</svg>

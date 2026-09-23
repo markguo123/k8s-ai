@@ -81,6 +81,16 @@ func logStat(value string) string {
 	return fmt.Sprintf("（%d 行）", n)
 }
 
+// writeTableRow 写入一行 Markdown 表格（单元格内竖线转义）。
+func writeTableRow(b *strings.Builder, k, v string) {
+	fmt.Fprintf(b, "| %s | %s |\n", escapeTableCell(k), escapeTableCell(v))
+}
+
+// escapeTableCell 转义 Markdown 表格单元格内的竖线。
+func escapeTableCell(s string) string {
+	return strings.ReplaceAll(s, "|", "\\|")
+}
+
 // RenderTerminal 终端一屏摘要（Markdown）：健康条、严重级计数、Top 重点问题、系统组件、采集错误。
 func RenderTerminal(r *model.ScanResult) string {
 	var b strings.Builder
@@ -95,12 +105,14 @@ func RenderTerminal(r *model.ScanResult) string {
 		healthLabel = "命名空间健康度"
 	}
 	fmt.Fprintf(&b, "# k8s-ai scan\n\n")
-	fmt.Fprintf(&b, "- **Scope**：%s\n", scope)
-	fmt.Fprintf(&b, "- **%s**：%d/%d  %s\n", healthLabel, r.HealthScore.Score, r.HealthScore.Max, scoreBar(r.HealthScore.Score, r.HealthScore.Max))
-	fmt.Fprintf(&b, "- **严重级**：%s\n", severityCountsLine(r.Findings))
+	b.WriteString("| 项 | 值 |\n| --- | --- |\n")
+	writeTableRow(&b, "Scope", scope)
+	writeTableRow(&b, healthLabel, fmt.Sprintf("%d/%d  %s", r.HealthScore.Score, r.HealthScore.Max, scoreBar(r.HealthScore.Score, r.HealthScore.Max)))
+	writeTableRow(&b, "严重级", severityCountsLine(r.Findings))
 	if r.History != nil {
-		fmt.Fprintf(&b, "- 历史对比：新增 %d / 持续 %d / 恢复 %d\n", len(r.History.Added), len(r.History.Continued), len(r.History.Recovered))
+		writeTableRow(&b, "历史对比", fmt.Sprintf("新增 %d / 持续 %d / 恢复 %d", len(r.History.Added), len(r.History.Continued), len(r.History.Recovered)))
 	}
+	b.WriteString("\n")
 
 	if len(r.Incidents) > 0 {
 		// Incident 聚合：一个故障链一行根因，派生问题折叠展示。
@@ -123,13 +135,12 @@ func RenderTerminal(r *model.ScanResult) string {
 			if printed > 0 {
 				b.WriteString("\n")
 			}
-			renderTerminalFinding(&b, *rootF, diagnosisFor(r, inc.Root.ID))
+			renderTerminalFinding(&b, printed+1, *rootF, diagnosisFor(r, inc.Root.ID))
 			if len(inc.Members) > 0 {
-				titles := make([]string, 0, len(inc.Members))
+				b.WriteString("\n**关联（派生）**\n")
 				for _, m := range inc.Members {
-					titles = append(titles, m.Title)
+					fmt.Fprintf(&b, "- %s\n", m.Title)
 				}
-				fmt.Fprintf(&b, "  - **关联（派生）**：%s\n", strings.Join(titles, "；"))
 			}
 			printed++
 		}
@@ -148,7 +159,7 @@ func RenderTerminal(r *model.ScanResult) string {
 			if printed > 0 {
 				b.WriteString("\n")
 			}
-			renderTerminalFinding(&b, f, diagnosisFor(r, f.ID))
+			renderTerminalFinding(&b, printed+1, f, diagnosisFor(r, f.ID))
 			printed++
 		}
 	} else {
@@ -160,7 +171,7 @@ func RenderTerminal(r *model.ScanResult) string {
 				if i > 0 {
 					b.WriteString("\n")
 				}
-				renderTerminalFinding(&b, f, diagnosisFor(r, f.ID))
+				renderTerminalFinding(&b, i+1, f, diagnosisFor(r, f.ID))
 			}
 			if len(r.Findings) > len(top) {
 				fmt.Fprintf(&b, "  - … 还有 %d 个问题，详见报告或 --verbose\n", len(r.Findings)-len(top))
@@ -223,8 +234,8 @@ func topFindings(findings []model.Finding, n int) []model.Finding {
 }
 
 // renderTerminalFinding 单条重点问题：图标 + 现象 + 根因 + 首条修复建议。
-func renderTerminalFinding(b *strings.Builder, f model.Finding, diag *model.Diagnosis) {
-	fmt.Fprintf(b, "- **%s %s** %s/%s：%s\n", severityIcon(f.Severity), f.Severity, f.Resource.Namespace, f.Resource.Name, f.Title)
+func renderTerminalFinding(b *strings.Builder, num int, f model.Finding, diag *model.Diagnosis) {
+	fmt.Fprintf(b, "### %d. %s %s · %s/%s\n\n%s\n\n", num, severityIcon(f.Severity), f.Severity, f.Resource.Namespace, f.Resource.Name, f.Title)
 	var facts []string
 	logNote := ""
 	logValue := ""
@@ -241,36 +252,39 @@ func renderTerminalFinding(b *strings.Builder, f model.Finding, diag *model.Diag
 		}
 	}
 	if len(facts) > 0 {
-		fmt.Fprintf(b, "  - **现象**：%s\n", strings.Join(facts, "；"))
+		fmt.Fprintf(b, "**现象**\n\n```text\n%s\n```\n\n", strings.Join(facts, "\n"))
 	}
 	if logNote != "" {
 		if hl := logHighlight(logValue); hl != "" {
-			fmt.Fprintf(b, "  - **%s**：%s\n", logNote, hl)
+			fmt.Fprintf(b, "**%s**\n\n```text\n%s\n```\n\n", logNote, hl)
 		} else {
-			fmt.Fprintf(b, "  - **%s**\n", logNote)
+			fmt.Fprintf(b, "**%s**\n\n", logNote)
 		}
 	}
 	if diag != nil {
 		if diag.LLMUsed {
-			fmt.Fprintf(b, "  - **根因**：%s\n", diag.RootCause)
+			fmt.Fprintf(b, "**根因**：%s\n\n", diag.RootCause)
 			text := diag.RemediationText
 			if text == "" {
 				text = diag.RemediationDirection
 			}
 			if text != "" {
-				fmt.Fprintf(b, "  - **建议**：%s\n", text)
+				fmt.Fprintf(b, "**建议**：%s\n\n", text)
+			}
+			if len(diag.Remediation) > 0 {
+				fmt.Fprintf(b, "**修复指令**\n\n")
 			}
 			for i, c := range diag.Remediation {
 				if i >= summaryMaxRemediationCommands {
-					fmt.Fprintf(b, "  - … 其余 %d 条修复指令见 --verbose 完整输出\n", len(diag.Remediation)-summaryMaxRemediationCommands)
+					fmt.Fprintf(b, "- … 其余 %d 条修复指令见 --verbose 完整输出\n", len(diag.Remediation)-summaryMaxRemediationCommands)
 					break
 				}
-				fmt.Fprintf(b, "  - **修复指令**：%s（风险 %s）\n", c.Text, c.Risk)
+				fmt.Fprintf(b, "- `%s`（风险 %s）\n", c.Text, c.Risk)
 			}
 		} else if diag.RootCause != "" {
-			fmt.Fprintf(b, "  - **初步判断（规则）**：%s\n", diag.RootCause)
+			fmt.Fprintf(b, "**初步判断（规则）**：%s\n\n", diag.RootCause)
 			if diag.RemediationDirection != "" {
-				fmt.Fprintf(b, "  - **修复方向（规则）**：%s\n", diag.RemediationDirection)
+				fmt.Fprintf(b, "**修复方向（规则）**：%s\n", diag.RemediationDirection)
 			}
 		}
 	}

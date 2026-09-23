@@ -61,6 +61,7 @@ type Message struct {
 type ToolCallEvent struct {
 	Name      string         `json:"name"`
 	Arguments map[string]any `json:"arguments,omitempty"`
+	Risk      string         `json:"risk,omitempty"`
 	Truncated bool           `json:"truncated,omitempty"`
 }
 

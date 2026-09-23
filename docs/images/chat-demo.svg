@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 700" style="background:#1e1e1e">
+  <defs>
+    <style>
+      .terminal-text { font-family: 'Consolas', 'Monaco', monospace; font-size: 13px; }
+      .user { fill: #4ec9b0; }
+      .ai { fill: #569cd6; }
+      .tool { fill: #dcdcaa; }
+      .tool-result { fill: #ce9178; }
+      .thinking { fill: #808080; font-style: italic; }
+      .normal { fill: #d4d4d4; }
+      .header { fill: #c586c0; font-weight: bold; }
+    </style>
+  </defs>
+
+  <!-- Terminal Window Frame -->
+  <rect x="0" y="0" width="900" height="30" fill="#2d2d30"/>
+  <circle cx="15" cy="15" r="6" fill="#ff5f56"/>
+  <circle cx="35" cy="15" r="6" fill="#ffbd2e"/>
+  <circle cx="55" cy="15" r="6" fill="#27c93f"/>
+  <text x="450" y="20" font-family="Arial" font-size="13" fill="#cccccc" text-anchor="middle">Terminal - k8s-ai chat</text>
+
+  <!-- Terminal Content -->
+  <text x="20" y="55" class="terminal-text info">$ k8s-ai chat</text>
+
+  <text x="20" y="80" class="terminal-text header">╔═══════════════════════════════════════════════════════════╗</text>
+  <text x="20" y="100" class="terminal-text header">║  k8s-ai AI Kubernetes Assistant                        ║</text>
+  <text x="20" y="120" class="terminal-text header">║  Connected cluster: production-cluster                   ║</text>
+  <text x="20" y="140" class="terminal-text header">╚═══════════════════════════════════════════════════════════╝</text>
+
+  <!-- User Question -->
+  <text x="20" y="170" class="terminal-text user">❯ 为什么 payment-api 一直重启？</text>
+
+  <!-- AI Thinking -->
+  <text x="20" y="195" class="terminal-text thinking">💭 正在分析...需要检查 Pod 状态、日志和事件</text>
+
+  <!-- Tool Calls -->
+  <text x="20" y="220" class="terminal-text tool">🔧 [Tool] get_pod</text>
+  <text x="40" y="240" class="terminal-text tool-result">   payment-api-7f9b5c8d-2kq4p (production)</text>
+  <text x="40" y="260" class="terminal-text tool-result">   Status: CrashLoopBackOff | Restarts: 15</text>
+
+  <text x="20" y="285" class="terminal-text tool">🔧 [Tool] get_previous_logs</text>
+  <text x="40" y="305" class="terminal-text tool-result">   payment-api (production)</text>
+  <text x="40" y="325" class="terminal-text tool-result">   Last 50 lines: "panic: runtime error: invalid memory address"</text>
+
+  <text x="20" y="350" class="terminal-text tool">🔧 [Tool] get_events</text>
+  <text x="40" y="370" class="terminal-text tool-result">   payment-api-7f9b5c8d-2kq4p (production)</text>
+  <text x="40" y="390" class="terminal-text tool-result">   Warning: BackOff 5m (kubelet) - Back-off restarting failed container</text>
+
+  <text x="20" y="415" class="terminal-text tool">🔧 [Tool] get_deployment</text>
+  <text x="40" y="435" class="terminal-text tool-result">   payment-api (production)</text>
+  <text x="40" y="455" class="terminal-text tool-result">   Replicas: 3/3 | Memory Limit: 256Mi</text>
+
+  <!-- AI Analysis -->
+  <text x="20" y="485" class="terminal-text ai">🤖 根据收集的证据，我发现了问题根因：</text>
+
+  <text x="20" y="510" class="terminal-text normal">   现象: payment-api Pod 处于 CrashLoopBackOff 状态，已重启 15 次</text>
+  <text x="20" y="530" class="terminal-text normal">   根因: 应用代码存在空指针引用（panic: runtime error: invalid memory address）</text>
+  <text x="20" y="550" class="terminal-text normal">   影响: 服务不可用，用户无法完成支付</text>
+
+  <text x="20" y="580" class="terminal-text normal">   建议修复步骤:</text>
+  <text x="20" y="600" class="terminal-text success">   1. 检查代码中 payment-api 的空指针处理逻辑</text>
+  <text x="20" y="620" class="terminal-text success">   2. 修复后重新部署: kubectl rollout restart deployment/payment-api</text>
+  <text x="20" y="640" class="terminal-text success">   3. 验证: kubectl get pods -l app=payment-api</text>
+
+  <text x="20" y="670" class="terminal-text user">❯ _</text>
+</svg>

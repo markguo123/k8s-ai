@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 600" style="background:#fff">
+  <defs>
+    <linearGradient id="p1-grad1" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#667eea;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#764ba2;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="p1-grad2" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#f093fb;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#f5576c;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="p1-grad3" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#4facfe;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#00f2fe;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <!-- Title -->
+  <text x="500" y="40" font-family="Arial, sans-serif" font-size="28" font-weight="bold" text-anchor="middle" fill="#333">一期架构：只读巡检 + 规则引擎 + LLM 诊断</text>
+
+  <!-- CLI Entry -->
+  <rect x="50" y="80" width="180" height="70" rx="10" fill="url(#p1-grad1)" opacity="0.9"/>
+  <text x="140" y="110" font-family="Arial, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="#fff">CLI 入口</text>
+  <text x="140" y="135" font-family="Arial, sans-serif" font-size="13" text-anchor="middle" fill="#fff">k8s-ai scan</text>
+
+  <!-- Config -->
+  <rect x="280" y="80" width="180" height="70" rx="10" fill="#a29bfe" opacity="0.9"/>
+  <text x="370" y="110" font-family="Arial, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="#fff">配置层</text>
+  <text x="370" y="135" font-family="Arial, sans-serif" font-size="13" text-anchor="middle" fill="#fff">Viper + YAML</text>
+
+  <!-- K8s Client -->
+  <rect x="510" y="80" width="180" height="70" rx="10" fill="#326ce5" opacity="0.9"/>
+  <text x="600" y="110" font-family="Arial, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="#fff">Kubernetes Client</text>
+  <text x="600" y="135" font-family="Arial, sans-serif" font-size="13" text-anchor="middle" fill="#fff">client-go typed</text>
+
+  <!-- Server -->
+  <rect x="740" y="80" width="210" height="70" rx="10" fill="#6c5ce7" opacity="0.9"/>
+  <text x="845" y="110" font-family="Arial, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="#fff">HTTP Server (可选)</text>
+  <text x="845" y="135" font-family="Arial, sans-serif" font-size="13" text-anchor="middle" fill="#fff">REST API + 异步扫描</text>
+
+  <!-- Scanner -->
+  <rect x="50" y="200" width="280" height="120" rx="10" fill="#4ecdc4" opacity="0.9"/>
+  <text x="190" y="230" font-family="Arial, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="#fff">扫描引擎 (Scanner)</text>
+  <text x="190" y="260" font-family="Arial, sans-serif" font-size="14" text-anchor="middle" fill="#fff">• Pod / Node / Workload / Storage</text>
+  <text x="190" y="285" font-family="Arial, sans-serif" font-size="14" text-anchor="middle" fill="#fff">• Network / Events / 系统组件</text>
+  <text x="190" y="310" font-family="Arial, sans-serif" font-size="14" text-anchor="middle" fill="#fff">• 并发采集 (8 worker)</text>
+
+  <!-- Rule Engine -->
+  <rect x="380" y="200" width="280" height="120" rx="10" fill="#95e1d3" opacity="0.9"/>
+  <text x="520" y="230" font-family="Arial, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="#333">规则引擎 (Rule Engine)</text>
+  <text x="520" y="260" font-family="Arial, sans-serif" font-size="14" text-anchor="middle" fill="#333">• 35 条内置规则</text>
+  <text x="520" y="285" font-family="Arial, sans-serif" font-size="14" text-anchor="middle" fill="#333">• A/B/C 严重级分级</text>
+  <text x="520" y="310" font-family="Arial, sans-serif" font-size="14" text-anchor="middle" fill="#333">• 健康评分 (0-100)</text>
+
+  <!-- Evidence -->
+  <rect x="710" y="200" width="240" height="120" rx="10" fill="#feca57" opacity="0.9"/>
+  <text x="830" y="230" font-family="Arial, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="#333">证据链 (Evidence)</text>
+  <text x="830" y="260" font-family="Arial, sans-serif" font-size="14" text-anchor="middle" fill="#333">• 状态字段</text>
+  <text x="830" y="285" font-family="Arial, sans-serif" font-size="14" text-anchor="middle" fill="#333">• Events 事件</text>
+  <text x="830" y="310" font-family="Arial, sans-serif" font-size="14" text-anchor="middle" fill="#333">• 日志关键行</text>
+
+  <!-- LLM -->
+  <rect x="50" y="370" width="280" height="120" rx="10" fill="#ff6b6b" opacity="0.9"/>
+  <text x="190" y="400" font-family="Arial, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="#fff">LLM 诊断</text>
+  <text x="190" y="430" font-family="Arial, sans-serif" font-size="14" text-anchor="middle" fill="#fff">• OpenAI 兼容接口</text>
+  <text x="190" y="455" font-family="Arial, sans-serif" font-size="14" text-anchor="middle" fill="#fff">• 根因分析 + 影响评估</text>
+  <text x="190" y="480" font-family="Arial, sans-serif" font-size="14" text-anchor="middle" fill="#fff">• 排查/修复/验证命令</text>
+
+  <!-- Report -->
+  <rect x="380" y="370" width="280" height="120" rx="10" fill="#00b894" opacity="0.9"/>
+  <text x="520" y="400" font-family="Arial, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="#fff">报告输出 (Report)</text>
+  <text x="520" y="430" font-family="Arial, sans-serif" font-size="14" text-anchor="middle" fill="#fff">• Markdown (latest.md)</text>
+  <text x="520" y="455" font-family="Arial, sans-serif" font-size="14" text-anchor="middle" fill="#fff">• JSON (latest.json)</text>
+  <text x="520" y="480" font-family="Arial, sans-serif" font-size="14" text-anchor="middle" fill="#fff">• 终端摘要 (一屏显示)</text>
+
+  <!-- History -->
+  <rect x="710" y="370" width="240" height="120" rx="10" fill="#00cec9" opacity="0.9"/>
+  <text x="830" y="400" font-family="Arial, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="#fff">历史对比 (History)</text>
+  <text x="830" y="430" font-family="Arial, sans-serif" font-size="14" text-anchor="middle" fill="#fff">• 新增问题</text>
+  <text x="830" y="455" font-family="Arial, sans-serif" font-size="14" text-anchor="middle" fill="#fff">• 持续问题</text>
+  <text x="830" y="480" font-family="Arial, sans-serif" font-size="14" text-anchor="middle" fill="#fff">• 恢复问题</text>
+
+  <!-- Security -->
+  <rect x="50" y="540" width="900" height="50" rx="10" fill="#d63031" opacity="0.9"/>
+  <text x="500" y="570" font-family="Arial, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="#fff">安全层：只读 RBAC | Secret 内容值拒读 | 双重脱敏 | Prompt 注入防护 | LLM 无执行能力</text>
+
+  <!-- Arrows -->
+  <g stroke="#666" stroke-width="2" fill="none" marker-end="url(#p1-arrow)">
+    <defs>
+      <marker id="p1-arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+        <polygon points="0 0, 10 3.5, 0 7" fill="#666"/>
+      </marker>
+    </defs>
+    <!-- CLI to Config -->
+    <line x1="230" y1="115" x2="280" y2="115"/>
+    <!-- Config to K8s -->
+    <line x1="460" y1="115" x2="510" y2="115"/>
+    <!-- CLI to Scanner -->
+    <line x1="140" y1="150" x2="140" y2="200"/>
+    <!-- K8s to Scanner -->
+    <line x1="600" y1="150" x2="280" y2="200"/>
+    <!-- Scanner to Rule -->
+    <line x1="330" y1="260" x2="380" y2="260"/>
+    <!-- Rule to Evidence -->
+    <line x1="660" y1="260" x2="710" y2="260"/>
+    <!-- Rule to LLM -->
+    <line x1="520" y1="320" x2="280" y2="370"/>
+    <!-- Evidence to LLM -->
+    <line x1="830" y1="320" x2="280" y2="400"/>
+    <!-- LLM to Report -->
+    <line x1="330" y1="430" x2="380" y2="430"/>
+    <!-- Report to History -->
+    <line x1="660" y1="430" x2="710" y2="430"/>
+  </g>
+</svg>

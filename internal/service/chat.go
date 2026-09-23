@@ -41,8 +41,12 @@ const (
 type ChatToolCallView struct {
 	Name      string         `json:"name"`
 	Arguments map[string]any `json:"arguments,omitempty"`
+	Risk      string         `json:"risk,omitempty"`
 	Result    string         `json:"result,omitempty"`
+	Summary   string         `json:"summary,omitempty"`
+	Ok        *bool          `json:"ok,omitempty"` // nil=旧客户端/旧会话无此字段，前端回退正则兜底
 	Truncated bool           `json:"truncated,omitempty"`
+	Data      any            `json:"data,omitempty"` // 结构化结果（仅 UI 回放展示，不参与 LLM 载荷）
 }
 
 // ChatChoiceOption 是审批/选择项。
@@ -394,7 +398,7 @@ func translateEvent(m agent.Message) (ChatEvent, bool) {
 		return ChatEvent{Type: ChatEventState, State: toString(m.Payload)}, true
 	case agent.MessageTypeToolCallRequest:
 		if ev, ok := m.Payload.(agent.ToolCallEvent); ok {
-			return ChatEvent{Type: ChatEventToolCall, Tool: &ChatToolCallView{Name: ev.Name, Arguments: ev.Arguments}}, true
+			return ChatEvent{Type: ChatEventToolCall, Tool: &ChatToolCallView{Name: ev.Name, Arguments: ev.Arguments, Risk: ev.Risk}}, true
 		}
 	case agent.MessageTypeToolCallResponse:
 		if mm, ok := m.Payload.(map[string]any); ok {
@@ -403,7 +407,10 @@ func translateEvent(m agent.Message) (ChatEvent, bool) {
 				Tool: &ChatToolCallView{
 					Name:      toString(mm["name"]),
 					Result:    toString(mm["text"]),
+					Summary:   toString(mm["summary"]),
+					Ok:        boolPtr(mm["ok"]),
 					Truncated: toBool(mm["truncated"]),
+					Data:      mm["data"],
 				},
 			}, true
 		}
@@ -493,4 +500,13 @@ func toString(v any) string {
 func toBool(v any) bool {
 	b, _ := v.(bool)
 	return b
+}
+
+// boolPtr 返回 *bool：字段缺失（旧客户端/旧会话无 ok 键）时为 nil，前端据此回退正则兜底。
+func boolPtr(v any) *bool {
+	b, ok := v.(bool)
+	if !ok {
+		return nil
+	}
+	return &b
 }

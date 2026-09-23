@@ -169,6 +169,9 @@ func TestChatNativeToolLoop(t *testing.T) {
 	if toolMsg.Role != "tool" || toolMsg.ToolCallID != "c1" || !strings.Contains(toolMsg.Content, "untrusted_k8s_data") {
 		t.Fatalf("tool message = %+v", toolMsg)
 	}
+	if toolMsg.Ok == nil || !*toolMsg.Ok {
+		t.Fatalf("tool message ok = %v", toolMsg.Ok)
+	}
 	// 消息事件流应包含 tool-call-request。
 	gotRequest := false
 	for {

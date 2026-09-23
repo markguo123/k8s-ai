@@ -2,16 +2,22 @@
 // 设计逻辑借鉴 kubectl-ai 的 Store/Manager 模式，类型按 k8s-ai 重新实现。
 package session
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Message 是会话中持久化的一条消息（落盘前统一脱敏）。
 type Message struct {
-	Role       string    `json:"role"`                 // user | assistant | tool
-	Type       string    `json:"type"`                 // text | reasoning | tool-call-response | error | ...
-	Name       string    `json:"name,omitempty"`       // tool 消息的工具名
-	ToolCallID string    `json:"toolCallId,omitempty"` // native Tool Calling 的调用 ID（恢复会话回传必需）
-	Content    string    `json:"content"`
-	Timestamp  time.Time `json:"timestamp"`
+	Role       string          `json:"role"`                 // user | assistant | tool
+	Type       string          `json:"type"`                 // text | reasoning | tool-call-response | error | ...
+	Name       string          `json:"name,omitempty"`       // tool 消息的工具名
+	ToolCallID string          `json:"toolCallId,omitempty"` // native Tool Calling 的调用 ID（恢复会话回传必需）
+	Arguments  json.RawMessage `json:"arguments,omitempty"`  // 工具调用参数（恢复会话展示命令用，仅读回放不喂 LLM）
+	Data       any             `json:"data,omitempty"`       // 工具结构化结果（恢复会话渲染表格用，仅读回放不喂 LLM）
+	Ok         *bool           `json:"ok,omitempty"`         // 工具执行是否成功（前端权威判定，回放兜底用）
+	Content    string          `json:"content"`
+	Timestamp  time.Time       `json:"timestamp"`
 }
 
 // Session 是一个对话会话。
