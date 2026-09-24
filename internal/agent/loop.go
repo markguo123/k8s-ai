@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/k8s-ai/k8s-ai/internal/approval"
 	"github.com/k8s-ai/k8s-ai/internal/audit"
 	"github.com/k8s-ai/k8s-ai/internal/llm"
 	"github.com/k8s-ai/k8s-ai/internal/session"
@@ -371,19 +372,124 @@ func normalizeKubectlCommand(cmd string) string {
 	return strings.Join(parts, " ")
 }
 
-// batchApprove 在 native 模式下收集一轮 LLM 返回的所有写工具调用，
-// 如果有 2+ 个需要审批的写操作，合并为一次确认。
+// batchApprove 在 native 模式下收集一轮 LLM 返回的所有待审批调用，
+// 如果有 2+ 个需要审批的调用，合并为一次确认。
 // 返回 approved/declined 两个 set（以 call.ID 为 key）。
 // approved 中的 call 在 executeTool 中跳过单独审批；
 // declined 中的 call 在 executeTool 前直接返回拒绝结果。
 // 借鉴 kubectl-ai conversation.go L757-794 的批量收集 + 统一审批。
+func (a *Agent) toolHasShell(t tools.Tool, args json.RawMessage) bool {
+	if s, ok := t.(tools.ShellSyntaxAware); ok {
+		return s.HasShellSyntax(args)
+	}
+	return false
+}
+
+// approvalDetail 是审批决策结果，附带 Authorization Grant 命中信息（仅审计用）。
+type approvalDetail struct {
+	decision    approval.Decision
+	grant       *approval.Grant
+	matchReason string
+}
+
+// grantRequestFor 构建当前工具调用的授权请求上下文。
+// kubectl 工具从 command 文本提取 operation/kind/name/namespace；
+// 结构化工具以工具名作为 operation，并从参数中取 kind/name/namespace。
+// 含 shell 语法或无法可靠解析的命令标记 Shell=true，永不出现在授权匹配里。
+func (a *Agent) grantRequestFor(t tools.Tool, args json.RawMessage) approval.GrantRequest {
+	req := approval.GrantRequest{
+		Cluster: a.Session.Cluster,
+		Risk:    t.Risk(args),
+	}
+	if a.toolHasShell(t, args) {
+		req.Shell = true
+	}
+	req.Operation = t.Name()
+	if req.Operation != "kubectl" {
+		var argsView map[string]any
+		_ = json.Unmarshal(args, &argsView)
+		if v, ok := argsView["kind"].(string); ok {
+			req.Kind = v
+		}
+		if v, ok := argsView["name"].(string); ok {
+			req.Name = v
+		}
+		if v, ok := argsView["namespace"].(string); ok && v != "" {
+			req.Namespace = v
+		}
+		if req.Namespace == "" {
+			req.Namespace = a.Session.Namespace
+		}
+		return req
+	}
+	var raw struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal(args, &raw); err != nil || raw.Command == "" {
+		req.Shell = true
+		return req
+	}
+	target := approval.ParseCommandTarget(raw.Command)
+	if target.Operation == "" {
+		req.Shell = true // 无法可靠解析 → 排除授权匹配
+		return req
+	}
+	req.Operation = target.Operation
+	req.Kind = target.Kind
+	req.Name = target.Name
+	req.Namespace = target.Namespace
+	if req.Namespace == "" {
+		req.Namespace = a.Session.Namespace
+	}
+	return req
+}
+
+// matchedGrant 返回会话中第一条匹配当前调用的结构化授权记录，没有则 nil。
+func (a *Agent) matchedGrant(t tools.Tool, args json.RawMessage) *approval.Grant {
+	if a.Session == nil {
+		return nil
+	}
+	return a.Session.FindGrant(a.grantRequestFor(t, args))
+}
+
+// approvalDecisionDetail 先走统一 ApprovalPolicy，再叠加 Phase D 的
+// Authorization Grant 命中判断：仅当策略要求审批且会话中有匹配授权时
+// 才降级为 auto。Shell / HIGH / CRITICAL 永不匹配授权。
+func (a *Agent) approvalDecisionDetail(t tools.Tool, args json.RawMessage) approvalDetail {
+	in := approval.Input{ReadOnly: t.IsReadOnly(args), Risk: t.Risk(args)}
+	if a.toolHasShell(t, args) {
+		in.Shell = true
+	}
+	if a.ApprovalPolicy == nil {
+		a.ApprovalPolicy = &approval.Policy{Mode: approval.ModeStrict, RequireApproval: true}
+	}
+	d := approvalDetail{decision: a.ApprovalPolicy.Evaluate(in)}
+	if d.decision != approval.DecisionRequireApproval {
+		d.matchReason = "policy_not_require"
+		return d
+	}
+	if g := a.matchedGrant(t, args); g != nil {
+		d.decision = approval.DecisionAuto
+		d.grant = g
+		d.matchReason = "matched_grant"
+		return d
+	}
+	d.matchReason = "no_grant"
+	return d
+}
+
+// approvalDecision 保留旧签名供批量审批复用；内部已叠加授权匹配。
+func (a *Agent) approvalDecision(t tools.Tool, args json.RawMessage) approval.Decision {
+	return a.approvalDecisionDetail(t, args).decision
+}
+
 func (a *Agent) batchApprove(ctx context.Context, calls []llm.ToolCall) (approved, declined map[string]bool) {
 	approved = map[string]bool{}
 	declined = map[string]bool{}
 	if a.Approver == nil || len(calls) < 2 {
 		return // 无 approver 或少于 2 个调用，走个体审批
 	}
-	// 收集需要审批的写调用（非只读 + 未授权 + 未被硬拦截）。
+	// 收集需要审批的调用（非只读 + 未授权 + 未被硬拦截，或 shell 只读）。
 	type pending struct {
 		call llm.ToolCall
 		tool tools.Tool
@@ -392,7 +498,7 @@ func (a *Agent) batchApprove(ctx context.Context, calls []llm.ToolCall) (approve
 	var pendingWrites []pending
 	for _, call := range calls {
 		t, ok := a.Tools.Lookup(call.Name)
-		if !ok || t.IsReadOnly(call.Arguments) {
+		if !ok || a.approvalDecision(t, call.Arguments) != approval.DecisionRequireApproval {
 			continue
 		}
 		key := declineKey(call.Name, call.Arguments)
@@ -405,11 +511,11 @@ func (a *Agent) batchApprove(ctx context.Context, calls []llm.ToolCall) (approve
 		pendingWrites = append(pendingWrites, pending{call: call, tool: t, key: key})
 	}
 	if len(pendingWrites) < 2 {
-		return // 0 或 1 个写操作需要审批，走个体审批
+		return // 0 或 1 个调用需要审批，走个体审批
 	}
 	// 构建合并审批面板。
 	var sb strings.Builder
-	sb.WriteString("将执行以下写操作（请逐条确认）：")
+	sb.WriteString("将执行以下操作（请逐条确认）：")
 	for i, pw := range pendingWrites {
 		risk := pw.tool.Risk(pw.call.Arguments)
 		fmt.Fprintf(&sb, "\n\n%d. 风险等级：%s", i+1, risk)
@@ -440,9 +546,16 @@ func (a *Agent) batchApprove(ctx context.Context, calls []llm.ToolCall) (approve
 		for _, pw := range pendingWrites {
 			a.Session.AddApproved(pw.key)
 			approved[pw.call.ID] = true
-			a.audit(ctx, audit.ActionApprovalGranted, map[string]any{
-				"name": pw.call.Name, "choice": choice, "batch": true,
-			})
+			grantAudit := map[string]any{"name": pw.call.Name, "choice": choice, "batch": true}
+			if g, ok := approval.NewGrant(a.grantRequestFor(pw.tool, pw.call.Arguments)); ok {
+				a.Session.AddGrant(g)
+				grantAudit["grant_id"] = g.ID
+				grantAudit["operation"] = g.Operation
+				grantAudit["kind"] = g.Kind
+				grantAudit["name"] = g.Name
+				grantAudit["namespace"] = g.Namespace
+			}
+			a.audit(ctx, audit.ActionApprovalGranted, grantAudit)
 		}
 	case ChoiceYes:
 		for _, pw := range pendingWrites {
@@ -454,6 +567,7 @@ func (a *Agent) batchApprove(ctx context.Context, calls []llm.ToolCall) (approve
 	default:
 		for _, pw := range pendingWrites {
 			total := a.Session.AddDeclined(pw.key)
+			a.Session.RemoveGrantMatching(a.grantRequestFor(pw.tool, pw.call.Arguments))
 			declined[pw.call.ID] = true
 			a.audit(ctx, audit.ActionApprovalDenied, map[string]any{
 				"name": pw.call.Name, "declineCount": total, "batch": true,
@@ -478,7 +592,29 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolCall, batchApprove
 	}})
 	a.audit(ctx, audit.ActionToolCallRequest, map[string]any{"name": call.Name, "arguments": argsView})
 
-	if !t.IsReadOnly(call.Arguments) {
+	detail := a.approvalDecisionDetail(t, call.Arguments)
+	decision := detail.decision
+	mode := approval.ModeStrict
+	if a.ApprovalPolicy != nil {
+		mode = a.ApprovalPolicy.Mode
+	}
+	decisionAudit := map[string]any{
+		"name":          call.Name,
+		"approval_mode": mode,
+		"risk":          t.Risk(call.Arguments),
+		"readonly":      t.IsReadOnly(call.Arguments),
+		"shell":         a.toolHasShell(t, call.Arguments),
+		"decision":      decision,
+		"match_reason":  detail.matchReason,
+	}
+	if detail.grant != nil {
+		decisionAudit["grant_id"] = detail.grant.ID
+	}
+	a.audit(ctx, audit.ActionApprovalDecision, decisionAudit)
+	if decision == approval.DecisionDeny {
+		return tools.ResultError("tool call denied by approval policy")
+	}
+	if decision == approval.DecisionRequireApproval {
 		key := declineKey(call.Name, call.Arguments)
 		// 先查拒绝计数 ≥ 上限？是 → 不再打扰用户，直接返回"硬拦截 + 替代方案提示"，LLM 必须收敛到新方案。
 		if a.Session.Declined(key) >= maxDeclinesBeforeBlock {
@@ -515,12 +651,22 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolCall, batchApprove
 			}
 			switch choice {
 			case ChoiceYesNoAskAgain:
-				a.audit(ctx, audit.ActionApprovalGranted, map[string]any{"name": call.Name, "choice": choice})
 				a.Session.AddApproved(key)
+				grantAudit := map[string]any{"name": call.Name, "choice": choice}
+				if g, ok := approval.NewGrant(a.grantRequestFor(t, call.Arguments)); ok {
+					a.Session.AddGrant(g)
+					grantAudit["grant_id"] = g.ID
+					grantAudit["operation"] = g.Operation
+					grantAudit["kind"] = g.Kind
+					grantAudit["name"] = g.Name
+					grantAudit["namespace"] = g.Namespace
+				}
+				a.audit(ctx, audit.ActionApprovalGranted, grantAudit)
 			case ChoiceYes:
 				a.audit(ctx, audit.ActionApprovalGranted, map[string]any{"name": call.Name, "choice": choice})
 			default:
 				total := a.Session.AddDeclined(key)
+				a.Session.RemoveGrantMatching(a.grantRequestFor(t, call.Arguments))
 				a.audit(ctx, audit.ActionApprovalDenied, map[string]any{
 					"name": call.Name, "choice": choice, "declineCount": total,
 				})

@@ -5,6 +5,8 @@ package session
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/k8s-ai/k8s-ai/internal/approval"
 )
 
 // Message 是会话中持久化的一条消息（落盘前统一脱敏）。
@@ -22,17 +24,18 @@ type Message struct {
 
 // Session 是一个对话会话。
 type Session struct {
-	ID             string         `json:"id"`
-	Name           string         `json:"name"`
-	Cluster        string         `json:"cluster,omitempty"`
-	Namespace      string         `json:"namespace,omitempty"`
-	Model          string         `json:"model,omitempty"`
-	State          string         `json:"state,omitempty"` // AgentState 快照（避免包依赖环）
-	Messages       []Message      `json:"messages"`
-	ApprovedWrites []string       `json:"approvedWrites,omitempty"` // 本次会话已授权的写操作
-	DeclinedWrites map[string]int `json:"declinedWrites,omitempty"` // 本次会话拒绝过的写操作 key→次数（用于≥2 次硬拦截）
-	CreatedAt      time.Time      `json:"createdAt"`
-	LastModified   time.Time      `json:"lastModified"`
+	ID             string           `json:"id"`
+	Name           string           `json:"name"`
+	Cluster        string           `json:"cluster,omitempty"`
+	Namespace      string           `json:"namespace,omitempty"`
+	Model          string           `json:"model,omitempty"`
+	State          string           `json:"state,omitempty"` // AgentState 快照（避免包依赖环）
+	Messages       []Message        `json:"messages"`
+	ApprovedWrites []string         `json:"approvedWrites,omitempty"` // 本次会话已授权的写操作
+	ApprovalGrants []approval.Grant `json:"approvalGrants,omitempty"` // Phase D 结构化授权（旧 key 仅兼容迁移）
+	DeclinedWrites map[string]int   `json:"declinedWrites,omitempty"` // 本次会话拒绝过的写操作 key→次数（用于≥2 次硬拦截）
+	CreatedAt      time.Time        `json:"createdAt"`
+	LastModified   time.Time        `json:"lastModified"`
 }
 
 // AddMessage 追加消息并刷新 LastModified。
@@ -66,6 +69,49 @@ func (s *Session) AddApproved(key string) {
 		return
 	}
 	s.ApprovedWrites = append(s.ApprovedWrites, key)
+	s.LastModified = time.Now()
+}
+
+// AddGrant 保存一条结构化授权记录（按 ID 去重/覆盖）。
+func (s *Session) AddGrant(g approval.Grant) {
+	if g.ID == "" {
+		return
+	}
+	for i := range s.ApprovalGrants {
+		if s.ApprovalGrants[i].ID == g.ID {
+			s.ApprovalGrants[i] = g
+			s.LastModified = time.Now()
+			return
+		}
+	}
+	s.ApprovalGrants = append(s.ApprovalGrants, g)
+	s.LastModified = time.Now()
+}
+
+// FindGrant 返回第一条匹配请求的结构化授权记录，没有则返回 nil。
+func (s *Session) FindGrant(req approval.GrantRequest) *approval.Grant {
+	if len(s.ApprovalGrants) == 0 {
+		return nil
+	}
+	return approval.MatchGrant(s.ApprovalGrants, req)
+}
+
+// RemoveGrantMatching 删除所有匹配请求的结构化授权记录。
+// 用户否定某个写操作时调用，避免旧授权继续自动放行同类操作。
+func (s *Session) RemoveGrantMatching(req approval.GrantRequest) {
+	if len(s.ApprovalGrants) == 0 {
+		return
+	}
+	var kept []approval.Grant
+	for i := range s.ApprovalGrants {
+		if !s.ApprovalGrants[i].Matches(req) {
+			kept = append(kept, s.ApprovalGrants[i])
+		}
+	}
+	if len(kept) == len(s.ApprovalGrants) {
+		return
+	}
+	s.ApprovalGrants = kept
 	s.LastModified = time.Now()
 }
 

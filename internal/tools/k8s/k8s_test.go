@@ -355,6 +355,29 @@ func TestRegisterAllCount(t *testing.T) {
 	}
 }
 
+func TestSchemaMetadataForReadOnlyTools(t *testing.T) {
+	reg := tools.NewRegistry()
+	if err := RegisterAll(reg, testReader()); err != nil {
+		t.Fatal(err)
+	}
+	specs := reg.Schemas()
+	byName := map[string]string{}
+	for _, spec := range specs {
+		byName[spec.Name] = spec.Description
+	}
+	for _, name := range []string{"get_pod", "get_deployment", "get_nodes"} {
+		desc, ok := byName[name]
+		if !ok {
+			t.Fatalf("缺少工具 %s", name)
+		}
+		for _, want := range []string{"[READ ONLY]", "[RISK: SAFE]", "[APPROVAL REQUIRED: NO]"} {
+			if !strings.Contains(desc, want) {
+				t.Fatalf("%s description 缺少 %q: %q", name, want, desc)
+			}
+		}
+	}
+}
+
 func int32Ptr(v int32) *int32 { return &v }
 func boolPtr(v bool) *bool    { return &v }
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/k8s-ai/k8s-ai/internal/agent"
+	"github.com/k8s-ai/k8s-ai/internal/approval"
 	"github.com/k8s-ai/k8s-ai/internal/audit"
 	"github.com/k8s-ai/k8s-ai/internal/config"
 	"github.com/k8s-ai/k8s-ai/internal/executor"
@@ -240,11 +241,17 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 		reg.Remove(strings.TrimSpace(name))
 	}
 	events := make(chan ChatEvent, 64)
+	pol := approval.Policy{
+		Mode:            approval.Mode(s.cfg.Agent.ApprovalMode),
+		RequireApproval: s.cfg.Agent.RequireApproval,
+		SkipPermissions: req.SkipPermissions || s.cfg.Agent.SkipPermissions,
+		DenyOps:         s.cfg.Agent.DenyOps,
+	}
 	approver := &chatApprover{
 		events:      events,
 		respond:     respond,
-		skip:        req.SkipPermissions || s.cfg.Agent.SkipPermissions,
-		autoApprove: !s.cfg.Agent.RequireApproval,
+		skip:        false,
+		autoApprove: false,
 	}
 	client := s.llmFactory(llm.Options{
 		Endpoint:        s.cfg.LLM.Endpoint,
@@ -263,6 +270,7 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 		Tools:          reg,
 		Session:        sess,
 		Approver:       approver,
+		ApprovalPolicy: &pol,
 		Recorder:       recorder,
 		MaxIterations:  s.cfg.Agent.MaxIterations,
 		MaxToolCalls:   s.cfg.Agent.MaxToolCalls,

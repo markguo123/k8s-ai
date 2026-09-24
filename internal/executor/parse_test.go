@@ -139,3 +139,32 @@ func TestParseCommandNonShell(t *testing.T) {
 		}
 	}
 }
+
+func TestParseCommandShellBypassVariants(t *testing.T) {
+	shellBypasses := []string{
+		"kubectl get pods | kubectl delete pod x",
+		"kubectl get pods | xargs kubectl delete pod",
+		`sh -c "kubectl delete pod x"`,
+		`bash -c "kubectl delete deployment/app"`,
+		"$(kubectl delete pod x)",
+		"`kubectl delete pod x`",
+		"echo PT94bmNsIH0= | base64 -d | sh",
+	}
+	for _, cmd := range shellBypasses {
+		pc, err := ParseCommandDetail(cmd)
+		if err != nil {
+			t.Errorf("shell 绕过变体不应因 shell 语法被拒绝: %q: %v", cmd, err)
+			continue
+		}
+		if !pc.IsShell {
+			t.Errorf("shell 绕过变体应标记 isShell=true: %q", cmd)
+		}
+	}
+}
+
+func TestParseCommandShellRejectsInteractiveStill(t *testing.T) {
+	cmd := "kubectl get pods | kubectl edit deployment/app"
+	if _, err := ParseCommandDetail(cmd); err == nil {
+		t.Fatalf("shell 里包含交互式命令仍应拒绝: %q", cmd)
+	}
+}

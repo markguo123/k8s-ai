@@ -24,6 +24,10 @@ func (b *base) Risk(json.RawMessage) model.RiskLevel {
 	return model.RiskSafe
 }
 
+func (b *base) SchemaMetadata() string {
+	return "[READ ONLY][RISK: SAFE][APPROVAL REQUIRED: NO]"
+}
+
 // All 返回全部只读 Kubernetes Tools。
 func All(r Reader) []tools.Tool {
 	return []tools.Tool{

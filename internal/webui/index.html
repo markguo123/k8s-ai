@@ -7,7 +7,7 @@
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 
 <style>
 
@@ -119,15 +119,205 @@ body {
   flex-direction: column;
   flex-shrink: 0;
   z-index: 100;
+  transition: width .28s ease, opacity .2s ease;
+  overflow: hidden;
 }
+
+/* === 品牌区 === */
 
 #sidebar header {
-  padding: 20px 18px 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 10px 16px 14px;
   border-bottom: 1px solid rgba(255,255,255,.06);
+  flex-shrink: 0;
 }
 
-#sidebar h1 { font-size: 18px; font-weight: 700; letter-spacing: -.3px; color: #fff; }
-#sidebar .sub { color: var(--sidebar-muted); font-size: 12px; margin-top: 4px; font-weight: 500; }
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  flex: 1;
+  min-width: 0;
+}
+
+.brand-icon {
+  position: relative;
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6, #ec4899, #6366f1);
+  background-size: 300% 300%;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  overflow: hidden;
+  box-shadow:
+    0 4px 14px rgba(99,102,241,.35),
+    0 0 0 1px rgba(139,92,246,.3) inset;
+  animation: brandGradient 8s ease infinite, brandGlow 3s ease-in-out infinite;
+}
+
+.brand-icon::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 0;
+  width: 60%;
+  height: 100%;
+  background: linear-gradient(
+    100deg,
+    transparent 0%,
+    rgba(255,255,255,0) 30%,
+    rgba(255,255,255,.35) 50%,
+    rgba(255,255,255,0) 70%,
+    transparent 100%
+  );
+  transform: translateX(-150%);
+  animation: brandShine 3.5s ease-in-out infinite;
+  z-index: 1;
+}
+
+@keyframes brandGradient {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+@keyframes brandGlow {
+  0%, 100% {
+    box-shadow:
+      0 4px 14px rgba(99,102,241,.35),
+      0 0 0 1px rgba(139,92,246,.3) inset;
+  }
+  50% {
+    box-shadow:
+      0 4px 22px rgba(139,92,246,.6),
+      0 0 0 1px rgba(139,92,246,.55) inset;
+  }
+}
+
+@keyframes brandShine {
+  0% { transform: translateX(-150%); }
+  60%, 100% { transform: translateX(250%); }
+}
+
+.brand-icon svg {
+  width: 20px;
+  height: 20px;
+  color: #fff;
+  position: relative;
+  z-index: 2;
+  filter: drop-shadow(0 1px 2px rgba(0,0,0,.25));
+}
+
+.brand-text {
+  min-width: 0;
+  flex: 1;
+}
+
+#sidebar h1 {
+  display: flex;
+  align-items: baseline;
+  font-size: 18px;
+  line-height: 1.15;
+  letter-spacing: -.5px;
+  font-weight: 700;
+  color: #fff;
+  margin: 0;
+  font-family: var(--font-sans);
+}
+
+.brand-k8s {
+  color: #ffffff;
+  font-weight: 700;
+  letter-spacing: -.5px;
+}
+
+.brand-dash {
+  color: var(--accent);
+  font-weight: 400;
+  margin: 0 1px;
+  opacity: .9;
+}
+
+.brand-ai {
+  background: linear-gradient(135deg, #a5b4fc, #e0e7ff 60%, #c4b5fd);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  font-weight: 800;
+  letter-spacing: -.3px;
+}
+
+#sidebar .sub {
+  color: var(--sidebar-muted);
+  font-size: 9.5px;
+  margin-top: 4px;
+  font-weight: 600;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  opacity: .85;
+  white-space: nowrap;
+}
+
+/* === 侧栏收起按钮（仅桌面端显示） === */
+
+.sidebar-collapse {
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--sidebar-muted);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  transition: all .15s;
+  padding: 0;
+}
+
+.sidebar-collapse:hover {
+  color: #fff;
+  background: rgba(255,255,255,.06);
+  border-color: rgba(255,255,255,.12);
+}
+
+.sidebar-collapse svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* === 桌面端收起态 === */
+
+@media (min-width: 961px) {
+  body.sidebar-collapsed #sidebar {
+    width: 44px;
+    opacity: 1;
+  }
+  body.sidebar-collapsed #sidebar .brand,
+  body.sidebar-collapsed #sidebar #sessionList,
+  body.sidebar-collapsed #sidebar #newSession {
+    display: none;
+  }
+  body.sidebar-collapsed #sidebar header {
+    padding: 0;
+    justify-content: center;
+    border-bottom-color: transparent;
+  }
+  body.sidebar-collapsed #sidebar .sidebar-collapse {
+    width: 40px;
+    height: 40px;
+  }
+}
+
+/* === 移动端隐藏收起/展开按钮（移动端已有 drawer 逻辑） === */
+
+@media (max-width: 960px) {
+  .sidebar-collapse { display: none; }
+}
+
+/* === 品牌区结束 === */
 
 #sessionList { flex: 1; overflow-y: auto; padding: 12px 10px; }
 
@@ -148,6 +338,8 @@ body {
 }
 .session-item:hover .del, .session-item:hover .ren { opacity: 1; }
 .session-item .del:hover { color: #f87171; }
+.session-item .del svg { width: 12px; height: 12px; display: block; }
+.session-item .ren svg { width: 12px; height: 12px; display: block; }
 .session-item .ren:hover { color: #60a5fa; }
 .session-item .time { color: var(--sidebar-muted); font-size: 11px; margin-top: 2px; }
 
@@ -155,8 +347,10 @@ body {
   margin: 12px; padding: 11px; border: none; border-radius: var(--radius-md);
   background: var(--accent); color: #fff; cursor: pointer;
   font-size: 13px; font-weight: 600; transition: opacity .15s;
+  flex-shrink: 0; display: flex; align-items: center; justify-content: center; gap: 6px;
 }
 #newSession:hover { opacity: .9; }
+#newSession svg { width: 16px; height: 16px; flex-shrink: 0; }
 
 /* ═══════════════════════════════════════════════════════
    Main Layout
@@ -168,7 +362,7 @@ body {
 .inner { max-width: 880px; margin: 0 auto; }
 
 /* ═══════════════════════════════════════════════════════
-   Session Status Bar — 方案 B：状态点 + Agent + 描述
+   Session Status Bar — 方案 B
    ═══════════════════════════════════════════════════════ */
 
 .session-status {
@@ -202,8 +396,6 @@ body {
 .session-status.done::before { background: var(--ok); }
 .session-status.waiting::before { background: var(--warn); }
 
-/* 状态点 */
-
 .session-status .status-dot {
   width: 8px;
   height: 8px;
@@ -228,7 +420,14 @@ body {
   animation: pulse 1.4s ease-in-out infinite;
 }
 
-/* Agent 名字 + 动态描述 */
+.session-status.interrupted::before { background: var(--warn); }
+.session-status.interrupted .status-dot {
+  background: var(--warn);
+  box-shadow: 0 0 0 3px rgba(245,158,11,.16);
+  animation: none;
+}
+.session-status.interrupted .agent-name { color: var(--warn); }
+.session-status.interrupted .counters .num { color: var(--warn); }
 
 .session-status .agent-line {
   flex: 1;
@@ -255,8 +454,6 @@ body {
   font-weight: 500;
   font-size: 12.5px;
 }
-
-/* 计数器：推理 N · 工具 N · 耗时 Ns */
 
 .session-status .counters {
   flex: none;
@@ -351,7 +548,7 @@ body {
 }
 
 /* ═══════════════════════════════════════════════════════
-   Turn Timeline（容器保留，stepper 不再生成）
+   Turn Timeline
    ═══════════════════════════════════════════════════════ */
 
 .turn-timeline { margin: var(--space-md) 0; }
@@ -450,15 +647,15 @@ body {
 .phase-progress summary:hover { background: rgba(99,102,241,.04); }
 .phase-progress summary::-webkit-details-marker { display: none; }
 
-.phase-progress summary::after {
-  content: "⌄";
+.phase-progress summary .phase-chevron {
   margin-left: 8px;
+  width: 14px;
+  height: 14px;
   color: var(--muted);
   transition: transform .2s;
-  font-size: 13px;
   flex-shrink: 0;
 }
-.phase-progress[open] summary::after { transform: rotate(180deg); }
+.phase-progress[open] summary .phase-chevron { transform: rotate(180deg); }
 
 .phase-progress .mark {
   width: 26px;
@@ -475,9 +672,9 @@ body {
   line-height: 1;
 }
 
-.phase-progress .mark::before {
-  content: "🤖";
-  font-size: 14px;
+.phase-progress .mark svg {
+  width: 17px;
+  height: 17px;
 }
 
 .phase-progress[data-done="true"] .mark {
@@ -898,6 +1095,13 @@ body {
 .approval .always { background: var(--accent); color: #fff; box-shadow: 0 4px 12px rgba(99,102,241,.28); }
 .approval .no { background: var(--code-bg); color: var(--text); border: 1px solid var(--border); }
 
+.approval.submitting button {
+  opacity: .55;
+  cursor: wait;
+  transform: none;
+}
+.approval button:disabled { pointer-events: none; }
+
 /* ═══════════════════════════════════════════════════════
    输入区域
    ═══════════════════════════════════════════════════════ */
@@ -935,25 +1139,34 @@ body {
    Markdown
    ═══════════════════════════════════════════════════════ */
 
-.markdown h1, .markdown h2, .markdown h3 {
+.markdown h1, .markdown h2, .markdown h3, .markdown h4, .markdown h5, .markdown h6 {
   margin: 20px 0 10px; line-height: 1.3; font-weight: 700; color: var(--text);
 }
 .markdown h1 { font-size: 22px; }
-.markdown h2 { font-size: 18px; }
+.markdown h2 {
+  font-size: 18px;
+  padding-left: 10px;
+  border-left: 3px solid var(--accent);
+}
 .markdown h3 { font-size: 16px; }
+.markdown h4 { font-size: 14px; }
+.markdown h5, .markdown h6 { font-size: 13px; }
 .markdown p { margin: 10px 0; }
 .markdown ul, .markdown ol { padding-left: 24px; margin: 10px 0; }
 .markdown li { margin: 4px 0; }
 .markdown a { color: var(--accent); text-decoration: none; }
 .markdown a:hover { text-decoration: underline; }
 
+.markdown .table-wrap { overflow-x: auto; margin: 14px 0; }
 .markdown table {
-  border-collapse: collapse; margin: 14px 0;
+  border-collapse: collapse;
   width: 100%; font-size: 13px;
   border-radius: var(--radius-sm); overflow: hidden;
+  margin: 0;
 }
 .markdown th, .markdown td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; }
-.markdown th { background: var(--code-bg); font-weight: 600; }
+.markdown th { background: rgba(99,102,241,.14); font-weight: 700; }
+.markdown tbody td:first-child { font-weight: 600; }
 .markdown blockquote {
   border-left: 3px solid var(--accent); padding-left: 14px;
   color: var(--muted); margin: 12px 0; font-style: italic;
@@ -971,6 +1184,54 @@ code {
   font-size: 13px; color: var(--accent);
 }
 pre code { background: none; padding: 0; color: inherit; }
+
+.code-block {
+  margin: 12px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--code-bg);
+  overflow: hidden;
+}
+.code-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 10px;
+  background: rgba(99,102,241,.08);
+  border-bottom: 1px solid var(--border);
+}
+.code-lang {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: #a5b4fc;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.code-copy {
+  border: 1px solid transparent;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  transition: color .15s, border-color .15s, background .15s;
+  font-family: var(--font-sans);
+}
+.code-copy:hover {
+  color: var(--text);
+  border-color: var(--border);
+  background: var(--border-light);
+}
+.code-block pre {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  padding: 12px 14px;
+}
 
 /* ═══════════════════════════════════════════════════════
    欢迎页
@@ -1224,6 +1485,11 @@ pre code { background: none; padding: 0; color: inherit; }
   font-size: 20px; color: var(--text);
 }
 
+#sidebarToggle svg {
+  width: 20px;
+  height: 20px;
+}
+
 #sidebarOverlay {
   display: none; position: fixed; inset: 0;
   background: rgba(0,0,0,.4); z-index: 90;
@@ -1231,7 +1497,7 @@ pre code { background: none; padding: 0; color: inherit; }
 
 @media (max-width: 960px) {
   #sidebarToggle { display: flex; }
-  #sidebar { position: fixed; left: -280px; top: 0; bottom: 0; transition: left .25s ease; box-shadow: var(--shadow-lg); }
+  #sidebar { position: fixed; left: -280px; top: 0; bottom: 0; transition: left .25s ease; box-shadow: var(--shadow-lg); width: 260px; opacity: 1; }
   #sidebar.open { left: 0; }
   #sidebarOverlay.open { display: block; }
   #chat { padding: 16px; }
@@ -1563,27 +1829,55 @@ pre code { background: none; padding: 0; color: inherit; }
 
 <body>
 
-<button id="sidebarToggle" aria-label="切换侧栏">☰</button>
+<!-- 移动端侧栏触发按钮（保留原样） -->
+<button id="sidebarToggle" aria-label="切换侧栏" aria-expanded="false">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 7h16"/>
+    <path d="M4 12h16"/>
+    <path d="M4 17h16"/>
+  </svg>
+</button>
 <div id="sidebarOverlay"></div>
+
 
 <aside id="sidebar">
 
   <header>
-    <h1>k8s-ai</h1>
-    <div class="sub">Kubernetes 智能诊断助手</div>
+    <div class="brand">
+      <div class="brand-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 2 L20.66 7 V17 L12 22 L3.34 17 V7 Z"/>
+          <circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none"/>
+          <path d="M12 9.6 V4.5"/>
+          <path d="M14.1 13.2 L18.5 15.7"/>
+          <path d="M9.9 13.2 L5.5 15.7"/>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <h1><span class="brand-k8s">k8s</span><span class="brand-dash">-</span><span class="brand-ai">ai</span></h1>
+        <div class="sub">KUBERNETES · AI · OPS</div>
+      </div>
+    </div>
+    <button id="sidebarCollapse" class="sidebar-collapse" aria-label="收起/展开侧栏" title="收起/展开侧栏" aria-expanded="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 7h16"/>
+        <path d="M4 12h16"/>
+        <path d="M4 17h16"/>
+      </svg>
+    </button>
   </header>
 
   <div id="sessionList"></div>
 
-  <button id="newSession">＋ 新会话</button>
+  <button id="newSession">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+    <span>新会话</span>
+  </button>
 
 </aside>
 
 <main id="main">
 
-  <!-- ═══════════════════════════════════════════════════
-       Agent 状态条 — 方案 B：状态点 + Agent + 动态描述
-       ═══════════════════════════════════════════════════ -->
   <div id="sessionStatus" class="session-status" aria-live="polite">
     <span class="status-dot"></span>
     <span class="agent-line">
@@ -1646,9 +1940,36 @@ let runElapsed = 0;
 let runStartAt = 0;
 let runStatusTimer = null;
 const currentSessionStorageKey = "k8s-ai-current-session";
+const sidebarCollapsedKey = "k8s-ai-sidebar-collapsed";
 
 const $ = (id) => document.getElementById(id);
 const inner = () => document.querySelector("#chat .inner");
+
+/* ═══════════════════════════════════════════════════════
+   侧栏收起/展开（仅桌面端）
+   ═══════════════════════════════════════════════════════ */
+
+function setSidebarCollapsed(collapsed) {
+  document.body.classList.toggle("sidebar-collapsed", collapsed);
+  const toggle = $("sidebarCollapse");
+  if (toggle) toggle.setAttribute("aria-expanded", String(!collapsed));
+  try {
+    localStorage.setItem(sidebarCollapsedKey, collapsed ? "1" : "0");
+  } catch (e) { /* localStorage 不可用时静默 */ }
+}
+
+try {
+  if (localStorage.getItem(sidebarCollapsedKey) === "1") {
+    setSidebarCollapsed(true);
+  }
+} catch (e) { /* 静默 */ }
+
+if ($("sidebarCollapse")) {
+  $("sidebarCollapse").onclick = (e) => {
+    e.stopPropagation();
+    setSidebarCollapsed(!document.body.classList.contains("sidebar-collapsed"));
+  };
+}
 
 /* ═══════════════════════════════════════════════════════
    processRoot — 不再生成 stepper
@@ -1666,7 +1987,7 @@ function processRoot(create) {
 function resetTimeline() { currentTimeline = null; }
 
 /* ═══════════════════════════════════════════════════════
-   setRunStatus — 只更新描述和状态类（无徽章）
+   setRunStatus
    ═══════════════════════════════════════════════════════ */
 
 function setRunStatus(label, state) {
@@ -1679,6 +2000,7 @@ function setRunStatus(label, state) {
   bar.classList.toggle("done", state === "done");
   bar.classList.toggle("waiting", state === "waiting");
   bar.classList.toggle("running", state === "running");
+  bar.classList.toggle("interrupted", state === "interrupted");
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -1771,7 +2093,7 @@ async function loadSessions() {
 
     const del = document.createElement("button");
     del.className = "del";
-    del.textContent = "✕";
+    del.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg>';
     del.onclick = async (e) => {
       e.stopPropagation();
       if (!confirm("确定删除会话「" + (s.name || s.id) + "」？")) return;
@@ -1782,7 +2104,7 @@ async function loadSessions() {
 
     const ren = document.createElement("button");
     ren.className = "ren";
-    ren.textContent = "✎";
+    ren.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
     ren.title = "重命名";
     ren.onclick = async (e) => {
       e.stopPropagation();
@@ -1861,7 +2183,10 @@ function openSession(id) {
   eventSource.onerror = () => {
     chatBusy = false;
     setBusy(false);
-    stopRunStatus("done", "连接中断");
+    closeProgress("已中断");
+    collapseCompletedToolCards();
+    resetTimeline();
+    stopRunStatus("interrupted", "连接中断，可重新提问");
   };
 }
 
@@ -1984,9 +2309,12 @@ function handleEvent(ev) {
     case "error":
       hideTyping();
       if (ev.text) addErrorCard(ev.text);
+      closeProgress("已中断");
+      collapseCompletedToolCards();
+      resetTimeline();
       chatBusy = false;
       setBusy(false);
-      stopRunStatus("done", "执行出错");
+      stopRunStatus("interrupted", "本轮结束，可继续提问");
       break;
 
     case "choice-request":
@@ -2198,10 +2526,13 @@ function ensureProgressPanel() {
     panel.open = true;
     panel.innerHTML =
       '<summary>' +
-      '<span class="mark"></span>' +
+      '<span class="mark">' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3.2" y="6.8" width="17.6" height="11.4" rx="2.8"/><path d="M12 6.8V3.6"/><circle cx="12" cy="2.9" r="1.05" fill="currentColor" stroke="none"/><path d="M1.6 11.6h2.4"/><path d="M20 11.6h2.4"/><circle cx="9" cy="12.6" r="1.3" fill="currentColor" stroke="none"/><circle cx="15" cy="12.6" r="1.3" fill="currentColor" stroke="none"/><path d="M9.3 16h5.4"/></svg>' +
+      '</span>' +
       '<span class="phase-label"></span>' +
       '<span class="phase-status">分析中</span>' +
       '<span class="phase-count"></span>' +
+      '<svg class="phase-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>' +
       '</summary>' +
       '<div class="progress-list"></div>';
 
@@ -2255,7 +2586,7 @@ function showProgress(text) {
   scroll();
 }
 
-function closeProgress() {
+function closeProgress(finalText) {
   const root = processRoot(false);
   const panel = root.querySelector(".phase-progress");
 
@@ -2264,7 +2595,7 @@ function closeProgress() {
     panel.dataset.done = "true";
 
     const status = panel.querySelector(".phase-status");
-    if (status) status.textContent = "已完成";
+    if (status) status.textContent = finalText || "已完成";
 
     const last = panel.querySelector(".progress-item.active");
     if (last) last.classList.remove("active");
@@ -2815,13 +3146,24 @@ function showApproval(choice) {
     b.className = cls;
     b.textContent = label;
     b.onclick = async () => {
-      await api(
-        "/api/sessions/" + encodeURIComponent(currentSession) + "/approve",
-        { method: "POST", body: JSON.stringify({ choice: value }) }
-      );
-      card.remove();
-      setStatus(true);
-      showTyping("Agent 正在继续…");
+      if (card.dataset.submitting === "true") return;
+      card.dataset.submitting = "true";
+      card.classList.add("submitting");
+      btns.querySelectorAll("button").forEach((btn) => { btn.disabled = true; });
+      try {
+        await api(
+          "/api/sessions/" + encodeURIComponent(currentSession) + "/approve",
+          { method: "POST", body: JSON.stringify({ choice: value }) }
+        );
+        card.remove();
+        setStatus(true);
+        showTyping("等待 Agent 继续…", true);
+      } catch (err) {
+        card.dataset.submitting = "false";
+        card.classList.remove("submitting");
+        btns.querySelectorAll("button").forEach((btn) => { btn.disabled = false; });
+        addMsg("error", "审批提交失败: " + err.message);
+      }
     };
     return b;
   };
@@ -2877,7 +3219,10 @@ async function send() {
     chatBusy = false;
     setBusy(false);
     hideTyping();
-    stopRunStatus("done", "发送失败");
+    closeProgress("已中断");
+    collapseCompletedToolCards();
+    resetTimeline();
+    stopRunStatus("interrupted", "发送失败");
   }
 }
 
@@ -3132,6 +3477,7 @@ function markdown(s) {
   let html = "";
   let inCode = false;
   let codeBuf = [];
+  let codeLang = "";
   let list = null;
 
   const closeList = () => {
@@ -3147,8 +3493,11 @@ function markdown(s) {
     if (line.startsWith("```")) {
       closeList();
       if (inCode) {
-        html += "<pre><code>" + codeBuf.join("\n") + "</code></pre>";
+        html += codeBlockHtml(codeLang, codeBuf.join("\n"));
         codeBuf = [];
+        codeLang = "";
+      } else {
+        codeLang = line.slice(3).trim().replace(/[^\w.+#-]/g, "");
       }
       inCode = !inCode;
       continue;
@@ -3156,7 +3505,7 @@ function markdown(s) {
 
     if (inCode) { codeBuf.push(line); continue; }
 
-    if (/^#{1,3} /.test(line)) {
+    if (/^#{1,6} /.test(line)) {
       closeList();
       const level = line.indexOf(" ");
       html += "<h" + level + ">" + inline(line.slice(level + 1)) + "</h" + level + ">";
@@ -3168,7 +3517,7 @@ function markdown(s) {
       html += "<li>" + inline(line.replace(/^\s*\d+\.\s/, "")) + "</li>";
     } else if (/^\|/.test(line)) {
       closeList();
-      html += "<table><tr>" + tableCells(line, "th") + "</tr>";
+      html += '<div class="table-wrap"><table><tr>' + tableCells(line, "th") + "</tr>";
       i++;
       if (i < lines.length && /^[-|:\s]+$/.test(lines[i].replace(/^\|/, "").replace(/\|$/, ""))) {
         i++;
@@ -3178,7 +3527,7 @@ function markdown(s) {
         i++;
       }
       i--;
-      html += "</table>";
+      html += "</table></div>";
     } else if (/^&gt; /.test(line)) {
       closeList();
       html += "<blockquote>" + inline(line.replace(/^&gt; /, "")) + "</blockquote>";
@@ -3191,8 +3540,17 @@ function markdown(s) {
   }
 
   closeList();
-  if (inCode) html += "<pre><code>" + codeBuf.join("\n") + "</code></pre>";
+  if (inCode) html += codeBlockHtml(codeLang, codeBuf.join("\n"));
   return '<div class="markdown">' + html + "</div>";
+}
+
+function codeBlockHtml(lang, code) {
+  return (
+    '<div class="code-block"><div class="code-meta">' +
+    '<span class="code-lang">' + (lang || "text") + '</span>' +
+    '<button type="button" class="code-copy">复制</button>' +
+    '</div><pre><code>' + code + '</code></pre></div>'
+  );
 }
 
 function tableCells(line, tag) {
@@ -3213,13 +3571,15 @@ function inline(s) {
    ═══════════════════════════════════════════════════════ */
 
 function toggleSidebar() {
-  $("sidebar").classList.toggle("open");
+  const open = $("sidebar").classList.toggle("open");
   $("sidebarOverlay").classList.toggle("open");
+  $("sidebarToggle").setAttribute("aria-expanded", String(open));
 }
 
 function closeSidebar() {
   $("sidebar").classList.remove("open");
   $("sidebarOverlay").classList.remove("open");
+  $("sidebarToggle").setAttribute("aria-expanded", "false");
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -3233,7 +3593,49 @@ $("newSession").onclick = async () => {
 
 $("send").onclick = send;
 
+function copyTextFallback(text) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.top = "0";
+  ta.style.left = "0";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch (err) { ok = false; }
+  ta.remove();
+  return ok;
+}
+
+const chatRoot = $("chat");
+if (chatRoot) {
+  chatRoot.addEventListener("click", (e) => {
+    const btn = e.target.closest(".code-copy");
+    if (!btn) return;
+    const block = btn.closest(".code-block");
+    const codeEl = block ? block.querySelector("pre code") : null;
+    if (!codeEl) return;
+    const text = codeEl.innerText.replace(/\n$/, "");
+    const flash = (ok) => {
+      if (btn._copyTimer) clearTimeout(btn._copyTimer);
+      btn.textContent = ok ? "已复制" : "复制失败";
+      btn._copyTimer = setTimeout(() => {
+        btn.textContent = "复制";
+        btn._copyTimer = null;
+      }, 1200);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(() => flash(true), () => flash(copyTextFallback(text)));
+    } else {
+      flash(copyTextFallback(text));
+    }
+  });
+}
+
 $("input").addEventListener("keydown", (e) => {
+  if (e.isComposing || e.keyCode === 229) return;
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     send();

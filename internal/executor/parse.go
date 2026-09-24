@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+
+	"github.com/k8s-ai/k8s-ai/internal/approval"
 )
 
 // 动词白名单：只读 + 非交互写。
@@ -57,6 +59,11 @@ func ParseCommandDetail(command string) (ParsedCommand, error) {
 	tokens, isShell, err := tokenize(command)
 	if err != nil {
 		return ParsedCommand{}, err
+	}
+	// sh -c / bash -c / eval 等显式 shell 包装即使没有外层元字符，
+	// 也要按 shell 模式执行（必须在人工审批后进入）。
+	if !isShell && approval.HasShellSyntax(command) {
+		isShell = true
 	}
 	if len(tokens) == 0 {
 		return ParsedCommand{}, fmt.Errorf("empty command")

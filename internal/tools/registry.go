@@ -3,6 +3,7 @@ package tools
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/k8s-ai/k8s-ai/internal/llm"
 )
@@ -70,9 +71,13 @@ func (r *Registry) Schemas() []llm.ToolSpec {
 	all := r.All()
 	out := make([]llm.ToolSpec, 0, len(all))
 	for _, t := range all {
+		desc := t.Description()
+		if md, ok := t.(MetadataDescriber); ok && strings.TrimSpace(md.SchemaMetadata()) != "" {
+			desc = md.SchemaMetadata() + "\n" + desc
+		}
 		out = append(out, llm.ToolSpec{
 			Name:        t.Name(),
-			Description: t.Description(),
+			Description: desc,
 			Parameters:  t.InputSchema(),
 		})
 	}

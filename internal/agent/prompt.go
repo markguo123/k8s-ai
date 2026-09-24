@@ -40,7 +40,7 @@ const healthCheckProtocol = `
 7. 警告事件：get_events（type=Warning，按 namespace 归类）
 最终输出结构：整体状态 → 节点 → 资源使用 → 命名空间 → Pod → 系统组件 → 警告事件 → 健康评分与整体评估 → 建议。
 健康评分：给出两个数值评分——规则健康评分（scan_cluster 返回，0-100，程序计算）与你的综合健康评分（0-100，基于节点/资源使用/系统组件/Pod/警告事件综合判断），并解释两者差异（如：规则扣分多但实际影响小，或规则未覆盖资源压力）；评分偏低时列出主要扣分项，不要只报一个数字。
-注意：metrics-server 不可用时直接说明，不要臆造资源使用数据；kubectl 命令支持 shell 构造（pipe/heredoc 等），但含 shell 语法的命令永不自动执行，需人工审批。`
+注意：metrics-server 不可用时直接说明，不要臆造资源使用数据。`
 
 // toolSelectionProtocol 是 chat 全场景的“按意图分层”工具选择决策树
 // （优化项 #3：消灭模型自由取工具时的绕路与错选，保证完备性覆盖）。
@@ -54,9 +54,10 @@ const toolSelectionProtocol = `
 优先顺序：
 1. 先取证：**kubectl get <资源> <名称> -n <ns> -o yaml**（Pod/Deployment/StatefulSet/DaemonSet/Job/Ingress 等任何对象都用这一招）。
    这是唯一完整视图，command/args/env/probe/affinity/volume/securityContext 等任意字段都不会漏。
-2. 配合取日志：get_previous_logs（CrashLoopBackOff/OOMKilled 时必取）、get_logs（当前日志）、get_events（按 kind+name 过滤）。
-3. 如果结构化工具 get_pod / get_deployment 摘要已经够回答，也可以用摘要；但摘要解释不了现象或证据自相矛盾时，**必须立刻升级 kubectl -o yaml 再看**，不要在摘要里瞎猜不要重复调用工具。
-4. diagnose_pod / diagnose_workload 只在"需要规则引擎确定性告警 + 故障链聚合"时用（相当于小范围 scan）。
+2. 需要事件关联/跨对象核对时（Service 没 Endpoint、PVC 一直 Pending/FailedBinding、Node 有 Pressure、Pod 调度/重启上下文），先用 kubectl describe <资源> <名称> -n <ns> 聚合状态/条件/事件快速缩小范围；字段级根因仍以 kubectl get -o yaml 为准。
+3. 配合取日志：get_previous_logs（CrashLoopBackOff/OOMKilled 时必取）、get_logs（当前日志）、get_events（按 kind+name 过滤）。
+4. 如果结构化工具 get_pod / get_deployment 摘要已经够回答，也可以用摘要；但摘要解释不了现象或证据自相矛盾时，**必须立刻升级 kubectl -o yaml 再看**，不要在摘要里瞎猜不要重复调用工具。
+5. diagnose_pod / diagnose_workload 只在"需要规则引擎确定性告警 + 故障链聚合"时用（相当于小范围 scan）。
    单纯"为什么一个 Pod 异常"不要首选它（它只看规则命中，YAML 里大量自定义字段规则看不到）。
 
 ### 第二层：浏览意图（现在状态/几个副本/多少节点/什么镜像/挂了什么PVC）
@@ -81,13 +82,22 @@ const toolSelectionProtocol = `
 按 健康检查协议（healthCheckProtocol）的 7 个维度调查，其中规则巡检用 **scan_cluster()**（全量，无 namespace），
 组件状态/事件/资源压力按各自结构化工具。
 
+### 第五层：操作/修复意图（扩容/重启/删除/patch/scale/apply/rollout/解决等）
+—— 用户明确要求变更集群状态时，不按调查层反复取证；直接进入「修复行为约束」。
+优先顺序：
+1. 先给诊断结论 + 方案列举（≥2 条，按风险升序），等用户选择后再执行。
+2. 写命令统一用 kubectl 工具生成（create/patch/scale/apply/delete/rollout 等），所有写操作必须人工审批。
+3. 只读确认（get/describe/logs/events）仍可自动执行；但诊断/检查类问题不要落到这一层。
+
+### 兜底：其余意图
+—— 以上都不匹配（普通咨询、概念解释、对比分析、无法归类的提问）时，直接回答或先向用户确认意图，不要硬调工具。
+
 ### 交叉规则（硬性）
 1. 结构化工具（get_pod / get_deployment 等）返回的是**摘要视图**，字段不完整。诊断意图下看到"现象解释不了/字段缺失/根因在某个自定义字段"时，必须用 kubectl -o yaml 升级，不能硬猜。
-2. kubectl 只读命令（get/describe/list/logs/events）自动执行，不触发审批；禁止读取 Secret（会被拦截），禁止 --raw。
+2. kubectl 只读命令（get/describe/list/logs/events）自动执行，不触发审批。
 3. 写操作（patch/scale/delete/apply 等）统一使用 kubectl 工具生成完整命令（含完整 YAML 创建/重建、JSON patch、cat <<EOF | kubectl apply -f - 等复合 shell 构造时同样使用 kubectl 工具），触发人工审批。
    **无论命令是否包含 shell 构造，写操作都必须经过人工审批，LLM 不得自动执行。**
-4. CRD 或自定义资源（非内置 Kind）：直接用 kubectl get <crd-kind> <name> -n <ns> -o yaml，结构化工具不一定支持。
-5. kubectl 工具支持 shell 构造（pipe/heredoc/redirect/&&/||/command substitution），但含 shell 语法的命令**永不自动执行**，必须走人工审批。`
+4. CRD 或自定义资源（非内置 Kind）：直接用 kubectl get <crd-kind> <name> -n <ns> -o yaml，结构化工具不一定支持。`
 
 // efficiencyProtocol 约束调查效率与回答收敛（避免重复工具调用与冗长输出）。
 const efficiencyProtocol = `
@@ -120,9 +130,8 @@ const remediationGate = `
     ③ 任何时候提出 delete pvc 都必须同时展示 patch 方案，并等待用户在两者之间做选择；单方案只提 delete pvc 视为错误。
 
 审批语义（严格遵守，禁止误解）：
-- 工具结果中出现 "USER_EXPLICITLY_DECLINED" 或 "DECLINED_TOO_MANY_TIMES" 前缀时，代表"用户明确反对该变更"，**不是工具错误，也不是需要重试的临时故障**。禁止以相同或等效的参数再次调用同一写工具。
-- 遇到用户拒绝一次：必须向用户解释"此方案被否决，我改用更小范围的替代方案 X，是否接受？"并等待用户回复；替代方案必须比被否决的方案风险至少低一级（例如被否决的是 Delete（CRITICAL）→ 替代用 Patch（HIGH/MEDIUM）；被否决的是 Delete Pod → 替代用 rollout restart）。
-- 同一写操作签名被拒两次：系统层会自动拦截，你必须立即收敛到替代方案，不要再向用户提出同一个写动作的请求。`
+- 用户拒绝写操作时，必须停止使用相同或等效的写参数，向用户解释"此方案被否决，我改用更小范围的替代方案 X，是否接受？"并等待用户回复。
+- 不要尝试绕过工具权限、审批或安全限制；同签名写操作被系统拦截时立即换方案，不要再次提出同一写动作。`
 
 // basePrompt 是 native/shim 共用的基础 prompt 主体（按决策树 + 效率 + 修复门顺序）。
 func basePrompt() string {

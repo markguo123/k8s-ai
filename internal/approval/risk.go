@@ -87,6 +87,8 @@ var valueFlags = map[string]bool{
 // ClassifyCommand 解析 kubectl 命令并给出风险等级。
 // 只读 → SAFE；rollout history/status → SAFE；--dry-run 的已知写动词 → SAFE；
 // 删除关键资源 → CRITICAL；其余写动词按表；未知动词保守 CRITICAL。
+// 含 shell 语法的命令永不返回 SAFE（必须人工审批），并扫描其中所有 kubectl 调用，
+// 取最高风险，避免仅因第一条命令是 get 就把整个 pipeline 判定为只读。
 func ClassifyCommand(command string) model.RiskLevel {
 	readOnly, risk := classifyCommand(command)
 	if readOnly {
@@ -107,9 +109,33 @@ func IsReadOnlyCommand(command string) bool {
 	return readOnly
 }
 
+// riskOrder 用于计算 shell 命令中的最高风险等级。
+var riskOrder = map[model.RiskLevel]int{
+	model.RiskSafe:     0,
+	model.RiskLow:      1,
+	model.RiskMedium:   2,
+	model.RiskHigh:     3,
+	model.RiskCritical: 4,
+}
+
+func higherRisk(a, b model.RiskLevel) model.RiskLevel {
+	if riskOrder[a] >= riskOrder[b] {
+		return a
+	}
+	return b
+}
+
 // HasShellSyntax 判断命令字符串是否包含 shell 元字符（用于审批分类：
 // 含 shell 语法的命令永不归类为只读，必须走人工审批）。
 func HasShellSyntax(command string) bool {
+	// sh -c / bash -c / eval 等显式 shell 包装也可能把写命令藏在引号内，
+	// 此时没有外层元字符也会被当作 shell 命令处理（永不自动执行）。
+	lower := strings.ToLower(command)
+	for _, wrapper := range []string{"sh -c", "bash -c", "zsh -c", "dash -c", "ksh -c", "eval "} {
+		if strings.Contains(lower, wrapper) {
+			return true
+		}
+	}
 	inSingle, inDouble := false, false
 	for _, r := range command {
 		switch r {
@@ -135,10 +161,19 @@ func HasShellSyntax(command string) bool {
 
 // classifyCommand 统一分类：返回 (只读, 风险等级)。
 func classifyCommand(command string) (readOnly bool, risk model.RiskLevel) {
+	if HasShellSyntax(command) {
+		return false, classifyShellCommand(command)
+	}
 	verb, rest := extractVerb(command)
 	if verb == "" {
 		return false, model.RiskCritical
 	}
+	return classifyVerb(verb, rest, command)
+}
+
+// classifyVerb 根据 kubectl 动词及其剩余参数计算 (只读, 风险等级)。
+// command 仅用于读取 --dry-run 标记：该标记可能出现在命令任意位置。
+func classifyVerb(verb string, rest []string, command string) (readOnly bool, risk model.RiskLevel) {
 	if readOnlyVerbs[verb] {
 		return true, model.RiskSafe
 	}
@@ -179,6 +214,49 @@ func classifyCommand(command string) (readOnly bool, risk model.RiskLevel) {
 		return false, risk
 	}
 	return false, model.RiskCritical
+}
+
+// classifyShellCommand 对含 shell 语法的命令做整体风险分类：
+// 扫描命令中所有 kubectl 调用，取最高风险；没有命中任何已知动词时保守 CRITICAL。
+// 含 shell 语法的命令永不返回 SAFE（必须人工审批）。
+func classifyShellCommand(command string) model.RiskLevel {
+	var maxRisk model.RiskLevel = model.RiskSafe
+	sawKubectl := false
+	tokens := shellTokens(command)
+	for i := 0; i < len(tokens); i++ {
+		if tokens[i] != "kubectl" {
+			continue
+		}
+		sawKubectl = true
+		verb, rest := extractVerbFromTokens(tokens[i+1:])
+		if verb == "" {
+			maxRisk = higherRisk(maxRisk, model.RiskCritical)
+			continue
+		}
+		_, risk := classifyVerb(verb, rest, command)
+		maxRisk = higherRisk(maxRisk, risk)
+	}
+	if maxRisk == model.RiskSafe {
+		// 没有可见 kubectl 写命令时仍可能通过 base64/eval/管道向 sh 注入任意命令，
+		// 保守按 CRITICAL 分类；有 kubectl 只读调用但含 shell 语法时也不能自动执行。
+		if !sawKubectl {
+			return model.RiskCritical
+		}
+		return model.RiskMedium
+	}
+	return maxRisk
+}
+
+// extractVerbFromTokens 在 shell 分词中查找 kubectl 后的第一个已知动词。
+// 每次只扫描当前 kubectl 调用之后的 token，避免 pipeline 中第一条 get 掩盖后续 delete。
+func extractVerbFromTokens(tokens []string) (string, []string) {
+	for i := 0; i < len(tokens); i++ {
+		f := tokens[i]
+		if isKnownVerb(f) {
+			return f, tokens[i+1:]
+		}
+	}
+	return "", nil
 }
 
 // hasDryRun 检测命令是否带 --dry-run（client/server/none 均不实际变更）。

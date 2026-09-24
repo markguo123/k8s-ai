@@ -28,6 +28,7 @@ const (
 	ActionApprovalGranted       = "approval.granted"
 	ActionApprovalDenied        = "approval.denied"
 	ActionApprovalSkipped       = "approval.skipped"
+	ActionApprovalDecision      = "approval.decision"
 	ActionExecutionStarted      = "execution.started"
 	ActionExecutionSucceeded    = "execution.succeeded"
 	ActionExecutionFailed       = "execution.failed"

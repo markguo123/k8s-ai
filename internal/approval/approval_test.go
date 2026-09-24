@@ -137,6 +137,50 @@ func TestIsReadOnlyCommand(t *testing.T) {
 	}
 }
 
+func TestShellBypassNeverReadOnlyAndRiskNotSafe(t *testing.T) {
+	bypass := []string{
+		"kubectl get pods | kubectl delete pod x",
+		"kubectl get pods | kubectl delete namespace prod",
+		"kubectl get pods | xargs kubectl delete pod",
+		`sh -c "kubectl delete pod x"`,
+		`bash -c "kubectl delete deployment/app"`,
+		"$(kubectl delete pod x)",
+		"`kubectl delete pod x`",
+		"echo PT94bmNsIH0= | base64 -d | sh",
+		"kubectl get pods | base64 -d | sh",
+		"kubectl get pods; kubectl delete deployment/app",
+		"kubectl get pods && kubectl delete namespace prod",
+	}
+	for _, cmd := range bypass {
+		if IsReadOnlyCommand(cmd) {
+			t.Errorf("shell 绕过变体不应为只读: %q", cmd)
+		}
+		if got := ClassifyCommand(cmd); got == model.RiskSafe {
+			t.Errorf("shell 绕过变体风险不应为 SAFE: %q", cmd)
+		}
+	}
+}
+
+func TestClassifyShellPipelineUsesMaxRisk(t *testing.T) {
+	cases := []struct {
+		cmd  string
+		want model.RiskLevel
+	}{
+		{"kubectl get pods | kubectl delete namespace prod", model.RiskCritical},
+		{"kubectl get pods | kubectl delete pod x", model.RiskHigh},
+		{"kubectl get pods | kubectl delete pvc data", model.RiskCritical},
+		{"kubectl get pods && kubectl delete service web", model.RiskCritical},
+		{"kubectl get pods --dry-run=client | kubectl delete pod x --dry-run=client", model.RiskMedium},
+		{"echo PT94bmNsIH0= | base64 -d | sh", model.RiskCritical},
+		{"kubectl get pods | grep crash", model.RiskMedium},
+	}
+	for _, c := range cases {
+		if got := ClassifyCommand(c.cmd); got != c.want {
+			t.Errorf("%s: risk = %s, want %s", c.cmd, got, c.want)
+		}
+	}
+}
+
 func TestPolicyRequiresApproval(t *testing.T) {
 	p := Policy{RequireApproval: true}
 	if !p.RequiresApproval() {

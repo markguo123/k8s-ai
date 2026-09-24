@@ -12,6 +12,7 @@ type Policy struct {
 	RequireApproval bool
 	SkipPermissions bool
 	DenyOps         []string
+	Mode            Mode
 }
 
 // RequiresApproval 判断写操作是否需要人类确认。

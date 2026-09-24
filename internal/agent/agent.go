@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/k8s-ai/k8s-ai/internal/approval"
 	"github.com/k8s-ai/k8s-ai/internal/audit"
 	"github.com/k8s-ai/k8s-ai/internal/llm"
 	"github.com/k8s-ai/k8s-ai/internal/session"
@@ -23,6 +24,8 @@ type Options struct {
 	Session  *session.Session
 	Approver Approver
 	Recorder audit.Recorder
+	// ApprovalPolicy 是统一的写操作审批决策；nil 时采用 strict + 要求审批（等价 v1）。
+	ApprovalPolicy *approval.Policy
 
 	MaxIterations  int
 	MaxToolCalls   int
@@ -43,11 +46,12 @@ type Agent struct {
 	// Input 是 UI → Agent 的消息流（用户输入/审批响应）。
 	Input chan any
 
-	LLM      llm.LLMClient
-	Tools    *tools.Registry
-	Session  *session.Session
-	Approver Approver
-	Recorder audit.Recorder
+	LLM            llm.LLMClient
+	Tools          *tools.Registry
+	Session        *session.Session
+	Approver       Approver
+	Recorder       audit.Recorder
+	ApprovalPolicy *approval.Policy
 
 	MaxIterations  int
 	MaxToolCalls   int
@@ -70,6 +74,7 @@ func New(opts Options) *Agent {
 		Session:        opts.Session,
 		Approver:       opts.Approver,
 		Recorder:       opts.Recorder,
+		ApprovalPolicy: opts.ApprovalPolicy,
 		MaxIterations:  opts.MaxIterations,
 		MaxToolCalls:   opts.MaxToolCalls,
 		Timeout:        opts.Timeout,
@@ -98,6 +103,13 @@ func New(opts Options) *Agent {
 	}
 	if a.HistoryTurns <= 0 {
 		a.HistoryTurns = 20
+	}
+	if a.ApprovalPolicy == nil {
+		// 未显式指定时默认 strict + 要求审批，与 v1 行为一致。
+		a.ApprovalPolicy = &approval.Policy{
+			Mode:            approval.ModeStrict,
+			RequireApproval: true,
+		}
 	}
 	return a
 }

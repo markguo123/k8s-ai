@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/k8s-ai/k8s-ai/internal/approval"
+	"github.com/k8s-ai/k8s-ai/internal/model"
 )
 
 func TestMemoryStoreCRUD(t *testing.T) {
@@ -109,5 +112,54 @@ func TestManagerNewSessionAutoID(t *testing.T) {
 	}
 	if s.ID == "" || s.Cluster != "prod" || s.Model != "qwen-plus" {
 		t.Fatalf("session = %+v", s)
+	}
+}
+
+func TestSessionApprovalGrants(t *testing.T) {
+	s := &Session{ID: "task-1", Cluster: "prod"}
+	g, ok := approval.NewGrant(approval.GrantRequest{
+		TaskID:    "task-1",
+		Operation: "scale",
+		Kind:      "deployments",
+		Name:      "web",
+		Namespace: "prod",
+		Cluster:   "prod",
+		Risk:      model.RiskMedium,
+	})
+	if !ok {
+		t.Fatal("medium write should produce a grant")
+	}
+	s.AddGrant(g)
+	if len(s.ApprovalGrants) != 1 {
+		t.Fatalf("ApprovalGrants len = %d, want 1", len(s.ApprovalGrants))
+	}
+	req := approval.GrantRequest{
+		TaskID:    "task-1",
+		Operation: "scale",
+		Kind:      "deployments",
+		Name:      "web",
+		Namespace: "prod",
+		Cluster:   "prod",
+		Risk:      model.RiskMedium,
+	}
+	if got := s.FindGrant(req); got == nil || got.ID != g.ID {
+		t.Fatalf("FindGrant = %+v, want %s", got, g.ID)
+	}
+	other := req
+	other.Namespace = "dev"
+	if got := s.FindGrant(other); got != nil {
+		t.Fatalf("grant must not cross namespace, got %+v", got)
+	}
+	s.RemoveGrantMatching(req)
+	if got := s.FindGrant(req); got != nil {
+		t.Fatalf("RemoveGrantMatching should remove matching grants, got %+v", got)
+	}
+}
+
+func TestSessionAddGrantIgnoresEmptyID(t *testing.T) {
+	s := &Session{ID: "task-1"}
+	s.AddGrant(approval.Grant{})
+	if len(s.ApprovalGrants) != 0 {
+		t.Fatalf("empty-id grant should not be persisted: %+v", s.ApprovalGrants)
 	}
 }

@@ -87,7 +87,8 @@ type AgentConfig struct {
 	MaxIterations   int           `mapstructure:"max_iterations"`
 	MaxToolCalls    int           `mapstructure:"max_tool_calls"`
 	Timeout         time.Duration `mapstructure:"timeout"`
-	ToolCalling     string        `mapstructure:"tool_calling"` // native | shim | auto
+	ToolCalling     string        `mapstructure:"tool_calling"`  // native | shim | auto
+	ApprovalMode    string        `mapstructure:"approval_mode"` // strict | smart（Phase C 才启用 smart）
 	RequireApproval bool          `mapstructure:"require_approval"`
 	SkipPermissions bool          `mapstructure:"skip_permissions"`
 	DenyOps         []string      `mapstructure:"deny_ops"`
@@ -208,6 +209,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("agent.max_tool_calls", 20)
 	v.SetDefault("agent.timeout", 5*time.Minute)
 	v.SetDefault("agent.tool_calling", "native")
+	v.SetDefault("agent.approval_mode", "strict")
 	v.SetDefault("agent.require_approval", true)
 	v.SetDefault("agent.skip_permissions", false)
 	v.SetDefault("agent.result_max_bytes", 8*1024)
@@ -353,6 +355,11 @@ func (c *Config) Validate() error {
 	case "native", "shim", "auto":
 	default:
 		return fmt.Errorf("agent.tool_calling must be one of native, shim, auto")
+	}
+	switch c.Agent.ApprovalMode {
+	case "strict", "smart":
+	default:
+		return fmt.Errorf("agent.approval_mode must be one of strict, smart")
 	}
 	if c.Agent.ResultMaxBytes <= 0 || c.Agent.TurnMaxBytes <= 0 || c.Agent.CmdMaxBytes <= 0 {
 		return fmt.Errorf("agent result/turn/cmd max bytes must be > 0")

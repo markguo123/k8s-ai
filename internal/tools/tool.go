@@ -33,6 +33,14 @@ type ToolResult struct {
 	Redacted  bool   // 是否发生了脱敏
 }
 
+// MetadataDescriber 是可选接口：为模型可见的 Tool Schema 提供静态安全元数据前缀。
+// 该 metadata 仅用于帮助模型选择工具，不作为安全边界；实际安全判断始终以
+// Tool.IsReadOnly / Tool.Risk 为最终依据（Agent Loop 不变）。
+type MetadataDescriber interface {
+	// SchemaMetadata 返回形如 "[READ ONLY][RISK: SAFE][APPROVAL REQUIRED: NO]" 的稳定前缀。
+	SchemaMetadata() string
+}
+
 // ResultError 包装工具级错误：回传 LLM 继续调查，不中断 Loop。
 func ResultError(msg string) ToolResult {
 	return ToolResult{Data: map[string]any{"error": msg}, Text: "错误：" + msg}
