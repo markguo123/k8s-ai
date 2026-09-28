@@ -96,6 +96,7 @@ func TestTruncateLogs(t *testing.T) {
 		t.Fatalf("单条超长行应完整保留: %d", len(single))
 	}
 }
+
 // TestListSecretMetaStripsData 验证 ListSecretMeta 只暴露元数据与键名，
 // Secret 内容值在采集边界剥离，绝不进入应用/证据/LLM/会话/审计（AGENTS.md LLM Safety）。
 func TestListSecretMetaStripsData(t *testing.T) {

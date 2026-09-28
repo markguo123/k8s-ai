@@ -1,9 +1,14 @@
-# k8s-ai 二期：Agent 写操作权限示例（RBAC）
+# k8s-ai 二/三期：Agent 写操作与资源创建权限示例（RBAC）
 #
 # ⚠️ 说明：
 #   - 默认 deploy/clusterrole.yaml 保持只读（scan 巡检 + chat 只读调查）。
 #   - 仅当需要 k8s-ai chat 执行"修复操作"（patch/scale/restart/delete）时，
 #     才按需授予以下写权限；LLM 永远不是权限主体，真实边界来自 RBAC。
+#   - 三期创建通道（create_resource）用 Server-Side Apply 提交，需要 create + patch
+#     （覆盖已有对象时还需 update）；server dry run 同样按 create/patch 鉴权。
+#   - secrets 只授 create/patch/update：k8s-ai 不会读取 Secret 内容值
+#     （创建时只写 stringData 的 @generate 占位符，由执行器生成随机值），
+#     因此这里刻意不给 secrets 的 get/list/watch，也不给 delete。
 #   - 建议按最小权限裁剪 resources/verbs（如不需要 delete 就删除）。
 #   - 使用方法：kubectl apply -f deploy/rbac-write.example.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -13,13 +18,27 @@ metadata:
 rules:
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
-    verbs: ["get", "list", "watch", "patch", "update", "scale"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "scale"]
   - apiGroups: [""]
     resources: ["pods", "configmaps", "services", "endpoints", "events", "namespaces", "nodes", "persistentvolumeclaims", "persistentvolumes"]
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
+    resources: ["pods", "configmaps", "services", "namespaces", "serviceaccounts", "limitranges", "resourcequotas"]
+    # create/patch/update 供三期创建通道（SSA）使用；delete 仅供二期修复操作
+    verbs: ["create", "patch", "update"]
+  - apiGroups: [""]
     resources: ["pods", "configmaps", "services"]
     verbs: ["patch", "update", "delete"]
+  - apiGroups: [""]
+    # Secret 只创建/覆盖，永不读取内容值（AGENTS.md LLM Safety / SECURITY.md §3）
+    resources: ["secrets"]
+    verbs: ["create", "patch", "update"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["create", "patch", "update"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies"]
+    verbs: ["create", "patch", "update"]
   - apiGroups: ["storage.k8s.io"]
     resources: ["storageclasses"]
     verbs: ["get", "list", "watch"]

@@ -6,8 +6,8 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sort"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -83,6 +83,17 @@ func NewClientset(opts Options) (kubernetes.Interface, error) {
 // NewClientWithClientset 用已有 clientset 构造只读客户端（测试注入用）。
 func NewClientWithClientset(cs kubernetes.Interface) *Client {
 	return &Client{clientset: cs}
+}
+
+// NewRESTConfig 返回与只读门面同源的 rest.Config（同一 kubeconfig/context/限流口径）。
+// 三期写通道用它构造 dynamic client 与 discovery/RESTMapper，构造动作只在 internal/executor。
+func NewRESTConfig(opts Options) (*rest.Config, error) {
+	rc, err := buildRESTConfig(opts)
+	if err != nil {
+		return nil, err
+	}
+	applyLimits(rc, opts)
+	return rc, nil
 }
 
 func buildRESTConfig(opts Options) (*rest.Config, error) {
