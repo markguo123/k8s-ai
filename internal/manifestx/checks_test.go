@@ -148,11 +148,11 @@ metadata:
   namespace: d
 type: Opaque
 stringData:
-  password: "@generate"
+  password: $GENERATE
 `, testOpts())
 	o := objs[0]
 	if o.HasErrors() {
-		t.Fatalf("@generate 通道应放行: %+v", o.Errors())
+		t.Fatalf("占位符通道应放行（不带引号也必须能解析）: %+v", o.Errors())
 	}
 	if len(o.SecretKeys) != 1 || o.SecretKeys[0].Key != "password" || !o.SecretKeys[0].Generated {
 		t.Fatalf("Secret 指纹错误: %+v", o.SecretKeys)
@@ -212,7 +212,7 @@ func TestSecretDataAndErrors(t *testing.T) {
 		t.Fatalf("非法 base64 应报错: %+v", objs[0].Findings)
 	}
 	// 占位符只能出现在 stringData。
-	objs = mustParse(t, "apiVersion: v1\nkind: Secret\nmetadata:\n  name: s\n  namespace: d\ndata:\n  token: \""+PlaceholderGenerate+"\"\n", opts)
+	objs = mustParse(t, "apiVersion: v1\nkind: Secret\nmetadata:\n  name: s\n  namespace: d\ndata:\n  token: "+PlaceholderGenerate+"\n", opts)
 	if !hasFinding(objs, CodeSecretBadDataPlaceh) {
 		t.Fatalf("data 中的占位符应报错: %+v", objs[0].Findings)
 	}

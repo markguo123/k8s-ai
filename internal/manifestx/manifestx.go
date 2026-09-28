@@ -53,6 +53,7 @@ const (
 	CodeSecretNoKeys        = "secret_no_keys"             // Secret 没有任何 key
 	CodeSecretInvalidData   = "secret_invalid_data"        // data 字段不是合法 base64
 	CodeSecretBadDataPlaceh = "secret_placeholder_in_data" // 占位符只能用在 stringData
+	CodeSecretAccessOff     = "secret_access_off"          // agent.secret.access=off，禁止创建 Secret
 )
 
 // Finding 是一条结构化校验结论（可定位字段，进入审批提案）。

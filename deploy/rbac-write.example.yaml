@@ -7,7 +7,7 @@
 #   - 三期创建通道（create_resource）用 Server-Side Apply 提交，需要 create + patch
 #     （覆盖已有对象时还需 update）；server dry run 同样按 create/patch 鉴权。
 #   - secrets 只授 create/patch/update：k8s-ai 不会读取 Secret 内容值
-#     （创建时只写 stringData 的 @generate 占位符，由执行器生成随机值），
+#     （创建时只写 stringData 的 $GENERATE 占位符，由执行器生成随机值），
 #     因此这里刻意不给 secrets 的 get/list/watch，也不给 delete。
 #   - 建议按最小权限裁剪 resources/verbs（如不需要 delete 就删除）。
 #   - 使用方法：kubectl apply -f deploy/rbac-write.example.yaml

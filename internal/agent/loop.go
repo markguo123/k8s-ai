@@ -420,6 +420,20 @@ func (a *Agent) grantRequestFor(t tools.Tool, args json.RawMessage) approval.Gra
 		if req.Namespace == "" {
 			req.Namespace = a.Session.Namespace
 		}
+		// 工具自己声明授权目标时以工具为准：入参里没有 kind/name 的工具
+		// （如 create_resource 从 manifest 里解析）若留空 Kind，会让一条 MEDIUM 授权
+		// 覆盖同风险档的任意调用；无法收敛到单一目标时直接禁用授权。
+		if gt, ok := t.(tools.GrantTargeter); ok {
+			kind, name, namespace, okTarget := gt.GrantTarget(args)
+			if !okTarget {
+				req.NoGrant = true
+				return req
+			}
+			req.Kind, req.Name, req.Namespace = kind, name, namespace
+			if req.Namespace == "" {
+				req.Namespace = a.Session.Namespace
+			}
+		}
 		return req
 	}
 	var raw struct {

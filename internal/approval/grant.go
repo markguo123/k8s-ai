@@ -25,6 +25,12 @@ type GrantRequest struct {
 	Cluster   string
 	Risk      model.RiskLevel
 	Shell     bool
+	// NoGrant opts a call out of the grant mechanism entirely. It is set when a
+	// write call cannot be reduced to one kind/name target (for example
+	// create_resource with several objects): an empty Kind would otherwise match
+	// every grant of the same risk ceiling and silently authorize unrelated
+	// mutations.
+	NoGrant bool
 }
 
 // Grant is a task-scoped authorization record created after the user
@@ -52,7 +58,7 @@ func GrantEligibleRisk(r model.RiskLevel) bool {
 // NewGrant creates a task-scoped grant for a matching request. It returns
 // false when the operation is not eligible (shell, SAFE, HIGH, CRITICAL).
 func NewGrant(req GrantRequest) (Grant, bool) {
-	if req.Shell || !GrantEligibleRisk(req.Risk) {
+	if req.Shell || req.NoGrant || !GrantEligibleRisk(req.Risk) {
 		return Grant{}, false
 	}
 	return Grant{
@@ -76,6 +82,9 @@ func (g Grant) Matches(req GrantRequest) bool {
 		return false
 	}
 	if req.Shell {
+		return false
+	}
+	if req.NoGrant {
 		return false
 	}
 	if riskOrder[req.Risk] > riskOrder[g.RiskCeiling] {

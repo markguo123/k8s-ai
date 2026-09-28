@@ -2,6 +2,7 @@ package manifestx
 
 import (
 	"fmt"
+	"strings"
 )
 
 // buildObject 组装单个对象：身份字段 → 映射与 scope → 命名空间 → 门禁 →
@@ -27,11 +28,23 @@ func buildObject(index int, content map[string]any, opts Options) Object {
 
 	keys, secretFindings := inspectSecrets(&o)
 	findings = append(findings, secretFindings...)
+	findings = append(findings, secretAccessFinding(&o, opts.SecretAccess)...)
 	o.SecretKeys = keys
 	o.Findings = findings
 	o.Fingerprint = Fingerprint(content)
 	o.Manifest = DisplayManifest(content, keys)
 	return o
+}
+
+// secretAccessFinding 实现 agent.secret.access=off 闸门：
+// 该档位下连「值由执行器生成」的 Secret 创建也一并禁止，判断落在代码层而非提示词。
+func secretAccessFinding(o *Object, access string) []Finding {
+	if !o.IsSecret() || !strings.EqualFold(strings.TrimSpace(access), "off") {
+		return nil
+	}
+	return []Finding{{Code: CodeSecretAccessOff, Severity: SeverityError, Field: "kind",
+		Message: "agent.secret.access=off，当前配置禁止创建 Secret",
+		Fix:     "如确需创建，请由管理员把 agent.secret.access 设为 create_only（只放行占位符生成）"}}
 }
 
 // resolveMapping 解析 GVK→GVR 与 scope。

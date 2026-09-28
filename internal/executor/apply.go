@@ -27,7 +27,8 @@ const FieldManager = "k8s-ai"
 
 // SecretPlaceholder 与 manifestx.PlaceholderGenerate 同值：
 // manifest 里只出现占位符，真实值由执行器在提交前的深拷贝里生成（三期 D-06/D-12）。
-const SecretPlaceholder = "@generate"
+// 不能以 YAML 指示符开头（模型通常不加引号写进清单）。
+const SecretPlaceholder = "$GENERATE"
 
 const (
 	secretKeyLength  = 32
@@ -238,7 +239,7 @@ func prepareObject(content map[string]any) (*unstructured.Unstructured, error) {
 	return obj, nil
 }
 
-// materializeSecret 把 stringData 里的 @generate 换成 crypto/rand 生成的随机值。
+// materializeSecret 把 stringData 里的占位符换成 crypto/rand 生成的随机值。
 //
 // 红线（AGENTS.md LLM Safety）：Secret 内容值不得由模型编写，也不得回流到
 // 工具结果 / 会话 / 审计。因此这里只接受占位符，且只写入深拷贝后的对象。

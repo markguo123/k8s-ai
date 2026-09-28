@@ -10,7 +10,10 @@ import (
 
 // PlaceholderGenerate 是 Secret 值占位符：值由 Executor 在提交前生成随机内容，
 // 模型编写的 manifest 里只出现占位符（三期 D-06/D-12，create_only 通道）。
-const PlaceholderGenerate = "@generate"
+//
+// 选型约束：这个串会由模型直接写进 YAML 且通常不带引号，因此它不能以 YAML
+// 指示符开头（@ ! % & * ` 等会让整段清单解析失败，"$GENERATE" 是安全的）。
+const PlaceholderGenerate = "$GENERATE"
 
 // secretValueSource 是 Secret key 的值来源。
 const (

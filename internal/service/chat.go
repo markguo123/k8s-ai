@@ -14,6 +14,7 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/executor"
 	"github.com/k8s-ai/k8s-ai/internal/kubernetes"
 	"github.com/k8s-ai/k8s-ai/internal/llm"
+	"github.com/k8s-ai/k8s-ai/internal/manifestx"
 	"github.com/k8s-ai/k8s-ai/internal/model"
 	"github.com/k8s-ai/k8s-ai/internal/scanner"
 	"github.com/k8s-ai/k8s-ai/internal/session"
@@ -99,6 +100,9 @@ type chatService struct {
 	newReader      func() (scanner.Reader, error)
 	scanFactory    func() tools.ScanRunner
 	newWriteRunner func() (tools.WriteRunner, error)
+	// proposals 跨轮次保存创建提案指纹：每轮 Chat 都会重建工具实例，
+	// dry run 与 apply 通常不在同一轮，所以缓存必须挂在服务上。
+	proposals *tools.ProposalStore
 }
 
 // NewChat 创建二期 Agent 服务。
@@ -125,6 +129,7 @@ func NewChat(cfg *config.Config, newReader func() (scanner.Reader, error), llmFa
 		newReader:      newReader,
 		scanFactory:    scanFactory,
 		newWriteRunner: newWriteRunner,
+		proposals:      tools.NewProposalStore(),
 	}
 }
 
@@ -160,6 +165,18 @@ func chatWriteRunner(cfg *config.Config) (tools.WriteRunner, error) {
 	if bin == "" {
 		bin = "kubectl"
 	}
+	// 三期创建通道（R3）需要 dynamic + discovery：RESTConfig 与只读门面同源，
+	// 缺它时 executor 会报「写通道未装配」而不是静默降级。
+	restConfig, err := kubernetes.NewRESTConfig(kubernetes.Options{
+		Kubeconfig: cfg.Kubernetes.Kubeconfig,
+		Context:    cfg.Kubernetes.Context,
+		Timeout:    cfg.Kubernetes.Timeout,
+		QPS:        cfg.Kubernetes.QPS,
+		Burst:      cfg.Kubernetes.Burst,
+	})
+	if err != nil {
+		return nil, err
+	}
 	return executor.NewRunner(executor.Options{
 		KubectlBin: bin,
 		Kubeconfig: cfg.Kubernetes.Kubeconfig,
@@ -167,6 +184,7 @@ func chatWriteRunner(cfg *config.Config) (tools.WriteRunner, error) {
 		DenyOps:    cfg.Agent.DenyOps,
 		Clientset:  cs,
 		Namespace:  cfg.Kubernetes.Namespace,
+		RESTConfig: restConfig,
 	}), nil
 }
 
@@ -207,6 +225,25 @@ func chatScanOptions(cfg *config.Config) model.ScanOptions {
 	}
 }
 
+// createToolOptions 把 agent.create.* / agent.secret.* 映射为创建工具的门禁与上限（R3.2）。
+func createToolOptions(cfg *config.Config) tools.CreateOptions {
+	limits := manifestx.Limits{
+		MaxObjects: cfg.Agent.Create.MaxObjectsPerCall,
+		MaxBytes:   cfg.Agent.Create.MaxManifestBytes,
+	}
+	return tools.CreateOptions{
+		Policy: manifestx.Policy{
+			DenyKinds:    cfg.Agent.Create.DenyKinds,
+			AllowKinds:   cfg.Agent.Create.AllowKinds,
+			ClusterKinds: cfg.Agent.Create.ClusterKinds,
+		},
+		Limits:           limits,
+		DefaultNamespace: cfg.Kubernetes.Namespace,
+		SecretAccess:     cfg.Agent.Secret.Access,
+		VerifyTimeout:    executor.DefaultVerifyTimeout,
+	}
+}
+
 // Chat 编排一轮对话：装配 Agent → 转发事件 → 持久化会话。
 func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan string) (<-chan ChatEvent, error) {
 	sess, err := s.sessions.Get(req.SessionID)
@@ -235,6 +272,15 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 	for _, wt := range tools.NewWriteTools(writeRunner) {
 		if err := reg.Register(wt); err != nil {
 			return nil, err
+		}
+	}
+	// 三期创建通道（R3）：结构化 create_resource，注册在 disabled_tools 之前，
+	// 这样 agent.disabled_tools 里写 create_resource 就能摘掉它。
+	if s.cfg.Agent.Create.Enabled {
+		if runner, ok := writeRunner.(tools.CreateRunner); ok {
+			if err := reg.Register(tools.NewCreateTool(createToolOptions(s.cfg), runner, s.proposals, sess.ID)); err != nil {
+				return nil, err
+			}
 		}
 	}
 	for _, name := range s.cfg.Agent.DisabledTools {
