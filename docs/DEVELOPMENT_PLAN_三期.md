@@ -1,7 +1,7 @@
 # k8s-ai 三期开发计划：资源创建能力（Resource Create）
 
-- 版本：v1.6
-- 日期：2026-09-24（v1.6 进度回填：2026-09-29）
+- 版本：v1.7
+- 日期：2026-09-24（v1.7 进度回填：2026-09-29）
 - 状态：进行中（R0.2 + R1 + R2 + R3 + R4 已落地，R5 起未开始）
 - 当前基线版本：v2.7.0（git tag 与 Makefile VERSION 一致；CHANGELOG / VERSIONING / PROJECT_STATUS 顶部仍停在 v2.6.0，由 R0.6 补齐）
 - 目标版本：v3.0.0
@@ -12,6 +12,8 @@
   载荷均无明文；`agent.secret.access` 配置闸门只接受 `off`/`create_only`（`read_write` 启动即拒）；
   `kubectl create secret` 红线回归用例补齐；`create_resource.Describe` 输出人类可读审批卡
   （对象清单 + 变更说明 + Secret 脱敏清单）。`go test ./...`、`go vet ./...`、`gofmt` 全绿。
+  R4 验收复核：逐项核对 R4.1~R4.9 验收标准，补 `approval.Policy.Evaluate` 的 `Input.Denied` 用例 3 条，确认 Code Guard 硬拒绝优先于
+  `SkipPermissions`、`RequireApproval=false` 与只读自动放行三条捷径；「创建首提必批」由 Agent 循环用例覆盖（Grant 只豁免第二次同类 MEDIUM 写）。
   下一步：R5 内置 Skill 元数据与接口契约；R2/R3/R4 真实集群端到端与 R8 准出需人工点验。
 - 需求输入：[RESOURCE_CREATE_DESIGN.md](./RESOURCE_CREATE_DESIGN.md)、[APPROVAL_V2_DESIGN.md](./APPROVAL_V2_DESIGN.md)、AGENTS.md
 - 编号说明：本计划用 **R0–R8** 作为主线编号。AGENTS.md 中预留的 Phase 3（MCP 外部工具、
@@ -28,6 +30,7 @@
 | v1.3 | 2026-09-28 | | Skill 排期签收：通用 Skill 引擎与用户自定义 Skill 目录整体移到四期（三期资源创建能力落地后再讨论方案并排期）。D-15 改为「三期只冻结 Skill 数据模型与 Registry 读接口」；R5.9 收口为单条接口冻结任务（0.25d），删去 R5.10、R6.6，`agent.skills.*` 配置、用户 Skill 目录发现与门禁、Skill 目录注入 Agent 上下文全部移出三期；§3 里程碑、§6 出口标准、§7 落点、§8 风险、§9 工作量随之调整（77 条 / 37.50 人日） |
 | v1.5 | 2026-09-28 | | 进度回填：R3（R3.1~R3.11）已完成。新增 `internal/tools/create.go`（create_resource 两步式：dry_run 提案 / apply 需同指纹提案）、`internal/tools/proposal.go`（会话级提案指纹存储）、`internal/approval/create_risk.go`（Kind/scope/危险字段风险分级）；`tools.GrantTargeter` + `Grant.NoGrant` 收窄可复用授权；`internal/service/chat.go` 装配 `agent.create.*` 与写通道 RESTConfig；`agent.secret.access=off` 由 manifestx 硬闸门落地；Secret 占位符 `@generate` → `$GENERATE`（YAML 安全）；tools/approval/service 三层新增单测，`go test ./...`、`go vet ./...` 全绿 |
 | v1.6 | 2026-09-29 | | 进度回填：R4（R4.1~R4.9）已完成。R4.1/R4.2/R4.3 在 R3 期间随 `create_risk.go`、`create.go` 校验链与 decision 用例落地，本轮回补 kubectl 通道 forbidden 回归用例；新增 `internal/tools/secret_values.go`（`SecretValueKey`/`SecretValuePrompt`/`SecretValuePlanner`/`PendingSecretValues`、`secretTouches` 审计载荷、`WithSecretValues` 带外值通道）、`internal/executor/apply.go` 的 `materializeSecret`（`$GENERATE` 用 crypto/rand 生成、`$ASK` 取人工输入值、`data` 字段与模型自填值硬拒）与 `FingerprintSecretValue`；`agent.SecretValueApprover` + `loop.collectSecretValues`（缺值整批不提交、拒绝文案区分已输入与已放弃）、`service.ChatApprover.RequestSecretValue`（CLI 走 `term.ReadPassword` 不回显、Web 走密码输入框且值不回显）、`audit` 两个 Secret 事件、`config.validateSecretAccess`；`create_resource.Describe` 落地 R4.9 审批卡文案；新增 Secret 专项测试文件并扩展 tools/agent/service/config/approval 用例 |
+| v1.7 | 2026-09-29 | | R4 验收复核（无生产代码改动）：逐项核对 R4.1~R4.9 验收标准；`internal/approval/decision_test.go` 补 3 条 `Input.Denied` 用例，锁定 Code Guard 硬拒绝优先于 `SkipPermissions`、`RequireApproval=false` 与只读自动放行捷径（此前 `Denied` 分支无用例）；确认「创建首提必批」由 `internal/agent/approval_loop_test.go` 覆盖（首次写必过审批、Grant 只豁免第二次同类 MEDIUM 写，HIGH 与 shell 永不命中）。R4 状态不变，`go build`/`go vet`/`go test ./...` 全绿 |
 
 ---
 

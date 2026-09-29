@@ -85,6 +85,28 @@ func TestPolicyEvaluateStrict(t *testing.T) {
 			in:     Input{ReadOnly: false, Risk: model.RiskMedium},
 			want:   DecisionAuto,
 		},
+		{
+			// Code Guard DENY outranks every automation shortcut: skip-permissions
+			// only removes the human confirmation step, never the code-level gate.
+			name:   "code guard deny beats skip-permissions",
+			policy: Policy{Mode: ModeStrict, RequireApproval: true, SkipPermissions: true},
+			in:     Input{ReadOnly: false, Risk: model.RiskMedium, Denied: true},
+			want:   DecisionDeny,
+		},
+		{
+			name:   "code guard deny beats require_approval false",
+			policy: Policy{Mode: ModeSmart, RequireApproval: false},
+			in:     Input{ReadOnly: false, Risk: model.RiskMedium, Shell: true, Denied: true},
+			want:   DecisionDeny,
+		},
+		{
+			// A read-only call that Code Guard still rejects (namespace missing,
+			// kind blacklisted) must not fall into the auto-execute branch.
+			name:   "code guard deny beats read-only auto",
+			policy: Policy{Mode: ModeStrict, RequireApproval: true},
+			in:     Input{ReadOnly: true, Risk: model.RiskSafe, Denied: true},
+			want:   DecisionDeny,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
