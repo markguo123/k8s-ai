@@ -142,6 +142,16 @@ type Object struct {
 // Content 返回待提交的对象内容（可能含 Secret 明文，仅限 executor 提交路径使用）。
 func (o *Object) Content() map[string]any { return o.content }
 
+// CloneForStore 返回独立的深拷贝，供提案存储等跨调用复用（content 保持值语义）。
+func (o *Object) CloneForStore() Object {
+	clone := *o
+	if o.content != nil {
+		clone.content = deepCopyMap(o.content)
+	}
+	return clone
+}
+
+
 // HasErrors 判断是否存在阻断创建的结论。
 func (o *Object) HasErrors() bool {
 	for _, f := range o.Findings {

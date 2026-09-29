@@ -282,8 +282,9 @@ create_resource(manifest, mode)
 | 未命中上表的 Kind（CRD / 自定义资源，任意 scope） | HIGH（必人工审批） |
 | 目标资源已存在却要求覆盖 | 拒绝，转 patch/update 提案 |
 
-该表落地为 Code Guard 的确定性函数，而不是 prompt 文字。Skill 元数据里的风险规则
-可以提出“提升建议”，最终由 Code Guard 的强规则裁决。
+该表落地为 Code Guard 的确定性函数，而不是 prompt 文字。Skill（含用户 Skill）里的风险规则
+只能提出“升档建议”，最终由 Code Guard 的强规则裁决；CRD / 未知 Kind 的 HIGH 基线
+不因命中任何 Skill 而降级或免审。
 
 ### 5.2 Code Guard 强化点
 
@@ -369,9 +370,10 @@ Skill 数据模型 + `Registry` 读接口 + `Source` 来源字段 + `Reload()` �
 保证四期加引擎时不必返工。通用 Skill 引擎与用户自定义 Skill 目录（目录发现、来源标记、门禁、
 Agent 按需加载调用）整体排在四期，在三期资源创建能力交付后再讨论方案并排期。
 
-四期开放用户 Skill 时必须守住的三条边界：只声明方法论与校验规则（不含执行动作，不新增写通道）；
+四期开放用户 Skill 时必须守住的边界：只声明方法论与校验规则（不含执行动作，不新增写通道）；
 风险只升不降，且引用的 rule / check kind 必须命中内置注册表；与内置 Skill 同名一律拒绝加载。
-写操作仍然只有 `create_resource` → `internal/executor` 一条路。
+用户 Skill 不是安全权威：不能覆盖 Code Guard 的基线风险，尤其不能因命中 CRD / 未知 Kind
+而降低默认 HIGH 或豁免人工审批。写操作仍然只有 `create_resource` → `internal/executor` 一条路。
 
 ### 6.2 首批 Skill 域（按风险/生命周期域，不按 Kind）
 

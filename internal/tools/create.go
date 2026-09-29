@@ -56,6 +56,8 @@ const (
 	errCreateManifestRejected    = "manifest_rejected"
 	errCreateValidationFailed    = "validation_failed"
 	errCreateProposalRequired    = "proposal_required"
+	errCreateProposalNotFound    = "proposal_not_found"
+	errCreateProposalMismatch    = "proposal_mismatch"
 	errCreateAlreadyExists       = "already_exists"
 	errCreateNamespaceMissing    = "namespace_missing"
 	errCreateApplyFailed         = "apply_failed"
@@ -93,7 +95,7 @@ func (t *createTool) SchemaMetadata() string {
 func (t *createTool) Description() string {
 	return "创建 Kubernetes 资源（YAML/JSON，支持一次多个对象）。固定两步：\n" +
 		"1) mode=dry_run（默认）：服务端全量校验并返回创建提案（对象清单、风险等级与原因、待改字段），不改变集群；\n" +
-		"2) 用户确认后用完全相同的 manifest 再调一次 mode=apply 才会真正创建；指纹不一致会被拒绝，必须重新 dry_run。\n" +
+		"2) 用户确认后用 dry_run 返回的 proposal_id 再调一次 mode=apply，即可原样复用那份已校验的清单（也可带同一 manifest 做一致性校验）；内容不一致会被拒绝，必须重新 dry_run。\n" +
 		"约束：manifest 必须是最终生效的纯 YAML/JSON，不接受 helm/kustomize 模板表达式；" +
 		"每个对象必须有 apiVersion/kind/metadata.name；namespaced 资源省略 namespace 时按默认命名空间创建。\n" +
 		"Secret 的值只允许两种来源，禁止把用户口头给的密码写进清单：\n" +
@@ -105,23 +107,25 @@ func (t *createTool) Description() string {
 
 func (t *createTool) InputSchema() any {
 	return objSchema(map[string]any{
-		"manifest":        strProp("YAML/JSON 清单，多个对象用 --- 分隔；必须是最终生效内容，不能含模板表达式"),
+		"manifest":        strProp("YAML/JSON 清单，多个对象用 --- 分隔；必须是最终生效内容，不能含模板表达式。apply 复用 dry_run 的 proposal_id 时可省略"),
+		"proposal_id":     strProp("dry_run 成功返回的提案 ID；apply 时携带它即可复用那份已过服务端校验的原始清单"),
 		"mode":            strProp("dry_run＝服务端校验并产出提案（默认，不改变集群）；apply＝提交已确认的同一份清单"),
 		"verify":          boolProp("apply 后是否等待对象就绪（Deployment 可用副本、Pod Running 等），默认 false"),
 		"timeout_seconds": intProp("就绪等待上限秒数，仅 verify=true 时生效，默认 30"),
-	}, "manifest")
+	}, "mode")
 }
 
 // createArgs 是一次调用的入参视图。
 type createArgs struct {
 	manifest      string
+	proposalID    string
 	apply         bool
 	verify        bool
 	verifyTimeout time.Duration
 }
 
 func (t *createTool) parseInput(input json.RawMessage) (createArgs, error) {
-	raw, err := ParseArgs(input, "manifest")
+	raw, err := ParseArgs(input)
 	if err != nil {
 		return createArgs{}, err
 	}
@@ -134,6 +138,7 @@ func (t *createTool) parseInput(input json.RawMessage) (createArgs, error) {
 	}
 	args := createArgs{
 		manifest:      raw["manifest"],
+		proposalID:    strings.TrimSpace(raw["proposal_id"]),
 		apply:         mode == CreateModeApply,
 		verify:        strings.EqualFold(strings.TrimSpace(raw["verify"]), "true"),
 		verifyTimeout: t.opts.VerifyTimeout,
@@ -152,15 +157,18 @@ func (t *createTool) Execute(ctx context.Context, input json.RawMessage) (ToolRe
 	if t.runner == nil {
 		return resultWithCode(errCreateRunnerUnavail, "创建通道未装配（缺少集群连接）", nil), nil
 	}
+	if args.apply {
+		return t.apply(ctx, args), nil
+	}
+	if strings.TrimSpace(args.manifest) == "" {
+		return resultWithCode(errCreateInvalidArguments, "dry_run 必须提供 manifest", nil), nil
+	}
 	objs, err := manifestx.Parse(args.manifest, t.parseOptions())
 	if err != nil {
 		return resultWithCode(errCreateManifestRejected, err.Error(), nil), nil
 	}
 	if manifestx.HasErrors(objs) {
 		return t.rejected(objs, errCreateValidationFailed, "清单校验未通过，未做任何变更"), nil
-	}
-	if args.apply {
-		return t.apply(ctx, args, objs), nil
 	}
 	return t.dryRun(ctx, args, objs), nil
 }
@@ -203,9 +211,13 @@ func (t *createTool) dryRun(ctx context.Context, args createArgs, objs []manifes
 		data["error"] = "服务端校验未通过，修正清单后重新 dry_run"
 		return ToolResult{Data: data, Text: t.summaryText(data)}
 	}
-	// 提案登记：apply 阶段只接受这里记下的指纹序列。
-	t.proposals.Record(t.sessionID, manifestx.Fingerprints(objs), describeObjects(objs))
-	data["next"] = "把上面的提案（对象清单 + 风险原因）转述给用户确认（完整清单 YAML 已由界面展示，不要在回复里重复输出 YAML 全文）；用户同意后，用完全相同的 manifest 调 mode=apply"
+	// 提案登记：apply 阶段可只凭 proposal_id 复用，也可带 manifest 走指纹一致性校验。
+	provID := fmt.Sprintf("prop-%d", time.Now().UnixNano())
+	manifestJoined := strings.Join(manifestBlocks(objs), "\n---\n")
+	t.proposals.RecordFull(t.sessionID, provID, manifestJoined, manifestx.Fingerprints(objs), describeObjects(objs), objs)
+	data["proposalId"] = provID
+	data["proposalManifest"] = manifestJoined
+	data["next"] = "把上面的提案（对象清单 + 风险原因）转述给用户确认（完整清单 YAML 已由界面展示，不要在回复里重复输出 YAML 全文）；用户同意后，用 mode=apply 且带上本次返回的 proposal_id=" + provID + " 即可复用这份已校验的原始清单"
 	if pending := PendingSecretValues(objs); len(pending) > 0 {
 		names := make([]string, 0, len(pending))
 		for _, key := range pending {
@@ -217,13 +229,13 @@ func (t *createTool) dryRun(ctx context.Context, args createArgs, objs []manifes
 	return ToolResult{Data: data, Text: t.summaryText(data)}
 }
 
-// apply 提交已确认的清单：逐对象独立处理，不做批量回滚（与 kubectl apply 语义一致）。
-func (t *createTool) apply(ctx context.Context, args createArgs, objs []manifestx.Object) ToolResult {
-	fingerprints := manifestx.Fingerprints(objs)
-	if ok, reason := t.proposals.Match(t.sessionID, fingerprints); !ok {
-		return resultWithCode(errCreateProposalRequired,
-			"未执行 dry run 或清单与提案不一致，拒绝创建："+reason+
-				"；请先用同一份 manifest 调 mode=dry_run，把提案交给用户确认", nil)
+// apply 提交已确认的清单：优先复用 dry_run 已保存的原始对象（proposal_id），
+// 请求体不再强制重建 manifest，避免模型改写导致指纹漂移而被拒绝。
+// 逐对象独立处理，不做批量回滚（与 kubectl apply 语义一致）。
+func (t *createTool) apply(ctx context.Context, args createArgs) ToolResult {
+	objs, code, msg := t.resolveApplyObjects(args)
+	if code != "" {
+		return resultWithCode(code, msg, nil)
 	}
 	// Secret 值通道（R4.5）：$ASK 的值必须在提交前备齐，缺一个就整批不提交，
 	// 否则会留下"建了一半、剩下缺值"这种无法回滚的中间态。
@@ -313,6 +325,44 @@ func (t *createTool) apply(ctx context.Context, args createArgs, objs []manifest
 		data["note"] = "部分对象未创建；失败对象不会回滚已成功部分（与 kubectl apply 一致），请按 objects[].error 逐个处理"
 	}
 	return ToolResult{Data: data, Text: t.summaryText(data)}
+}
+
+// resolveApplyObjects 解析 apply 阶段要提交的对象：proposal_id 优先原样复用，否则退回指纹校验。
+func (t *createTool) resolveApplyObjects(args createArgs) ([]manifestx.Object, string, string) {
+	manifest := strings.TrimSpace(args.manifest)
+	if lp := t.proposals.Get(t.sessionID, args.proposalID); len(lp) > 0 {
+		if manifest != "" {
+			parsed, err := manifestx.Parse(manifest, t.parseOptions())
+			if err != nil {
+				return nil, errCreateManifestRejected, err.Error()
+			}
+			if manifestx.HasErrors(parsed) {
+				return nil, errCreateValidationFailed, "清单校验未通过，未做任何变更"
+			}
+			if !sameSequence(manifestx.Fingerprints(parsed), manifestx.Fingerprints(lp)) {
+				return nil, errCreateProposalMismatch,
+					"携带的 manifest 与本会话提案内容不一致：请去掉 manifest 仅用 proposal_id，或重新 dry_run"
+			}
+		}
+		return lp, "", ""
+	}
+	if manifest == "" {
+		return nil, errCreateProposalNotFound,
+			"未提供 proposal_id 或它已过期/不属于本会话；请先调 mode=dry_run 拿回提案，确认后用 proposal_id 或同一 manifest 调用 mode=apply"
+	}
+	parsed, err := manifestx.Parse(manifest, t.parseOptions())
+	if err != nil {
+		return nil, errCreateManifestRejected, err.Error()
+	}
+	if manifestx.HasErrors(parsed) {
+		return nil, errCreateValidationFailed, "清单校验未通过，未做任何变更"
+	}
+	if ok, reason := t.proposals.Match(t.sessionID, manifestx.Fingerprints(parsed)); !ok {
+		return nil, errCreateProposalRequired,
+			"未执行 dry run 或清单与提案不一致，拒绝创建："+reason+
+				"；请先用同一份 manifest 调 mode=dry_run，把提案交给用户确认"
+	}
+	return parsed, "", ""
 }
 
 // precheckObject 在提交前拦住「命名空间不存在」与「同名对象已存在」，
@@ -419,15 +469,19 @@ func (t *createTool) GuardRequest(input json.RawMessage) (approval.GuardRequest,
 	if err != nil {
 		return approval.GuardRequest{}, false
 	}
-	objs, err := manifestx.Parse(args.manifest, t.parseOptions())
-	if err != nil {
+	if !args.apply {
+		// dry_run 不产生写动作，门禁仅按清单静态要素判定。
+		objs, perr := manifestx.Parse(args.manifest, t.parseOptions())
+		if perr != nil || manifestx.HasErrors(objs) {
+			return approval.GuardRequest{}, false
+		}
+		return approval.GuardRequest{Subjects: t.subjectsFor(objs, false), DryRunVerified: true}, true
+	}
+	objs, code, _ := t.resolveApplyObjects(args)
+	if code != "" {
 		return approval.GuardRequest{}, false
 	}
-	verified := !args.apply
-	if args.apply {
-		verified, _ = t.proposals.Match(t.sessionID, manifestx.Fingerprints(objs))
-	}
-	return approval.GuardRequest{Subjects: t.subjectsFor(objs, args.apply), DryRunVerified: verified}, true
+	return approval.GuardRequest{Subjects: t.subjectsFor(objs, true), DryRunVerified: true}, true
 }
 
 // PendingSecretValues 实现 tools.SecretValuePlanner：申报本次 apply 需要向用户索取的 Secret 值。
@@ -437,8 +491,8 @@ func (t *createTool) PendingSecretValues(input json.RawMessage) ([]SecretValuePr
 	if err != nil || !args.apply {
 		return nil, false
 	}
-	objs, perr := manifestx.Parse(args.manifest, t.parseOptions())
-	if perr != nil {
+	objs, code, _ := t.resolveApplyObjects(args)
+	if code != "" {
 		return nil, false
 	}
 	keys := PendingSecretValues(objs)
@@ -466,8 +520,8 @@ func (t *createTool) Risk(input json.RawMessage) model.RiskLevel {
 	if !args.apply {
 		return model.RiskSafe
 	}
-	objs, err := manifestx.Parse(args.manifest, t.parseOptions())
-	if err != nil {
+	objs, code, _ := t.resolveApplyObjects(args)
+	if code != "" {
 		return model.RiskHigh
 	}
 	return t.riskFor(objs, true).Level
@@ -484,9 +538,27 @@ func (t *createTool) Describe(input json.RawMessage) (command, change string) {
 	if args.apply {
 		mode = CreateModeApply
 	}
-	objs, perr := manifestx.Parse(args.manifest, t.parseOptions())
-	if perr != nil {
-		return "create_resource mode=" + mode, "清单无法解析：" + perr.Error()
+	var objs []manifestx.Object
+	if args.apply {
+		resolved, code, msg := t.resolveApplyObjects(args)
+		objs = resolved
+		if code != "" {
+			// 提案不可用但请求体带 manifest 时仍展示脱敏清单供人工核对。
+			if strings.TrimSpace(args.manifest) != "" {
+				if parsed, perr := manifestx.Parse(args.manifest, t.parseOptions()); perr == nil && !manifestx.HasErrors(parsed) {
+					objs = parsed
+				}
+			}
+			if len(objs) == 0 {
+				return "create_resource mode=" + mode, "无法确定要创建的对象：" + code + ": " + msg
+			}
+		}
+	} else {
+		var perr error
+		objs, perr = manifestx.Parse(args.manifest, t.parseOptions())
+		if perr != nil {
+			return "create_resource mode=" + mode, "清单无法解析：" + perr.Error()
+		}
 	}
 	command = "create_resource mode=" + mode + " objects=" + strings.Join(describeObjects(objs), ", ")
 
@@ -556,8 +628,8 @@ func (t *createTool) GrantTarget(input json.RawMessage) (kind, name, namespace s
 	if err != nil || !args.apply {
 		return "", "", "", false
 	}
-	objs, perr := manifestx.Parse(args.manifest, t.parseOptions())
-	if perr != nil || len(objs) != 1 {
+	objs, code, _ := t.resolveApplyObjects(args)
+	if code != "" || len(objs) != 1 {
 		return "", "", "", false
 	}
 	o := objs[0]

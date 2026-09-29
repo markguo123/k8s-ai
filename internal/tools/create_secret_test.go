@@ -134,8 +134,15 @@ func TestCreateToolPendingSecretValuesOnlyInApplyMode(t *testing.T) {
 	if pending, need := planner.PendingSecretValues(createInput(t, secretAskManifest, CreateModeDryRun, nil)); need || len(pending) != 0 {
 		t.Fatalf("dry_run 不该向用户索取值: need=%v pending=%v", need, pending)
 	}
+	if _, err := tool.Execute(context.Background(), createInput(t, secretGenerateManifest, "", nil)); err != nil {
+		t.Fatal(err)
+	}
 	if pending, need := planner.PendingSecretValues(createInput(t, secretGenerateManifest, CreateModeApply, nil)); need || len(pending) != 0 {
 		t.Fatalf("$GENERATE 无需用户取值: need=%v pending=%v", need, pending)
+	}
+
+	if _, err := tool.Execute(context.Background(), createInput(t, secretAskManifest, "", nil)); err != nil {
+		t.Fatal(err)
 	}
 
 	pending, need := planner.PendingSecretValues(createInput(t, secretAskManifest, CreateModeApply, nil))

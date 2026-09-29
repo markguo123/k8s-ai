@@ -336,6 +336,12 @@ func TestCreateToolRiskFollowsKindScopeAndFields(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.kind+"/"+tc.mode, func(t *testing.T) {
+			// apply 路径必须先有同内容的 dry run 提案，Risk 才能复用该清单。
+			if tc.mode == CreateModeApply {
+				if _, err := tool.Execute(context.Background(), createInput(t, tc.manifest, "", nil)); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if got := tool.Risk(createInput(t, tc.manifest, tc.mode, nil)); got != tc.want {
 				t.Fatalf("risk = %s, want %s", got, tc.want)
 			}
@@ -392,28 +398,39 @@ func TestCreateToolSecretAccessOffIsRejected(t *testing.T) {
 }
 
 func TestCreateToolGrantTargetOnlyForSingleObject(t *testing.T) {
-	tool := newTestCreateTool(newFakeCreateRunner(), nil).(interface {
+	tool := newTestCreateTool(newFakeCreateRunner(), nil)
+	gt := tool.(interface {
 		GrantTarget(json.RawMessage) (string, string, string, bool)
 	})
-	kind, name, ns, ok := tool.GrantTarget(createInput(t, cmManifest, CreateModeApply, nil))
+	if _, err := tool.Execute(context.Background(), createInput(t, cmManifest, "", nil)); err != nil {
+		t.Fatal(err)
+	}
+	kind, name, ns, ok := gt.GrantTarget(createInput(t, cmManifest, CreateModeApply, nil))
 	if !ok || kind != "ConfigMap" || name != "web" || ns != "default" {
 		t.Fatalf("单对象应给出精确授权目标：%s %s %s %v", kind, name, ns, ok)
 	}
 	two := cmManifest + "---\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: web2\n  namespace: default\n"
-	if _, _, _, ok := tool.GrantTarget(createInput(t, two, CreateModeApply, nil)); ok {
+	if _, err := tool.Execute(context.Background(), createInput(t, two, "", nil)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, ok := gt.GrantTarget(createInput(t, two, CreateModeApply, nil)); ok {
 		t.Fatal("多对象不得产生可复用授权")
 	}
-	if _, _, _, ok := tool.GrantTarget(createInput(t, cmManifest, "", nil)); ok {
+	if _, _, _, ok := gt.GrantTarget(createInput(t, cmManifest, "", nil)); ok {
 		t.Fatal("dry run 不得产生授权目标")
 	}
 }
 
 func TestCreateToolDescribeMasksSecrets(t *testing.T) {
-	tool := newTestCreateTool(newFakeCreateRunner(), nil).(interface {
+	tool := newTestCreateTool(newFakeCreateRunner(), nil)
+	desc := tool.(interface {
 		Describe(json.RawMessage) (string, string)
 	})
 	manifest := "apiVersion: v1\nkind: Secret\nmetadata:\n  name: web\n  namespace: default\nstringData:\n  token: " + manifestx.PlaceholderGenerate + "\n"
-	command, change := tool.Describe(createInput(t, manifest, CreateModeApply, nil))
+	if _, err := tool.Execute(context.Background(), createInput(t, manifest, "", nil)); err != nil {
+		t.Fatal(err)
+	}
+	command, change := desc.Describe(createInput(t, manifest, CreateModeApply, nil))
 	if !strings.Contains(command, "create_resource mode=apply") || !strings.Contains(command, "Secret/default/web") {
 		t.Fatalf("command = %q", command)
 	}

@@ -131,6 +131,10 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 			a.EmitCritical(Message{Source: SourceAgent, Type: MessageTypeToolCallResponse, Payload: map[string]any{
 				"name": call.Name, "text": text, "truncated": truncated, "ok": ok, "summary": tr.Text, "data": tr.Data,
 			}})
+			// 写工具失败/被拒：停止执行本批剩余写调用，把决策交回模型。
+			if !toolExecuted && !ok {
+				break
+			}
 			// 单轮上下文预算：超限后停止执行本批剩余工具，让 LLM 基于现有证据回答。
 			if budgetExceeded {
 				break

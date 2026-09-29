@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/k8s-ai/k8s-ai/internal/manifestx"
 )
 
 const (
@@ -21,8 +23,11 @@ const (
 
 // proposal 是一次通过 dry run 的清单记录。
 type proposal struct {
+	id           string
 	fingerprints []string
 	objects      []string
+	manifest     string
+	objs         []manifestx.Object
 	expiresAt    time.Time
 }
 
@@ -55,17 +60,38 @@ func NewProposalStoreWith(ttl time.Duration, maxPerSession int) *ProposalStore {
 }
 
 // Record 记录一次通过 dry run 的清单（指纹 + 对象展示名）。
+// 保留旧签名：三期指纹一致性校验路径继续可用。
 func (s *ProposalStore) Record(sessionID string, fingerprints, objects []string) {
+	s.record(sessionID, "", "", fingerprints, objects, nil, nil)
+}
+
+// RecordFull 记录一次包含原始清单与已解析对象的 dry run 提案。
+// dry run 先落盘对象和 manifest，后续 apply 只需携带 proposal_id 即可原样复用，
+// 不依赖模型再次重建 manifest（避免指纹漂移导致 apply 被拒）。
+func (s *ProposalStore) RecordFull(sessionID, id, manifest string, fingerprints, objects []string, objs []manifestx.Object) {
+	s.record(sessionID, id, manifest, fingerprints, objects, objs, nil)
+}
+
+func (s *ProposalStore) record(sessionID, id, manifest string, fingerprints, objects []string, objs []manifestx.Object, objsCopied []manifestx.Object) {
 	if sessionID == "" || len(fingerprints) == 0 || !allFingerprinted(fingerprints) {
 		return
 	}
 	fp := append([]string(nil), fingerprints...)
 	obj := append([]string(nil), objects...)
+	if objsCopied == nil && len(objs) > 0 {
+		objsCopied = make([]manifestx.Object, 0, len(objs))
+		for i := range objs {
+			objsCopied = append(objsCopied, objs[i].CloneForStore())
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	list := append(s.bySession[sessionID], proposal{
+		id:           id,
 		fingerprints: fp,
 		objects:      obj,
+		manifest:     manifest,
+		objs:         objsCopied,
 		expiresAt:    time.Now().Add(s.ttl),
 	})
 	// 只保留最近 N 条未过期提案。
@@ -106,6 +132,27 @@ func (s *ProposalStore) Match(sessionID string, fingerprints []string) (bool, st
 		}
 	}
 	return false, "清单内容与本会话已预演的提案指纹不一致（可能改动了字段），请用相同内容重新 dry run"
+}
+
+// Get 按 proposal_id 取回 dry run 已记录的原始对象清单。
+// 未命中或已过期返回 nil（调用方按 proposal_required/proposal_not_found 处理）。
+func (s *ProposalStore) Get(sessionID, id string) []manifestx.Object {
+	if sessionID == "" || strings.TrimSpace(id) == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	for _, p := range s.bySession[sessionID] {
+		if p.id == id && now.Before(p.expiresAt) {
+			out := make([]manifestx.Object, 0, len(p.objs))
+			for i := range p.objs {
+				out = append(out, p.objs[i].CloneForStore())
+			}
+			return out
+		}
+	}
+	return nil
 }
 
 // Count 返回某会话当前有效提案数（测试与展示用）。
