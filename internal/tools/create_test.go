@@ -75,8 +75,7 @@ func (f *fakeCreateRunner) Apply(_ context.Context, req executor.ApplyRequest) (
 		res.Existed = true
 	}
 	if kind == "Secret" {
-		res.SecretKeys = []string{"token"}
-		res.GeneratedKeys = []string{"token"}
+		res.SecretKeys, res.GeneratedKeys, res.SecretKeyStatuses = fakeSecretOutcome(req)
 	}
 	if req.Verify && !req.DryRun {
 		res.Verify = &executor.VerifyResult{Kind: kind, Name: name, Ready: true, Reason: "available"}

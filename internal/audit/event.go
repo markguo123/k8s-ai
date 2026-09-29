@@ -35,4 +35,7 @@ const (
 	ActionVerificationStarted   = "verification.started"
 	ActionVerificationSucceeded = "verification.succeeded"
 	ActionVerificationFailed    = "verification.failed"
+	// Secret 值通道（三期 R4.5/R4.6）：只记录键定位与脱敏指纹，绝不记录明文值。
+	ActionSecretValueRequested = "secret.value_requested"
+	ActionSecretTouched        = "secret.touched"
 )

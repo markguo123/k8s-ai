@@ -52,14 +52,15 @@ const (
 	CreateModeDryRun = "dry_run"
 	CreateModeApply  = "apply"
 
-	errCreateInvalidArguments = "invalid_arguments"
-	errCreateManifestRejected = "manifest_rejected"
-	errCreateValidationFailed = "validation_failed"
-	errCreateProposalRequired = "proposal_required"
-	errCreateAlreadyExists    = "already_exists"
-	errCreateNamespaceMissing = "namespace_missing"
-	errCreateApplyFailed      = "apply_failed"
-	errCreateRunnerUnavail    = "runner_unavailable"
+	errCreateInvalidArguments    = "invalid_arguments"
+	errCreateManifestRejected    = "manifest_rejected"
+	errCreateValidationFailed    = "validation_failed"
+	errCreateProposalRequired    = "proposal_required"
+	errCreateAlreadyExists       = "already_exists"
+	errCreateNamespaceMissing    = "namespace_missing"
+	errCreateApplyFailed         = "apply_failed"
+	errCreateRunnerUnavail       = "runner_unavailable"
+	errCreateSecretValueRequired = "secret_value_required"
 
 	statusValidated = "validated"
 	statusApplied   = "applied"
@@ -95,7 +96,9 @@ func (t *createTool) Description() string {
 		"2) 用户确认后用完全相同的 manifest 再调一次 mode=apply 才会真正创建；指纹不一致会被拒绝，必须重新 dry_run。\n" +
 		"约束：manifest 必须是最终生效的纯 YAML/JSON，不接受 helm/kustomize 模板表达式；" +
 		"每个对象必须有 apiVersion/kind/metadata.name；namespaced 资源省略 namespace 时按默认命名空间创建。\n" +
-		"Secret 只能在 stringData 里写 " + manifestx.PlaceholderGenerate + " 由执行器生成随机值，禁止编造 Secret 值。\n" +
+		"Secret 的值只允许两种来源，禁止把用户口头给的密码写进清单：\n" +
+		"  - " + manifestx.PlaceholderGenerate + "：执行器生成随机值；\n" +
+		"  - " + manifestx.PlaceholderAsk + "：值由用户在审批通过后单独填写，不进入对话、会话与审计日志。\n" +
 		"资源已存在时该对象会被拒绝并提示改用 patch/update；cluster-scoped 资源默认禁止创建。\n" +
 		"verify=true 时 apply 后会等待对象就绪并附带最近事件。"
 }
@@ -202,7 +205,15 @@ func (t *createTool) dryRun(ctx context.Context, args createArgs, objs []manifes
 	}
 	// 提案登记：apply 阶段只接受这里记下的指纹序列。
 	t.proposals.Record(t.sessionID, manifestx.Fingerprints(objs), describeObjects(objs))
-	data["next"] = "把上面的提案（对象清单 + 风险原因）转述给用户确认；用户同意后，用完全相同的 manifest 调 mode=apply"
+	data["next"] = "把上面的提案（对象清单 + 风险原因）转述给用户确认（完整清单 YAML 已由界面展示，不要在回复里重复输出 YAML 全文）；用户同意后，用完全相同的 manifest 调 mode=apply"
+	if pending := PendingSecretValues(objs); len(pending) > 0 {
+		names := make([]string, 0, len(pending))
+		for _, key := range pending {
+			names = append(names, key.String())
+		}
+		data["secretValuesRequired"] = names
+		data["secretValuesNote"] = "这些 key 的值会在 mode=apply 且审批通过后由交互界面单独向用户索取；不要让用户把明文值发在对话里，也不要在回复里复述它们"
+	}
 	return ToolResult{Data: data, Text: t.summaryText(data)}
 }
 
@@ -214,8 +225,22 @@ func (t *createTool) apply(ctx context.Context, args createArgs, objs []manifest
 			"未执行 dry run 或清单与提案不一致，拒绝创建："+reason+
 				"；请先用同一份 manifest 调 mode=dry_run，把提案交给用户确认", nil)
 	}
+	// Secret 值通道（R4.5）：$ASK 的值必须在提交前备齐，缺一个就整批不提交，
+	// 否则会留下"建了一半、剩下缺值"这种无法回滚的中间态。
+	values := SecretValuesFromContext(ctx)
+	if missing := missingSecretValues(values, PendingSecretValues(objs)); len(missing) > 0 {
+		names := make([]string, 0, len(missing))
+		for _, key := range missing {
+			names = append(names, key.String())
+		}
+		return resultWithCode(errCreateSecretValueRequired,
+			"这些 Secret key 需要由你提供值，但本次执行没有收到："+strings.Join(names, "、")+
+				"；请重新发起创建并在审批通过后填写，或把清单里的 "+manifestx.PlaceholderAsk+
+				" 改为 "+manifestx.PlaceholderGenerate+" 由执行器生成随机值", nil)
+	}
 	risk := t.riskFor(objs, true)
 	outcomes := make([]map[string]any, 0, len(objs))
+	var touches []SecretTouch
 	applied, refused := 0, 0
 	for i := range objs {
 		o := &objs[i]
@@ -232,6 +257,7 @@ func (t *createTool) apply(ctx context.Context, args createArgs, objs []manifest
 			Namespace:     o.Namespace,
 			Verify:        args.verify,
 			VerifyTimeout: args.verifyTimeout,
+			SecretValues:  secretValuesForObject(values, o),
 		})
 		if err != nil {
 			refused++
@@ -246,12 +272,16 @@ func (t *createTool) apply(ctx context.Context, args createArgs, objs []manifest
 		if res.Summary != nil {
 			item["summary"] = res.Summary
 		}
-		if len(res.SecretKeys) > 0 {
-			item["secretKeys"] = res.SecretKeys // 只有 key 名与来源，没有值
+		if len(res.SecretKeyStatuses) > 0 {
+			// 只有 key 名、长度与 SHA-256：原值在执行器里用完即弃（R4.5/R4.6）。
+			item["secretKeys"] = res.SecretKeyStatuses
+			item["secretNote"] = "Secret 值不进入会话与模型上下文；sha256 可供用户与集群侧实际值核对"
+			touches = append(touches, SecretTouch{
+				Kind: res.Kind, Namespace: res.Namespace, Name: res.Name, Keys: res.SecretKeyStatuses,
+			})
 		}
 		if len(res.GeneratedKeys) > 0 {
 			item["generatedKeys"] = res.GeneratedKeys
-			item["secretNote"] = "Secret 值由执行器随机生成，不进入会话与模型上下文；如需原值请让用户从集群侧读取"
 		}
 		if res.Verify != nil {
 			item["verify"] = res.Verify
@@ -273,6 +303,9 @@ func (t *createTool) apply(ctx context.Context, args createArgs, objs []manifest
 		"applied":     applied,
 		"refused":     refused,
 		"objects":     outcomes,
+	}
+	if len(touches) > 0 {
+		data[DataSecretTouches] = touches
 	}
 	if applied == 0 {
 		data["error"] = errCreateApplyFailed + ": 所有对象都未创建成功，见 objects[].error"
@@ -298,7 +331,7 @@ func (t *createTool) precheckObject(ctx context.Context, o *manifestx.Object) (m
 		return item, "" // 存在性查不动就交给 apiserver 裁决
 	}
 	if status.NamespaceMissing {
-		return item, fmt.Sprintf("%s: 命名空间 %s 不存在；请先创建命名空间或改用已有命名空间", errCreateNamespaceMissing, o.Namespace)
+		return item, t.guardDenyForObject(o, func(s *approval.CreateSubject) { s.NamespaceMissing = true })
 	}
 	if status.Found {
 		return item, fmt.Sprintf("%s: %s/%s 在命名空间 %s 已存在；本次调用是创建语义，不会覆盖，请改用 patch/update 或换名字",
@@ -308,6 +341,19 @@ func (t *createTool) precheckObject(ctx context.Context, o *manifestx.Object) (m
 }
 
 // parseOptions 组装 manifestx 解析参数：门禁、上限、默认命名空间与 discovery 映射。
+// guardDenyForObject 是执行前的第二道 Code Guard：命名空间存在性这类必须读集群
+// 才能判定的门禁，Agent 在审批前拿不到结论，这里逐对象兜底（三期 R4.2）。
+// 返回空串表示门禁放行；非空时带上门禁码，保持错误码契约不变。
+func (t *createTool) guardDenyForObject(o *manifestx.Object, mutate func(*approval.CreateSubject)) string {
+	subjects := t.subjectsFor([]manifestx.Object{*o}, true)
+	mutate(&subjects[0])
+	guard := approval.CodeGuard(approval.GuardRequest{Subjects: subjects, DryRunVerified: true})
+	if !guard.Denied() {
+		return ""
+	}
+	return "CODE_GUARD 拒绝[" + strings.Join(guard.Codes, ",") + "]：" + strings.Join(guard.Reasons, "；")
+}
+
 func (t *createTool) parseOptions() manifestx.Options {
 	return manifestx.Options{
 		Policy:           t.opts.Policy,
@@ -328,6 +374,10 @@ func (t *createTool) baseOutcome(o *manifestx.Object) map[string]any {
 	if o.Namespace != "" {
 		item["namespace"] = o.Namespace
 	}
+	if len(o.SecretKeys) > 0 {
+		// 提案阶段只带占位符标记或脱敏指纹，不含原值。
+		item["secretKeys"] = o.SecretKeys
+	}
 	if warns := o.Warnings(); len(warns) > 0 {
 		item["findings"] = warns
 	}
@@ -336,20 +386,71 @@ func (t *createTool) baseOutcome(o *manifestx.Object) map[string]any {
 
 // riskFor 给出风险结论。解析失败已在前面拒绝，这里只处理合法清单。
 func (t *createTool) riskFor(objs []manifestx.Object, apply bool) approval.CreateRisk {
+	return approval.CreateSubjectRisk(t.subjectsFor(objs, apply))
+}
+
+// subjectsFor 把解析结果翻译成风险与门禁要素。名单类结论从 manifestx 的 finding code
+// 映射成布尔位，approval 因此不必依赖 manifestx（依赖方向保持 tools → approval + manifestx）。
+func (t *createTool) subjectsFor(objs []manifestx.Object, apply bool) []approval.CreateSubject {
 	subjects := make([]approval.CreateSubject, 0, len(objs))
 	for i := range objs {
 		o := &objs[i]
 		subjects = append(subjects, approval.CreateSubject{
-			Group:     o.GVK.Group,
-			Kind:      o.Kind,
-			Scope:     scopeString(o.Scope),
-			Dangerous: o.Dangerous,
-			Unknown:   o.UnknownKind,
-			Secret:    o.IsSecret(),
-			DryRun:    !apply,
+			Group:             o.GVK.Group,
+			Kind:              o.Kind,
+			Scope:             scopeString(o.Scope),
+			Dangerous:         o.Dangerous,
+			Unknown:           o.UnknownKind,
+			Secret:            o.IsSecret(),
+			DryRun:            !apply,
+			Namespace:         o.Namespace,
+			Denied:            o.HasFinding(manifestx.CodeDeniedKind),
+			NotAllowed:        o.HasFinding(manifestx.CodeKindNotAllowed),
+			ClusterKindDenied: o.HasFinding(manifestx.CodeClusterKindDenied),
 		})
 	}
-	return approval.CreateSubjectRisk(subjects)
+	return subjects
+}
+
+// GuardRequest 实现 tools.GuardPlanner：apply 前必须有同指纹的 dry run 记录，
+// 其余门禁要素全部来自清单解析与配置，不需要额外读集群（R4.2 审批前的第一道闸）。
+func (t *createTool) GuardRequest(input json.RawMessage) (approval.GuardRequest, bool) {
+	args, err := t.parseInput(input)
+	if err != nil {
+		return approval.GuardRequest{}, false
+	}
+	objs, err := manifestx.Parse(args.manifest, t.parseOptions())
+	if err != nil {
+		return approval.GuardRequest{}, false
+	}
+	verified := !args.apply
+	if args.apply {
+		verified, _ = t.proposals.Match(t.sessionID, manifestx.Fingerprints(objs))
+	}
+	return approval.GuardRequest{Subjects: t.subjectsFor(objs, args.apply), DryRunVerified: verified}, true
+}
+
+// PendingSecretValues 实现 tools.SecretValuePlanner：申报本次 apply 需要向用户索取的 Secret 值。
+// dry_run 不申报（提案阶段还不需要值），避免在只读预演时打扰用户。
+func (t *createTool) PendingSecretValues(input json.RawMessage) ([]SecretValuePrompt, bool) {
+	args, err := t.parseInput(input)
+	if err != nil || !args.apply {
+		return nil, false
+	}
+	objs, perr := manifestx.Parse(args.manifest, t.parseOptions())
+	if perr != nil {
+		return nil, false
+	}
+	keys := PendingSecretValues(objs)
+	if len(keys) == 0 {
+		return nil, false
+	}
+	prompts := make([]SecretValuePrompt, 0, len(keys))
+	for _, key := range keys {
+		prompts = append(prompts, SecretValuePrompt{Key: key,
+			Prompt: "请输入 " + key.String() + " 的值（该值不会写入对话、会话与审计日志；留空或输入 no 取消本次创建）"})
+	}
+	return prompts, true
 }
 
 func (t *createTool) IsReadOnly(input json.RawMessage) bool {
@@ -372,7 +473,8 @@ func (t *createTool) Risk(input json.RawMessage) model.RiskLevel {
 	return t.riskFor(objs, true).Level
 }
 
-// Describe 给审批卡片提供命令与变更说明（manifest 已是脱敏展示版）。
+// Describe 给审批卡片提供命令与变更说明（R4.9）：先给"要动哪些对象 + 为什么有风险 +
+// 需要你补什么"，再附脱敏后的清单；绝不把转义 JSON 甩给人工审批人。
 func (t *createTool) Describe(input json.RawMessage) (command, change string) {
 	args, err := t.parseInput(input)
 	if err != nil {
@@ -387,17 +489,64 @@ func (t *createTool) Describe(input json.RawMessage) (command, change string) {
 		return "create_resource mode=" + mode, "清单无法解析：" + perr.Error()
 	}
 	command = "create_resource mode=" + mode + " objects=" + strings.Join(describeObjects(objs), ", ")
+
 	var sb strings.Builder
+	if args.apply {
+		sb.WriteString("将真正创建以下对象（逐个提交，失败不自动回滚）：")
+	} else {
+		sb.WriteString("服务端预演，不改变集群；提案对象：")
+	}
+	for i := range objs {
+		o := &objs[i]
+		target := o.Kind + "/" + o.Name
+		if o.Namespace != "" {
+			target = o.Kind + "/" + o.Namespace + "/" + o.Name
+		}
+		fmt.Fprintf(&sb, "\n%d. %s（%s）", i+1, target, scopeString(o.Scope))
+		for _, f := range o.Errors() {
+			fmt.Fprintf(&sb, "\n   阻断 %s：%s", f.Code, f.Message)
+		}
+		for _, f := range o.Warnings() {
+			fmt.Fprintf(&sb, "\n   提示 %s：%s", f.Code, f.Message)
+		}
+		for _, k := range o.SecretKeys {
+			switch {
+			case k.Ask:
+				fmt.Fprintf(&sb, "\n   Secret key %s：值待你在本卡片通过后单独填写（不进对话与日志）", k.Key)
+			case k.Generated:
+				fmt.Fprintf(&sb, "\n   Secret key %s：值由执行器随机生成（不落任何记录）", k.Key)
+			default:
+				fmt.Fprintf(&sb, "\n   Secret key %s：长度 %d，sha256=%s", k.Key, k.Length, shortSum(k.SHA256))
+			}
+		}
+	}
 	risk := t.riskFor(objs, args.apply)
-	fmt.Fprintf(&sb, "风险等级 %s", risk.Level)
+	fmt.Fprintf(&sb, "\n\n风险等级 %s", risk.Level)
 	for _, reason := range risk.Reasons {
 		sb.WriteString("\n· " + reason)
 	}
+	if pending := PendingSecretValues(objs); args.apply && len(pending) > 0 {
+		sb.WriteString("\n\n通过后还需你单独提供这些 Secret 的值：")
+		for _, key := range pending {
+			sb.WriteString("\n· " + key.String())
+		}
+	}
 	if len(objs) > 0 {
-		sb.WriteString("\n清单：\n")
-		sb.WriteString(truncateText(strings.Join(manifestBlocks(objs), "---\n"), describeManifestBytes))
+		sb.WriteString("\n\n清单（Secret 值已脱敏）：\n")
+		sb.WriteString(truncateText(strings.Join(manifestBlocks(objs), "\n---\n"), describeManifestBytes))
 	}
 	return command, sb.String()
+}
+
+// shortSum 截短指纹，够人工核对又不占审批卡片篇幅。
+func shortSum(sum string) string {
+	if len(sum) > 12 {
+		return sum[:12]
+	}
+	if sum == "" {
+		return "待生成"
+	}
+	return sum
 }
 
 // GrantTarget 限定「本次会话不再询问」的可复用范围：
@@ -411,7 +560,18 @@ func (t *createTool) GrantTarget(input json.RawMessage) (kind, name, namespace s
 	if perr != nil || len(objs) != 1 {
 		return "", "", "", false
 	}
-	return objs[0].Kind, objs[0].Name, objs[0].Namespace, true
+	o := objs[0]
+	// 三期 R4.4：只有「单个 + namespaced + MEDIUM」的创建才允许会话级免询问。
+	// Secret（含值通道）与任何 HIGH/CRITICAL 对象（cluster-scoped、未知 Kind、
+	// 危险字段、非良性 Kind）每次都重新人工确认；Code Guard 的 REVIEW 档同理，
+	// 因为免询问等于让后续同 kind/name 的调用绕过审批面板。
+	if o.IsSecret() || o.Scope != manifestx.ScopeNamespaced || !o.Mapped {
+		return "", "", "", false
+	}
+	if t.riskFor([]manifestx.Object{o}, true).Level != model.RiskMedium {
+		return "", "", "", false
+	}
+	return o.Kind, o.Name, o.Namespace, true
 }
 
 func (t *createTool) summaryText(data map[string]any) string {
@@ -426,6 +586,13 @@ func (t *createTool) summaryText(data map[string]any) string {
 			line += " ns=" + ns
 		}
 		line += " " + stringOf(item["status"])
+		if statuses, okk := item["secretKeys"].([]executor.SecretKeyStatus); okk && len(statuses) > 0 {
+			names := make([]string, 0, len(statuses))
+			for _, st := range statuses {
+				names = append(names, fmt.Sprintf("%s(len=%d,sha256=%s)", st.Key, st.Length, shortSum(st.SHA256)))
+			}
+			line += " Secret[" + strings.Join(names, ",") + "]"
+		}
 		if errText := stringOf(item["error"]); errText != "" {
 			line += "：" + errText
 		}

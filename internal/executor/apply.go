@@ -7,6 +7,8 @@ package executor
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +31,10 @@ const FieldManager = "k8s-ai"
 // manifest 里只出现占位符，真实值由执行器在提交前的深拷贝里生成（三期 D-06/D-12）。
 // 不能以 YAML 指示符开头（模型通常不加引号写进清单）。
 const SecretPlaceholder = "$GENERATE"
+
+// SecretPlaceholderAsk 与 manifestx.PlaceholderAsk 同值（executor 不 import manifestx）：
+// 值由用户在审批环节提供，经 ApplyRequest.SecretValues 传入（三期 R4.5）。
+const SecretPlaceholderAsk = "$ASK"
 
 const (
 	secretKeyLength  = 32
@@ -147,9 +153,10 @@ func (r *Runner) Apply(ctx context.Context, req ApplyRequest) (ApplyResult, erro
 	name := obj.GetName()
 
 	var secretKeys, generatedKeys []string
+	var secretStatuses []SecretKeyStatus
 	isSecret := strings.EqualFold(gvk.Kind, "Secret")
 	if isSecret {
-		secretKeys, generatedKeys, err = materializeSecret(obj)
+		secretKeys, generatedKeys, secretStatuses, err = materializeSecret(obj, req.SecretValues, req.DryRun)
 		if err != nil {
 			return ApplyResult{}, err
 		}
@@ -186,20 +193,21 @@ func (r *Runner) Apply(ctx context.Context, req ApplyRequest) (ApplyResult, erro
 	}
 
 	out := ApplyResult{
-		APIVersion:      got.GetAPIVersion(),
-		Kind:            got.GetKind(),
-		Namespace:       got.GetNamespace(),
-		Name:            got.GetName(),
-		Resource:        gvr.Resource,
-		Namespaced:      namespaced,
-		DryRun:          req.DryRun,
-		Existed:         before.Found,
-		UID:             string(got.GetUID()),
-		ResourceVersion: got.GetResourceVersion(),
-		Generation:      got.GetGeneration(),
-		Summary:         observe(got).fields,
-		SecretKeys:      secretKeys,
-		GeneratedKeys:   generatedKeys,
+		APIVersion:        got.GetAPIVersion(),
+		Kind:              got.GetKind(),
+		Namespace:         got.GetNamespace(),
+		Name:              got.GetName(),
+		Resource:          gvr.Resource,
+		Namespaced:        namespaced,
+		DryRun:            req.DryRun,
+		Existed:           before.Found,
+		UID:               string(got.GetUID()),
+		ResourceVersion:   got.GetResourceVersion(),
+		Generation:        got.GetGeneration(),
+		Summary:           observe(got).fields,
+		SecretKeys:        secretKeys,
+		GeneratedKeys:     generatedKeys,
+		SecretKeyStatuses: secretStatuses,
 	}
 	if req.Verify && !req.DryRun {
 		vres, verr := r.Verify(ctx, VerifyRequest{Ref: ObjectRef{APIVersion: out.APIVersion, Kind: out.Kind, Namespace: out.Namespace, Name: out.Name}, Timeout: req.VerifyTimeout})
@@ -239,41 +247,81 @@ func prepareObject(content map[string]any) (*unstructured.Unstructured, error) {
 	return obj, nil
 }
 
-// materializeSecret 把 stringData 里的占位符换成 crypto/rand 生成的随机值。
+// materializeSecret 把 stringData 里的占位符换成真实值：$GENERATE 由执行器用
+// crypto/rand 生成，$ASK 由用户在审批环节提供（三期 R4.5，ApplyRequest.SecretValues）。
 //
 // 红线（AGENTS.md LLM Safety）：Secret 内容值不得由模型编写，也不得回流到
-// 工具结果 / 会话 / 审计。因此这里只接受占位符，且只写入深拷贝后的对象。
-// 返回 key 列表与其中由执行器生成的 key（都不含值）。
-func materializeSecret(obj *unstructured.Unstructured) (keys, generated []string, err error) {
+// 工具结果 / 会话 / 审计。因此这里只接受占位符，只写入深拷贝后的对象，
+// 返回值只含 key、长度与 SHA-256 指纹。
+func materializeSecret(obj *unstructured.Unstructured, values map[string]string, dryRun bool) (keys, generated []string, statuses []SecretKeyStatus, err error) {
 	if data, ok, _ := unstructured.NestedMap(obj.Object, "data"); ok && len(data) > 0 {
 		names := make([]string, 0, len(data))
 		for k := range data {
 			names = append(names, k)
 		}
 		sort.Strings(names)
-		return nil, nil, fmt.Errorf("Secret 的 data 含显式值（%s）；只允许 stringData 里的 %s 占位符", strings.Join(names, ", "), SecretPlaceholder)
+		return nil, nil, nil, fmt.Errorf("Secret 的 data 含显式值（%s）；只允许 stringData 里的 %s / %s 占位符",
+			strings.Join(names, ", "), SecretPlaceholder, SecretPlaceholderAsk)
 	}
 	stringData, ok, _ := unstructured.NestedStringMap(obj.Object, "stringData")
 	if !ok || len(stringData) == 0 {
-		return nil, nil, errors.New("Secret 没有可创建的 key；请在 stringData 里为每个 key 填 " + SecretPlaceholder)
+		return nil, nil, nil, errors.New("Secret 没有可创建的 key；请在 stringData 里为每个 key 填 " +
+			SecretPlaceholder + "（执行器生成）或 " + SecretPlaceholderAsk + "（审批时由用户提供）")
 	}
 	out := make(map[string]any, len(stringData))
 	for _, name := range sortedMapKeys(stringData) {
 		value := stringData[name]
-		if value != SecretPlaceholder {
-			return nil, nil, fmt.Errorf("Secret 的 stringData.%s 含模型编写的值；请改为 %s，由执行器生成随机值", name, SecretPlaceholder)
+		source := SecretValueSourceGenerate
+		record := true
+		switch value {
+		case SecretPlaceholder:
+			value, err = GenerateSecretValue(secretKeyLength)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			generated = append(generated, name)
+		case SecretPlaceholderAsk:
+			userValue := strings.TrimSpace(values[name])
+			switch {
+			case userValue != "":
+				value = userValue
+				source = SecretValueSourceUser
+			case dryRun:
+				// dry run 只需要一个能通过 apiserver 校验的临时值：
+				// 它既不是最终值也不该被记录，因此不产出指纹。
+				value, err = GenerateSecretValue(secretKeyLength)
+				if err != nil {
+					return nil, nil, nil, err
+				}
+				record = false
+			default:
+				return nil, nil, nil, fmt.Errorf("Secret 的 stringData.%s 需要用户提供值，但本次执行没有收到；请重新发起创建并在审批时填写该值，或改用 %s 由执行器生成", name, SecretPlaceholder)
+			}
+		default:
+			return nil, nil, nil, fmt.Errorf("Secret 的 stringData.%s 含模型编写的值；请改为 %s（执行器生成随机值）或 %s（审批时由用户提供）",
+				name, SecretPlaceholder, SecretPlaceholderAsk)
 		}
-		secret, gerr := GenerateSecretValue(secretKeyLength)
-		if gerr != nil {
-			return nil, nil, gerr
+		out[name] = value
+		if record {
+			keys = append(keys, name)
+			statuses = append(statuses, FingerprintSecretValue(name, value, source))
 		}
-		out[name] = secret
-		generated = append(generated, name)
 	}
 	if err := unstructured.SetNestedStringMap(obj.Object, toStringAnyMap(out), "stringData"); err != nil {
-		return nil, nil, fmt.Errorf("写入生成的 Secret 值失败: %w", err)
+		return nil, nil, nil, fmt.Errorf("写入生成的 Secret 值失败: %w", err)
 	}
-	return sortedMapKeysAny(out), generated, nil
+	return keys, generated, statuses, nil
+}
+
+// FingerprintSecretValue 把一个 Secret 值折叠成可审计结论（长度 + SHA-256），原值即刻丢弃。
+func FingerprintSecretValue(key, value, source string) SecretKeyStatus {
+	sum := sha256.Sum256([]byte(value))
+	return SecretKeyStatus{
+		Key:    key,
+		Length: len(value),
+		SHA256: hex.EncodeToString(sum[:]),
+		Source: source,
+	}
 }
 
 // GenerateSecretValue 用 crypto/rand 生成长度为 n 的随机密钥（字符集避免 shell/URL 特殊字符）。
@@ -326,15 +374,6 @@ func toStringAnyMap(m map[string]any) map[string]string {
 }
 
 func sortedMapKeys(m map[string]string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func sortedMapKeysAny(m map[string]any) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)

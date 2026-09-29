@@ -1046,6 +1046,53 @@ body {
 
 .tool-card.open .tool-output { display: block; }
 
+.tool-card .tool-manifest {
+  display: none;
+  margin: 0 14px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(0,0,0,.28);
+}
+
+.tool-card.open .tool-manifest { display: block; }
+
+.tool-manifest summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--muted);
+  user-select: none;
+  padding: 6px 12px;
+}
+
+.tool-manifest summary:hover { color: var(--text); }
+
+.tool-manifest .mf-body { position: relative; border-top: 1px solid var(--border); }
+
+.tool-manifest pre {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 320px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre;
+  color: var(--text-secondary);
+}
+
+.tool-manifest .mf-copy {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  padding: 2px 8px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--code-bg);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
 /* ═══════════════════════════════════════════════════════
    审批卡片
    ═══════════════════════════════════════════════════════ */
@@ -1080,6 +1127,16 @@ body {
 
 .approval .btns { display: flex; gap: 10px; flex-wrap: wrap; padding-left: 10px; }
 
+.approval .secret-row { padding-left: 10px; margin-bottom: 10px; }
+.approval .secret-input {
+  width: 100%; box-sizing: border-box; padding: 9px 12px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--code-bg); color: var(--text);
+  font-family: inherit; font-size: 13px;
+}
+.approval .secret-input:focus { outline: none; border-color: var(--accent); }
+.approval .secret-hint { padding-left: 10px; font-size: 11.5px; opacity: .7; margin: -4px 0 10px; }
+
 .approval button {
   padding: 10px 20px;
   border: none;
@@ -1101,6 +1158,19 @@ body {
   transform: none;
 }
 .approval button:disabled { pointer-events: none; }
+
+.approval.resolved { box-shadow: none; }
+.approval.resolved::before { background: var(--ok); }
+.approval.resolved.rejected::before { background: var(--danger); }
+
+.approval .resolution {
+  padding-left: 10px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ok);
+}
+
+.approval .resolution.rejected { color: var(--danger); }
 
 /* ═══════════════════════════════════════════════════════
    输入区域
@@ -2320,6 +2390,11 @@ function handleEvent(ev) {
     case "choice-request":
       hideTyping();
       if (ev.choice) showApproval(ev.choice);
+      if (ev.choice && ev.choice.secret) {
+        setRunStatus("等待 Secret 值输入", "waiting");
+        showTyping("等待 Secret 输入…", true);
+        break;
+      }
       setRunStatus("等待你的审批", "waiting");
       showTyping("等待审批…", true);
       break;
@@ -3019,9 +3094,50 @@ function buildToolCard(tool, isHistory) {
 
   card.appendChild(head);
   card.appendChild(errBar);
+
+  // create_resource 专属：YAML 取工具调用入参原文，与实际提交内容一致，随会话历史保留
+  const manifest = buildManifestBlock(tool);
+  if (manifest) card.appendChild(manifest);
+
   card.appendChild(output);
 
   return card;
+}
+
+function buildManifestBlock(tool) {
+  if (!tool || tool.name !== "create_resource") return null;
+  const args = parseJsonLoose(tool.arguments);
+  const mf = args && typeof args.manifest === "string" ? args.manifest.trim() : "";
+  if (!mf) return null;
+
+  const det = document.createElement("details");
+  det.className = "tool-manifest";
+  det.open = true;
+
+  const sum = document.createElement("summary");
+  sum.textContent = "创建清单 YAML（与本次实际提交的原文一致）";
+
+  const body = document.createElement("div");
+  body.className = "mf-body";
+
+  const pre = document.createElement("pre");
+  pre.textContent = mf;
+
+  const copy = document.createElement("button");
+  copy.className = "mf-copy";
+  copy.textContent = "复制";
+  copy.onclick = async (e) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(mf);
+      copy.textContent = "已复制";
+      setTimeout(() => { copy.textContent = "复制"; }, 1200);
+    } catch (err) { /* 静默 */ }
+  };
+
+  body.append(pre, copy);
+  det.append(sum, body);
+  return det;
 }
 
 function addToolCard(tool) {
@@ -3120,6 +3236,12 @@ function commandText(tool) {
     const c = args && args.command;
     return c ? String(c) : "kubectl";
   }
+  if (tool.name === "create_resource") {
+    const mf = args && typeof args.manifest === "string" ? args.manifest : "";
+    const n = (mf.match(/^\s*kind\s*:/gm) || []).length;
+    const mode = args && args.mode ? String(args.mode) : "dry_run";
+    return "[create_resource] mode=" + mode + (n ? " · " + n + " 个对象" : "");
+  }
   return "[" + (tool.name || "") + "] " + formatArgs(args);
 }
 
@@ -3133,6 +3255,14 @@ function showApproval(choice) {
 
   const card = document.createElement("div");
   card.className = "approval";
+
+  // Secret 值请求：密码框收集，值只提交一次，不进对话历史与会话文件。
+  if (choice.secret) {
+    appendSecretApproval(card, choice.prompt);
+    inner().appendChild(card);
+    scroll();
+    return;
+  }
 
   const prompt = document.createElement("div");
   prompt.className = "prompt";
@@ -3155,7 +3285,7 @@ function showApproval(choice) {
           "/api/sessions/" + encodeURIComponent(currentSession) + "/approve",
           { method: "POST", body: JSON.stringify({ choice: value }) }
         );
-        card.remove();
+        resolveApproval(card, value);
         setStatus(true);
         showTyping("等待 Agent 继续…", true);
       } catch (err) {
@@ -3176,6 +3306,110 @@ function showApproval(choice) {
   card.appendChild(btns);
   inner().appendChild(card);
   scroll();
+}
+
+/* Secret 值卡片：值提交后立即清空输入框，不进消息列表、不进会话文件。 */
+function appendSecretApproval(card, promptText) {
+  const prompt = document.createElement("div");
+  prompt.className = "prompt";
+  prompt.textContent = promptText || "请输入 Secret 值：";
+
+  const row = document.createElement("div");
+  row.className = "secret-row";
+  const field = document.createElement("input");
+  field.type = "password";
+  field.className = "secret-input";
+  field.autocomplete = "new-password";
+  field.spellcheck = false;
+  field.placeholder = "Secret 值";
+  row.appendChild(field);
+
+  const hint = document.createElement("div");
+  hint.className = "secret-hint";
+  hint.textContent = "值只用于本次创建，不会写入对话、会话文件或审计日志";
+
+  const btns = document.createElement("div");
+  btns.className = "btns";
+
+  const submit = (cancelled) => {
+    if (card.dataset.submitting === "true") return;
+    const value = cancelled ? "" : field.value;
+    field.value = "";
+    if (value === "") cancelled = true;
+    card.dataset.submitting = "true";
+    card.classList.add("submitting");
+    btns.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+    api("/api/sessions/" + encodeURIComponent(currentSession) + "/approve",
+      { method: "POST", body: JSON.stringify({ choice: cancelled ? "no" : value }) })
+      .then(() => {
+        resolveSecretApproval(card, cancelled);
+        if (!cancelled) {
+          setStatus(true);
+          showTyping("等待 Agent 继续…", true);
+        }
+      })
+      .catch((err) => {
+        card.dataset.submitting = "false";
+        card.classList.remove("submitting");
+        btns.querySelectorAll("button").forEach((b) => { b.disabled = false; });
+        addMsg("error", "Secret 提交失败: " + err.message);
+      });
+  };
+
+  const mk = (label, cls, onClick) => {
+    const b = document.createElement("button");
+    b.className = cls;
+    b.textContent = label;
+    b.onclick = onClick;
+    return b;
+  };
+
+  btns.appendChild(mk("提交", "yes", () => submit(false)));
+  btns.appendChild(mk("取消", "no", () => submit(true)));
+
+  field.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      submit(false);
+    }
+  });
+
+  card.appendChild(prompt);
+  card.appendChild(row);
+  card.appendChild(hint);
+  card.appendChild(btns);
+  setTimeout(() => field.focus(), 0);
+}
+
+function resolveSecretApproval(card, cancelled) {
+  card.classList.add("resolved");
+  card.classList.remove("submitting");
+  if (cancelled) card.classList.add("rejected");
+  ["secret-row", "secret-hint", "btns"].forEach((sel) => {
+    const el = card.querySelector("." + sel);
+    if (el) el.remove();
+  });
+  const stamp = document.createElement("div");
+  stamp.className = "resolution" + (cancelled ? " rejected" : "");
+  stamp.textContent = cancelled ? "已取消，未提交 Secret 值" : "已提交（值不显示、不记录）";
+  card.appendChild(stamp);
+}
+
+function resolveApproval(card, value) {
+  const rejected = value === "no";
+  card.classList.add("resolved");
+  card.classList.remove("submitting");
+  if (rejected) card.classList.add("rejected");
+  const btns = card.querySelector(".btns");
+  if (btns) btns.remove();
+  const stamp = document.createElement("div");
+  stamp.className = "resolution" + (rejected ? " rejected" : "");
+  stamp.textContent = rejected
+    ? "已拒绝，操作未执行"
+    : value === "yes_and_dont_ask_again"
+      ? "已批准执行（同类操作本会话内不再询问）"
+      : "已批准执行";
+  card.appendChild(stamp);
 }
 
 /* ═══════════════════════════════════════════════════════

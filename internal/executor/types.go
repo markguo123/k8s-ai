@@ -81,6 +81,10 @@ type ApplyRequest struct {
 	Verify bool
 	// VerifyTimeout 就绪等待上限；<=0 取默认 30s。
 	VerifyTimeout time.Duration
+	// SecretValues 承载用户在审批环节提供的 Secret 值（三期 R4.5）：
+	// key 是 stringData 里的键名，value 是原值。仅用于替换 $ASK 占位符，
+	// 调用方必须保证它不进入日志、结果、会话与审计。
+	SecretValues map[string]string
 }
 
 // ApplyResult 是单对象的提交结果。
@@ -98,9 +102,26 @@ type ApplyResult struct {
 	Generation      int64          `json:"generation,omitempty"`
 	Summary         map[string]any `json:"summary,omitempty"` // 关键状态摘要（副本数/phase 等）
 	SecretKeys      []string       `json:"secretKeys,omitempty"`
-	GeneratedKeys   []string       `json:"generatedKeys,omitempty"` // 由执行器生成随机值的 Secret key
-	Verify          *VerifyResult  `json:"verify,omitempty"`
+	// SecretKeyStatuses 是 Secret 各 key 的可审计结论（长度 + SHA-256 + 来源，无原值）。
+	SecretKeyStatuses []SecretKeyStatus `json:"secretKeyStatuses,omitempty"`
+	GeneratedKeys     []string          `json:"generatedKeys,omitempty"` // 由执行器生成随机值的 Secret key
+	Verify            *VerifyResult     `json:"verify,omitempty"`
 }
+
+// SecretKeyStatus 是单个 Secret key 的可审计结论：只有长度与 SHA-256 指纹，绝不含原值。
+// 审计与会话只允许携带这一层信息（RESOURCE_CREATE_DESIGN.md §5.3）。
+type SecretKeyStatus struct {
+	Key    string `json:"key"`
+	Length int    `json:"length"`
+	SHA256 string `json:"sha256"`
+	Source string `json:"source"` // generate / user
+}
+
+// Secret 值来源标识（工具结果与审计共用同一串）。
+const (
+	SecretValueSourceGenerate = "generate"
+	SecretValueSourceUser     = "user"
+)
 
 // VerifyRequest 是执行后就绪校验请求。
 type VerifyRequest struct {

@@ -75,6 +75,8 @@ type SecretKeyFingerprint struct {
 	SHA256    string `json:"sha256"`
 	Source    string `json:"source"` // stringData / generate
 	Generated bool   `json:"generated,omitempty"`
+	// Ask 表示值由用户在审批环节提供（$ASK）：解析阶段还没有值，因此无长度与指纹。
+	Ask bool `json:"ask,omitempty"`
 }
 
 // Limits 是单次创建的资源规模上限。零值取 DefaultLimits。
@@ -158,6 +160,18 @@ func (o *Object) Warnings() []Finding { return filterFindings(o.Findings, false)
 
 // IsSecret 判断是否为 Secret 资源。
 func (o *Object) IsSecret() bool { return isSecretKind(o.Kind) }
+
+// HasFinding 报告对象是否命中了指定结论码。
+// 工具层用它把门禁结论（deny_kinds 命中、命名空间缺失等）映射成
+// approval.CreateSubject 上的布尔位，approval 不必 import 本包。
+func (o *Object) HasFinding(code string) bool {
+	for _, f := range o.Findings {
+		if f.Code == code {
+			return true
+		}
+	}
+	return false
+}
 
 func filterFindings(in []Finding, wantErr bool) []Finding {
 	out := make([]Finding, 0, len(in))

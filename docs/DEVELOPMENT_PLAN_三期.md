@@ -1,18 +1,18 @@
 # k8s-ai 三期开发计划：资源创建能力（Resource Create）
 
-- 版本：v1.5
-- 日期：2026-09-24（v1.5 进度回填：2026-09-28）
-- 状态：进行中（R0.2 + R1 + R2 + R3 已落地，R4 起未开始）
+- 版本：v1.6
+- 日期：2026-09-24（v1.6 进度回填：2026-09-29）
+- 状态：进行中（R0.2 + R1 + R2 + R3 + R4 已落地，R5 起未开始）
 - 当前基线版本：v2.7.0（git tag 与 Makefile VERSION 一致；CHANGELOG / VERSIONING / PROJECT_STATUS 顶部仍停在 v2.6.0，由 R0.6 补齐）
 - 目标版本：v3.0.0
-- 进度快照（2026-09-28）：manifest 底座与创建执行通道已落地——`internal/manifestx`（解析 / GVK 映射 / 黑名单与 scope 校验 /
-  静态校验 / 危险字段 / 指纹 / Secret 值检测）+ `internal/executor` 创建通道（dynamic + SSA、dry-run、存在性检查、
-  按 Kind 就绪校验与 Events 采样脱敏）+ 架构门禁与 RBAC 写权限示例同步；`go test ./...`、`go vet ./...` 全绿。
-  R3 创建工具已落地：`create_resource`（dry_run 提案 → 指纹一致性校验 → apply → verify，逐对象部分失败语义）、
-  `approval.CreateSubjectRisk` 按 Kind/scope/危险字段分级、`tools.ProposalStore` 会话级提案指纹（TTL + 上限）、
-  `tools.GrantTargeter` 与 `Grant.NoGrant`（多对象与 dry run 不产生可复用授权）；Secret 值占位符统一为
-  `$GENERATE`（原 `@generate` 不带引号在 YAML 里无法解析）。下一步：R4 安全与审批链路收尾；
-  R2/R3 真实集群端到端与 R8 准出需人工点验。
+- 进度快照（2026-09-29）：R4 安全与审批链路已落地——Secret 值通道打通（`$GENERATE` 由执行器用 crypto/rand 生成、
+  `$ASK` 由人工在审批环节输入），明文值带外传递（`tools.WithSecretValues` 走 context，不进 LLM 上下文/会话文件/审计），
+  免交互通道（`--skip-permissions`、Grant 自动放行、`--yes`）遇 `$ASK` 直接拒绝并建议改用 `$GENERATE`；
+  审计新增 `secret.value_requested`（仅键名与来源）与 `secret.touched`（键名/长度/SHA-256 指纹/来源），审计文件与 SLS
+  载荷均无明文；`agent.secret.access` 配置闸门只接受 `off`/`create_only`（`read_write` 启动即拒）；
+  `kubectl create secret` 红线回归用例补齐；`create_resource.Describe` 输出人类可读审批卡
+  （对象清单 + 变更说明 + Secret 脱敏清单）。`go test ./...`、`go vet ./...`、`gofmt` 全绿。
+  下一步：R5 内置 Skill 元数据与接口契约；R2/R3/R4 真实集群端到端与 R8 准出需人工点验。
 - 需求输入：[RESOURCE_CREATE_DESIGN.md](./RESOURCE_CREATE_DESIGN.md)、[APPROVAL_V2_DESIGN.md](./APPROVAL_V2_DESIGN.md)、AGENTS.md
 - 编号说明：本计划用 **R0–R8** 作为主线编号。AGENTS.md 中预留的 Phase 3（MCP 外部工具、
   可观测性、多会话后端）不属本计划范围，属四期另一条线，此处不排期；AGENTS.md 的 Phase 口径在 R0.5 同步修订。
@@ -27,6 +27,7 @@
 | v1.4 | 2026-09-28 | | 进度回填：R0.2、R1（R1.1~R1.10）、R2（R2.1~R2.12）已完成；R2.10 实现口径改为「dynamic 与 os/exec 同口径收窄到 executor，`Secrets()` 仍全仓禁入」；D-03 标注实现已按推荐值落地。R0.1/R0.3~R0.6 与 R3+ 未开始 |
 | v1.3 | 2026-09-28 | | Skill 排期签收：通用 Skill 引擎与用户自定义 Skill 目录整体移到四期（三期资源创建能力落地后再讨论方案并排期）。D-15 改为「三期只冻结 Skill 数据模型与 Registry 读接口」；R5.9 收口为单条接口冻结任务（0.25d），删去 R5.10、R6.6，`agent.skills.*` 配置、用户 Skill 目录发现与门禁、Skill 目录注入 Agent 上下文全部移出三期；§3 里程碑、§6 出口标准、§7 落点、§8 风险、§9 工作量随之调整（77 条 / 37.50 人日） |
 | v1.5 | 2026-09-28 | | 进度回填：R3（R3.1~R3.11）已完成。新增 `internal/tools/create.go`（create_resource 两步式：dry_run 提案 / apply 需同指纹提案）、`internal/tools/proposal.go`（会话级提案指纹存储）、`internal/approval/create_risk.go`（Kind/scope/危险字段风险分级）；`tools.GrantTargeter` + `Grant.NoGrant` 收窄可复用授权；`internal/service/chat.go` 装配 `agent.create.*` 与写通道 RESTConfig；`agent.secret.access=off` 由 manifestx 硬闸门落地；Secret 占位符 `@generate` → `$GENERATE`（YAML 安全）；tools/approval/service 三层新增单测，`go test ./...`、`go vet ./...` 全绿 |
+| v1.6 | 2026-09-29 | | 进度回填：R4（R4.1~R4.9）已完成。R4.1/R4.2/R4.3 在 R3 期间随 `create_risk.go`、`create.go` 校验链与 decision 用例落地，本轮回补 kubectl 通道 forbidden 回归用例；新增 `internal/tools/secret_values.go`（`SecretValueKey`/`SecretValuePrompt`/`SecretValuePlanner`/`PendingSecretValues`、`secretTouches` 审计载荷、`WithSecretValues` 带外值通道）、`internal/executor/apply.go` 的 `materializeSecret`（`$GENERATE` 用 crypto/rand 生成、`$ASK` 取人工输入值、`data` 字段与模型自填值硬拒）与 `FingerprintSecretValue`；`agent.SecretValueApprover` + `loop.collectSecretValues`（缺值整批不提交、拒绝文案区分已输入与已放弃）、`service.ChatApprover.RequestSecretValue`（CLI 走 `term.ReadPassword` 不回显、Web 走密码输入框且值不回显）、`audit` 两个 Secret 事件、`config.validateSecretAccess`；`create_resource.Describe` 落地 R4.9 审批卡文案；新增 Secret 专项测试文件并扩展 tools/agent/service/config/approval 用例 |
 
 ---
 
@@ -180,15 +181,15 @@ R7 前端部分可在 R3 落地后启动（依赖契约不依赖安全实现）�
 
 | 编号 | 任务项 | 交付物 / 涉及文件 | 验收标准 | 依赖 | 规模 | 预估 | 里程碑 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| R4.1 | 创建风险分级实现（kind 级分级） | internal/approval/risk.go：kind/scope/字段 → RiskLevel | 与 R0.3 表格一致：已知良性 namespaced MEDIUM；cluster-scoped、危险字段、未知 Kind HIGH | R0.3, R3.3 | M | 0.5d | M2 | 未开始 |
-| R4.2 | Code Guard 门禁落地 | kind 黑名单、dry-run 强制、namespace 存在性、危险字段（executor/approval） | 四类门禁各有拒绝用例；未知 Kind 不得被误判为可自动放行 | R4.1, R2.3 | L | 1d | M2 | 未开始 |
-| R4.3 | Policy 与模式回归 | internal/approval/decision.go + 用例（strict/smart 两种 Mode 与 Shell 闸门不受影响） | 现有审批行为无回归，含 shell 构造的命令仍不可自动放行 | R4.1 | M | 0.5d | M2 | 未开始 |
-| R4.4 | Grant 与创建联动 | 创建首提必批；Grant 匹配键为 task/operation/kind/namespace 且上限 MEDIUM，需 D-13 先允许良性 Kind 降 MEDIUM | Grant 用例覆盖创建场景，HIGH 与 shell 仍不命中 | R4.1, D-13 | M | 0.5d | M3 | 未开始 |
-| R4.5 | Secret `create_only` 值通道 | 审批载荷承载用户值 / Executor 生成随机值；LLM 只见 key 与占位符 | 值不进 LLM 上下文、会话、审计；创建结果可用 | R1.9, R4.2 | L | 1d | M3 | 未开始 |
-| R4.6 | Secret 审计与指纹 | audit 事件记录 key/长度/sha256 与 `SECRET_TOUCHED` 标记 | 审计文件无明文值，指纹可复核 | R4.5 | M | 0.5d | M3 | 未开始 |
-| R4.7 | `secret.access` 配置闸门 | config + 行为分支（off / create_only / read_write 仅关闭态） | 非 create_only 时创建含值 Secret 被拒 | R4.5 | S | 0.25d | M3 | 未开始 |
-| R4.8 | kubectl 通道 Secret 红线回归 | internal/approval/policy.go 行为不变 | `kubectl create secret` 仍被硬拦，回归用例 | R4.5 | S | 0.25d | M3 | 未开始 |
-| R4.9 | 创建提案人类可读描述 | CommandDescriber/提案渲染：对象清单 + 风险原因 + manifest 摘要 | 审批面板不再展示原始转义 JSON | R3.4 | M | 0.5d | M2 | 未开始 |
+| R4.1 | 创建风险分级实现（kind 级分级） | internal/approval/risk.go：kind/scope/字段 → RiskLevel | 与 R0.3 表格一致：已知良性 namespaced MEDIUM；cluster-scoped、危险字段、未知 Kind HIGH | R0.3, R3.3 | M | 0.5d | M2 | 已完成 |
+| R4.2 | Code Guard 门禁落地 | kind 黑名单、dry-run 强制、namespace 存在性、危险字段（executor/approval） | 四类门禁各有拒绝用例；未知 Kind 不得被误判为可自动放行 | R4.1, R2.3 | L | 1d | M2 | 已完成 |
+| R4.3 | Policy 与模式回归 | internal/approval/decision.go + 用例（strict/smart 两种 Mode 与 Shell 闸门不受影响） | 现有审批行为无回归，含 shell 构造的命令仍不可自动放行 | R4.1 | M | 0.5d | M2 | 已完成 |
+| R4.4 | Grant 与创建联动 | 创建首提必批；Grant 匹配键为 task/operation/kind/namespace 且上限 MEDIUM，需 D-13 先允许良性 Kind 降 MEDIUM | Grant 用例覆盖创建场景，HIGH 与 shell 仍不命中 | R4.1, D-13 | M | 0.5d | M3 | 已完成 |
+| R4.5 | Secret `create_only` 值通道 | 审批载荷承载用户值 / Executor 生成随机值；LLM 只见 key 与占位符 | 值不进 LLM 上下文、会话、审计；创建结果可用 | R1.9, R4.2 | L | 1d | M3 | 已完成 |
+| R4.6 | Secret 审计与指纹 | audit 事件记录 key/长度/sha256 与 `SECRET_TOUCHED` 标记 | 审计文件无明文值，指纹可复核 | R4.5 | M | 0.5d | M3 | 已完成 |
+| R4.7 | `secret.access` 配置闸门 | config + 行为分支（off / create_only / read_write 仅关闭态） | 非 create_only 时创建含值 Secret 被拒 | R4.5 | S | 0.25d | M3 | 已完成 |
+| R4.8 | kubectl 通道 Secret 红线回归 | internal/approval/policy.go 行为不变 | `kubectl create secret` 仍被硬拦，回归用例 | R4.5 | S | 0.25d | M3 | 已完成 |
+| R4.9 | 创建提案人类可读描述 | CommandDescriber/提案渲染：对象清单 + 风险原因 + manifest 摘要 | 审批面板不再展示原始转义 JSON | R3.4 | M | 0.5d | M2 | 已完成 |
 
 ### R5 内置 Skill 元数据与接口契约（约 3.50d）
 

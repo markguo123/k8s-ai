@@ -15,11 +15,24 @@ import (
 // 指示符开头（@ ! % & * ` 等会让整段清单解析失败，"$GENERATE" 是安全的）。
 const PlaceholderGenerate = "$GENERATE"
 
+// PlaceholderAsk 是「值由用户在审批环节提供」的占位符（三期 R4.5）。
+//
+// 用户说"密码设为 xxx"时，模型也绝不能把 xxx 写进 manifest：值会进 LLM 请求、
+// 会话文件与审计。模型只写 $ASK，真实值在审批通过后由交互通道单独交给执行器，
+// 只存在内存与一次提交里（RESOURCE_CREATE_DESIGN.md §5.3）。
+const PlaceholderAsk = "$ASK"
+
+// IsSecretPlaceholder 报告字符串是否是受支持的 Secret 值占位符。
+func IsSecretPlaceholder(s string) bool {
+	return s == PlaceholderGenerate || s == PlaceholderAsk
+}
+
 // secretValueSource 是 Secret key 的值来源。
 const (
 	SecretSourceStringData = "stringData"
 	SecretSourceData       = "data"
 	SecretSourceGenerate   = "generate"
+	SecretSourceAsk        = "ask"
 )
 
 // inspectSecrets 检测 Secret 的 data / stringData：
@@ -44,6 +57,11 @@ func inspectSecrets(o *Object) ([]SecretKeyFingerprint, []Finding) {
 				keys = append(keys, SecretKeyFingerprint{Key: name, Source: SecretSourceGenerate, Generated: true})
 				continue
 			}
+			if value == PlaceholderAsk {
+				// 值此刻还不存在：没有长度也没有指纹，创建后再由审计补 SHA-256。
+				keys = append(keys, SecretKeyFingerprint{Key: name, Source: SecretSourceAsk, Ask: true})
+				continue
+			}
 			keys = append(keys, fingerprintOf(name, []byte(value), SecretSourceStringData))
 			findings = append(findings, literalValueFinding("stringData."+name, o.Kind))
 		}
@@ -56,11 +74,11 @@ func inspectSecrets(o *Object) ([]SecretKeyFingerprint, []Finding) {
 					Field: "data." + name, Message: "data 的值必须是 base64 字符串", Fix: "改用 stringData 或 " + PlaceholderGenerate})
 				continue
 			}
-			if value == PlaceholderGenerate {
+			if IsSecretPlaceholder(value) {
 				findings = append(findings, Finding{Code: CodeSecretBadDataPlaceh, Severity: SeverityError,
 					Field:   "data." + name,
-					Message: PlaceholderGenerate + " 只能用在 stringData，data 需要 base64 编码",
-					Fix:     "把该 key 移到 stringData 并填 " + PlaceholderGenerate})
+					Message: "占位符（" + PlaceholderGenerate + " / " + PlaceholderAsk + "）只能用在 stringData，data 需要 base64 编码",
+					Fix:     "把该 key 移到 stringData 并填 " + PlaceholderGenerate + " 或 " + PlaceholderAsk})
 				continue
 			}
 			decoded, err := base64.StdEncoding.DecodeString(value)
@@ -109,7 +127,7 @@ func redactSecret(content map[string]any, keys []SecretKeyFingerprint) map[strin
 			continue
 		}
 		for name, value := range raw {
-			if s, isString := value.(string); isString && s == PlaceholderGenerate {
+			if s, isString := value.(string); isString && IsSecretPlaceholder(s) {
 				continue
 			}
 			raw[name] = redactedMark(byKey[name])

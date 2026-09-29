@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -61,6 +62,8 @@ type ChatChoiceOption struct {
 type ChatChoice struct {
 	Prompt  string             `json:"prompt"`
 	Options []ChatChoiceOption `json:"options"`
+	// Secret 为 true 时该请求要收集 Secret 值：前端用密码框，值不回显、不入会话与审计。
+	Secret bool `json:"secret,omitempty"`
 }
 
 // ChatEvent 是一轮对话中的增量事件。
@@ -493,6 +496,25 @@ func (a *chatApprover) Confirm(ctx context.Context, prompt string, options []age
 	case <-ctx.Done():
 		return "", ctx.Err()
 	case c := <-a.respond:
+		return c, nil
+	}
+}
+
+// RequestSecretValue 走同一条 choice 通道索取 Secret 值（secret=true）。
+// 返回值只存在于内存与本次工具调用，不进事件流、会话文件与审计日志。
+func (a *chatApprover) RequestSecretValue(ctx context.Context, prompt string) (string, error) {
+	if a.skip || a.autoApprove {
+		return "", errors.New("非交互模式下无法向用户索取 Secret 值，请改用 $GENERATE 由 k8s-ai 随机生成")
+	}
+	a.events <- ChatEvent{Type: ChatEventChoice, Choice: &ChatChoice{Prompt: prompt, Secret: true}}
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case c := <-a.respond:
+		value := strings.TrimSpace(c)
+		if value == "" || strings.EqualFold(value, "no") {
+			return "", nil
+		}
 		return c, nil
 	}
 }

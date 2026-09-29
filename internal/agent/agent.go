@@ -17,6 +17,13 @@ type Approver interface {
 	Confirm(ctx context.Context, prompt string, options []UserChoiceOption) (string, error)
 }
 
+// SecretValueApprover 是 Approver 的可选接口：审批通过后向用户索取单个 Secret 明文值
+// （三期 R4.5）。值只在内存与一次提交里存在，绝不写进会话、审计与 LLM 请求。
+type SecretValueApprover interface {
+	// RequestSecretValue 提问并等待用户输入；返回空串表示用户放弃（该次创建取消）。
+	RequestSecretValue(ctx context.Context, prompt string) (string, error)
+}
+
 // Options 是 Agent 装配参数。
 type Options struct {
 	LLM      llm.LLMClient

@@ -296,7 +296,8 @@ func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
 	}
 	select {
 	case respond <- body.Choice:
-		writeJSON(w, http.StatusOK, map[string]string{"choice": body.Choice})
+		// 不回显 choice：Secret 值经此通道提交，响应体必须原样返回会话 id。
+		writeJSON(w, http.StatusOK, map[string]string{"sessionId": id})
 	default:
 		writeError(w, http.StatusConflict, fmt.Errorf("approval already answered"))
 	}

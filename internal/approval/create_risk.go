@@ -37,6 +37,16 @@ type CreateSubject struct {
 	Secret bool
 	// DryRun 表示本次只做 server-side 预演，不改变集群。
 	DryRun bool
+	// Namespace 是对象的目标命名空间（cluster-scoped 为空）。
+	Namespace string
+	// NamespaceMissing 表示目标命名空间在集群里不存在（Code Guard 直接拒绝）。
+	NamespaceMissing bool
+	// Denied 表示命中 agent.create.deny_kinds 黑名单。
+	Denied bool
+	// NotAllowed 表示未列入 agent.create.allow_kinds 白名单。
+	NotAllowed bool
+	// ClusterKindDenied 表示 cluster-scoped 资源未获得 agent.create.cluster_kinds 授权。
+	ClusterKindDenied bool
 }
 
 // CreateRisk 是风险分级结论（等级 + 可展示的原因）。
