@@ -24,6 +24,7 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/executor"
 	"github.com/k8s-ai/k8s-ai/internal/manifestx"
 	"github.com/k8s-ai/k8s-ai/internal/model"
+	"github.com/k8s-ai/k8s-ai/internal/skills"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
@@ -45,6 +46,8 @@ type CreateOptions struct {
 	SecretAccess     string
 	// VerifyTimeout 是就绪等待的默认上限（LLM 可用 timeout_seconds 覆盖）。
 	VerifyTimeout time.Duration
+	// Skills 是内置/用户 Skill 注册表（R5.7）。nil 时跳过 Skill 校验。
+	Skills skills.Registry
 }
 
 // 创建工具的入参取值与错误码（稳定契约：进入审计与提示词）。
@@ -359,7 +362,7 @@ func (t *createTool) resolveApplyObjects(args createArgs) ([]manifestx.Object, s
 	}
 	if ok, reason := t.proposals.Match(t.sessionID, manifestx.Fingerprints(parsed)); !ok {
 		return nil, errCreateProposalRequired,
-			"未执行 dry run 或清单与提案不一致，拒绝创建："+reason+
+			"未执行 dry run 或清单与提案不一致，拒绝创建：" + reason +
 				"；请先用同一份 manifest 调 mode=dry_run，把提案交给用户确认"
 	}
 	return parsed, "", ""
@@ -414,6 +417,29 @@ func (t *createTool) parseOptions() manifestx.Options {
 	}
 }
 
+// skillFindings 执行 Skill 校验器（R5.7）。它只产生建议/升档提示，不阻断创建。
+func (t *createTool) skillFindings(o *manifestx.Object) []skills.Finding {
+	if t.opts.Skills == nil {
+		return nil
+	}
+	if val, ok := t.opts.Skills.(skills.Validator); ok {
+		return val.Validate(o.GVK, o.Content(), skills.Scope(o.Scope))
+	}
+	return nil
+}
+
+// skillEscalations 从 Skill findings 中提取风险升档消息，供 approval 决策使用。
+func skillEscalations(in []skills.Finding) []string {
+	var out []string
+	for _, f := range in {
+		if f.Risk == "" {
+			continue
+		}
+		out = append(out, "["+f.Skill+":"+f.Rule+"] "+f.Message)
+	}
+	return out
+}
+
 func (t *createTool) baseOutcome(o *manifestx.Object) map[string]any {
 	item := map[string]any{
 		"index":    o.Index,
@@ -431,6 +457,9 @@ func (t *createTool) baseOutcome(o *manifestx.Object) map[string]any {
 	if warns := o.Warnings(); len(warns) > 0 {
 		item["findings"] = warns
 	}
+	if finds := t.skillFindings(o); len(finds) > 0 {
+		item["skills"] = finds
+	}
 	return item
 }
 
@@ -445,11 +474,13 @@ func (t *createTool) subjectsFor(objs []manifestx.Object, apply bool) []approval
 	subjects := make([]approval.CreateSubject, 0, len(objs))
 	for i := range objs {
 		o := &objs[i]
+		finds := t.skillFindings(o)
 		subjects = append(subjects, approval.CreateSubject{
 			Group:             o.GVK.Group,
 			Kind:              o.Kind,
 			Scope:             scopeString(o.Scope),
 			Dangerous:         o.Dangerous,
+			Escalations:       skillEscalations(finds),
 			Unknown:           o.UnknownKind,
 			Secret:            o.IsSecret(),
 			DryRun:            !apply,
@@ -580,6 +611,17 @@ func (t *createTool) Describe(input json.RawMessage) (command, change string) {
 		}
 		for _, f := range o.Warnings() {
 			fmt.Fprintf(&sb, "\n   提示 %s：%s", f.Code, f.Message)
+		}
+		for _, f := range t.skillFindings(o) {
+			loc := f.Path
+			if loc == "" {
+				loc = f.Rule
+			}
+			if f.Risk != "" {
+				fmt.Fprintf(&sb, "\n   技能风险 %s (%s) [%s]：%s", f.Skill, loc, f.Risk, f.Message)
+			} else {
+				fmt.Fprintf(&sb, "\n   技能提示 %s (%s)：%s", f.Skill, loc, f.Message)
+			}
 		}
 		for _, k := range o.SecretKeys {
 			switch {

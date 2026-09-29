@@ -1,0 +1,40 @@
+name: create-rbac
+domain: rbac
+version: 3.0.0
+source: builtin
+kinds:
+  - rbac.authorization.k8s.io/v1/Role
+  - rbac.authorization.k8s.io/v1/RoleBinding
+  - rbac.authorization.k8s.io/v1/ClusterRole
+  - rbac.authorization.k8s.io/v1/ClusterRoleBinding
+  - v1/ServiceAccount
+requiredInputs:
+  - name
+  - rules
+optionalInputs:
+  - subjects
+validation:
+  - name: rules_declared
+    path: rules
+    condition: missing
+    severity: suggest
+    message: 未声明 rules，建议按最小权限列出需要的 API 组与资源
+    fix: 补充 rules（apiGroups/resources/verbs）
+  - name: binding_subjects
+    path: subjects
+    condition: missing
+    severity: suggest
+    message: RoleBinding/ClusterRoleBinding 未声明 subjects，绑定将不生效
+    fix: 补充 subjects 中的用户/ServiceAccount/Group
+risk:
+  default: MEDIUM
+  elevateWhen:
+    - name: cluster_admin_like
+      path: ""
+      condition: cluster_scoped
+      to: HIGH
+      message: ClusterRole/ClusterRoleBinding 是 cluster-scoped 权限授予，默认按高风险确认
+preChecks:
+  - name: namespace_exists
+postChecks:
+  - name: object_exists

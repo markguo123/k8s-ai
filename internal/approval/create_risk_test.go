@@ -20,6 +20,7 @@ func TestCreateRiskForTable(t *testing.T) {
 		{"作用域未知升级", CreateSubject{Kind: "ConfigMap", Scope: CreateScopeUnknown}, model.RiskHigh},
 		{"未映射 Kind 升级", CreateSubject{Kind: "Widget", Scope: CreateScopeNamespaced, Unknown: true}, model.RiskHigh},
 		{"特权字段升级", CreateSubject{Kind: "DaemonSet", Scope: CreateScopeNamespaced, Dangerous: []string{"privileged"}}, model.RiskHigh},
+		{"Skill 风险规则升级", CreateSubject{Kind: "ConfigMap", Scope: CreateScopeNamespaced, Escalations: []string{"[create-network:host_network] 启用宿主机网络"}}, model.RiskHigh},
 		{"非良性 Kind 升级", CreateSubject{Kind: "HorizontalPodAutoscaler", Scope: CreateScopeNamespaced}, model.RiskHigh},
 	}
 	for _, tc := range cases {

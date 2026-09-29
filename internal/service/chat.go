@@ -19,6 +19,7 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/model"
 	"github.com/k8s-ai/k8s-ai/internal/scanner"
 	"github.com/k8s-ai/k8s-ai/internal/session"
+	"github.com/k8s-ai/k8s-ai/internal/skills"
 	"github.com/k8s-ai/k8s-ai/internal/tools"
 	k8stools "github.com/k8s-ai/k8s-ai/internal/tools/k8s"
 )
@@ -281,7 +282,13 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 	// 这样 agent.disabled_tools 里写 create_resource 就能摘掉它。
 	if s.cfg.Agent.Create.Enabled {
 		if runner, ok := writeRunner.(tools.CreateRunner); ok {
-			if err := reg.Register(tools.NewCreateTool(createToolOptions(s.cfg), runner, s.proposals, sess.ID)); err != nil {
+			opts := createToolOptions(s.cfg)
+			skillReg, err := skills.NewBuiltin()
+			if err != nil {
+				return nil, err
+			}
+			opts.Skills = skillReg
+			if err := reg.Register(tools.NewCreateTool(opts, runner, s.proposals, sess.ID)); err != nil {
 				return nil, err
 			}
 		}

@@ -31,6 +31,9 @@ type CreateSubject struct {
 	Scope string
 	// Dangerous 是命中的危险字段码（manifestx.Danger* 常量）。
 	Dangerous []string
+	// Escalations 是命中 Skill 风险规则后附加的升档建议（如权限授予、hostNetwork）。
+	// 它们只能把风险抬到更高档，永远不能让 HIGH 档资源掉回 MEDIUM。
+	Escalations []string
 	// Unknown 表示集群里没有该类型（CRD 未安装 / kind 拼错）。
 	Unknown bool
 	// Secret 表示被创建对象是 Secret（含值创建走 D-06 专用通道）。
@@ -112,6 +115,9 @@ func CreateRiskFor(s CreateSubject) CreateRisk {
 	}
 	if len(s.Dangerous) > 0 {
 		raise(model.RiskHigh, "manifest 含特权/宿主机类字段（"+strings.Join(sortedUnique(s.Dangerous), ", ")+"）")
+	}
+	if len(s.Escalations) > 0 {
+		raise(model.RiskHigh, "命中创建 Skill 风险规则："+strings.Join(sortedUnique(s.Escalations), "；"))
 	}
 	if !benignCreateKinds[s.Kind] {
 		raise(model.RiskHigh, s.Kind+" 不在已知良性 Kind 表中")

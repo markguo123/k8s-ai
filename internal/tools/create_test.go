@@ -10,6 +10,7 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/executor"
 	"github.com/k8s-ai/k8s-ai/internal/manifestx"
 	"github.com/k8s-ai/k8s-ai/internal/model"
+	"github.com/k8s-ai/k8s-ai/internal/skills"
 )
 
 // fakeCreateRunner 记录提交请求，并按表返回映射/存在性结论。
@@ -436,6 +437,44 @@ func TestCreateToolDescribeMasksSecrets(t *testing.T) {
 	}
 	if !strings.Contains(change, "风险等级") {
 		t.Fatalf("change = %q", change)
+	}
+}
+
+func TestCreateToolDryRunIncludesSkillFindings(t *testing.T) {
+	reg, err := skills.NewBuiltin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := newFakeCreateRunner()
+	tool := NewCreateTool(CreateOptions{
+		Limits:           manifestx.Limits{MaxObjects: 3, MaxBytes: 8192},
+		DefaultNamespace: "default",
+		SecretAccess:     "create_only",
+		VerifyTimeout:    30 * time.Second,
+		Skills:           reg,
+	}, runner, NewProposalStore(), "sess-1")
+	tr, err := tool.Execute(context.Background(), createInput(t, cmManifest, "", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := dataOf(t, tr)
+	objects, _ := data["objects"].([]map[string]any)
+	if len(objects) != 1 {
+		t.Fatalf("objects = %v", objects)
+	}
+	item := objects[0]
+	finds, _ := item["skills"].([]skills.Finding)
+	if len(finds) == 0 {
+		t.Fatalf("未输出 Skill findings: %v", item)
+	}
+	found := false
+	for _, f := range finds {
+		if f.Rule == "metadata_labels" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("缺 metadata_labels finding: %+v", finds)
 	}
 }
 

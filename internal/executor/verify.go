@@ -26,6 +26,19 @@ const (
 
 	maxEventSamples = 5
 	maxEventRunes   = 220
+
+	// 就绪策略名（R5.8：post_checks 按策略名引用，Kind→策略由 readinessKinds 数据驱动）。
+	StrategyObjectExists  = "object_exists"
+	StrategyReplicaWait   = "replica_wait_ready"
+	StrategyReplicaFollow = "replica_follow_revision"
+	StrategyDaemonSet     = "daemonset_ready"
+	StrategyJob           = "job_ready"
+	StrategyCronJob       = "cronjob_object"
+	StrategyPod           = "pod_ready"
+	StrategyPVC           = "pvc_bound"
+	StrategyService       = "service_ready"
+	StrategyIngress       = "ingress_ready"
+	StrategyNamespace     = "namespace_active"
 )
 
 var eventsGVR = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "events"}
@@ -179,9 +192,23 @@ func sameInvolvedObject(item *unstructured.Unstructured, ref ObjectRef) bool {
 
 // observe 按 Kind 读取关键状态并判定是否就绪。
 func observe(obj *unstructured.Unstructured) observation {
-	if policy, ok := readinessPolicies[obj.GetKind()]; ok {
+	policy, ok := readinessStrategies[ReadinessStrategyFor(obj.GetKind())]
+	if ok {
 		return policy(obj)
 	}
+	return observeObjectExists(obj)
+}
+
+// ReadinessStrategyFor 返回 Kind 对应的就绪策略名（R5.8 数据驱动；未映射 Kind
+// 回退 object_exists）。skills post_checks 通过这个命名引用策略表。
+func ReadinessStrategyFor(kind string) string {
+	if s, ok := readinessKinds[kind]; ok {
+		return s
+	}
+	return StrategyObjectExists
+}
+
+func observeObjectExists(obj *unstructured.Unstructured) observation {
 	phase, _, _ := unstructured.NestedString(obj.Object, "status", "phase")
 	fields := map[string]any{}
 	if phase != "" {
@@ -191,19 +218,35 @@ func observe(obj *unstructured.Unstructured) observation {
 		reason: fmt.Sprintf("%s %s 已创建（无专门就绪判定策略，仅确认对象已存在）", obj.GetKind(), obj.GetName())}
 }
 
-// readinessPolicies 是 Kind → 就绪判定策略（R2.6 策略表）。
-var readinessPolicies = map[string]func(*unstructured.Unstructured) observation{
-	"Deployment":            observeReplicaWorkload("Deployment", false),
-	"StatefulSet":           observeReplicaWorkload("StatefulSet", true),
-	"ReplicaSet":            observeReplicaWorkload("ReplicaSet", false),
-	"DaemonSet":             observeDaemonSet,
-	"Job":                   observeJob,
-	"CronJob":               observeCronJob,
-	"Pod":                   observePod,
-	"PersistentVolumeClaim": observePVC,
-	"Service":               observeService,
-	"Ingress":               observeIngress,
-	"Namespace":             observeNamespace,
+// readinessStrategies 是策略名 → 就绪判定函数集合（R5.8：verify 的 post_checks
+// 引用策略名，skills/执行器共用同一张表，不再按 Kind 硬编码扩散到业务包）。
+var readinessStrategies = map[string]func(*unstructured.Unstructured) observation{
+	StrategyObjectExists:  observeObjectExists,
+	StrategyReplicaWait:   observeReplicaWorkload("Deployment", false),
+	StrategyReplicaFollow: observeReplicaWorkload("StatefulSet", true),
+	StrategyDaemonSet:     observeDaemonSet,
+	StrategyJob:           observeJob,
+	StrategyCronJob:       observeCronJob,
+	StrategyPod:           observePod,
+	StrategyPVC:           observePVC,
+	StrategyService:       observeService,
+	StrategyIngress:       observeIngress,
+	StrategyNamespace:     observeNamespace,
+}
+
+// readinessKinds 是 Kind → 策略名的映射（数据驱动主表）。
+var readinessKinds = map[string]string{
+	"Deployment":            StrategyReplicaWait,
+	"StatefulSet":           StrategyReplicaFollow,
+	"ReplicaSet":            StrategyReplicaWait,
+	"DaemonSet":             StrategyDaemonSet,
+	"Job":                   StrategyJob,
+	"CronJob":               StrategyCronJob,
+	"Pod":                   StrategyPod,
+	"PersistentVolumeClaim": StrategyPVC,
+	"Service":               StrategyService,
+	"Ingress":               StrategyIngress,
+	"Namespace":             StrategyNamespace,
 }
 
 // observeReplicaWorkload 生成 Deployment/ReplicaSet/StatefulSet 的就绪判定。

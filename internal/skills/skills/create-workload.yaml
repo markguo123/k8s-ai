@@ -1,0 +1,54 @@
+name: create-workload
+domain: workload
+version: 3.0.0
+source: builtin
+kinds:
+  - apps/v1/Deployment
+  - apps/v1/StatefulSet
+  - apps/v1/DaemonSet
+  - batch/v1/Job
+  - batch/v1/CronJob
+  - v1/Pod
+requiredInputs:
+  - name
+  - image
+optionalInputs:
+  - replicas
+  - serviceAccount
+  - resources
+validation:
+  - name: image_unpinned
+    path: spec.template.spec.containers[].image,spec.containers[].image
+    condition: latest_or_empty
+    severity: suggest
+    message: 镜像未固定 tag（缺失或 :latest），建议钉到具体版本避免漂移
+    fix: 给 image 使用具体版本 tag（例如 :8.0.20），不要依赖 latest
+  - name: resources_declared
+    path: spec.template.spec.containers[].resources,spec.containers[].resources
+    condition: missing
+    severity: suggest
+    message: 未声明 resources，建议补充 requests/limits
+    fix: 为每个容器补充 resources.requests 与 resources.limits
+  - name: anti_affinity
+    path: spec.template.spec.affinity.podAntiAffinity
+    condition: missing
+    severity: suggest
+    message: 高可用工作负载建议配置 podAntiAffinity，避免副本集中调度
+    fix: 补充 podAntiAffinity 或在架构层面接受单点调度
+risk:
+  default: MEDIUM
+  elevateWhen:
+    - name: privileged_container
+      path: spec.template.spec.containers[].securityContext.privileged,spec.containers[].securityContext.privileged
+      condition: privileged
+      to: HIGH
+      message: 容器以特权模式运行，风险升档为 HIGH
+    - name: host_network
+      path: spec.hostNetwork
+      condition: true
+      to: HIGH
+      message: 启用 hostNetwork，影响面超过工作负载本身，风险升档为 HIGH
+preChecks:
+  - name: namespace_exists
+postChecks:
+  - name: readiness

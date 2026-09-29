@@ -1,0 +1,40 @@
+name: create-network
+domain: network
+version: 3.0.0
+source: builtin
+kinds:
+  - v1/Service
+  - networking.k8s.io/v1/Ingress
+  - networking.k8s.io/v1/NetworkPolicy
+requiredInputs:
+  - name
+  - selector
+optionalInputs:
+  - ports
+  - ingressClassName
+validation:
+  - name: selector_declared
+    path: spec.selector
+    condition: missing
+    severity: suggest
+    message: 未设置 selector，Service/NetworkPolicy 可能匹配不到预期 Pod
+    fix: 补充 spec.selector 指向目标工作负载的 labels
+  - name: ports_declared
+    path: spec.ports
+    condition: missing
+    severity: suggest
+    message: 未声明 ports，建议明确对外暴露端口
+    fix: 补充 spec.ports（port/targetPort/protocol）
+  - name: ingress_class_check
+    path: spec.ingressClassName
+    condition: missing
+    severity: suggest
+    message: Ingress 未指定 ingressClassName，可能默认类不匹配
+    fix: 补充 spec.ingressClassName 或在审批前确认集群默认 IngressClass
+risk:
+  default: MEDIUM
+preChecks:
+  - name: namespace_exists
+postChecks:
+  - name: service_ready
+  - name: readiness

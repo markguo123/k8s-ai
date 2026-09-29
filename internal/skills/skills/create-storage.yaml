@@ -1,0 +1,46 @@
+name: create-storage
+domain: storage
+version: 3.0.0
+source: builtin
+kinds:
+  - v1/PersistentVolumeClaim
+  - v1/PersistentVolume
+  - storage.k8s.io/v1/StorageClass
+requiredInputs:
+  - name
+  - storageClassName
+optionalInputs:
+  - accessModes
+  - storage
+validation:
+  - name: storage_class_declared
+    path: spec.storageClassName
+    condition: missing
+    severity: suggest
+    message: 未指定 storageClassName，建议明确持久化存储类
+    fix: 填写 spec.storageClassName 或说明使用默认 StorageClass
+  - name: access_modes_declared
+    path: spec.accessModes
+    condition: missing
+    severity: suggest
+    message: 未声明 accessModes，建议按使用方式明确 ReadWriteOnce/ReadWriteMany
+    fix: 补充 spec.accessModes
+  - name: capacity_declared
+    path: spec.resources.requests.storage
+    condition: missing
+    severity: suggest
+    message: 未声明容量 requests.storage，建议设置容量
+    fix: 补充 spec.resources.requests.storage
+risk:
+  default: MEDIUM
+  elevateWhen:
+    - name: cluster_storage
+      path: ""
+      condition: cluster_scoped
+      to: HIGH
+      message: PV/StorageClass 是 cluster-scoped 资源，风险升档为 HIGH
+preChecks:
+  - name: namespace_exists
+postChecks:
+  - name: pvc_bound
+  - name: object_exists
