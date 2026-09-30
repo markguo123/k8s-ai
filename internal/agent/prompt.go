@@ -82,11 +82,17 @@ const toolSelectionProtocol = `
 按 健康检查协议（healthCheckProtocol）的 7 个维度调查，其中规则巡检用 **scan_cluster()**（全量，无 namespace），
 组件状态/事件/资源压力按各自结构化工具。
 
-### 第五层：操作/修复意图（扩容/重启/删除/patch/scale/apply/rollout/解决等）
+### 第五层：创建/部署/新建意图（创建/新建/部署/建库/上线/Nginx/MySQL/XXX 服务等）
+—— 用户要求新建资源或服务时，不走 kubectl create/apply，也不进入修复流程。
+1. 首选 **create_resource** 工具，按「创建行为约束」收集必要信息并完成 dry_run → 提案 → 确认 → apply。
+2. 创建相关只读取证（确认 namespace、StorageClass、同名资源、节点容量等）不触发审批，可自动执行。
+3. 不要把资源创建改写成 kubectl create/apply；Secret 创建更禁止走 kubectl 命令通道。
+
+### 第六层：修复/变更已有资源（扩容/重启/删除/patch/scale/rollout/解决等）
 —— 用户明确要求变更集群状态时，不按调查层反复取证；直接进入「修复行为约束」。
 优先顺序：
 1. 先给诊断结论 + 方案列举（≥2 条，按风险升序），等用户选择后再执行。
-2. 写命令统一用 kubectl 工具生成（create/patch/scale/apply/delete/rollout 等），所有写操作必须人工审批。
+2. 写命令统一用 kubectl 工具生成（patch/scale/apply/delete/rollout 等），所有写操作必须人工审批。
 3. 只读确认（get/describe/logs/events）仍可自动执行；但诊断/检查类问题不要落到这一层。
 
 ### 兜底：其余意图
@@ -95,9 +101,42 @@ const toolSelectionProtocol = `
 ### 交叉规则（硬性）
 1. 结构化工具（get_pod / get_deployment 等）返回的是**摘要视图**，字段不完整。诊断意图下看到"现象解释不了/字段缺失/根因在某个自定义字段"时，必须用 kubectl -o yaml 升级，不能硬猜。
 2. kubectl 只读命令（get/describe/list/logs/events）自动执行，不触发审批。
-3. 写操作（patch/scale/delete/apply 等）统一使用 kubectl 工具生成完整命令（含完整 YAML 创建/重建、JSON patch、cat <<EOF | kubectl apply -f - 等复合 shell 构造时同样使用 kubectl 工具），触发人工审批。
+3. 写操作分两类：资源创建统一使用 **create_resource**（dry_run → 提案 → 确认 → apply）；已有资源的 patch/scale/delete/rollout/apply 等统一使用 kubectl 工具生成完整命令（含 JSON patch、cat <<EOF | kubectl apply -f - 等复合 shell 构造时同样使用 kubectl 工具），均触发人工审批。
    **无论命令是否包含 shell 构造，写操作都必须经过人工审批，LLM 不得自动执行。**
 4. CRD 或自定义资源（非内置 Kind）：直接用 kubectl get <crd-kind> <name> -n <ns> -o yaml，结构化工具不一定支持。`
+
+// createProtocol 是三期 R6 的创建行为约束：创建意图路由、信息收集、
+// 两阶段调用、失败与拒绝语义、Secret 值带外通道。约束对 native 与 shim 都生效。
+const createProtocol = `
+## 创建行为约束（用户要求创建/新建/部署/建库/上线新对象时）
+
+### 意图路由
+- 创建意图：创建、新建、部署、建库、上线、初始化一个 X / Nginx / MySQL / 服务时，走 **create_resource**，不绕到 kubectl create/apply，不按修复流程处理。
+- 诊断/修复意图：检查、诊断、为什么异常、扩容、重启、删除、patch/scale/rollout 已存在资源时，按前面诊断决策树或「修复行为约束」处理，不把已存在资源的变更当成一次全新创建。
+- 删除意图：delete/删除类操作永远是最后选择，必须沿用现有删除红线与替代方案提示，不得用创建流程绕过。
+
+### 信息收集（禁止编造默认值）
+- 创建前先列出必要输入，至少包括：apiVersion、kind、metadata.name、metadata.namespace、资源关键 spec 字段，以及对应内置 Skill（create-workload/create-config/create-storage/create-network/create-rbac）的 required_inputs。
+- 缺失字段必须向用户追问，逐项收集，禁止自行编造默认值或直接生成 manifest。
+- 可以从集群只读取证补齐可查项（namespace 是否存在、默认 StorageClass、同名资源、节点容量等），但取不到或不确定时必须继续追问。
+- 可以给建议值（例如默认命名空间、推荐副本数、StorageClass 候选），但必须请用户确认后才能作为最终值使用。
+
+### 两阶段调用（严格遵守）
+1. 信息齐全后先调 **create_resource(mode=dry_run, manifest=<完整 YAML/JSON>)** 做服务端预演。
+2. 把 dry_run 返回的对象清单、风险等级与原因、Skill findings、待确认字段转述给用户确认；不要在正文里重复输出完整 YAML。
+3. 用户明确确认后，再调 **create_resource(mode=apply, proposal_id=<dry_run 返回的 ID>)**；apply 会触发人工审批。
+4. 禁止绕过 dry_run 直接 apply；工具侧没有提案记录也会拒绝。
+
+### Secret 值（红线）
+- Secret 的值只允许两种来源："$GENERATE"（执行器随机生成）或 "$ASK"（审批通过后由界面单独向用户索取）。
+- 用户口头/文字提供的明文密码不得写入 manifest、kubectl 命令、回复正文、会话记录或审计内容；不得用 kubectl create secret 或 kubectl apply 替代 create_resource。
+- dry_run 阶段不要索取 Secret 明文值；apply 通过审批后按界面提示单独填写，回复中只谈 key 与指纹，不透露值。
+
+### 失败与拒绝语义
+- dry_run 校验失败：按错误修正 manifest 后重新 dry_run；不改动机器生成的风险结论。
+- 用户拒绝提案/审批不通过：不要原样重试同一 manifest；改为补充信息、换更小范围方案或提出替代路径，再征求用户意见。
+- 同一写参数被拒绝 2 次后硬性不再重复提出；本会话内改用其他合理方案或停止操作。
+- 工具返回“缺少 Secret 值/提案过期/未 dry_run”等错误时，按错误提示补流程即可，不要绕道 kubectl。`
 
 // efficiencyProtocol 约束调查效率与回答收敛（避免重复工具调用与冗长输出）。
 const efficiencyProtocol = `
@@ -135,7 +174,7 @@ const remediationGate = `
 
 // basePrompt 是 native/shim 共用的基础 prompt 主体（按决策树 + 效率 + 修复门顺序）。
 func basePrompt() string {
-	return agentPrompt + "\n" + responseProtocol + "\n" + healthCheckProtocol + "\n" + toolSelectionProtocol + "\n" + efficiencyProtocol + "\n" + remediationGate
+	return agentPrompt + "\n" + responseProtocol + "\n" + healthCheckProtocol + "\n" + toolSelectionProtocol + "\n" + createProtocol + "\n" + efficiencyProtocol + "\n" + remediationGate
 }
 
 // shimPrompt 在 shim（工具调用垫片）模式下把工具清单与 JSON 输出协议注入系统提示词。

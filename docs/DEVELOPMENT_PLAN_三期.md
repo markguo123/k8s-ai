@@ -1,8 +1,8 @@
 # k8s-ai 三期开发计划：资源创建能力（Resource Create）
 
-- 版本：v1.8
-- 日期：2026-09-24（v1.8 进度回填：2026-09-29）
-- 状态：进行中（R0.2 + R1 + R2 + R3 + R4 + R5 已落地，R6 起未开始）
+- 版本：v1.9
+- 日期：2026-09-24（v1.9 进度回填：2026-09-30）
+- 状态：进行中（R0.2 + R1 + R2 + R3 + R4 + R5 + R6 已落地，R7 起未开始）
 - 当前基线版本：v2.7.0（git tag 与 Makefile VERSION 一致；CHANGELOG / VERSIONING / PROJECT_STATUS 顶部仍停在 v2.6.0，由 R0.6 补齐）
 - 目标版本：v3.0.0
 - 进度快照（2026-09-29）：R4 安全与审批链路已落地——Secret 值通道打通（`$GENERATE` 由执行器用 crypto/rand 生成、
@@ -15,7 +15,8 @@
   R4 验收复核：逐项核对 R4.1~R4.9 验收标准，补 `approval.Policy.Evaluate` 的 `Input.Denied` 用例 3 条，确认 Code Guard 硬拒绝优先于
   `SkipPermissions`、`RequireApproval=false` 与只读自动放行三条捷径；「创建首提必批」由 Agent 循环用例覆盖（Grant 只豁免第二次同类 MEDIUM 写）。
   R5 内置 Skill 元数据与接口契约已落地：新增 internal/skills 包（Skill/Rule/RiskClause/RiskRule/Check/Source/Registry/Validator，go:embed 内置 workload/config/storage/network/rbac 五域 YAML），create_resource dry-run 输出技能提示/技能风险，approval.CreateRiskFor 新增 Escalations 只升不降，verify 策略数据化；Skill 模型无执行动作字段（架构测试），go test ./... 与 go vet ./... 全绿。
-  下一步：R6 Agent 编排与提示词；R2/R3/R4/R5 真实集群端到端与 R8 准出需人工点验。
+  R6 Agent 编排与提示词已落地：prompt 决策树新增创建/部署/新建分支并把资源创建路由到 create_resource，创建行为约束覆盖信息收集（required_inputs/禁止编造默认值）、两阶段 dry_run→提案→确认→apply、Secret 值只允许 $GENERATE/$ASK 带外通道、失败/拒绝语义与 2 次硬拦截；新增 prompt 回归测试断言创建意图路由、dry_run 先于 apply、shim/native 共用创建协议。go test ./... 与 go vet ./... 全绿。
+  下一步：R7 Web UI 与 CLI 体验；R2/R3/R4/R5 真实集群端到端与 R8 准出需人工点验。
 - 需求输入：[RESOURCE_CREATE_DESIGN.md](./RESOURCE_CREATE_DESIGN.md)、[APPROVAL_V2_DESIGN.md](./APPROVAL_V2_DESIGN.md)、AGENTS.md
 - 编号说明：本计划用 **R0–R8** 作为主线编号。AGENTS.md 中预留的 Phase 3（MCP 外部工具、
   可观测性、多会话后端）不属本计划范围，属四期另一条线，此处不排期；AGENTS.md 的 Phase 口径在 R0.5 同步修订。
@@ -33,6 +34,7 @@
 | v1.6 | 2026-09-29 | | 进度回填：R4（R4.1~R4.9）已完成。R4.1/R4.2/R4.3 在 R3 期间随 `create_risk.go`、`create.go` 校验链与 decision 用例落地，本轮回补 kubectl 通道 forbidden 回归用例；新增 `internal/tools/secret_values.go`（`SecretValueKey`/`SecretValuePrompt`/`SecretValuePlanner`/`PendingSecretValues`、`secretTouches` 审计载荷、`WithSecretValues` 带外值通道）、`internal/executor/apply.go` 的 `materializeSecret`（`$GENERATE` 用 crypto/rand 生成、`$ASK` 取人工输入值、`data` 字段与模型自填值硬拒）与 `FingerprintSecretValue`；`agent.SecretValueApprover` + `loop.collectSecretValues`（缺值整批不提交、拒绝文案区分已输入与已放弃）、`service.ChatApprover.RequestSecretValue`（CLI 走 `term.ReadPassword` 不回显、Web 走密码输入框且值不回显）、`audit` 两个 Secret 事件、`config.validateSecretAccess`；`create_resource.Describe` 落地 R4.9 审批卡文案；新增 Secret 专项测试文件并扩展 tools/agent/service/config/approval 用例 |
 | v1.7 | 2026-09-29 | | R4 验收复核（无生产代码改动）：逐项核对 R4.1~R4.9 验收标准；`internal/approval/decision_test.go` 补 3 条 `Input.Denied` 用例，锁定 Code Guard 硬拒绝优先于 `SkipPermissions`、`RequireApproval=false` 与只读自动放行捷径（此前 `Denied` 分支无用例）；确认「创建首提必批」由 `internal/agent/approval_loop_test.go` 覆盖（首次写必过审批、Grant 只豁免第二次同类 MEDIUM 写，HIGH 与 shell 永不命中）。R4 状态不变，`go build`/`go vet`/`go test ./...` 全绿 |
 | v1.8 | 2026-09-29 | | 进度回填：R5（R5.1~R5.9）已完成。新增 internal/skills 包（Skill/Rule/RiskClause/RiskRule/Check/Source/Registry/Validator，go:embed 五域 YAML），create_resource dry-run 输出 Skill findings，approval.CreateRiskFor 新增 Escalations 只升不降，verify 策略数据化；Skill 模型无执行动作字段（架构测试）；go test ./...、go vet ./... 全绿 |
+| v1.9 | 2026-09-30 | | 进度回填：R6（R6.1~R6.5）已完成。internal/agent/prompt.go 决策树新增创建分支并将资源创建路由到 create_resource；新增 createProtocol 约束（required_inputs 追问、禁止编造默认值、dry_run→提案→确认→apply、Secret 值只允许 $GENERATE/$ASK、失败/拒绝与 2 次硬拦截）；新增 prompt_test.go 回归测试。go test ./...、go vet ./... 全绿 |
 
 ---
 
@@ -278,11 +280,11 @@ Skill 目录注入 system prompt、`load_skill` 只读按需加载、热加载�
 
 | 编号 | 任务项 | 交付物 / 涉及文件 | 验收标准 | 依赖 | 规模 | 预估 | 里程碑 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| R6.1 | 创建意图路由 | internal/agent/prompt.go 决策树新增创建分支 | 创建/诊断/修复/删除四类意图路由正确 | R3.1 | M | 0.5d | M3 | 未开始 |
-| R6.2 | 信息收集协议 | required_inputs 驱动追问，禁止编造默认值 | 缺失字段必须追问；可给建议值但需确认 | R6.1 | M | 0.5d | M3 | 未开始 |
-| R6.3 | 两阶段调用协议 | prompt 明确 dry_run→提案→确认→apply 顺序 | 不允许跳过 dry_run 直接 apply（工具侧兜底） | R6.2, R3.5 | S | 0.25d | M2 | 未开始 |
-| R6.4 | 失败与拒绝语义 | 不原样重试、拒绝 2 次硬拦截沿用；Secret 值禁写入 kubectl 命令文案 | 现有熔断不被破坏；Secret 命令路径提示正确 | R3.9 | S | 0.25d | M3 | 未开始 |
-| R6.5 | 提示词回归测试 | internal/agent/prompt 测试 + 决策树用例 | `go test ./internal/agent/...` 绿 | R6.4 | M | 0.5d | M3 | 未开始 |
+| R6.1 | 创建意图路由 | internal/agent/prompt.go 决策树新增创建分支 | 创建/诊断/修复/删除四类意图路由正确 | R3.1 | M | 0.5d | M3 | 已完成 |
+| R6.2 | 信息收集协议 | required_inputs 驱动追问，禁止编造默认值 | 缺失字段必须追问；可给建议值但需确认 | R6.1 | M | 0.5d | M3 | 已完成 |
+| R6.3 | 两阶段调用协议 | prompt 明确 dry_run→提案→确认→apply 顺序 | 不允许跳过 dry_run 直接 apply（工具侧兜底） | R6.2, R3.5 | S | 0.25d | M2 | 已完成 |
+| R6.4 | 失败与拒绝语义 | 不原样重试、拒绝 2 次硬拦截沿用；Secret 值禁写入 kubectl 命令文案 | 现有熔断不被破坏；Secret 命令路径提示正确 | R3.9 | S | 0.25d | M3 | 已完成 |
+| R6.5 | 提示词回归测试 | internal/agent/prompt 测试 + 决策树用例 | `go test ./internal/agent/...` 绿 | R6.4 | M | 0.5d | M3 | 已完成 |
 
 ### R7 Web UI 与 CLI 体验（约 3.50d）
 
