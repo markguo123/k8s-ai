@@ -1794,6 +1794,22 @@ pre code { background: none; padding: 0; color: inherit; }
 .tool-output .cr-tag { font-family: var(--font-mono); white-space: nowrap; color: var(--accent); font-size: 10px; }
 .tool-output .cr-secrets, .tool-output .cr-sec { margin: 6px 0 10px; padding: 6px 10px; border-left: 2px solid var(--ok); background: rgba(13,16,23,.3); border-radius: 4px; }
 .tool-output .secret-note { font-size: 10.5px; color: var(--muted); margin-bottom: 4px; }
+.tool-output .cr-flow {
+  display: flex; align-items: stretch; gap: 4px; flex-wrap: wrap;
+  margin: 0 0 12px; padding: 8px 10px;
+  background: rgba(13,16,23,.45); border: 1px solid var(--border); border-radius: 6px;
+}
+.tool-output .cr-flow-step {
+  flex: 1 1 88px; min-width: 74px; text-align: center;
+  font-size: 10.5px; line-height: 1.5; padding: 5px 6px;
+  border-radius: 4px; color: var(--muted); background: rgba(148,163,184,.08);
+  border: 1px solid transparent;
+}
+.tool-output .cr-flow-step.done { color: #34d399; background: rgba(52,211,153,.12); border-color: rgba(52,211,153,.35); }
+.tool-output .cr-flow-step.active { color: var(--accent); background: rgba(99,102,241,.14); border-color: rgba(99,102,241,.45); }
+.tool-output .cr-flow-step.error { color: #ff7d7d; background: rgba(239,68,68,.14); border-color: rgba(239,68,68,.45); }
+.tool-output .cr-flow-note { width: 100%; margin-top: 6px; font-size: 11px; color: var(--text-secondary); }
+
 
 
 .tool-output .tl-muted { color: var(--muted); }
@@ -3024,6 +3040,55 @@ function crVerify(verify) {
   return '<div class="cr-sec"><div class="tl-sub">就绪校验</div>' + html + '</div>';
 }
 
+function crFlow(data, tool) {
+  const args = tool && tool.arguments ? parseJsonLoose(tool.arguments) : {};
+  const mode = (data && data.mode) || args.mode || "dry_run";
+  const status = data && data.status ? String(data.status) : (mode === "apply" ? "applied" : "validated");
+  const objs = data && Array.isArray(data.objects) ? data.objects.filter(Boolean) : [];
+  const hasVerify = objs.some(function(o) { return o && o.verify; });
+  const notReady = objs.some(function(o) { return o && o.verify && o.verify.ready === false; });
+  const steps = ["预演", "待确认", "执行", "校验", "完成"];
+  const cls = ["pending", "pending", "pending", "pending", "pending"];
+  let note = "";
+  if (data && mode === "dry_run") {
+    if (status === "validated") {
+      cls[0] = "done"; cls[1] = "active"; note = "服务端校验通过，等待用户确认后 apply";
+    } else if (status === "rejected" || data.error) {
+      cls[0] = "error"; note = String(data.error || "dry_run 未通过，异常态可见");
+    } else {
+      cls[0] = "active"; note = "进行服务端校验";
+    }
+  } else if (data && mode === "apply") {
+    if (status === "applied" || status === "partial") {
+      cls[0] = "done"; cls[1] = "done"; cls[2] = "done";
+      if (hasVerify) {
+        cls[3] = "done";
+        cls[4] = notReady ? "active" : "done";
+        note = notReady ? "存在对象未就绪，请查看校验摘要" : "创建完成，校验通过";
+      } else {
+        cls[3] = "pending";
+        cls[4] = "done";
+        note = "创建完成（未启用就绪校验）";
+      }
+      if (status === "partial" && data.refused) note = note + "，部分对象未成功";
+    } else if (status === "rejected" || status === "failed") {
+      cls[0] = "done"; cls[1] = "done"; cls[2] = "error";
+      note = String(data.error || "apply 未成功，异常态可见");
+    } else {
+      cls[0] = "done"; cls[1] = "done"; cls[2] = "active";
+      note = "正在执行并等待结果";
+    }
+  } else if (!data && mode === "apply") {
+    cls[0] = "done"; cls[1] = "done"; cls[2] = "active";
+    note = "正在执行并等待结果";
+  } else if (!data) {
+    cls[0] = "active"; note = "进行服务端校验";
+  }
+  return '<div class="cr-flow">' + steps.map(function(label, i) {
+    return '<span class="cr-flow-step ' + cls[i] + '">' + escapeHtml(label) + '</span>';
+  }).join("") + (note ? '<div class="cr-flow-note">' + escapeHtml(note) + '</div>' : "") + '</div>';
+}
+
 function renderCreateResource(data, tool) {
   if (!data || typeof data !== "object") return "";
   const mode = data.mode ? String(data.mode) : "dry_run";
@@ -3034,7 +3099,7 @@ function renderCreateResource(data, tool) {
   if (data.applied != null) meta.push("applied=" + escapeHtml(String(data.applied)));
   if (data.refused != null) meta.push("refused=" + escapeHtml(String(data.refused)));
   if (data.proposalId) meta.push("proposal=" + escapeHtml(String(data.proposalId)));
-  let html = '<div class="tl-meta">' + meta.join(" · ") + '</div>';
+  let html = crFlow(data, tool) + '<div class="tl-meta">' + meta.join(" · ") + '</div>';
 
   if (data.risk) {
     html += '<div class="cr-risk"><span class="tool-risk risk-' + crRiskClass(data.risk) + '">' +
@@ -3224,6 +3289,7 @@ function buildToolCard(tool, isHistory) {
   const output = document.createElement("pre");
   output.className = "tool-output";
   if (isHistory) output.innerHTML = renderToolOutput(tool);
+  else if (tool && tool.name === "create_resource") output.innerHTML = crFlow(null, tool);
 
   card.appendChild(head);
   card.appendChild(errBar);
