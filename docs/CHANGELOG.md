@@ -2,6 +2,34 @@
 
 本项目遵循 docs/VERSIONING.md 的里程碑阶梯约定。
 
+## [v3.0.0-beta] - 2026-09-30
+
+三期资源创建能力完成（R0–R8）：自然语言创建资源进入统一 `create_resource` 通道，支持 dry-run 提案、人工审批、Server-Side Apply、创建后 verify，并为四期 Skill 引擎冻结数据模型与读接口。
+
+### Added
+
+- **`create_resource` Tool**：`internal/tools/create.go` 提供 `manifest` / `mode` / `verify` / `timeout_seconds` 参数；dry-run 产出会话级提案，apply 需通过 `proposal_id` 或同指纹 manifest。
+- **Executor 创建能力**：`internal/executor/apply.go` 基于 client-go dynamic + Server-Side Apply（fieldManager=`k8s-ai`），支持 server-side dry-run、存在性检查、创建后 verify；写入路径仍只在 Executor。
+- **创建安全门禁**：`internal/approval/codeguard.go` / `create_risk.go` 提供 kind 黑白名单、cluster 授权闸门、命名空间存在性、未 dry-run 拒绝、未知 Kind/危险字段风险升档。
+- **Secret 创建通道**：`agent.secret.access=create_only`；只允许 `stringData` 使用 `$GENERATE` / `$ASK`，明文值走审批带外传入，审计只记录键名/长度/SHA-256/来源。
+- **内置 Skill 元数据**：`internal/skills/` 冻结 Skill/Rule/RiskClause/RiskRule/Check/Source/Registry 契约，go:embed 内置 workload/config/storage/network/rbac 五域 YAML，Skill 模型无执行动作字段。
+- **Agent 创建编排**：`internal/agent/prompt.go` 新增创建/部署/新建意图路由与 `createProtocol` 约束，必须信息收集后 dry-run → 提案 → 用户确认 → apply。
+- **CLI/Web 渲染**：CLI 与 Web 展示创建提案卡、五步执行状态流、创建结果与 Secret 脱敏清单；提案/manifest/指纹/verify 落库并支持刷新恢复。
+- **集成测试**：`internal/creationtest/` 覆盖 dry_run → 审批 → SSA 创建 → verify、Secret `$ASK` 带外取值与审计无明文、绕过 dry-run 拒绝等场景。
+
+### Changed
+
+- `k8s-ai-test.yaml`、`docs/INSTALLATION.md` 增加 `agent.create.*` 与 `agent.secret.access` 配置样例。
+- `docs/E2E_SMOKE.md` 增加资源创建、Secret 审计与失败路径冒烟场景。
+- `docs/RESOURCE_CREATE_DESIGN.md` 实现状态标注为三期已落地。
+- `internal/webui/server.go` 新增 `POST /api/sessions/{id}/cancel` 取消当前 Chat 运行（按 session 记录 `context.CancelFunc`，删除会话时同步取消）；发送区新增停止按钮，运行状态改由停止按钮标识，移除原旋转 spinner；新增 `TestCancelActiveRun` 覆盖取消接口与无活动运行冲突提示。
+
+### Tests
+
+- `go test ./...` 通过（含新增 `internal/creationtest`）
+- `go vet ./...` 通过
+- `tests/arch` 通过
+
 ## [v2.6.0] - 2026-09-20
 
 Web 工具卡片结构化渲染与会话持久化补全（Data.kind 驱动工具结果表格/键值展示；kubectl 工具卡仅展示原始命令；arguments/data/ok 落库并随 SSE 回传）。

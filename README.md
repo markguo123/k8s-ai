@@ -1,9 +1,9 @@
 # k8s-ai
 
-> 当前版本：**v2.6.0**（二期迭代；版本约定见 [docs/VERSIONING.md](docs/VERSIONING.md)，变更见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）
+> 当前版本：**v3.0.0-beta**（三期资源创建；版本约定见 [docs/VERSIONING.md](docs/VERSIONING.md)，变更见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）
 
 Kubernetes AI 智能巡检、故障诊断与自然语言运维 Agent
-（一期：只读巡检 + 规则引擎 + 私有大模型诊断 + 报告；二期：`chat` 对话 Agent + `web` 浏览器界面 + 读写操作 + 人工确认）。
+（一期：只读巡检 + 规则引擎 + 私有大模型诊断 + 报告；二期：`chat` 对话 Agent + `web` 浏览器界面 + 读写操作 + 人工确认；三期：自然语言资源创建）。
 
 ## 项目介绍
 
@@ -31,7 +31,7 @@ k8s-ai web --addr 127.0.0.1:8081
 二期能力：
 
 - **流式输出**：`llm.stream: true` 开启 SSE 流式处理；工具前保留简短进度说明，工具调用与结果分阶段展示，最终报告在工具完成后输出；流式失败自动降级为非流式（兼容不支持 stream 的网关）
-- **Web 流程时间线**：同一轮对话中的思考、工具执行、最终结论按竖向时间线展示，过程状态更清晰
+- **Web 流程时间线**：同一轮对话中的思考、工具执行、最终结论按竖向时间线展示，过程状态更清晰；分析期间可点击发送区右侧停止按钮中断 Agent 本轮运行
 - **Agent 工具集**：20 个只读工具（Pod/Node/Workload/存储/网络/Events/日志/ConfigMap/节点资源用量 + 5 个诊断工具 scan*cluster/diagnose*\*，复用一期 Scanner/规则/诊断）+ **1 个写工具**（kubectl，唯一入口：LLM 生成完整命令字符串，含 shell 构造走 `bash -c`，无 shell 走 argv 直调）
 - **四层意图决策树**：诊断意图→kubectl -o yaml+previous logs+events；浏览意图→结构化摘要工具；ns 级健康→scan_cluster(namespace=X)；集群全景→scan_cluster()+健康检查协议。读操作全走结构化工具；写操作只有 kubectl 一条路径，LLM 生成完整命令（含 shell 构造），统一走审批
 - **集群健康检查**：节点 → 资源使用（metrics API）→ 命名空间 → Pod → 系统组件 → 警告事件 → 规则评分 + LLM 综合评分双轨
@@ -43,6 +43,14 @@ k8s-ai web --addr 127.0.0.1:8081
 - **MCP 预留**：Client 接口 + 注册表适配器（二期 v1 不连接外部服务器）
 
 > 写权限示例见 [deploy/rbac-write.example.yaml](deploy/rbac-write.example.yaml)（默认 clusterrole 保持只读）；安装部署见 [docs/INSTALLATION.md](docs/INSTALLATION.md)。
+
+## 三期：资源创建（v3.0.0-beta）
+
+- **统一创建 Tool**：`create_resource(manifest, mode, verify, timeout_seconds)`，不按资源类型堆工具；写入路径仍是 `internal/executor`（dynamic + Server-Side Apply）
+- **两阶段协议**：强制先 `dry_run` 产出创建提案（manifest、风险、Skill findings）→ 人工确认 → `apply` → `verify`
+- **安全门禁**：黑名单/白名单/cluster 授权闸门、命名空间存在性、未 dry-run 拒绝、未知 Kind/危险字段升档；详情见 [docs/RESOURCE_CREATE_DESIGN.md](docs/RESOURCE_CREATE_DESIGN.md)
+- **Secret 创建通道**：`agent.secret.access=create_only`，只允许 `$GENERATE`（执行器生成）或 `$ASK`（审批时用户输入）；明文值不进 LLM/会话/审计
+- **内置 Skill 元数据**：`internal/skills/` 冻结数据模型与 Registry 读接口，go:embed 五域 YAML；四期用户自定义 Skill/通用引擎在四期规划
 
 ## 安装
 
@@ -102,6 +110,10 @@ k8s-ai scan --fail-on HIGH              # 达到 HIGH 返回退出码 2（CI 用
 | `llm.thinking`                                 | `{type: enabled}`                 | chat 标准思考参数（OpenAI 兼容网关）                    |
 | `scan.thinking`                                | `{type: enabled}`                 | 一期 Scan 诊断思考参数                                  |
 | `report.directory` / `format`                  | ./reports / markdown              | 报告输出                                                |
+| `agent.create.enabled` / `deny_kinds` / `allow_kinds` | true / [] / []             | 三期创建开关与 kind 门禁                              |
+| `agent.create.cluster_kinds`                   | []                               | cluster-scoped 资源授权白名单（默认空即禁止集群级创建） |
+| `agent.create.max_objects_per_call` / `max_manifest_bytes` | 3 / 8192                | 单次创建规模上限                                        |
+| `agent.secret.access`                          | `create_only`                    | `off` / `create_only`；`read_write` 未开放                |
 
 环境变量：`KUBECONFIG`、`K8S_AI_LLM_ENDPOINT`、`K8S_AI_LLM_API_KEY`、`K8S_AI_LLM_MODEL` 等。
 

@@ -1203,6 +1203,16 @@ body {
 #send:hover { opacity: .9; }
 #send:disabled { opacity: .4; cursor: not-allowed; }
 
+#stop {
+  width: 48px; height: 48px; border: 1px solid var(--border);
+  border-radius: var(--radius-md); background: var(--bg); color: var(--danger);
+  cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+  transition: border-color .15s, color .15s, opacity .15s;
+}
+#stop:hover { border-color: var(--danger); color: var(--danger); }
+#stop:disabled { opacity: .45; cursor: not-allowed; }
+#stop svg { display: block; }
+
 .hint { max-width: 880px; margin: 8px auto 0; text-align: center; color: var(--muted); font-size: 12px; }
 
 /* ═══════════════════════════════════════════════════════
@@ -1604,17 +1614,8 @@ pre code { background: none; padding: 0; color: inherit; }
 }
 
 /* ═══════════════════════════════════════════════════════
-   Spinner & Motion
+   Motion & Effects
    ═══════════════════════════════════════════════════════ */
-
-.send-spinner {
-  display: inline-block; width: 18px; height: 18px;
-  border: 2px solid rgba(255,255,255,.3);
-  border-top-color: #fff; border-radius: 50%;
-  animation: spin .6s linear infinite;
-}
-
-@keyframes spin { to { transform: rotate(360deg); } }
 
 @keyframes pulse {
   0%,100% { opacity: 1; }
@@ -2012,7 +2013,16 @@ pre code { background: none; padding: 0; color: inherit; }
 
       <button id="send">发送</button>
 
-      <span id="sendSpinner" class="send-spinner" style="display:none;"></span>
+      <button
+        id="stop"
+        title="停止本轮分析"
+        aria-label="停止本轮分析"
+        style="display:none;"
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+          <rect x="3" y="3" width="10" height="10" rx="1.5" />
+        </svg>
+      </button>
 
     </div>
 
@@ -2031,6 +2041,8 @@ pre code { background: none; padding: 0; color: inherit; }
 let currentSession = null;
 let eventSource = null;
 let chatBusy = false;
+let stopRequested = false;
+let stopAcknowledged = false;
 let pendingTools = [];
 let toolCallCount = 0;
 let currentTimeline = null;
@@ -2265,6 +2277,7 @@ function openSession(id) {
 
   pendingTools = [];
   toolCallCount = 0;
+  resetStopControl();
   inner().innerHTML = "";
   hideTyping();
   setBusy(false);
@@ -2282,6 +2295,7 @@ function openSession(id) {
 
   eventSource.onerror = () => {
     chatBusy = false;
+    resetStopControl();
     setBusy(false);
     closeProgress("已中断");
     collapseCompletedToolCards();
@@ -2298,6 +2312,7 @@ function handleEvent(ev) {
   switch (ev.type) {
 
     case "history":
+      resetStopControl();
       stopRunStatus("done", "已就绪，等待你的指令");
       resetRunCounters();
       inner().innerHTML = "";
@@ -2373,16 +2388,24 @@ function handleEvent(ev) {
       if (ev.text) addMsg("agent", ev.text);
       break;
 
-    case "answer":
+    case "answer": {
+      const userStopped = stopRequested || stopAcknowledged;
       hideTyping();
       if (ev.text) finishStreamedAnswer(ev.text);
-      closeProgress();
+      if (userStopped) {
+        closeProgress("已停止");
+        stopAcknowledged = true;
+      } else {
+        closeProgress();
+      }
       collapseCompletedToolCards();
       resetTimeline();
       chatBusy = false;
       setBusy(false);
-      stopRunStatus("done", "分析完成");
+      stopRunStatus(userStopped ? "interrupted" : "done", userStopped ? "已停止本轮分析" : "分析完成");
+      if (!userStopped) resetStopControl();
       break;
+    }
 
     case "tool-call":
       hideWelcome();
@@ -2406,16 +2429,19 @@ function handleEvent(ev) {
       showTyping("Agent 正在分析…");
       break;
 
-    case "error":
+    case "error": {
+      const wasStopped = stopRequested || stopAcknowledged;
       hideTyping();
-      if (ev.text) addErrorCard(ev.text);
+      if (ev.text && !wasStopped) addErrorCard(ev.text);
       closeProgress("已中断");
       collapseCompletedToolCards();
       resetTimeline();
       chatBusy = false;
+      resetStopControl();
       setBusy(false);
-      stopRunStatus("interrupted", "本轮结束，可继续提问");
+      stopRunStatus("interrupted", wasStopped ? "本轮已停止" : "本轮结束，可继续提问");
       break;
+    }
 
     case "choice-request":
       hideTyping();
@@ -3635,6 +3661,7 @@ async function send() {
   }
 
   chatBusy = true;
+  resetStopControl();
   setBusy(true);
   hideWelcome();
   addMsg("user", q);
@@ -3654,6 +3681,7 @@ async function send() {
   } catch (e) {
     addErrorCard(e.message);
     chatBusy = false;
+    resetStopControl();
     setBusy(false);
     hideTyping();
     closeProgress("已中断");
@@ -3698,21 +3726,63 @@ function formatTime(t) {
   } catch (e) { return ""; }
 }
 
+function resetStopControl() {
+  stopRequested = false;
+  stopAcknowledged = false;
+  const stopBtn = $("stop");
+  if (!stopBtn) return;
+  stopBtn.disabled = false;
+  stopBtn.title = "停止本轮分析";
+  stopBtn.setAttribute("aria-label", "停止本轮分析");
+}
+
+async function stopCurrentRun() {
+  if (stopRequested || !chatBusy || !currentSession) return;
+  stopRequested = true;
+  const stopBtn = $("stop");
+  if (stopBtn) {
+    stopBtn.disabled = true;
+    stopBtn.title = "正在停止…";
+    stopBtn.setAttribute("aria-label", "正在停止…");
+  }
+  try {
+    await api("/api/sessions/" + encodeURIComponent(currentSession) + "/cancel", { method: "POST", body: "{}" });
+  } catch (e) {
+    const msg = (e && e.message) || String(e);
+    if (!/no active run|no pending approval|already/i.test(msg)) {
+      addErrorCard("停止失败: " + msg);
+    }
+    stopRequested = false;
+    stopAcknowledged = false;
+    if (stopBtn) {
+      stopBtn.disabled = false;
+      stopBtn.title = "停止本轮分析";
+      stopBtn.setAttribute("aria-label", "停止本轮分析");
+    }
+  }
+}
+
 function setBusy(busy) {
   const input = $("input");
   const sendBtn = $("send");
-  const spinner = $("sendSpinner");
+  const stopBtn = $("stop");
 
   if (busy) {
     input.disabled = true;
     input.placeholder = "Agent 正在处理…";
     sendBtn.disabled = true;
-    spinner.style.display = "inline-block";
+    if (stopBtn) {
+      stopBtn.style.display = "inline-flex";
+      stopBtn.disabled = stopRequested;
+    }
   } else {
     input.disabled = false;
     input.placeholder = "例如：检查下集群健康状态，或 为什么 payment-api 一直重启？";
     sendBtn.disabled = false;
-    spinner.style.display = "none";
+    if (stopBtn) {
+      stopBtn.style.display = "none";
+      stopBtn.disabled = false;
+    }
     input.focus();
   }
 }
@@ -4035,6 +4105,7 @@ $("newSession").onclick = async () => {
 };
 
 $("send").onclick = send;
+$("stop").onclick = stopCurrentRun;
 
 function copyTextFallback(text) {
   const ta = document.createElement("textarea");

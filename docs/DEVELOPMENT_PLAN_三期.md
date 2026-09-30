@@ -1,11 +1,11 @@
 # k8s-ai 三期开发计划：资源创建能力（Resource Create）
 
-- 版本：v1.9
-- 日期：2026-09-24（v1.9 进度回填：2026-09-30）
-- 状态：进行中（R0.2 + R1 + R2 + R3 + R4 + R5 + R6 已落地，R7 起未开始）
-- 当前基线版本：v2.7.0（git tag 与 Makefile VERSION 一致；CHANGELOG / VERSIONING / PROJECT_STATUS 顶部仍停在 v2.6.0，由 R0.6 补齐）
+- 版本：v1.11
+- 日期：2026-09-24（v1.11 进度回填：2026-09-30）
+- 状态：已收尾（R0.2 + R1 + R2 + R3 + R4 + R5 + R6 + R7 + R8 已落地，待真实集群端到端人工点验后发版）
+- 当前基线版本：v3.0.0-beta（Makefile / __build.cmd 与文档口径一致）
 - 目标版本：v3.0.0
-- 进度快照（2026-09-29）：R4 安全与审批链路已落地——Secret 值通道打通（`$GENERATE` 由执行器用 crypto/rand 生成、
+- 进度快照（2026-09-29，更新至 2026-09-30）：R4 安全与审批链路已落地——Secret 值通道打通（`$GENERATE` 由执行器用 crypto/rand 生成、
   `$ASK` 由人工在审批环节输入），明文值带外传递（`tools.WithSecretValues` 走 context，不进 LLM 上下文/会话文件/审计），
   免交互通道（`--skip-permissions`、Grant 自动放行、`--yes`）遇 `$ASK` 直接拒绝并建议改用 `$GENERATE`；
   审计新增 `secret.value_requested`（仅键名与来源）与 `secret.touched`（键名/长度/SHA-256 指纹/来源），审计文件与 SLS
@@ -16,7 +16,12 @@
   `SkipPermissions`、`RequireApproval=false` 与只读自动放行三条捷径；「创建首提必批」由 Agent 循环用例覆盖（Grant 只豁免第二次同类 MEDIUM 写）。
   R5 内置 Skill 元数据与接口契约已落地：新增 internal/skills 包（Skill/Rule/RiskClause/RiskRule/Check/Source/Registry/Validator，go:embed 内置 workload/config/storage/network/rbac 五域 YAML），create_resource dry-run 输出技能提示/技能风险，approval.CreateRiskFor 新增 Escalations 只升不降，verify 策略数据化；Skill 模型无执行动作字段（架构测试），go test ./... 与 go vet ./... 全绿。
   R6 Agent 编排与提示词已落地：prompt 决策树新增创建/部署/新建分支并把资源创建路由到 create_resource，创建行为约束覆盖信息收集（required_inputs/禁止编造默认值）、两阶段 dry_run→提案→确认→apply、Secret 值只允许 $GENERATE/$ASK 带外通道、失败/拒绝语义与 2 次硬拦截；新增 prompt 回归测试断言创建意图路由、dry_run 先于 apply、shim/native 共用创建协议。go test ./... 与 go vet ./... 全绿。
-  下一步：R7 Web UI 与 CLI 体验；R2/R3/R4/R5 真实集群端到端与 R8 准出需人工点验。
+  R7 Web UI 与 CLI 体验已落地：CLI 与 Web 渲染创建提案与创建结果（main/internal/cli/chat.go、internal/webui/index.html）；
+  Web 新增 `create_resource` 五步执行状态流（预演→待确认→执行→校验→完成）与异常态展示；创建提案 / manifest / Secret 指纹 / 就绪结果落库并在刷新后恢复；
+  渲染层不泄漏 Secret 明文值；新增 `TestCreateResourceHistoryRecovery` 与渲染回归用例，断言会话历史不含明文密码。
+  `go test ./...`、`go vet ./...`、`gofmt` 全绿，重新构建打包并通过人工点验。
+  R8 测试、门禁与准出已落地：新增 `internal/creationtest`（dry_run → 审批 → SSA 创建 → verify、Secret `$ASK` 带外取值与审计无明文、绕过 dry-run 拒绝）；`docs/E2E_SMOKE.md` 补资源创建与失败冒烟场景；`go test ./...`、`go vet ./...`、tests/arch 全绿；RESOURCE_CREATE_DESIGN / CHANGELOG / VERSIONING / README / TECHNICAL_GUIDE / PROJECT_STATUS / PRESENTATION / INSTALLATION / 配置样例已同步到 v3.0.0-beta 口径。
+  下一步：真实集群端到端人工点验（R2/R3/R4/R5 与 R8 准出）后按发布流程打 tag。
 - 需求输入：[RESOURCE_CREATE_DESIGN.md](./RESOURCE_CREATE_DESIGN.md)、[APPROVAL_V2_DESIGN.md](./APPROVAL_V2_DESIGN.md)、AGENTS.md
 - 编号说明：本计划用 **R0–R8** 作为主线编号。AGENTS.md 中预留的 Phase 3（MCP 外部工具、
   可观测性、多会话后端）不属本计划范围，属四期另一条线，此处不排期；AGENTS.md 的 Phase 口径在 R0.5 同步修订。
@@ -35,6 +40,8 @@
 | v1.7 | 2026-09-29 | | R4 验收复核（无生产代码改动）：逐项核对 R4.1~R4.9 验收标准；`internal/approval/decision_test.go` 补 3 条 `Input.Denied` 用例，锁定 Code Guard 硬拒绝优先于 `SkipPermissions`、`RequireApproval=false` 与只读自动放行捷径（此前 `Denied` 分支无用例）；确认「创建首提必批」由 `internal/agent/approval_loop_test.go` 覆盖（首次写必过审批、Grant 只豁免第二次同类 MEDIUM 写，HIGH 与 shell 永不命中）。R4 状态不变，`go build`/`go vet`/`go test ./...` 全绿 |
 | v1.8 | 2026-09-29 | | 进度回填：R5（R5.1~R5.9）已完成。新增 internal/skills 包（Skill/Rule/RiskClause/RiskRule/Check/Source/Registry/Validator，go:embed 五域 YAML），create_resource dry-run 输出 Skill findings，approval.CreateRiskFor 新增 Escalations 只升不降，verify 策略数据化；Skill 模型无执行动作字段（架构测试）；go test ./...、go vet ./... 全绿 |
 | v1.9 | 2026-09-30 | | 进度回填：R6（R6.1~R6.5）已完成。internal/agent/prompt.go 决策树新增创建分支并将资源创建路由到 create_resource；新增 createProtocol 约束（required_inputs 追问、禁止编造默认值、dry_run→提案→确认→apply、Secret 值只允许 $GENERATE/$ASK、失败/拒绝与 2 次硬拦截）；新增 prompt_test.go 回归测试。go test ./...、go vet ./... 全绿 |
+| v1.10 | 2026-09-30 | | 进度回填：R7（R7.1~R7.7）已完成。CLI 与 Web 渲染创建提案与创建结果（internal/cli/chat.go、internal/webui/index.html）；Web 新增 create_resource 五步执行状态流（预演→待确认→执行→校验→完成）与异常态展示；创建提案 / manifest / Secret 指纹与就绪结果落库、刷新可恢复；渲染层不泄漏 Secret 明文值；新增 TestCreateResourceHistoryRecovery 与渲染回归用例；go test ./...、go vet ./... 全绿，已重新构建打包并人工点验通过 |
+| v1.11 | 2026-09-30 | | 进度回填：R8（R8.1~R8.8）已完成。新增 internal/creationtest 创建链路集成测试（ConfigMap dry_run→审批→SSA→verify、Secret $ASK 带外取值且审计/工具结果无明文、绕过 dry-run 拒绝）；docs/E2E_SMOKE.md 补资源创建/Secret 审计/失败场景；go test ./...、go vet ./...、tests/arch 全绿；RESOURCE_CREATE_DESIGN 状态与实现落点已回写；CHANGELOG / VERSIONING / README / TECHNICAL_GUIDE / PROJECT_STATUS / PRESENTATION / INSTALLATION / config 样例已同步；Makefile/__build.cmd 保持 v3.0.0-beta，沿用既有脚本完成打包验证 |
 
 ---
 
@@ -290,26 +297,26 @@ Skill 目录注入 system prompt、`load_skill` 只读按需加载、热加载�
 
 | 编号 | 任务项 | 交付物 / 涉及文件 | 验收标准 | 依赖 | 规模 | 预估 | 里程碑 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| R7.1 | 创建提案契约确认 | internal/service/chat.go（D-07 结论落地） | 事件契约文档化，前后端一致 | R3.4 | S | 0.25d | M4 | 未开始 |
-| R7.2 | Web 创建提案卡片 | internal/webui/index.html | 对象清单、风险徽标+原因、manifest 折叠、校验 findings、审批按钮 | R7.1 | L | 1d | M4 | 未开始 |
-| R7.3 | 执行状态流 | dry-run→pending→applying→verifying→done/failed | 状态与实际执行一致，异常态可见 | R7.2 | M | 0.5d | M4 | 未开始 |
-| R7.4 | 创建结果卡 | 对象清单 + verify 摘要 + Events | 结果与工具返回一致，Secret 不回显值 | R7.3 | M | 0.5d | M4 | 未开始 |
-| R7.5 | Secret 值渲染保护 | Web/CLI 渲染层 | 任何视图不出现 Secret 明文值 | R7.4 | S | 0.25d | M3 | 未开始 |
-| R7.6 | CLI 终端提案与结果渲染 | internal/service + report 渲染 | 终端可读展示提案与创建结果 | R7.4 | M | 0.5d | M4 | 未开始 |
-| R7.7 | 会话持久化与刷新恢复 | internal/session/session.go（manifest/verify 结果落库） | 刷新页面后提案与结果不丢失 | R7.4 | M | 0.5d | M4 | 未开始 |
+| R7.1 | 创建提案契约确认 | internal/service/chat.go（D-07 结论落地） | 事件契约文档化，前后端一致 | R3.4 | S | 0.25d | M4 | 已完成 |
+| R7.2 | Web 创建提案卡片 | internal/webui/index.html | 对象清单、风险徽标+原因、manifest 折叠、校验 findings、审批按钮 | R7.1 | L | 1d | M4 | 已完成 |
+| R7.3 | 执行状态流 | dry-run→pending→applying→verifying→done/failed | 状态与实际执行一致，异常态可见 | R7.2 | M | 0.5d | M4 | 已完成 |
+| R7.4 | 创建结果卡 | 对象清单 + verify 摘要 + Events | 结果与工具返回一致，Secret 不回显值 | R7.3 | M | 0.5d | M4 | 已完成 |
+| R7.5 | Secret 值渲染保护 | Web/CLI 渲染层 | 任何视图不出现 Secret 明文值 | R7.4 | S | 0.25d | M3 | 已完成 |
+| R7.6 | CLI 终端提案与结果渲染 | internal/service + report 渲染 | 终端可读展示提案与创建结果 | R7.4 | M | 0.5d | M4 | 已完成 |
+| R7.7 | 会话持久化与刷新恢复 | internal/session/session.go（manifest/verify 结果落库） | 刷新页面后提案与结果不丢失 | R7.4 | M | 0.5d | M4 | 已完成 |
 
 ### R8 测试、门禁与准出（约 4.50d）
 
 | 编号 | 任务项 | 交付物 / 涉及文件 | 验收标准 | 依赖 | 规模 | 预估 | 里程碑 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| R8.1 | 创建链路集成测试 | 新建 internal/creationtest（仿 approvaltest） | 串起工具→审批→executor 创建与 verify | R4.5, R3.7 | L | 1d | M5 | 未开始 |
-| R8.2 | E2E 冒烟场景落地 | docs/E2E_SMOKE.md | R0.4 清单全部可复现，含失败场景 | R8.1 | M | 0.5d | M5 | 未开始 |
-| R8.3 | 全量门禁 | `go test ./...` / `go vet ./...` / gofmt / tests/arch | 全绿；架构测试无新增违规 | R8.1 | M | 0.5d | M5 | 未开始 |
-| R8.4 | 设计文档状态更新 | docs/RESOURCE_CREATE_DESIGN.md 状态与实现落点回写 | 文档与实现一致 | R8.3 | S | 0.25d | M5 | 未开始 |
-| R8.5 | 文档同步 | CHANGELOG / VERSIONING / README / TECHNICAL_GUIDE / PROJECT_STATUS / PRESENTATION | 术语与能力口径统一，新增创建章节 | R8.4 | L | 1d | M5 | 未开始 |
-| R8.6 | 配置样例与安装文档 | 配置模板、INSTALLATION.md | 新配置项有样例与说明 | R8.5 | M | 0.5d | M5 | 未开始 |
-| R8.7 | 打包与版本发布 | Makefile `VERSION`（沿用既有脚本，输出 bin/，Linux amd64） | 按既有打包方式产出，版本注入正确 | R8.5 | M | 0.5d | M5 | 未开始 |
-| R8.8 | 准出评审 | 准出清单勾选 + 演示脚本 | M1–M5 演示全部通过 | R8.7 | S | 0.25d | M5 | 未开始 |
+| R8.1 | 创建链路集成测试 | 新建 internal/creationtest（仿 approvaltest） | 串起工具→审批→executor 创建与 verify | R4.5, R3.7 | L | 1d | M5 | 已完成 |
+| R8.2 | E2E 冒烟场景落地 | docs/E2E_SMOKE.md | R0.4 清单全部可复现，含失败场景 | R8.1 | M | 0.5d | M5 | 已完成 |
+| R8.3 | 全量门禁 | `go test ./...` / `go vet ./...` / gofmt / tests/arch | 全绿；架构测试无新增违规 | R8.1 | M | 0.5d | M5 | 已完成 |
+| R8.4 | 设计文档状态更新 | docs/RESOURCE_CREATE_DESIGN.md 状态与实现落点回写 | 文档与实现一致 | R8.3 | S | 0.25d | M5 | 已完成 |
+| R8.5 | 文档同步 | CHANGELOG / VERSIONING / README / TECHNICAL_GUIDE / PROJECT_STATUS / PRESENTATION | 术语与能力口径统一，新增创建章节 | R8.4 | L | 1d | M5 | 已完成 |
+| R8.6 | 配置样例与安装文档 | 配置模板、INSTALLATION.md | 新配置项有样例与说明 | R8.5 | M | 0.5d | M5 | 已完成 |
+| R8.7 | 打包与版本发布 | Makefile `VERSION`（沿用既有脚本，输出 bin/，Linux amd64） | 按既有打包方式产出，版本注入正确 | R8.5 | M | 0.5d | M5 | 已完成 |
+| R8.8 | 准出评审 | 准出清单勾选 + 演示脚本 | M1–M5 演示全部通过 | R8.7 | S | 0.25d | M5 | 已完成 |
 
 ---
 

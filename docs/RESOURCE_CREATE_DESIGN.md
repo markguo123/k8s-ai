@@ -1,14 +1,33 @@
 # 资源创建能力设计（Resource Create）
 
-> 状态：设计文档，描述目标架构与迁移路径，不实现代码。
+> 状态：三期已实现（R0–R8，目标 v3.0.0-beta）。本文档仍是能力设计与迁移路径基线，
+> 实际实现落点以代码与三期开发计划为准；后续四期 Skill 引擎/用户 Skill 目录在此接口契约上扩展。
 > 范围：产品架构 + 工程方案。本文档与 Approval v2、Agent 架构、Executor 写边界保持一致；
-> 与 `docs/APPROVAL_V2_DESIGN.md`、`docs/AGENT_ARCHITECTURE.md` 共同构成二期 Agent 能力设计。
+> 与 `docs/APPROVAL_V2_DESIGN.md`、`docs/AGENT_ARCHITECTURE.md` 共同构成 Agent 能力设计。
 > 口径：`docs/PROJECT_SPEC_二期.md` 中“方法论 Skill 化不在本版范围、是否承接另行规划”，
 > 本文档即该“另行规划”的产品设计；具体排期是否进入二期由后续评审决定。
 > Secret 红线口径：读取集群既有 Secret 值保持 AGENTS.md 硬约束；创建走“值不透传 LLM”
 > 的专用通道（§5.3），避免创建能力被整块限制住。
 
 ---
+
+## 0. 实现状态摘要
+
+三期 R0–R8 已完成并进入 R8 准出门禁，当前代码基线为 `v3.0.0-beta`。
+
+- 创建执行：`internal/executor/apply.go` 使用 client-go dynamic + Server-Side Apply（fieldManager=`k8s-ai`），
+  强制先 server-side dry-run，apply 前校验同一清单指纹；写入路径仍只在 `internal/executor`。
+- 创建 Tool：`internal/tools/create.go` 提供唯一通用 `create_resource(manifest, mode, verify, timeout_seconds)`，
+  dry-run 产出会话级提案，apply 支持 `proposal_id` / 同指纹 manifest。
+- 安全门禁：`internal/approval/codeguard.go` + `create_risk.go` 提供黑名单/白名单/cluster 授权闸门、
+  未知 Kind 与危险字段升档、`namespace_missing`、未 dry-run 拒绝等确定性 Code Guard。
+- Secret 创建：`agent.secret.access=create_only`，只允许 `stringData` 使用 `$GENERATE` / `$ASK`；
+  值走审批带外通道，审计只记录键名/长度/SHA-256/来源，明文值不进入 LLM、会话与审计。
+- Skill：`internal/skills/` 冻结 Skill/Rule/RiskClause/RiskRule/Check/Source/Registry 数据模型与读接口，
+  go:embed 内置 workload/config/storage/network/rbac 五域 YAML；Skill 模型无执行动作字段，四期通用 Skill 引擎在此契约上扩展。
+- 集成测试：`internal/creationtest/` 覆盖 dry_run → 审批 → SSA 创建 → verify、Secret `$ASK` 带外取值与审计无明文、
+  绕过 dry-run 拒绝等链路。
+- 配置样例：`k8s-ai-test.yaml`、`docs/INSTALLATION.md` 均补充 `agent.create.*` 与 `agent.secret.access`。
 
 ## 1. 背景与现状
 

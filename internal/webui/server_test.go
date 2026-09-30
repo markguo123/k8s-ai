@@ -120,6 +120,23 @@ func postJSON(t *testing.T, url string, body string) *http.Response {
 	return resp
 }
 
+type cancelChat struct {
+	*fakeChat
+	started  chan struct{}
+	canceled chan struct{}
+}
+
+func (c *cancelChat) Chat(ctx context.Context, _ service.ChatRequest, _ <-chan string) (<-chan service.ChatEvent, error) {
+	out := make(chan service.ChatEvent, 4)
+	go func() {
+		close(c.started)
+		<-ctx.Done()
+		close(c.canceled)
+		close(out)
+	}()
+	return out, nil
+}
+
 func TestIndexAndSessionCRUD(t *testing.T) {
 	srv := httptest.NewServer(New(newFakeChat(), "qwen-plus").Handler())
 	defer srv.Close()
@@ -161,6 +178,55 @@ func TestIndexAndSessionCRUD(t *testing.T) {
 		t.Fatalf("delete status = %v err=%v", resp.StatusCode, err)
 	}
 	resp.Body.Close()
+}
+
+func TestCancelActiveRun(t *testing.T) {
+	fake := &cancelChat{
+		fakeChat: newFakeChat(),
+		started:  make(chan struct{}),
+		canceled: make(chan struct{}),
+	}
+	_, _ = fake.GetOrCreateSession("s1", "", "m")
+	srv := httptest.NewServer(New(fake, "m").Handler())
+	defer srv.Close()
+
+	resp := postJSON(t, srv.URL+"/api/sessions/s1/send-message", `{"query":"检查"}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("send status = %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	select {
+	case <-fake.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("run did not start")
+	}
+
+	resp = postJSON(t, srv.URL+"/api/sessions/s1/cancel", `{}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("cancel status = %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	select {
+	case <-fake.canceled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("context was not canceled")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		resp = postJSON(t, srv.URL+"/api/sessions/s1/cancel", `{}`)
+		if resp.StatusCode == http.StatusConflict {
+			resp.Body.Close()
+			break
+		}
+		resp.Body.Close()
+		if time.Now().After(deadline) {
+			t.Fatal("active run cleanup did not finish")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // startSSE 打开一条 SSE 连接：收到 history 快照后通知 connected，继续读到 want 事件。
