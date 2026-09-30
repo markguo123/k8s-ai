@@ -386,7 +386,10 @@ func renderEvents(events <-chan service.ChatEvent, respond chan<- string, in cha
 				fmt.Fprintf(w, "  ↳ [Tool] %s %s\n", ev.Tool.Name, formatArgs(ev.Tool.Arguments))
 			}
 		case service.ChatEventToolResponse:
-			// 终端默认不打印原始工具结果，保持简洁。
+			if ev.Tool != nil && ev.Tool.Name == "create_resource" {
+				renderCreateToolResult(w, ev.Tool.Data)
+			}
+			// 其它工具默认不打印原始结果，保持简洁。
 		case service.ChatEventChoice:
 			if ev.Choice != nil {
 				if ev.Choice.Secret {
@@ -424,6 +427,81 @@ func renderEvents(events <-chan service.ChatEvent, respond chan<- string, in cha
 			}
 		case service.ChatEventError:
 			fmt.Fprintln(errW, "error:", ev.Text)
+		}
+	}
+}
+
+// renderCreateToolResult 渲染 create_resource 的提案/执行结果（终端版，不输出 Secret 原值）。
+func renderCreateToolResult(w io.Writer, data any) {
+	m, ok := data.(map[string]any)
+	if !ok {
+		return
+	}
+	mode, _ := m["mode"].(string)
+	status, _ := m["status"].(string)
+	risk, _ := m["risk"].(string)
+	if mode == "" {
+		mode = "dry_run"
+	}
+	fmt.Fprintf(w, "  -> [create_resource] mode=%s status=%s risk=%s\n", mode, status, risk)
+	if reasons, ok := m["riskReasons"].([]string); ok {
+		for _, r := range reasons {
+			fmt.Fprintf(w, "     - %s\n", r)
+		}
+	} else if reasons, ok := m["riskReasons"].([]any); ok {
+		for _, r := range reasons {
+			fmt.Fprintf(w, "     - %v\n", r)
+		}
+	}
+	if objs, ok := m["objects"].([]map[string]any); ok {
+		for _, o := range objs {
+			ref := fmt.Sprintf("%v %v", o["kind"], o["name"])
+			if ns, ok := o["namespace"].(string); ok && ns != "" {
+				ref = ref + " (" + ns + ")"
+			}
+			st, _ := o["status"].(string)
+			fmt.Fprintf(w, "     %-40s %s\n", ref, st)
+			if errMsg, ok := o["error"].(string); ok && errMsg != "" {
+				fmt.Fprintf(w, "         error: %s\n", errMsg)
+			}
+			if note, ok := o["note"].(string); ok && note != "" {
+				fmt.Fprintf(w, "         note: %s\n", note)
+			}
+		}
+	} else if objs, ok := m["objects"].([]any); ok {
+		for _, raw := range objs {
+			o, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			ref := fmt.Sprintf("%v %v", o["kind"], o["name"])
+			if ns, ok := o["namespace"].(string); ok && ns != "" {
+				ref = ref + " (" + ns + ")"
+			}
+			st, _ := o["status"].(string)
+			fmt.Fprintf(w, "     %-40s %s\n", ref, st)
+			if errMsg, ok := o["error"].(string); ok && errMsg != "" {
+				fmt.Fprintf(w, "         error: %s\n", errMsg)
+			}
+		}
+	}
+	if verify, ok := m["verify"]; ok {
+		if vm, ok := verify.(map[string]any); ok {
+			ready, _ := vm["ready"].(bool)
+			fmt.Fprintf(w, "     verify: ready=%v", ready)
+			if reason, ok := vm["reason"].(string); ok && reason != "" {
+				fmt.Fprintf(w, " (%s)", reason)
+			}
+			fmt.Fprintln(w)
+			if events, ok := vm["events"].([]string); ok {
+				for _, e := range events {
+					fmt.Fprintf(w, "         event: %s\n", e)
+				}
+			} else if events, ok := vm["events"].([]any); ok {
+				for _, e := range events {
+					fmt.Fprintf(w, "         event: %v\n", e)
+				}
+			}
 		}
 	}
 }
