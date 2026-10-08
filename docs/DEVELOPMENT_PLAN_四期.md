@@ -13,6 +13,8 @@
 | --- | --- | --- | --- |
 | v1.0 | 2026-09-30 | | 初版：基于四期需求 v1.2 拆分 P0–P6，71 条任务，估 57.50 人日（串行口径） |
 | v1.1 | 2026-09-30 | | P2 补充会话 Token 用量持久化与展示任务；任务数 72，估 58.00 人日 |
+| v1.2 | 2026-10-08 | | 开始四期代码落地：P1.2 Store 接口与 SQLite 驱动完成（含统一 migration 与 CRUD 单测）；后续每完成一个小阶段同步回写状态 |
+| v1.3 | 2026-10-08 | | P1.1 Vite+Vue3+TS 工程骨架完成（web/ 工程、src 骨架、7 个侧栏路由入口与登录路由；`npm run lint`/`typecheck`/`build` 通过） |
 
 ---
 
@@ -122,8 +124,8 @@ flowchart LR
 
 | 编号 | 任务项 | 交付物 | 验收标准 | 依赖 | 规模 | 预估 | 里程碑 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| P1.1 | Vite + Vue3 + TS 工程骨架 | web/ 工程、package.json、lint/format、CI build 步骤 | `npm run build` 与 `npm run lint` 通过；基础路由可访问 | P0.5 | L | 1d | M1 | 未开始 |
-| P1.2 | Store 接口与 SQLite 驱动 | internal/store：User/Session/Role/Audit/Settings/Skill/Approval/Memory/Retention/Cluster/Credential Store；SQLite 实现与迁移 | 各 Store CRUD 单测覆盖；SQLite 迁移幂等 | P0.3 | L | 1d | M1 | 未开始 |
+| P1.1 | Vite + Vue3 + TS 工程骨架 | web/ 工程、package.json、lint/format、CI build 步骤 | `npm run build` 与 `npm run lint` 通过；基础路由可访问 | P0.5 | L | 1d | M1 | 已完成 |
+| P1.2 | Store 接口与 SQLite 驱动 | internal/store：User/Session/Role/Audit/Settings/Skill/Approval/Memory/Retention/Cluster/Credential Store；SQLite 实现与迁移 | 各 Store CRUD 单测覆盖；SQLite 迁移幂等 | P0.3 | L | 1d | M1 | 已完成 |
 | P1.3 | MySQL 驱动与统一迁移 | MySQL 实现、迁移入口与测试库用例 | SQLite/MySQL 共用 schema 版本；两驱动业务测试等价 | P1.2 | XL | 1.5d | M1 | 未开始 |
 | P1.4 | HTTP 基础中间件 | request_id、统一 error envelope、分页、CORS、认证占位 | 所有 `/api/v1` 响应含 request_id/error.code/timestamp；分页字段稳定 | P0.2 | M | 0.5d | M1 | 未开始 |
 | P1.5 | 用户/角色模型与登录认证 | User/Role 模型、argon2 密码哈希、Session Token、/auth/login/logout/me | 可登录、可退出、可获取当前用户；密码/Token 不以明文落日志 | P1.2 | L | 1d | M1 | 未开始 |
