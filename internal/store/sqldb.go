@@ -15,6 +15,8 @@ type dbStore struct {
 	users       *userStore
 	roles       *roleStore
 	sessions    *sessionStore
+	turns       *turnStore
+	steps       *stepStore
 	audit       *auditStore
 	settings    *settingsStore
 	skills      *skillStore
@@ -31,6 +33,8 @@ func newDBStore(db *sql.DB, d dialect) *dbStore {
 	s.users = &userStore{s}
 	s.roles = &roleStore{s}
 	s.sessions = &sessionStore{s}
+	s.turns = &turnStore{s}
+	s.steps = &stepStore{s}
 	s.audit = &auditStore{s}
 	s.settings = &settingsStore{s}
 	s.skills = &skillStore{s}
@@ -47,6 +51,8 @@ func (s *dbStore) Close() error { return s.db.Close() }
 func (s *dbStore) Users() UserStore             { return s.users }
 func (s *dbStore) Roles() RoleStore             { return s.roles }
 func (s *dbStore) Sessions() SessionStore       { return s.sessions }
+func (s *dbStore) Turns() TurnStore             { return s.turns }
+func (s *dbStore) Steps() StepStore             { return s.steps }
 func (s *dbStore) Audit() AuditStore            { return s.audit }
 func (s *dbStore) Settings() SettingsStore      { return s.settings }
 func (s *dbStore) Skills() SkillStore           { return s.skills }

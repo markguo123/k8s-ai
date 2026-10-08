@@ -20,6 +20,7 @@
 | v1.6 | 2026-10-08 | | P1.4 HTTP 基础中间件完成：request_id 生成/透传（X-Request-ID）、统一响应信封（request_id/timestamp/data/error/pagination）、分页解析（page/page_size，兼容 pageSize）、CORS（默认放行 localhost:5173）、认证占位（Bearer/Cookie，仅注入上下文不拒请求）；含中间件与信封单测 |
 | v1.7 | 2026-10-08 | | P1.5 用户/角色模型与登录认证完成：argon2id 密码哈希、内存 Session Token（24h）、`/api/v1/auth/login|logout|me`、server 命令 SQLite 首次引导（`K8S_AI_ADMIN_PASSWORD` 初始化 admin 角色与用户）；含认证服务与 handler 单测，全量门禁通过 |
 | v1.8 | 2026-10-08 | | P1.6 Permission Middleware 完成：新增 `internal/permission`（Role→Permission→Policy 判定，通配与路由匹配）与 `internal/server` 权限门禁（API 未登录 401、越权 403、`/api/v1` 未登记路由默认 403）；默认角色权限对齐标准 Permission 常量，越权中间件门禁测试通过，全量门禁通过 |
+| v1.9 | 2026-10-08 | | P1.7 Session/Turn/Step 模型与存储完成：`internal/session/turn.go` 状态机（Turn 6 态/Step 4 态 + token 用量），Store 增加 `Turns()`/`Steps()` 与 `TurnStore`/`StepStore`（Create/Get/Update/ListBySession|ListByTurn/Delete），schemaVersion 提升到 2（`turns`/`steps` 表与索引），写前脱敏与可空时间字段落地；含状态机与双方言 CRUD 单测，全量门禁通过 |
 
 ---
 
@@ -136,7 +137,7 @@ flowchart LR
 | P1.4 | HTTP 基础中间件 | request_id、统一 error envelope、分页、CORS、认证占位 | 所有 `/api/v1` 响应含 request_id/error.code/timestamp；分页字段稳定 | P0.2 | M | 0.5d | M1 | 已完成 |
 | P1.5 | 用户/角色模型与登录认证 | User/Role 模型、argon2 密码哈希、Session Token、/auth/login/logout/me | 可登录、可退出、可获取当前用户；密码/Token 不以明文落日志 | P1.2 | L | 1d | M1 | 已完成 |
 | P1.6 | Permission Middleware | Role→Permission→Policy 判定与中间件 | API 越权返回 401/403；业务代码不散落 `role == "admin"` | P1.5 | M | 0.5d | M1 | 已完成 |
-| P1.7 | Session/Turn/Step 模型与存储 | Agent Session 三模型入库、列表/详情、状态更新 | 多轮 Agent 运行可回放；状态推进有单测 | P1.2 | L | 1d | M1 | 未开始 |
+| P1.7 | Session/Turn/Step 模型与存储 | Agent Session 三模型入库、列表/详情、状态更新 | 多轮 Agent 运行可回放；状态推进有单测 | P1.2 | L | 1d | M1 | 已完成 |
 | P1.8 | Agent Runtime 生命周期接入 | service/agent 每 Turn 创建 Session/Turn/Step；Reason/Tool/Observe/Approval/Response 埋点 | Agent 循环仍保持动态 Reason→Tool→Observe，Step 记录完整；审批暂停/恢复可续跑 | P1.7 | XL | 1.5d | M1 | 未开始 |
 | P1.9 | SSE 事件路由与旧事件映射层 | SSE 路由、事件序列化、三期旧事件映射 | Chat SSE 收到统一新事件；旧事件在映射期内仍可消费 | P0.4, P1.8 | L | 1d | M1 | 未开始 |
 | P1.10 | Config Service | SettingsStore 与 groups API：模型/Skill/Approval/Memory/Retention/MCP/运维 | 配置 CRUD 走 Store；敏感字段只在写接口接收，读接口脱敏 | P1.2 | L | 1d | M1 | 未开始 |

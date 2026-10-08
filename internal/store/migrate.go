@@ -8,7 +8,7 @@ import (
 
 // schemaVersion 是统一的逻辑 schema 版本。SQLite/MySQL 共用该版本号，
 // migrations 按版本逐个应用（P0.3/P1.12/P1.3）。只允许追加，禁止回跳。
-const schemaVersion = 1
+const schemaVersion = 2
 
 // migration 是一条单向升级步骤，通过 dialect 适配两个驱动。
 type migration struct {
@@ -23,6 +23,11 @@ var migrations = []migration{
 		version: 1,
 		name:    "initial platform schema",
 		up:      migrateV1,
+	},
+	{
+		version: 2,
+		name:    "agent session turn and step model",
+		up:      migrateV2,
 	},
 }
 
@@ -192,6 +197,58 @@ var schemaV1Indexes = []indexSpec{
 	{name: "idx_memories_scope", table: "memories", cols: "scope"},
 }
 
+// schemaV2 是第 2 版新增表：turns / steps（P1.7 三模型入库）。
+// 敏感字段约定：turn input/output/error 与 step params/result/error 在写入前
+// 由上层 redactor 脱敏；长文本列（colLong）存放 JSON/文本摘要，业务侧显式写入。
+var schemaV2 = []tableSpec{
+	{
+		name: "turns",
+		cols: []column{
+			{name: "id", kind: colText, primary: true},
+			{name: "session_id", kind: colText},
+			{name: "user_id", kind: colText, def: "''"},
+			{name: "status", kind: colText},
+			{name: "input", kind: colLong, def: "''"},
+			{name: "output", kind: colLong, def: "''"},
+			{name: "error", kind: colLong, def: "''"},
+			{name: "prompt_tokens", kind: colInt, def: "0"},
+			{name: "completion_tokens", kind: colInt, def: "0"},
+			{name: "total_tokens", kind: colInt, def: "0"},
+			{name: "started_at", kind: colTimeOrNull},
+			{name: "finished_at", kind: colTimeOrNull},
+			{name: "created_at", kind: colTime},
+			{name: "updated_at", kind: colTime},
+		},
+	},
+	{
+		name: "steps",
+		cols: []column{
+			{name: "id", kind: colText, primary: true},
+			{name: "turn_id", kind: colText},
+			{name: "session_id", kind: colText, def: "''"},
+			{name: "seq", kind: colInt, def: "0"},
+			{name: "type", kind: colText},
+			{name: "status", kind: colText},
+			{name: "tool", kind: colText, def: "''"},
+			{name: "params", kind: colLong, def: "''"},
+			{name: "result", kind: colLong, def: "''"},
+			{name: "error", kind: colLong, def: "''"},
+			{name: "started_at", kind: colTimeOrNull},
+			{name: "finished_at", kind: colTimeOrNull},
+			{name: "created_at", kind: colTime},
+			{name: "updated_at", kind: colTime},
+		},
+	},
+}
+
+// schemaV2Indexes 是第 2 版新增表的二级索引。
+var schemaV2Indexes = []indexSpec{
+	{name: "idx_turns_session", table: "turns", cols: "session_id"},
+	{name: "idx_turns_status", table: "turns", cols: "status"},
+	{name: "idx_steps_turn", table: "steps", cols: "turn_id"},
+	{name: "idx_steps_session", table: "steps", cols: "session_id"},
+}
+
 // migrateV1 建全部表与索引，SQL 由 dialect 按驱动渲染。
 func migrateV1(ctx context.Context, tx *sql.Tx, d dialect) error {
 	for _, t := range schemaV1 {
@@ -203,6 +260,25 @@ func migrateV1(ctx context.Context, tx *sql.Tx, d dialect) error {
 		q := d.createIndex(idx.name, idx.table, idx.cols)
 		if _, err := tx.ExecContext(ctx, q); err != nil {
 			// MySQL 无 CREATE INDEX IF NOT EXISTS；重复执行时容忍已存在索引。
+			if d.isDuplicateIndexErr(err) {
+				continue
+			}
+			return fmt.Errorf("create index %s: %w", idx.name, err)
+		}
+	}
+	return nil
+}
+
+// migrateV2 建 turns / steps 表与索引（SQL 由 dialect 按驱动渲染）。
+func migrateV2(ctx context.Context, tx *sql.Tx, d dialect) error {
+	for _, t := range schemaV2 {
+		if _, err := tx.ExecContext(ctx, d.createTable(t)); err != nil {
+			return fmt.Errorf("create table %s: %w", t.name, err)
+		}
+	}
+	for _, idx := range schemaV2Indexes {
+		q := d.createIndex(idx.name, idx.table, idx.cols)
+		if _, err := tx.ExecContext(ctx, q); err != nil {
 			if d.isDuplicateIndexErr(err) {
 				continue
 			}

@@ -42,14 +42,14 @@ func TestMigrateIdempotent(t *testing.T) {
 			t.Fatalf("migrate pass %d: %v", i, err)
 		}
 	}
-	// schema_migrations 只应有一条迁移记录。
+	// schema_migrations 应有与当前 schemaVersion 一致条数的迁移记录。
 	st := s.(*dbStore)
 	var n int
 	if err := st.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("expected 1 applied migration, got %d", n)
+	if n != schemaVersion {
+		t.Fatalf("expected %d applied migrations, got %d", schemaVersion, n)
 	}
 }
 
@@ -141,6 +141,127 @@ func runSessionCRUD(t *testing.T, s Store) {
 	}
 	if _, err := s.Sessions().Get(ctx, "s1"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func runTurnStepCRUD(t *testing.T, s Store) {
+	ctx := context.Background()
+	sess := &session.Session{ID: "ts-sess", Name: "multi-turn", State: "idle"}
+	if err := s.Sessions().Create(ctx, sess); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	const secret = "supersecrettoken123"
+	tr := &session.Turn{
+		ID: "turn-1", SessionID: "ts-sess", UserID: "u1",
+		Status: session.TurnPending,
+		Input:  `{"user":"alice","token":"` + secret + `"}`,
+	}
+	if err := s.Turns().Create(ctx, tr); err != nil {
+		t.Fatalf("create turn: %v", err)
+	}
+	got, err := s.Turns().Get(ctx, "turn-1")
+	if err != nil {
+		t.Fatalf("get turn: %v", err)
+	}
+	if got.Status != session.TurnPending || strings.Contains(got.Input, secret) {
+		t.Fatalf("turn pending/redacted mismatch: %+v", got)
+	}
+	if !got.StartedAt.IsZero() || got.FinishedAt != nil {
+		t.Fatalf("pending turn should have no timestamps: %+v", got)
+	}
+
+	// 状态推进：pending → running → done，记录开始/完成时间。
+	if err := tr.Start(); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	if err := s.Turns().Update(ctx, tr); err != nil {
+		t.Fatalf("update running turn: %v", err)
+	}
+	if err := tr.Complete("done token=" + secret); err != nil {
+		t.Fatalf("turn complete: %v", err)
+	}
+	if err := s.Turns().Update(ctx, tr); err != nil {
+		t.Fatalf("update done turn: %v", err)
+	}
+	got, err = s.Turns().Get(ctx, "turn-1")
+	if err != nil {
+		t.Fatalf("get done turn: %v", err)
+	}
+	if got.Status != session.TurnDone || got.FinishedAt == nil || strings.Contains(got.Output, secret) {
+		t.Fatalf("turn done/redacted mismatch: %+v", got)
+	}
+
+	// 多轮回放：列表按创建顺序升序。
+	tr2 := &session.Turn{
+		ID: "turn-2", SessionID: "ts-sess", UserID: "u1",
+		Status: session.TurnPending, Input: "hello again",
+	}
+	if err := s.Turns().Create(ctx, tr2); err != nil {
+		t.Fatalf("create turn 2: %v", err)
+	}
+	list, err := s.Turns().ListBySession(ctx, "ts-sess")
+	if err != nil || len(list) != 2 || list[0].ID != "turn-1" || list[1].ID != "turn-2" {
+		t.Fatalf("list turns: %v %+v", err, list)
+	}
+
+	st1 := &session.Step{
+		ID: "step-1", TurnID: "turn-1", SessionID: "ts-sess", Seq: 1,
+		Type: session.StepTool, Tool: "get_pod",
+		Params: `{"namespace":"default","secret":"` + secret + `"}`,
+	}
+	if err := s.Steps().Create(ctx, st1); err != nil {
+		t.Fatalf("create step 1: %v", err)
+	}
+	st2 := &session.Step{
+		ID: "step-2", TurnID: "turn-1", SessionID: "ts-sess", Seq: 2,
+		Type: session.StepReason, Status: session.StepRunning, Params: `{"reasoning":"ok"}`,
+	}
+	if err := s.Steps().Create(ctx, st2); err != nil {
+		t.Fatalf("create step 2: %v", err)
+	}
+	if err := st1.Begin(); err != nil {
+		t.Fatalf("step begin: %v", err)
+	}
+	if err := st1.Succeed("inspect done"); err != nil {
+		t.Fatalf("step succeed: %v", err)
+	}
+	if err := s.Steps().Update(ctx, st1); err != nil {
+		t.Fatalf("update step 1: %v", err)
+	}
+	if err := st2.Succeed(`{"answer":"done secret=` + secret + `"}`); err != nil {
+		t.Fatalf("step 2 succeed: %v", err)
+	}
+	if err := s.Steps().Update(ctx, st2); err != nil {
+		t.Fatalf("update step 2: %v", err)
+	}
+
+	steps, err := s.Steps().ListByTurn(ctx, "turn-1")
+	if err != nil || len(steps) != 2 || steps[0].ID != "step-1" || steps[1].ID != "step-2" {
+		t.Fatalf("list steps by seq: %v %+v", err, steps)
+	}
+	if strings.Contains(steps[0].Result, secret) || strings.Contains(steps[1].Result, secret) {
+		t.Fatalf("step result leaked secret: %+v", steps)
+	}
+	gotStep, err := s.Steps().Get(ctx, "step-1")
+	if err != nil {
+		t.Fatalf("get step: %v", err)
+	}
+	if gotStep.Status != session.StepDone || gotStep.FinishedAt == nil {
+		t.Fatalf("step state not round-tripped: %+v", gotStep)
+	}
+
+	if err := s.Steps().Delete(ctx, "step-1"); err != nil {
+		t.Fatalf("delete step: %v", err)
+	}
+	if _, err := s.Steps().Get(ctx, "step-1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for step, got %v", err)
+	}
+	if err := s.Turns().Delete(ctx, "turn-1"); err != nil {
+		t.Fatalf("delete turn: %v", err)
+	}
+	if _, err := s.Turns().Get(ctx, "turn-1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for turn, got %v", err)
 	}
 }
 
@@ -377,6 +498,7 @@ func runAllStoreCRUD(t *testing.T, s Store) {
 	runUserCRUD(t, s)
 	runRoleCRUD(t, s)
 	runSessionCRUD(t, s)
+	runTurnStepCRUD(t, s)
 	runAuditStoreRedactsSensitive(t, s)
 	runSettingsStore(t, s)
 	runSkillStore(t, s)

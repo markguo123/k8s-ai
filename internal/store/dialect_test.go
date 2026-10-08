@@ -22,6 +22,13 @@ func TestSQLiteDialectRendersSchema(t *testing.T) {
 	if !strings.Contains(settings, "PRIMARY KEY (group_name, key_name)") {
 		t.Fatalf("sqlite settings needs composite pk: %s", settings)
 	}
+	turns := d.createTable(schemaV2[0])
+	if !strings.Contains(turns, "id TEXT NOT NULL PRIMARY KEY") {
+		t.Fatalf("sqlite turns id should be text primary: %s", turns)
+	}
+	if strings.Contains(turns, "VARCHAR") {
+		t.Fatalf("sqlite must not render VARCHAR: %s", turns)
+	}
 	if !strings.Contains(d.createIndex("idx_x", "t", "c"), "CREATE INDEX IF NOT EXISTS ") {
 		t.Fatalf("sqlite index should use IF NOT EXISTS")
 	}
@@ -45,6 +52,12 @@ func TestMySQLDialectRendersSchema(t *testing.T) {
 		t.Fatalf("mysql table options missing: %s", users)
 	}
 	for _, tbl := range schemaV1 {
+		ddl := d.createTable(tbl)
+		if strings.Contains(ddl, "TEXT PRIMARY KEY") || strings.Contains(ddl, "TEXT NOT NULL UNIQUE") {
+			t.Fatalf("mysql cannot index TEXT directly in %s: %s", tbl.name, ddl)
+		}
+	}
+	for _, tbl := range schemaV2 {
 		ddl := d.createTable(tbl)
 		if strings.Contains(ddl, "TEXT PRIMARY KEY") || strings.Contains(ddl, "TEXT NOT NULL UNIQUE") {
 			t.Fatalf("mysql cannot index TEXT directly in %s: %s", tbl.name, ddl)

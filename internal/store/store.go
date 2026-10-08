@@ -22,6 +22,8 @@ type Store interface {
 	Users() UserStore
 	Roles() RoleStore
 	Sessions() SessionStore
+	Turns() TurnStore
+	Steps() StepStore
 	Audit() AuditStore
 	Settings() SettingsStore
 	Skills() SkillStore
@@ -62,6 +64,26 @@ type SessionStore interface {
 	Get(ctx context.Context, id string) (*session.Session, error)
 	Update(ctx context.Context, s *session.Session) error
 	List(ctx context.Context) ([]*session.Session, error)
+	Delete(ctx context.Context, id string) error
+}
+
+// TurnStore 持久化 Agent 单轮 Turn（P1.7，多轮可回放）。
+// Input/Output/Error 在落库前脱敏。
+type TurnStore interface {
+	Create(ctx context.Context, t *session.Turn) error
+	Get(ctx context.Context, id string) (*session.Turn, error)
+	Update(ctx context.Context, t *session.Turn) error
+	ListBySession(ctx context.Context, sessionID string) ([]*session.Turn, error)
+	Delete(ctx context.Context, id string) error
+}
+
+// StepStore 持久化 Turn 内的 Step（P1.7），按 seq 顺序回放。
+// Params/Result/Error 在落库前脱敏。
+type StepStore interface {
+	Create(ctx context.Context, s *session.Step) error
+	Get(ctx context.Context, id string) (*session.Step, error)
+	Update(ctx context.Context, s *session.Step) error
+	ListByTurn(ctx context.Context, turnID string) ([]*session.Step, error)
 	Delete(ctx context.Context, id string) error
 }
 
@@ -137,6 +159,8 @@ var (
 	_ UserStore       = (*userStore)(nil)
 	_ RoleStore       = (*roleStore)(nil)
 	_ SessionStore    = (*sessionStore)(nil)
+	_ TurnStore       = (*turnStore)(nil)
+	_ StepStore       = (*stepStore)(nil)
 	_ AuditStore      = (*auditStore)(nil)
 	_ SettingsStore   = (*settingsStore)(nil)
 	_ SkillStore      = (*skillStore)(nil)
