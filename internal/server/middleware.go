@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/k8s-ai/k8s-ai/internal/permission"
 )
 
 const (
@@ -46,9 +48,9 @@ func DefaultCORS() CORSConfig {
 	}
 }
 
-// WithMiddleware 挂载 request_id / 认证占位 / CORS 中间件。
-func WithMiddleware(next http.Handler, cors CORSConfig) http.Handler {
-	return CORS(cors)(AuthPlaceholder(RequestID(next)))
+// WithMiddleware 挂载 request_id / 认证占位 / 权限门禁 / CORS 中间件。
+func WithMiddleware(next http.Handler, cors CORSConfig, enforcer *permission.Enforcer, resolve principalResolver) http.Handler {
+	return CORS(cors)(AuthPlaceholder(RequestID(permissionGate(enforcer, resolve, next))))
 }
 
 // RequestID 从 X-Request-ID 读取或生成请求号，写入上下文并回写响应头。

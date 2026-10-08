@@ -12,8 +12,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/k8s-ai/k8s-ai/internal/auth"
 	"github.com/k8s-ai/k8s-ai/internal/model"
+	"github.com/k8s-ai/k8s-ai/internal/permission"
 	"github.com/k8s-ai/k8s-ai/internal/service"
+	"github.com/k8s-ai/k8s-ai/internal/store"
 	"github.com/k8s-ai/k8s-ai/internal/version"
 )
 
@@ -42,6 +45,7 @@ type ScanJob struct {
 type Server struct {
 	svc     service.ScanService
 	auth    authService
+	perms   *permission.Enforcer
 	mu      sync.Mutex
 	jobs    map[string]*ScanJob
 	running bool
@@ -49,7 +53,11 @@ type Server struct {
 
 // New 创建服务（注入 ScanService）。
 func New(svc service.ScanService) *Server {
-	return &Server{svc: svc, jobs: map[string]*ScanJob{}}
+	return &Server{
+		svc:   svc,
+		perms: permission.NewEnforcer(DefaultAPIPolicy()),
+		jobs:  map[string]*ScanJob{},
+	}
 }
 
 // NewWithAuth 创建服务并启用产品内认证端点（P1.5）。
@@ -70,7 +78,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/auth/me", s.handleMe)
 	mux.HandleFunc("POST /api/v1/scans", s.handleCreateScan)
 	mux.HandleFunc("GET /api/v1/scans/{id}", s.handleGetScan)
-	return WithMiddleware(mux, DefaultCORS())
+	return WithMiddleware(mux, DefaultCORS(), s.perms, s.principal)
+}
+
+// principal 由 Token 解析当前用户与角色；未配置认证服务时视为未认证。
+func (s *Server) principal(ctx context.Context, token string) (*store.User, *store.Role, error) {
+	if s.auth == nil {
+		return nil, nil, auth.ErrInvalidToken
+	}
+	return s.auth.UserByToken(ctx, token)
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {

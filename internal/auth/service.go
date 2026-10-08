@@ -226,8 +226,10 @@ type roleDef struct {
 func defaultRoles() []roleDef {
 	return []roleDef{
 		{name: RoleAdmin, description: "管理员：全部平台权限", permissions: []string{"*"}},
-		{name: RoleViewer, description: "只读查看", permissions: []string{"audit:read", "cluster:read", "skill:read"}},
-		{name: RoleOperator, description: "操作员（模型保留，暂不放量）", permissions: []string{"chat:use", "cluster:connect"}},
+		{name: RoleViewer, description: "只读查看", permissions: []string{
+			"chat.read", "cluster.read", "skill.read", "approval.read", "audit.read", "settings.read",
+		}},
+		{name: RoleOperator, description: "操作员（模型保留，暂不放量）", permissions: []string{"chat.write", "cluster.manage"}},
 	}
 }
 

@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -90,11 +89,9 @@ func TestHealthReadyVersion(t *testing.T) {
 }
 
 func TestCreateAndGetScan(t *testing.T) {
-	srv := New(&fakeScan{result: &model.ScanResult{}})
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
+	ts, token, _, _ := newAuthedScanServer(t, &fakeScan{result: &model.ScanResult{}})
 
-	resp, err := http.Post(ts.URL+"/api/v1/scans", "application/json", bytes.NewBufferString(`{"namespace":"default"}`))
+	resp, err := authedPost(ts, "/api/v1/scans", `{"namespace":"default"}`, token)
 	if err != nil || resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("create = %v %v", resp, err)
 	}
@@ -106,7 +103,7 @@ func TestCreateAndGetScan(t *testing.T) {
 	// 轮询直到 succeeded
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		r2, _ := http.Get(ts.URL + "/api/v1/scans/" + job.ID)
+		r2 := authedGet(t, ts, "/api/v1/scans/"+job.ID, token)
 		var j2 ScanJob
 		decodeData(t, r2, &j2)
 		if j2.Status == StatusSucceeded {
@@ -119,15 +116,13 @@ func TestCreateAndGetScan(t *testing.T) {
 
 func TestSingleConcurrency(t *testing.T) {
 	start := make(chan struct{})
-	srv := New(&fakeScan{result: &model.ScanResult{}, delay: time.Second, start: start})
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
+	ts, token, _, _ := newAuthedScanServer(t, &fakeScan{result: &model.ScanResult{}, delay: time.Second, start: start})
 
-	r1, err := http.Post(ts.URL+"/api/v1/scans", "application/json", bytes.NewBufferString(`{}`))
+	r1, err := authedPost(ts, "/api/v1/scans", `{}`, token)
 	if err != nil || r1.StatusCode != http.StatusAccepted {
 		t.Fatalf("第一次创建 = %v %v", r1, err)
 	}
-	r2, err := http.Post(ts.URL+"/api/v1/scans", "application/json", bytes.NewBufferString(`{}`))
+	r2, err := authedPost(ts, "/api/v1/scans", `{}`, token)
 	if err != nil || r2.StatusCode != http.StatusConflict {
 		t.Fatalf("并发时第二次应 409: %v %v", r2, err)
 	}
@@ -135,10 +130,8 @@ func TestSingleConcurrency(t *testing.T) {
 }
 
 func TestUnknownAndBadBody(t *testing.T) {
-	srv := New(&fakeScan{})
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
-	if r, _ := http.Get(ts.URL + "/api/v1/scans/nope"); r.StatusCode != http.StatusNotFound {
+	ts, token, _, _ := newAuthedScanServer(t, &fakeScan{})
+	if r := authedGet(t, ts, "/api/v1/scans/nope", token); r.StatusCode != http.StatusNotFound {
 		t.Fatalf("404 expected, got %d", r.StatusCode)
 	} else {
 		env := decodeData(t, r, nil)
@@ -146,7 +139,7 @@ func TestUnknownAndBadBody(t *testing.T) {
 			t.Fatalf("404 响应缺少统一错误码: %+v", env.Error)
 		}
 	}
-	r, _ := http.Post(ts.URL+"/api/v1/scans", "application/json", bytes.NewBufferString("{bad"))
+	r, _ := authedPost(ts, "/api/v1/scans", "{bad", token)
 	if r.StatusCode != http.StatusBadRequest {
 		t.Fatalf("400 expected, got %d", r.StatusCode)
 	} else {
