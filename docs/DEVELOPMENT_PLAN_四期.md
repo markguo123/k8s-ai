@@ -15,6 +15,7 @@
 | v1.1 | 2026-09-30 | | P2 补充会话 Token 用量持久化与展示任务；任务数 72，估 58.00 人日 |
 | v1.2 | 2026-10-08 | | 开始四期代码落地：P1.2 Store 接口与 SQLite 驱动完成（含统一 migration 与 CRUD 单测）；后续每完成一个小阶段同步回写状态 |
 | v1.3 | 2026-10-08 | | P1.1 Vite+Vue3+TS 工程骨架完成（web/ 工程、src 骨架、7 个侧栏路由入口与登录路由；`npm run lint`/`typecheck`/`build` 通过） |
+| v1.4 | 2026-10-08 | | P2.1 信息架构调整：侧栏按 工作区/治理/平台管理 三组分栏；Admin 不再作为侧栏一级菜单，当前用户信息与「管理控制台」移入右上角 User Menu |
 
 ---
 
@@ -69,6 +70,7 @@
 | D-12 | 部署 | 支持单进程二进制与 Kubernetes Deployment 双轨；默认只读 RBAC，写权限显式开启 | 已定 |
 | D-13 | 数据迁移 | 四期 migration 不得导致三期 session/audit/skill/config/报告无提示丢失；无法迁移的数据必须显式说明 | 已定 |
 | D-14 | 版本规划 | v4.0 平台基础、v4.1 治理、v4.2 长期数据；按里程碑释放 | 已定 |
+| D-15 | 侧栏信息架构 | 侧栏按 工作区（聊天/集群）、治理（审批中心/审计）、平台管理（Skill/配置中心/用户与权限）三组分栏；Admin 不作为侧栏一级菜单，当前用户（admin/角色）展示在右上角 User Menu，管理控制台为用户菜单入口 | 已定 |
 
 ---
 
@@ -117,7 +119,7 @@ flowchart LR
 | P0.2 | `/api/v1` API Contract v1 冻结 | docs/API_V4.md：认证、集群、Skill、配置、用户、Approval、Audit、Chat SSE 与通用错误/分页 | 前端可基于该 Contract mock 开发；错误码与权限码定义完整 | P0.1 | L | 1d | M1 | 未开始 |
 | P0.3 | Store Interface 与 migration 策略冻结 | internal/store 接口草案、SQLite/MySQL schema 与版本迁移策略 | 业务层依赖接口；migration 可升级，不无提示丢数据 | P0.1 | L | 1d | M1 | 未开始 |
 | P0.4 | SSE Event Catalog v1 与旧事件映射冻结 | docs/SSE_EVENT_V4.md：session/turn/step 事件 + 三期 answer-delta/reasoning-delta/tool-call/tool-result 映射 | 每个事件必有 session_id/turn_id/step_id/timestamp/event_type；迁移映射可用 | P0.2 | M | 0.5d | M1 | 未开始 |
-| P0.5 | 前端信息架构与目录规范 | web/ 目录、页面侧栏、权限前端三视图（Route/Component/Button）设计 | 与 v1.2 §10/§11 一致；权限仅 UX，后端强校验原则写明 | P0.2 | M | 0.5d | M1 | 未开始 |
+| P0.5 | 前端信息架构与目录规范 | web/ 目录、页面侧栏、权限前端三视图（Route/Component/Button）设计 | 一级路由与 v1.2 §10/§11 对应；侧栏按 D-15 三组分栏，Admin 入右上角 User Menu；权限仅 UX，后端强校验原则写明 | P0.2 | M | 0.5d | M1 | 未开始 |
 | P0.6 | 三期数据/配置迁移基线 | docs/MIGRATION_V4.md：旧 config.yaml、旧 Skill、旧 Session/Chat、旧 Approval、旧 Report、旧配置目录 | 每个数据源都有迁移/显式拒绝两条结论；验收用例可追踪 | P0.1 | M | 0.5d | M1 | 未开始 |
 
 ### P1 平台底座（约 12.00d）
@@ -142,7 +144,7 @@ flowchart LR
 
 | 编号 | 任务项 | 交付物 | 验收标准 | 依赖 | 规模 | 预估 | 里程碑 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| P2.1 | App Layout 与侧边栏 | 备注栏七个入口：聊天/集群/Skill/审批中心/审计/配置中心/用户与权限 | 路由与菜单可跳转；移动端布局不重叠 | P1.1 | M | 0.5d | M2 | 未开始 |
+| P2.1 | App Layout 与侧边栏 | 侧栏按 D-15 三组分栏：工作区（聊天/集群）、治理（审批中心/审计）、平台管理（Skill/配置中心/用户与权限）；右上角 User Menu 展示当前用户（admin/角色），管理控制台为用户菜单入口 | 侧栏分组与路由可跳转；Admin 不入侧栏一级菜单；移动端布局不重叠 | P1.1 | M | 0.5d | M2 | 未开始 |
 | P2.2 | 登录页与前端路由守卫 | /login、/app/* 路由守卫、401 跳登录 | 未登录不可访问业务页；登录后保留路由 | P1.5 | M | 0.5d | M2 | 未开始 |
 | P2.3 | API Client 与分页类型 | web/src/api、通用 request 封装、错误解析 | 统一错误可展示；分页类型与后端 Contract 一致 | P0.2, P2.2 | M | 0.5d | M2 | 未开始 |
 | P2.4 | 会话列表与历史会话加载 | ConversationList、创建/选择/删除会话 | 可切换历史 Session；列表与后端 SessionStore 一致 | P1.7, P2.3 | M | 0.5d | M2 | 未开始 |
