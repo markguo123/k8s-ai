@@ -1046,6 +1046,53 @@ body {
 
 .tool-card.open .tool-output { display: block; }
 
+.tool-card .tool-manifest {
+  display: none;
+  margin: 0 14px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(0,0,0,.28);
+}
+
+.tool-card.open .tool-manifest { display: block; }
+
+.tool-manifest summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--muted);
+  user-select: none;
+  padding: 6px 12px;
+}
+
+.tool-manifest summary:hover { color: var(--text); }
+
+.tool-manifest .mf-body { position: relative; border-top: 1px solid var(--border); }
+
+.tool-manifest pre {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 320px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre;
+  color: var(--text-secondary);
+}
+
+.tool-manifest .mf-copy {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  padding: 2px 8px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--code-bg);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
 /* ═══════════════════════════════════════════════════════
    审批卡片
    ═══════════════════════════════════════════════════════ */
@@ -1080,6 +1127,16 @@ body {
 
 .approval .btns { display: flex; gap: 10px; flex-wrap: wrap; padding-left: 10px; }
 
+.approval .secret-row { padding-left: 10px; margin-bottom: 10px; }
+.approval .secret-input {
+  width: 100%; box-sizing: border-box; padding: 9px 12px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--code-bg); color: var(--text);
+  font-family: inherit; font-size: 13px;
+}
+.approval .secret-input:focus { outline: none; border-color: var(--accent); }
+.approval .secret-hint { padding-left: 10px; font-size: 11.5px; opacity: .7; margin: -4px 0 10px; }
+
 .approval button {
   padding: 10px 20px;
   border: none;
@@ -1101,6 +1158,19 @@ body {
   transform: none;
 }
 .approval button:disabled { pointer-events: none; }
+
+.approval.resolved { box-shadow: none; }
+.approval.resolved::before { background: var(--ok); }
+.approval.resolved.rejected::before { background: var(--danger); }
+
+.approval .resolution {
+  padding-left: 10px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ok);
+}
+
+.approval .resolution.rejected { color: var(--danger); }
 
 /* ═══════════════════════════════════════════════════════
    输入区域
@@ -1132,6 +1202,16 @@ body {
 }
 #send:hover { opacity: .9; }
 #send:disabled { opacity: .4; cursor: not-allowed; }
+
+#stop {
+  width: 48px; height: 48px; border: 1px solid var(--border);
+  border-radius: var(--radius-md); background: var(--bg); color: var(--danger);
+  cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+  transition: border-color .15s, color .15s, opacity .15s;
+}
+#stop:hover { border-color: var(--danger); color: var(--danger); }
+#stop:disabled { opacity: .45; cursor: not-allowed; }
+#stop svg { display: block; }
 
 .hint { max-width: 880px; margin: 8px auto 0; text-align: center; color: var(--muted); font-size: 12px; }
 
@@ -1403,8 +1483,8 @@ pre code { background: none; padding: 0; color: inherit; }
 .welcome-caption .line { width: 30px; height: 1px; background: var(--border); }
 
 .welcome-cards {
-  display: grid; grid-template-columns: repeat(3, 1fr);
-  gap: 12px; width: 100%; max-width: 760px;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px; width: 100%; max-width: 860px;
 }
 
 .welcome-card {
@@ -1534,17 +1614,8 @@ pre code { background: none; padding: 0; color: inherit; }
 }
 
 /* ═══════════════════════════════════════════════════════
-   Spinner & Motion
+   Motion & Effects
    ═══════════════════════════════════════════════════════ */
-
-.send-spinner {
-  display: inline-block; width: 18px; height: 18px;
-  border: 2px solid rgba(255,255,255,.3);
-  border-top-color: #fff; border-radius: 50%;
-  animation: spin .6s linear infinite;
-}
-
-@keyframes spin { to { transform: rotate(360deg); } }
 
 @keyframes pulse {
   0%,100% { opacity: 1; }
@@ -1711,6 +1782,36 @@ pre code { background: none; padding: 0; color: inherit; }
   border-left-color: var(--accent);
   background: rgba(99,102,241,.04);
 }
+
+.tool-output .cr-risk {
+  display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; margin: 0 0 12px;
+}
+.tool-output .cr-reasons { margin: 0; padding-left: 18px; color: var(--text-secondary); font-size: 11px; line-height: 1.6; }
+.tool-output .cr-reasons li { margin-bottom: 2px; }
+.tool-output .cr-obj { margin: 6px 0 10px; padding: 6px 10px; border-left: 2px solid var(--border); background: rgba(13,16,23,.3); border-radius: 4px; }
+.tool-output .cr-obj-ref { font-family: var(--font-mono); font-size: 11px; color: var(--text); margin-bottom: 4px; }
+.tool-output .cr-find { display: flex; align-items: baseline; gap: 6px; font-size: 11px; color: var(--text-secondary); margin: 3px 0; }
+.tool-output .cr-find.muted { color: var(--muted); }
+.tool-output .cr-tag { font-family: var(--font-mono); white-space: nowrap; color: var(--accent); font-size: 10px; }
+.tool-output .cr-secrets, .tool-output .cr-sec { margin: 6px 0 10px; padding: 6px 10px; border-left: 2px solid var(--ok); background: rgba(13,16,23,.3); border-radius: 4px; }
+.tool-output .secret-note { font-size: 10.5px; color: var(--muted); margin-bottom: 4px; }
+.tool-output .cr-flow {
+  display: flex; align-items: stretch; gap: 4px; flex-wrap: wrap;
+  margin: 0 0 12px; padding: 8px 10px;
+  background: rgba(13,16,23,.45); border: 1px solid var(--border); border-radius: 6px;
+}
+.tool-output .cr-flow-step {
+  flex: 1 1 88px; min-width: 74px; text-align: center;
+  font-size: 10.5px; line-height: 1.5; padding: 5px 6px;
+  border-radius: 4px; color: var(--muted); background: rgba(148,163,184,.08);
+  border: 1px solid transparent;
+}
+.tool-output .cr-flow-step.done { color: #34d399; background: rgba(52,211,153,.12); border-color: rgba(52,211,153,.35); }
+.tool-output .cr-flow-step.active { color: var(--accent); background: rgba(99,102,241,.14); border-color: rgba(99,102,241,.45); }
+.tool-output .cr-flow-step.error { color: #ff7d7d; background: rgba(239,68,68,.14); border-color: rgba(239,68,68,.45); }
+.tool-output .cr-flow-note { width: 100%; margin-top: 6px; font-size: 11px; color: var(--text-secondary); }
+
+
 
 .tool-output .tl-muted { color: var(--muted); }
 
@@ -1912,7 +2013,16 @@ pre code { background: none; padding: 0; color: inherit; }
 
       <button id="send">发送</button>
 
-      <span id="sendSpinner" class="send-spinner" style="display:none;"></span>
+      <button
+        id="stop"
+        title="停止本轮分析"
+        aria-label="停止本轮分析"
+        style="display:none;"
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+          <rect x="3" y="3" width="10" height="10" rx="1.5" />
+        </svg>
+      </button>
 
     </div>
 
@@ -1931,6 +2041,8 @@ pre code { background: none; padding: 0; color: inherit; }
 let currentSession = null;
 let eventSource = null;
 let chatBusy = false;
+let stopRequested = false;
+let stopAcknowledged = false;
 let pendingTools = [];
 let toolCallCount = 0;
 let currentTimeline = null;
@@ -2165,6 +2277,7 @@ function openSession(id) {
 
   pendingTools = [];
   toolCallCount = 0;
+  resetStopControl();
   inner().innerHTML = "";
   hideTyping();
   setBusy(false);
@@ -2182,6 +2295,7 @@ function openSession(id) {
 
   eventSource.onerror = () => {
     chatBusy = false;
+    resetStopControl();
     setBusy(false);
     closeProgress("已中断");
     collapseCompletedToolCards();
@@ -2198,6 +2312,7 @@ function handleEvent(ev) {
   switch (ev.type) {
 
     case "history":
+      resetStopControl();
       stopRunStatus("done", "已就绪，等待你的指令");
       resetRunCounters();
       inner().innerHTML = "";
@@ -2273,16 +2388,24 @@ function handleEvent(ev) {
       if (ev.text) addMsg("agent", ev.text);
       break;
 
-    case "answer":
+    case "answer": {
+      const userStopped = stopRequested || stopAcknowledged;
       hideTyping();
       if (ev.text) finishStreamedAnswer(ev.text);
-      closeProgress();
+      if (userStopped) {
+        closeProgress("已停止");
+        stopAcknowledged = true;
+      } else {
+        closeProgress();
+      }
       collapseCompletedToolCards();
       resetTimeline();
       chatBusy = false;
       setBusy(false);
-      stopRunStatus("done", "分析完成");
+      stopRunStatus(userStopped ? "interrupted" : "done", userStopped ? "已停止本轮分析" : "分析完成");
+      if (!userStopped) resetStopControl();
       break;
+    }
 
     case "tool-call":
       hideWelcome();
@@ -2306,20 +2429,28 @@ function handleEvent(ev) {
       showTyping("Agent 正在分析…");
       break;
 
-    case "error":
+    case "error": {
+      const wasStopped = stopRequested || stopAcknowledged;
       hideTyping();
-      if (ev.text) addErrorCard(ev.text);
+      if (ev.text && !wasStopped) addErrorCard(ev.text);
       closeProgress("已中断");
       collapseCompletedToolCards();
       resetTimeline();
       chatBusy = false;
+      resetStopControl();
       setBusy(false);
-      stopRunStatus("interrupted", "本轮结束，可继续提问");
+      stopRunStatus("interrupted", wasStopped ? "本轮已停止" : "本轮结束，可继续提问");
       break;
+    }
 
     case "choice-request":
       hideTyping();
       if (ev.choice) showApproval(ev.choice);
+      if (ev.choice && ev.choice.secret) {
+        setRunStatus("等待 Secret 值输入", "waiting");
+        showTyping("等待 Secret 输入…", true);
+        break;
+      }
       setRunStatus("等待你的审批", "waiting");
       showTyping("等待审批…", true);
       break;
@@ -2860,6 +2991,171 @@ function stripUntrusted(text) {
     .trim();
 }
 
+function crStatusPill(status) {
+  const st = String(status || "pending");
+  let cls = "warning";
+  if (st === "validated" || st === "applied" || st === "ready") cls = "running";
+  if (st === "partial" || st === "pending") cls = "pending";
+  if (st === "rejected" || st === "failed" || st === "error" || st === "notready") cls = "error";
+  return '<span class="tool-status-pill ' + cls + '">' + escapeHtml(st) + '</span>';
+}
+
+function crRiskClass(risk) {
+  return riskLevel({ risk: risk }).toLowerCase();
+}
+
+function crSecretsBlock(item) {
+  let keys = [];
+  if (Array.isArray(item.secretKeys)) keys = keys.concat(item.secretKeys);
+  if (Array.isArray(item.generatedKeys)) keys = keys.concat(item.generatedKeys);
+  if (keys.length === 0) return "";
+  const rows = keys.map(function(k) {
+    if (k && typeof k === "object") {
+      const name = String(k.key || k.name || "");
+      const meta = [];
+      if (k.length != null) meta.push("len=" + String(k.length));
+      if (k.sha256) meta.push("sha256=" + String(k.sha256).slice(0, 16) + "...");
+      if (meta.length) return '<div class="tl-line"><span class="tl-msg"><b>' + escapeHtml(name) + '</b> ' + escapeHtml(meta.join(" · ")) + '</span></div>';
+      return '<div class="tl-line"><span class="tl-msg">' + escapeHtml(name) + '</span></div>';
+    }
+    return '<div class="tl-line"><span class="tl-msg">' + escapeHtml(String(k)) + '</span></div>';
+  }).join("");
+  return '<div class="tl-sub">Secret 键指纹</div>' +
+    '<div class="cr-secrets"><div class="secret-note">值不会回显；仅显示键名与长度/sha256 指纹</div>' + rows + '</div>';
+}
+
+function crFindings(items) {
+  const blocks = items.map(function(item) {
+    const rows = [];
+    if (Array.isArray(item.skills) && item.skills.length) {
+      item.skills.forEach(function(f) {
+        const risk = f && f.risk ? '<span class="tool-status-pill warning">' + escapeHtml(String(f.risk)) + '</span> ' : "";
+        rows.push('<div class="cr-find"><span class="cr-tag">' +
+          escapeHtml(String(f.skill || "")) + ":" + escapeHtml(String(f.rule || "")) +
+          '</span> ' + risk + '<span class="cr-msg">' + escapeHtml(String(f.message || "")) + '</span></div>');
+      });
+    }
+    if (Array.isArray(item.findings) && item.findings.length) {
+      item.findings.forEach(function(w) {
+        rows.push('<div class="cr-find muted"><span class="cr-tag">check</span> ' + escapeHtml(String(w)) + '</div>');
+      });
+    }
+    if (rows.length === 0) return "";
+    return '<div class="cr-obj"><div class="cr-obj-ref">' +
+      escapeHtml(String(item.kind || "")) + " " + escapeHtml(String(item.name || "")) +
+      '</div>' + rows.join("") + '</div>';
+  }).join("");
+  return blocks ? '<div class="tl-sub">Skill 校验与风险升档</div>' + blocks : "";
+}
+
+function crVerify(verify) {
+  if (!verify || typeof verify !== "object") return "";
+  const ready = verify.ready === true;
+  const pill = '<span class="tool-status-pill ' + (ready ? "running" : "pending") + '">' + (ready ? "Ready" : "NotReady") + '</span>';
+  let html = '<div>' + pill + (verify.timedOut ? ' <span class="tool-status-pill warning">timed out</span>' : "") + '</div>';
+  if (verify.reason) html += '<div class="tl-line"><span class="tl-msg">' + escapeHtml(String(verify.reason)) + '</span></div>';
+  if (verify.observations && typeof verify.observations === "object") {
+    html += '<div class="tl-line"><span class="tl-msg"><b>observations</b>: ' + escapeHtml(JSON.stringify(verify.observations)) + '</span></div>';
+  }
+  if (Array.isArray(verify.events) && verify.events.length) {
+    html += '<div class="tl-sub">Events</div>' + verify.events.map(function(e) {
+      return '<div class="tl-line"><span class="tl-msg">' + escapeHtml(String(e)) + '</span></div>';
+    }).join("");
+    if (verify.truncated) html += '<div class="tl-muted">(events 已截断)</div>';
+  }
+  return '<div class="cr-sec"><div class="tl-sub">就绪校验</div>' + html + '</div>';
+}
+
+function crFlow(data, tool) {
+  const args = tool && tool.arguments ? parseJsonLoose(tool.arguments) : {};
+  const mode = (data && data.mode) || args.mode || "dry_run";
+  const status = data && data.status ? String(data.status) : (mode === "apply" ? "applied" : "validated");
+  const objs = data && Array.isArray(data.objects) ? data.objects.filter(Boolean) : [];
+  const hasVerify = objs.some(function(o) { return o && o.verify; });
+  const notReady = objs.some(function(o) { return o && o.verify && o.verify.ready === false; });
+  const steps = ["预演", "待确认", "执行", "校验", "完成"];
+  const cls = ["pending", "pending", "pending", "pending", "pending"];
+  let note = "";
+  if (data && mode === "dry_run") {
+    if (status === "validated") {
+      cls[0] = "done"; cls[1] = "active"; note = "服务端校验通过，等待用户确认后 apply";
+    } else if (status === "rejected" || data.error) {
+      cls[0] = "error"; note = String(data.error || "dry_run 未通过，异常态可见");
+    } else {
+      cls[0] = "active"; note = "进行服务端校验";
+    }
+  } else if (data && mode === "apply") {
+    if (status === "applied" || status === "partial") {
+      cls[0] = "done"; cls[1] = "done"; cls[2] = "done";
+      if (hasVerify) {
+        cls[3] = "done";
+        cls[4] = notReady ? "active" : "done";
+        note = notReady ? "存在对象未就绪，请查看校验摘要" : "创建完成，校验通过";
+      } else {
+        cls[3] = "pending";
+        cls[4] = "done";
+        note = "创建完成（未启用就绪校验）";
+      }
+      if (status === "partial" && data.refused) note = note + "，部分对象未成功";
+    } else if (status === "rejected" || status === "failed") {
+      cls[0] = "done"; cls[1] = "done"; cls[2] = "error";
+      note = String(data.error || "apply 未成功，异常态可见");
+    } else {
+      cls[0] = "done"; cls[1] = "done"; cls[2] = "active";
+      note = "正在执行并等待结果";
+    }
+  } else if (!data && mode === "apply") {
+    cls[0] = "done"; cls[1] = "done"; cls[2] = "active";
+    note = "正在执行并等待结果";
+  } else if (!data) {
+    cls[0] = "active"; note = "进行服务端校验";
+  }
+  return '<div class="cr-flow">' + steps.map(function(label, i) {
+    return '<span class="cr-flow-step ' + cls[i] + '">' + escapeHtml(label) + '</span>';
+  }).join("") + (note ? '<div class="cr-flow-note">' + escapeHtml(note) + '</div>' : "") + '</div>';
+}
+
+function renderCreateResource(data, tool) {
+  if (!data || typeof data !== "object") return "";
+  const mode = data.mode ? String(data.mode) : "dry_run";
+  const status = data.status ? String(data.status) : (mode === "apply" ? "applied" : "validated");
+  const meta = [];
+  meta.push("mode=" + escapeHtml(mode));
+  meta.push(crStatusPill(status));
+  if (data.applied != null) meta.push("applied=" + escapeHtml(String(data.applied)));
+  if (data.refused != null) meta.push("refused=" + escapeHtml(String(data.refused)));
+  if (data.proposalId) meta.push("proposal=" + escapeHtml(String(data.proposalId)));
+  let html = crFlow(data, tool) + '<div class="tl-meta">' + meta.join(" · ") + '</div>';
+
+  if (data.risk) {
+    html += '<div class="cr-risk"><span class="tool-risk risk-' + crRiskClass(data.risk) + '">' +
+      escapeHtml(String(data.risk)) + '</span>' +
+      (Array.isArray(data.riskReasons) && data.riskReasons.length ?
+        '<ul class="cr-reasons">' + data.riskReasons.map(function(r) { return "<li>" + escapeHtml(String(r)) + "</li>"; }).join("") + '</ul>' : "") +
+      '</div>';
+  }
+
+  if (Array.isArray(data.objects) && data.objects.length) {
+    const rows = data.objects.map(function(o) {
+      const ref = [o.kind, o.name, o.namespace ? "(" + o.namespace + ")" : ""].filter(Boolean).join(" ");
+      const st = o.status ? o.status : (o.existed ? "exists" : "pending");
+      const det = o.error || o.note || (o.uid ? "uid=" + o.uid : "") || "";
+      return "<tr><td>" + escapeHtml(ref) + "</td><td>" + crStatusPill(st) + "</td><td>" + escapeHtml(String(det)) + "</td></tr>";
+    }).join("");
+    html += '<div class="tl-sub">对象清单</div>' +
+      '<table class="tl-table"><thead><tr><th>Object</th><th>Status</th><th>Detail</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    html += crFindings(data.objects);
+    html += data.objects.map(crSecretsBlock).join("");
+    const verify = data.objects.map(function(o) { return o.verify; }).filter(Boolean);
+    if (verify.length) html += verify.map(crVerify).join("");
+  }
+
+  if (data.secretValuesNote) html += '<div class="tool-summary">' + escapeHtml(String(data.secretValuesNote)) + '</div>';
+  if (data.note) html += '<div class="tool-summary">' + escapeHtml(String(data.note)) + '</div>';
+  return html;
+}
+
+
 function renderToolOutput(tool) {
   const src = tool || {};
   const text = String(src.result || src.content || "").trim();
@@ -2868,7 +3164,10 @@ function renderToolOutput(tool) {
   const hasData = data && typeof data === "object" && !Array.isArray(data);
   let html = "";
 
-  if (hasData) html = renderToolStructured(data);
+  if (hasData) {
+    if (src.name === "create_resource") html = renderCreateResource(data, src);
+    if (!html) html = renderToolStructured(data);
+  }
 
   if (html) {
     if (summary) {
@@ -3016,12 +3315,57 @@ function buildToolCard(tool, isHistory) {
   const output = document.createElement("pre");
   output.className = "tool-output";
   if (isHistory) output.innerHTML = renderToolOutput(tool);
+  else if (tool && tool.name === "create_resource") output.innerHTML = crFlow(null, tool);
 
   card.appendChild(head);
   card.appendChild(errBar);
+
+  // create_resource 专属：YAML 取工具调用入参原文，与实际提交内容一致，随会话历史保留
+  const manifest = buildManifestBlock(tool);
+  if (manifest) card.appendChild(manifest);
+
   card.appendChild(output);
 
   return card;
+}
+
+function buildManifestBlock(tool) {
+  if (!tool || tool.name !== "create_resource") return null;
+  const data = parseJsonLoose(tool.data);
+  const args = parseJsonLoose(tool.arguments);
+  const mf =
+    (data && typeof data.proposalManifest === "string" ? data.proposalManifest.trim() : "") ||
+    (args && typeof args.manifest === "string" ? args.manifest.trim() : "");
+  if (!mf) return null;
+
+  const det = document.createElement("details");
+  det.className = "tool-manifest";
+  det.open = true;
+
+  const sum = document.createElement("summary");
+  sum.textContent = "创建清单 YAML（与本次实际提交的原文一致）";
+
+  const body = document.createElement("div");
+  body.className = "mf-body";
+
+  const pre = document.createElement("pre");
+  pre.textContent = mf;
+
+  const copy = document.createElement("button");
+  copy.className = "mf-copy";
+  copy.textContent = "复制";
+  copy.onclick = async (e) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(mf);
+      copy.textContent = "已复制";
+      setTimeout(() => { copy.textContent = "复制"; }, 1200);
+    } catch (err) { /* 静默 */ }
+  };
+
+  body.append(pre, copy);
+  det.append(sum, body);
+  return det;
 }
 
 function addToolCard(tool) {
@@ -3063,6 +3407,7 @@ function fillToolOutput(tool) {
 
   const output = card.querySelector(".tool-output");
   output.innerHTML = renderToolOutput({
+    name: tool.name,
     result: text,
     data: tool.data,
     summary: tool.summary
@@ -3120,6 +3465,12 @@ function commandText(tool) {
     const c = args && args.command;
     return c ? String(c) : "kubectl";
   }
+  if (tool.name === "create_resource") {
+    const mf = args && typeof args.manifest === "string" ? args.manifest : "";
+    const n = (mf.match(/^\s*kind\s*:/gm) || []).length;
+    const mode = args && args.mode ? String(args.mode) : "dry_run";
+    return "[create_resource] mode=" + mode + (n ? " · " + n + " 个对象" : "");
+  }
   return "[" + (tool.name || "") + "] " + formatArgs(args);
 }
 
@@ -3133,6 +3484,14 @@ function showApproval(choice) {
 
   const card = document.createElement("div");
   card.className = "approval";
+
+  // Secret 值请求：密码框收集，值只提交一次，不进对话历史与会话文件。
+  if (choice.secret) {
+    appendSecretApproval(card, choice.prompt);
+    inner().appendChild(card);
+    scroll();
+    return;
+  }
 
   const prompt = document.createElement("div");
   prompt.className = "prompt";
@@ -3155,7 +3514,7 @@ function showApproval(choice) {
           "/api/sessions/" + encodeURIComponent(currentSession) + "/approve",
           { method: "POST", body: JSON.stringify({ choice: value }) }
         );
-        card.remove();
+        resolveApproval(card, value);
         setStatus(true);
         showTyping("等待 Agent 继续…", true);
       } catch (err) {
@@ -3178,6 +3537,110 @@ function showApproval(choice) {
   scroll();
 }
 
+/* Secret 值卡片：值提交后立即清空输入框，不进消息列表、不进会话文件。 */
+function appendSecretApproval(card, promptText) {
+  const prompt = document.createElement("div");
+  prompt.className = "prompt";
+  prompt.textContent = promptText || "请输入 Secret 值：";
+
+  const row = document.createElement("div");
+  row.className = "secret-row";
+  const field = document.createElement("input");
+  field.type = "password";
+  field.className = "secret-input";
+  field.autocomplete = "new-password";
+  field.spellcheck = false;
+  field.placeholder = "Secret 值";
+  row.appendChild(field);
+
+  const hint = document.createElement("div");
+  hint.className = "secret-hint";
+  hint.textContent = "值只用于本次创建，不会写入对话、会话文件或审计日志";
+
+  const btns = document.createElement("div");
+  btns.className = "btns";
+
+  const submit = (cancelled) => {
+    if (card.dataset.submitting === "true") return;
+    const value = cancelled ? "" : field.value;
+    field.value = "";
+    if (value === "") cancelled = true;
+    card.dataset.submitting = "true";
+    card.classList.add("submitting");
+    btns.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+    api("/api/sessions/" + encodeURIComponent(currentSession) + "/approve",
+      { method: "POST", body: JSON.stringify({ choice: cancelled ? "no" : value }) })
+      .then(() => {
+        resolveSecretApproval(card, cancelled);
+        if (!cancelled) {
+          setStatus(true);
+          showTyping("等待 Agent 继续…", true);
+        }
+      })
+      .catch((err) => {
+        card.dataset.submitting = "false";
+        card.classList.remove("submitting");
+        btns.querySelectorAll("button").forEach((b) => { b.disabled = false; });
+        addMsg("error", "Secret 提交失败: " + err.message);
+      });
+  };
+
+  const mk = (label, cls, onClick) => {
+    const b = document.createElement("button");
+    b.className = cls;
+    b.textContent = label;
+    b.onclick = onClick;
+    return b;
+  };
+
+  btns.appendChild(mk("提交", "yes", () => submit(false)));
+  btns.appendChild(mk("取消", "no", () => submit(true)));
+
+  field.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      submit(false);
+    }
+  });
+
+  card.appendChild(prompt);
+  card.appendChild(row);
+  card.appendChild(hint);
+  card.appendChild(btns);
+  setTimeout(() => field.focus(), 0);
+}
+
+function resolveSecretApproval(card, cancelled) {
+  card.classList.add("resolved");
+  card.classList.remove("submitting");
+  if (cancelled) card.classList.add("rejected");
+  ["secret-row", "secret-hint", "btns"].forEach((sel) => {
+    const el = card.querySelector("." + sel);
+    if (el) el.remove();
+  });
+  const stamp = document.createElement("div");
+  stamp.className = "resolution" + (cancelled ? " rejected" : "");
+  stamp.textContent = cancelled ? "已取消，未提交 Secret 值" : "已提交（值不显示、不记录）";
+  card.appendChild(stamp);
+}
+
+function resolveApproval(card, value) {
+  const rejected = value === "no";
+  card.classList.add("resolved");
+  card.classList.remove("submitting");
+  if (rejected) card.classList.add("rejected");
+  const btns = card.querySelector(".btns");
+  if (btns) btns.remove();
+  const stamp = document.createElement("div");
+  stamp.className = "resolution" + (rejected ? " rejected" : "");
+  stamp.textContent = rejected
+    ? "已拒绝，操作未执行"
+    : value === "yes_and_dont_ask_again"
+      ? "已批准执行（同类操作本会话内不再询问）"
+      : "已批准执行";
+  card.appendChild(stamp);
+}
+
 /* ═══════════════════════════════════════════════════════
    发送消息
    ═══════════════════════════════════════════════════════ */
@@ -3198,6 +3661,7 @@ async function send() {
   }
 
   chatBusy = true;
+  resetStopControl();
   setBusy(true);
   hideWelcome();
   addMsg("user", q);
@@ -3217,6 +3681,7 @@ async function send() {
   } catch (e) {
     addErrorCard(e.message);
     chatBusy = false;
+    resetStopControl();
     setBusy(false);
     hideTyping();
     closeProgress("已中断");
@@ -3261,21 +3726,63 @@ function formatTime(t) {
   } catch (e) { return ""; }
 }
 
+function resetStopControl() {
+  stopRequested = false;
+  stopAcknowledged = false;
+  const stopBtn = $("stop");
+  if (!stopBtn) return;
+  stopBtn.disabled = false;
+  stopBtn.title = "停止本轮分析";
+  stopBtn.setAttribute("aria-label", "停止本轮分析");
+}
+
+async function stopCurrentRun() {
+  if (stopRequested || !chatBusy || !currentSession) return;
+  stopRequested = true;
+  const stopBtn = $("stop");
+  if (stopBtn) {
+    stopBtn.disabled = true;
+    stopBtn.title = "正在停止…";
+    stopBtn.setAttribute("aria-label", "正在停止…");
+  }
+  try {
+    await api("/api/sessions/" + encodeURIComponent(currentSession) + "/cancel", { method: "POST", body: "{}" });
+  } catch (e) {
+    const msg = (e && e.message) || String(e);
+    if (!/no active run|no pending approval|already/i.test(msg)) {
+      addErrorCard("停止失败: " + msg);
+    }
+    stopRequested = false;
+    stopAcknowledged = false;
+    if (stopBtn) {
+      stopBtn.disabled = false;
+      stopBtn.title = "停止本轮分析";
+      stopBtn.setAttribute("aria-label", "停止本轮分析");
+    }
+  }
+}
+
 function setBusy(busy) {
   const input = $("input");
   const sendBtn = $("send");
-  const spinner = $("sendSpinner");
+  const stopBtn = $("stop");
 
   if (busy) {
     input.disabled = true;
     input.placeholder = "Agent 正在处理…";
     sendBtn.disabled = true;
-    spinner.style.display = "inline-block";
+    if (stopBtn) {
+      stopBtn.style.display = "inline-flex";
+      stopBtn.disabled = stopRequested;
+    }
   } else {
     input.disabled = false;
     input.placeholder = "例如：检查下集群健康状态，或 为什么 payment-api 一直重启？";
     sendBtn.disabled = false;
-    spinner.style.display = "none";
+    if (stopBtn) {
+      stopBtn.style.display = "none";
+      stopBtn.disabled = false;
+    }
     input.focus();
   }
 }
@@ -3293,6 +3800,7 @@ const welcomeMessages = [
   "发现异常后，我会继续采集日志、Events 和资源状态。",
   "我会区分「现象」与「根因」，避免把衍生告警当成故障原因。",
   "需要执行写操作时，我会先说明变更内容并请求人工确认。",
+  "需要创建新资源时，我会先提交 dry-run 提案，确认无误后再创建。",
   "告诉我你看到的现象，剩下的诊断流程交给我。"
 ];
 
@@ -3443,6 +3951,11 @@ function showWelcome() {
         <div class="title">故障诊断</div>
         <div class="desc">从故障现象出发，自动采集日志、Events 与资源状态，定位根因。</div>
       </div>
+      <div class="welcome-card" data-q="帮我在 test 命名空间部署一个 nginx">
+        <div class="icon">⊕</div>
+        <div class="title">资源创建</div>
+        <div class="desc">创建 Deployment、Service、ConfigMap 等资源，先出创建提案再确认执行。</div>
+      </div>
       <div class="welcome-card" data-q="帮我把 test ns下面的 nginx deployment 副本数扩到 3 个">
         <div class="icon">⌘</div>
         <div class="title">执行变更</div>
@@ -3592,6 +4105,7 @@ $("newSession").onclick = async () => {
 };
 
 $("send").onclick = send;
+$("stop").onclick = stopCurrentRun;
 
 function copyTextFallback(text) {
   const ta = document.createElement("textarea");

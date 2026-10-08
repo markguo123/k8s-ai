@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/chzyer/readline"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/k8s-ai/k8s-ai/internal/service"
 )
@@ -247,15 +248,27 @@ func runChatInteractive(cmd *cobra.Command, chat service.ChatService, sessionID 
 type chatInput interface {
 	SetPrompt(string)
 	Readline() (string, error)
+	// ReadSecret 读取不回显的一行输入（Secret 值）。
+	ReadSecret() (string, error)
 	Close() error
 }
 
 // readlineInput 包装 chzyer/readline：历史记录文件 + Ctrl+C 归一为 EOF。
 type readlineInput struct {
-	rl *readline.Instance
+	rl    *readline.Instance
+	stdin *os.File
 }
 
 func (r *readlineInput) SetPrompt(p string) { r.rl.SetPrompt(p) }
+
+// ReadSecret 走 x/term 关闭回显读取 Secret 值：值只在内存里流转，不进对话与日志。
+func (r *readlineInput) ReadSecret() (string, error) {
+	line, err := term.ReadPassword(int(r.stdin.Fd()))
+	if err != nil {
+		return "", err
+	}
+	return string(line), nil
+}
 func (r *readlineInput) Readline() (string, error) {
 	line, err := r.rl.Readline()
 	if err == readline.ErrInterrupt {
@@ -284,7 +297,10 @@ func (b *bufInput) Readline() (string, error) {
 	}
 	return strings.TrimRight(line, "\r\n"), nil
 }
-func (b *bufInput) Close() error { return nil }
+
+// ReadSecret 非 TTY 无法屏蔽回显：按行读取（自动化场景请改用 $GENERATE）。
+func (b *bufInput) ReadSecret() (string, error) { return b.Readline() }
+func (b *bufInput) Close() error                { return nil }
 
 // newChatInput 在真实终端启用 readline，否则回退 bufio（保持测试/管道可用）。
 func newChatInput(in io.Reader, out io.Writer) chatInput {
@@ -298,7 +314,7 @@ func newChatInput(in io.Reader, out io.Writer) chatInput {
 			HistoryLimit: 1000,
 		})
 		if err == nil {
-			return &readlineInput{rl: rl}
+			return &readlineInput{rl: rl, stdin: f}
 		}
 	}
 	return &bufInput{r: bufio.NewReader(in), w: out}
@@ -370,9 +386,25 @@ func renderEvents(events <-chan service.ChatEvent, respond chan<- string, in cha
 				fmt.Fprintf(w, "  ↳ [Tool] %s %s\n", ev.Tool.Name, formatArgs(ev.Tool.Arguments))
 			}
 		case service.ChatEventToolResponse:
-			// 终端默认不打印原始工具结果，保持简洁。
+			if ev.Tool != nil && ev.Tool.Name == "create_resource" {
+				renderCreateToolResult(w, ev.Tool.Data)
+			}
+			// 其它工具默认不打印原始结果，保持简洁。
 		case service.ChatEventChoice:
 			if ev.Choice != nil {
+				if ev.Choice.Secret {
+					// Secret 值：终端不回显，值不进对话历史、会话文件与审计日志。
+					fmt.Fprintln(w, ev.Choice.Prompt)
+					fmt.Fprint(w, "值（留空或输入 no 取消）: ")
+					value, err := in.ReadSecret()
+					fmt.Fprintln(w)
+					if err != nil || strings.TrimSpace(value) == "" || strings.EqualFold(strings.TrimSpace(value), "no") {
+						respond <- "no"
+						continue
+					}
+					respond <- value
+					continue
+				}
 				fmt.Fprintln(w, ev.Choice.Prompt)
 				for i, o := range ev.Choice.Options {
 					fmt.Fprintf(w, "[%d] %s\n", i+1, o.Label)
@@ -395,6 +427,81 @@ func renderEvents(events <-chan service.ChatEvent, respond chan<- string, in cha
 			}
 		case service.ChatEventError:
 			fmt.Fprintln(errW, "error:", ev.Text)
+		}
+	}
+}
+
+// renderCreateToolResult 渲染 create_resource 的提案/执行结果（终端版，不输出 Secret 原值）。
+func renderCreateToolResult(w io.Writer, data any) {
+	m, ok := data.(map[string]any)
+	if !ok {
+		return
+	}
+	mode, _ := m["mode"].(string)
+	status, _ := m["status"].(string)
+	risk, _ := m["risk"].(string)
+	if mode == "" {
+		mode = "dry_run"
+	}
+	fmt.Fprintf(w, "  -> [create_resource] mode=%s status=%s risk=%s\n", mode, status, risk)
+	if reasons, ok := m["riskReasons"].([]string); ok {
+		for _, r := range reasons {
+			fmt.Fprintf(w, "     - %s\n", r)
+		}
+	} else if reasons, ok := m["riskReasons"].([]any); ok {
+		for _, r := range reasons {
+			fmt.Fprintf(w, "     - %v\n", r)
+		}
+	}
+	if objs, ok := m["objects"].([]map[string]any); ok {
+		for _, o := range objs {
+			ref := fmt.Sprintf("%v %v", o["kind"], o["name"])
+			if ns, ok := o["namespace"].(string); ok && ns != "" {
+				ref = ref + " (" + ns + ")"
+			}
+			st, _ := o["status"].(string)
+			fmt.Fprintf(w, "     %-40s %s\n", ref, st)
+			if errMsg, ok := o["error"].(string); ok && errMsg != "" {
+				fmt.Fprintf(w, "         error: %s\n", errMsg)
+			}
+			if note, ok := o["note"].(string); ok && note != "" {
+				fmt.Fprintf(w, "         note: %s\n", note)
+			}
+		}
+	} else if objs, ok := m["objects"].([]any); ok {
+		for _, raw := range objs {
+			o, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			ref := fmt.Sprintf("%v %v", o["kind"], o["name"])
+			if ns, ok := o["namespace"].(string); ok && ns != "" {
+				ref = ref + " (" + ns + ")"
+			}
+			st, _ := o["status"].(string)
+			fmt.Fprintf(w, "     %-40s %s\n", ref, st)
+			if errMsg, ok := o["error"].(string); ok && errMsg != "" {
+				fmt.Fprintf(w, "         error: %s\n", errMsg)
+			}
+		}
+	}
+	if verify, ok := m["verify"]; ok {
+		if vm, ok := verify.(map[string]any); ok {
+			ready, _ := vm["ready"].(bool)
+			fmt.Fprintf(w, "     verify: ready=%v", ready)
+			if reason, ok := vm["reason"].(string); ok && reason != "" {
+				fmt.Fprintf(w, " (%s)", reason)
+			}
+			fmt.Fprintln(w)
+			if events, ok := vm["events"].([]string); ok {
+				for _, e := range events {
+					fmt.Fprintf(w, "         event: %s\n", e)
+				}
+			} else if events, ok := vm["events"].([]any); ok {
+				for _, e := range events {
+					fmt.Fprintf(w, "         event: %v\n", e)
+				}
+			}
 		}
 	}
 }

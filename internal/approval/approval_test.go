@@ -41,6 +41,9 @@ func TestIsForbiddenCommand(t *testing.T) {
 		`kubectl get sec"ret" -o yaml`,                           // 引号混淆 secret
 		"kubectl get $(echo secret) -o yaml",                     // 命令替换混淆 secret
 		`kubectl get '--raw' /api/v1/pods`,                       // 引号混淆 --raw
+		// 三期 R4.8：创建 Secret 只能走 create_resource 的占位符通道；
+		// kubectl create secret 会把明文写进命令行、审计与会话。
+		"kubectl create secret generic db -n web --from-literal=password=x",
 	}
 	for _, cmd := range forbidden {
 		if !IsForbiddenCommand(cmd) {

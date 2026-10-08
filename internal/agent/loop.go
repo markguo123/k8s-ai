@@ -131,6 +131,10 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 			a.EmitCritical(Message{Source: SourceAgent, Type: MessageTypeToolCallResponse, Payload: map[string]any{
 				"name": call.Name, "text": text, "truncated": truncated, "ok": ok, "summary": tr.Text, "data": tr.Data,
 			}})
+			// 写工具失败/被拒：停止执行本批剩余写调用，把决策交回模型。
+			if !toolExecuted && !ok {
+				break
+			}
 			// 单轮上下文预算：超限后停止执行本批剩余工具，让 LLM 基于现有证据回答。
 			if budgetExceeded {
 				break
@@ -390,6 +394,23 @@ type approvalDetail struct {
 	decision    approval.Decision
 	grant       *approval.Grant
 	matchReason string
+	guard       *approval.GuardResult
+}
+
+// guardFor 取工具自己给出的门禁要素并交给 Code Guard（三期 R4.2）。
+// 未实现 tools.GuardPlanner 的工具返回 nil：它们的闸门仍是
+// IsReadOnly / Risk / IsForbiddenCommand 这套二期既有链路。
+func (a *Agent) guardFor(t tools.Tool, args json.RawMessage) *approval.GuardResult {
+	gp, ok := t.(tools.GuardPlanner)
+	if !ok {
+		return nil
+	}
+	req, ok := gp.GuardRequest(args)
+	if !ok {
+		return nil
+	}
+	result := approval.CodeGuard(req)
+	return &result
 }
 
 // grantRequestFor 构建当前工具调用的授权请求上下文。
@@ -419,6 +440,20 @@ func (a *Agent) grantRequestFor(t tools.Tool, args json.RawMessage) approval.Gra
 		}
 		if req.Namespace == "" {
 			req.Namespace = a.Session.Namespace
+		}
+		// 工具自己声明授权目标时以工具为准：入参里没有 kind/name 的工具
+		// （如 create_resource 从 manifest 里解析）若留空 Kind，会让一条 MEDIUM 授权
+		// 覆盖同风险档的任意调用；无法收敛到单一目标时直接禁用授权。
+		if gt, ok := t.(tools.GrantTargeter); ok {
+			kind, name, namespace, okTarget := gt.GrantTarget(args)
+			if !okTarget {
+				req.NoGrant = true
+				return req
+			}
+			req.Kind, req.Name, req.Namespace = kind, name, namespace
+			if req.Namespace == "" {
+				req.Namespace = a.Session.Namespace
+			}
 		}
 		return req
 	}
@@ -460,10 +495,14 @@ func (a *Agent) approvalDecisionDetail(t tools.Tool, args json.RawMessage) appro
 	if a.toolHasShell(t, args) {
 		in.Shell = true
 	}
+	guard := a.guardFor(t, args)
+	if guard != nil {
+		in.Denied = guard.Denied()
+	}
 	if a.ApprovalPolicy == nil {
 		a.ApprovalPolicy = &approval.Policy{Mode: approval.ModeStrict, RequireApproval: true}
 	}
-	d := approvalDetail{decision: a.ApprovalPolicy.Evaluate(in)}
+	d := approvalDetail{decision: a.ApprovalPolicy.Evaluate(in), guard: guard}
 	if d.decision != approval.DecisionRequireApproval {
 		d.matchReason = "policy_not_require"
 		return d
@@ -610,8 +649,21 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolCall, batchApprove
 	if detail.grant != nil {
 		decisionAudit["grant_id"] = detail.grant.ID
 	}
+	if detail.guard != nil && len(detail.guard.Codes) > 0 {
+		decisionAudit["guard_verdict"] = detail.guard.Verdict
+		decisionAudit["guard_codes"] = detail.guard.Codes
+	}
 	a.audit(ctx, audit.ActionApprovalDecision, decisionAudit)
 	if decision == approval.DecisionDeny {
+		if detail.guard != nil {
+			// Code Guard 拒绝：门禁原因原样回传模型，让它改方案而不是换个写法重试。
+			a.audit(ctx, audit.ActionApprovalDenied, map[string]any{
+				"name": call.Name, "reason": "code_guard", "codes": detail.guard.Codes,
+			})
+			// 门禁码一并回传：模型只能靠稳定代码判断该改哪一条，中文原因给人看。
+			return tools.ResultError("CODE_GUARD 拒绝（不可通过审批放行）[" +
+				strings.Join(detail.guard.Codes, ",") + "]：" + strings.Join(detail.guard.Reasons, "；"))
+		}
 		return tools.ResultError("tool call denied by approval policy")
 	}
 	if decision == approval.DecisionRequireApproval {
@@ -676,7 +728,12 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolCall, batchApprove
 			a.audit(ctx, audit.ActionApprovalSkipped, map[string]any{"name": call.Name})
 		}
 	}
-	tr, err := t.Execute(ctx, call.Arguments)
+	// 审批通过后才索取 Secret 明文值（三期 R4.5）：值只活在 execCtx 里，不进历史。
+	execCtx, secretErr := a.collectSecretValues(ctx, t, call.Arguments)
+	if secretErr != "" {
+		return tools.ResultError(secretErr)
+	}
+	tr, err := t.Execute(execCtx, call.Arguments)
 	if err != nil {
 		tr = tools.ResultError(err.Error())
 	}
@@ -687,7 +744,50 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolCall, batchApprove
 	a.audit(ctx, audit.ActionToolCallResponse, map[string]any{
 		"name": call.Name, "truncated": tr.Truncated, "error": hasErr,
 	})
+	if touches := tools.SecretTouchesFromData(tr.Data); len(touches) > 0 {
+		// 三期 R4.6：审计只记 key/长度/SHA-256/来源，明文值从不落盘。
+		a.audit(ctx, audit.ActionSecretTouched, map[string]any{
+			"name": call.Name, "mark": "SECRET_TOUCHED", "secrets": touches,
+		})
+	}
 	return tr
+}
+
+// collectSecretValues 在审批通过后、工具执行前逐个索取 $ASK 的 Secret 明文值（三期 R4.5）。
+//
+// 这是 Secret 值进入执行器的唯一入口：值只存在于返回的 ctx 里，随本次工具调用结束消失，
+// 不进会话文件、审计、LLM 请求，也不缓存进 Session。交互通道不具备安全取值能力时直接拒绝，
+// 宁可让模型改用 $GENERATE，也不让明文值绕道进入对话历史。
+func (a *Agent) collectSecretValues(ctx context.Context, t tools.Tool, input json.RawMessage) (context.Context, string) {
+	planner, ok := t.(tools.SecretValuePlanner)
+	if !ok {
+		return ctx, ""
+	}
+	pending, ok := planner.PendingSecretValues(input)
+	if !ok || len(pending) == 0 {
+		return ctx, ""
+	}
+	approver, ok := a.Approver.(SecretValueApprover)
+	if !ok {
+		return ctx, "该创建含需要用户提供的 Secret 值，但当前运行方式无法安全取值（非交互/无人审批通道）。请改用 $GENERATE 由执行器生成随机值，或在交互式 CLI/Web 会话中重试"
+	}
+	values := make(map[tools.SecretValueKey]string, len(pending))
+	for _, item := range pending {
+		a.audit(ctx, audit.ActionSecretValueRequested, map[string]any{"tool": t.Name(), "key": item.Key})
+		value, err := approver.RequestSecretValue(ctx, item.Prompt)
+		if err != nil {
+			return ctx, "Secret 取值失败：" + err.Error()
+		}
+		if strings.TrimSpace(value) == "" {
+			a.audit(ctx, audit.ActionApprovalDenied, map[string]any{
+				"tool": t.Name(), "key": item.Key, "reason": "secret_value_not_provided",
+			})
+			return ctx, "USER_DECLINED_SECRET_VALUE: 用户未提供 " + item.Key.String() +
+				" 的值，本次创建已取消。不要重复追问同一个值；可改用 $GENERATE 生成随机值，或与用户确认下一步方案"
+		}
+		values[item.Key] = value
+	}
+	return tools.WithSecretValues(ctx, values), ""
 }
 
 // formatDeclinedMsg 格式化第一次/第二次"被用户拒绝"时回传给 LLM 的文本。

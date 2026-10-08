@@ -1,14 +1,33 @@
 # 资源创建能力设计（Resource Create）
 
-> 状态：设计文档，描述目标架构与迁移路径，不实现代码。
+> 状态：三期已实现（R0–R8，目标 v3.0.0-beta）。本文档仍是能力设计与迁移路径基线，
+> 实际实现落点以代码与三期开发计划为准；后续四期 Skill 引擎/用户 Skill 目录在此接口契约上扩展。
 > 范围：产品架构 + 工程方案。本文档与 Approval v2、Agent 架构、Executor 写边界保持一致；
-> 与 `docs/APPROVAL_V2_DESIGN.md`、`docs/AGENT_ARCHITECTURE.md` 共同构成二期 Agent 能力设计。
+> 与 `docs/APPROVAL_V2_DESIGN.md`、`docs/AGENT_ARCHITECTURE.md` 共同构成 Agent 能力设计。
 > 口径：`docs/PROJECT_SPEC_二期.md` 中“方法论 Skill 化不在本版范围、是否承接另行规划”，
 > 本文档即该“另行规划”的产品设计；具体排期是否进入二期由后续评审决定。
 > Secret 红线口径：读取集群既有 Secret 值保持 AGENTS.md 硬约束；创建走“值不透传 LLM”
 > 的专用通道（§5.3），避免创建能力被整块限制住。
 
 ---
+
+## 0. 实现状态摘要
+
+三期 R0–R8 已完成并进入 R8 准出门禁，当前代码基线为 `v3.0.0-beta`。
+
+- 创建执行：`internal/executor/apply.go` 使用 client-go dynamic + Server-Side Apply（fieldManager=`k8s-ai`），
+  强制先 server-side dry-run，apply 前校验同一清单指纹；写入路径仍只在 `internal/executor`。
+- 创建 Tool：`internal/tools/create.go` 提供唯一通用 `create_resource(manifest, mode, verify, timeout_seconds)`，
+  dry-run 产出会话级提案，apply 支持 `proposal_id` / 同指纹 manifest。
+- 安全门禁：`internal/approval/codeguard.go` + `create_risk.go` 提供黑名单/白名单/cluster 授权闸门、
+  未知 Kind 与危险字段升档、`namespace_missing`、未 dry-run 拒绝等确定性 Code Guard。
+- Secret 创建：`agent.secret.access=create_only`，只允许 `stringData` 使用 `$GENERATE` / `$ASK`；
+  值走审批带外通道，审计只记录键名/长度/SHA-256/来源，明文值不进入 LLM、会话与审计。
+- Skill：`internal/skills/` 冻结 Skill/Rule/RiskClause/RiskRule/Check/Source/Registry 数据模型与读接口，
+  go:embed 内置 workload/config/storage/network/rbac 五域 YAML；Skill 模型无执行动作字段，四期通用 Skill 引擎在此契约上扩展。
+- 集成测试：`internal/creationtest/` 覆盖 dry_run → 审批 → SSA 创建 → verify、Secret `$ASK` 带外取值与审计无明文、
+  绕过 dry-run 拒绝等链路。
+- 配置样例：`k8s-ai-test.yaml`、`docs/INSTALLATION.md` 均补充 `agent.create.*` 与 `agent.secret.access`。
 
 ## 1. 背景与现状
 
@@ -154,7 +173,7 @@ Skill 应按**风险/生命周期域**组织，而不是按 Kind 组织。
                        │
                  Authorization      （Grant scope 命中判断）
                        │
-                   Code Guard        （kind 白名单 / dry-run / Secret 红线 / shell）
+                   Code Guard        （kind 黑名单 / dry-run / Secret 红线 / shell）
                        │
                     Executor         （唯一写边界：kubectl argv / client-go typed）
                        │
@@ -279,17 +298,20 @@ create_resource(manifest, mode)
 | manifest 含 `hostNetwork`、`privileged`、`hostPath`、任意挂载 SA token 等敏感字段 | 提升 HIGH |
 | cluster-scoped 资源（Namespace/PV/StorageClass/ClusterRole/ClusterRoleBinding/CRD/PriorityClass） | HIGH |
 | 含值 Secret（用户提供/Executor 生成，值不透传 LLM） | MEDIUM（见 §5.3） |
+| 未命中上表的 Kind（CRD / 自定义资源，任意 scope） | HIGH（必人工审批） |
 | 目标资源已存在却要求覆盖 | 拒绝，转 patch/update 提案 |
 
-该表落地为 Code Guard 的确定性函数，而不是 prompt 文字。Skill 元数据里的风险规则
-可以提出“提升建议”，最终由 Code Guard 的强规则裁决。
+该表落地为 Code Guard 的确定性函数，而不是 prompt 文字。Skill（含用户 Skill）里的风险规则
+只能提出“升档建议”，最终由 Code Guard 的强规则裁决；CRD / 未知 Kind 的 HIGH 基线
+不因命中任何 Skill 而降级或免审。
 
 ### 5.2 Code Guard 强化点
 
 在现有 `internal/executor` / `internal/approval` 之上新增：
 
-- **kind 白名单**：`agent.create.allow_kinds` + `deny_kinds`（默认只放开常见内置 Kind，
-  CRD 需显式配置）；
+- **kind 黑名单**：`agent.create.deny_kinds`（默认不限制，CRD 与未知 Kind 均可创建，见三期计划 D-11）、
+  `cluster_kinds`（cluster-scoped 授权闸门）；`allow_kinds` 只作为可选收紧开关（空＝不限制），
+  未知 Kind 一律按 HIGH 走人工审批；
 - **manifest 静态检查**：危险字段（privileged/hostNetwork/hostPath）、空镜像 tag、
   明显缺失的 namespace；检查结果进入审批提案；
 - **dry-run 强制**：`apply` 前必须通过 server-side dry-run；未 dry-run 的 manifest 拒绝审批；
@@ -361,8 +383,16 @@ Skill 不是工具，不注册进 Tool Schema，不直接执行。它是 Agent �
 ```
 
 在“方法论 Skill 化”框架落地前（二期 spec 明确另行规划），第一版可以把首批创建知识
-做成**内置 Skill 配置**（Go 内嵌或 YAML），由 `create_resource` 的校验器直接消费；
-不急着引入通用 Skill 引擎。
+做成**内置 Skill 配置**（Go 内嵌或 YAML），由 `create_resource` 的校验器直接消费，
+Phase A（三期资源创建）不引入通用 Skill 引擎；但 **Skill 接口必须与三期同期冻结**：
+Skill 数据模型 + `Registry` 读接口 + `Source` 来源字段 + `Reload()` 签名（三期计划 D-15 / R5.9），
+保证四期加引擎时不必返工。通用 Skill 引擎与用户自定义 Skill 目录（目录发现、来源标记、门禁、
+Agent 按需加载调用）整体排在四期，在三期资源创建能力交付后再讨论方案并排期。
+
+四期开放用户 Skill 时必须守住的边界：只声明方法论与校验规则（不含执行动作，不新增写通道）；
+风险只升不降，且引用的 rule / check kind 必须命中内置注册表；与内置 Skill 同名一律拒绝加载。
+用户 Skill 不是安全权威：不能覆盖 Code Guard 的基线风险，尤其不能因命中 CRD / 未知 Kind
+而降低默认 HIGH 或豁免人工审批。写操作仍然只有 `create_resource` → `internal/executor` 一条路。
 
 ### 6.2 首批 Skill 域（按风险/生命周期域，不按 Kind）
 
@@ -461,7 +491,7 @@ Agent：展示创建提案（对象、风险、manifest 摘要）并请求确认
 用户：确认
 Agent：create_resource(mode=apply, manifest=<同一 manifest>)
   → Approval v2：require approval → 用户批准
-  → Code Guard：kind 白名单 / dry-run 记录 / Secret 红线
+  → Code Guard：kind 黑名单 / dry-run 记录 / Secret 红线
   → Executor：server-side apply
 Tool ：verify ready：sts 3/3，PVC 3 Bound
 Agent：输出创建报告与后续建议
@@ -503,17 +533,20 @@ Secret 创建只落 key 名/长度/SHA-256 指纹，不落明文值。
 ### Phase A：受控创建 MVP（不引入通用 Skill 引擎）
 
 - 新增 `create_resource` Tool（`dry_run` / `apply` 两阶段）；
-- 实现 GVK 解析、kind 白名单、server-side dry-run、风险分级、存在性检查；
-- 首批内置 Skill 配置覆盖 workload/config/storage/network/rbac；
+- 实现 GVK 解析、kind 黑名单与 scope 闸门、server-side dry-run、风险分级、存在性检查；
+- 首批内置 Skill 配置覆盖 workload/config/storage/network/rbac，并冻结 Skill 数据模型与 `Registry` 读接口（不含引擎与用户 Skill 目录）；
 - Secret `create_only` 通道：用户值/Executor 生成值 + 指纹审计（§5.3）；
 - Agent prompt 增加创建决策树与信息收集协议；
 - Web UI 创建提案卡片；审计埋点。
 
-### Phase B：Skill 框架化
+### Phase B：Skill 框架化（四期，待三期资源创建交付后讨论方案）
 
 - `internal/skills`：YAML/Go 定义统一加载、校验、版本化；
 - Skill 从内置配置迁移到可扩展注册表；CRD 域通过配置开放；
-- 创建结果 verify 规则全部数据化。
+- 用户自定义 Skill 目录（`agent.skills.dirs`）接入注册表，来源标记与门禁生效；
+- 创建结果 verify 规则全部数据化；
+- 用户 Skill 进入 Agent 上下文：Skill 目录注入 system prompt、`load_skill` 按需加载、热加载、
+  `k8s-ai skills list/validate` 子命令与用户 Skill 来源审计。
 
 ### Phase C：体验与自动化联动
 
@@ -535,7 +568,7 @@ Secret 创建只落 key 名/长度/SHA-256 指纹，不落明文值。
 | --- | --- | --- |
 | 1 | 含值 Secret 创建 | Phase A 支持（create_only 通道，值不透传 LLM）；读取保持红线 |
 | 2 | 目标 namespace 不存在 | 拒绝创建，提示先建 namespace |
-| 3 | CRD/自定义 Kind | 默认拒绝，配置白名单后开放 |
+| 3 | CRD/自定义 Kind | 不限制：默认可创建，`deny_kinds` 黑名单 + cluster-scoped 授权闸门 + 风险默认 HIGH（对齐三期计划 D-11/D-13） |
 | 4 | 多对象部分失败是否回滚 | v1 不回滚，逐对象报告 |
 | 5 | `--skip-permissions` 是否覆盖创建 | 沿用现有非 shell 语义，v1 建议告警 |
 | 6 | 创建操作与现有 `kubectl apply` 的 prompt 引导 | 创建意图优先 `create_resource`，兜底保留 kubectl |

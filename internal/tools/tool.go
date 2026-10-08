@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/k8s-ai/k8s-ai/internal/approval"
 	"github.com/k8s-ai/k8s-ai/internal/model"
 )
 
@@ -41,7 +42,24 @@ type MetadataDescriber interface {
 	SchemaMetadata() string
 }
 
+// GrantTargeter 是写工具的可选接口：为「本次会话不再询问」提供精确授权目标。
+// 返回 ok=false 表示这次调用无法收敛成单个 kind/name（例如一次创建多个对象），
+// 此时 Agent 不会生成、也不会复用任何授权记录，每次都重新走人工确认。
+type GrantTargeter interface {
+	// GrantTarget 返回本次调用的授权目标（kind/name/namespace）。
+	GrantTarget(input json.RawMessage) (kind, name, namespace string, ok bool)
+}
+
 // ResultError 包装工具级错误：回传 LLM 继续调查，不中断 Loop。
+// GuardPlanner 是写工具的可选接口：把工具自己就能确定的门禁要素（kind 名单命中、
+// 是否已 dry run、作用域、危险字段等）交给 approval.CodeGuard 裁决（三期 R4.2）。
+// Agent 在人工审批之前调用：结论为 DENY 时直接拒绝并审计，不再打扰用户；
+// 需要读集群才能判定的门禁（如命名空间存在性）由工具在执行前兜底。
+type GuardPlanner interface {
+	// GuardRequest 返回本次调用的门禁输入；ok=false 表示无法给出要素（跳过门禁）。
+	GuardRequest(input json.RawMessage) (approval.GuardRequest, bool)
+}
+
 func ResultError(msg string) ToolResult {
 	return ToolResult{Data: map[string]any{"error": msg}, Text: "错误：" + msg}
 }

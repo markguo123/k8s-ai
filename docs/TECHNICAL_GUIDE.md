@@ -1,7 +1,7 @@
 # k8s-ai 技术指导手册
 
 > 面向读者：产品经理 / 运维负责人 / 项目决策者（不需要懂 Go）。
-> 本文基于**代码实际状态（截至 v2.6.0，2026-09-20，一期 1.1 + 1.2 与二期 Agent 全部完成，含 v2.5.1 终端摘要分层、v2.6.0 Web 工具卡结构化渲染与会话持久化）**编写；每完成一个阶段都会刷新第二章与第五章。
+> 本文基于**代码实际状态（截至 v3.0.0-beta，2026-09-30，一期 1.1 + 1.2、二期 Agent 与三期资源创建全部完成）**编写；每完成一个阶段都会刷新第二章与第五章。
 
 ---
 
@@ -17,7 +17,7 @@ k8s-ai 是一个 Kubernetes 集群的"只读体检医生"：运维人员执行�
 
 ---
 
-## 第二章：现阶段已完成功能（截至 P12）
+## 第二章：现阶段已完成功能（截至 v3.0.0-beta）
 
 > 说明：按代码实际状态编写；P3-P11（一期 1.1）与 P12（一期 1.2：Server + 历史差异数据）均已完成。
 
@@ -28,7 +28,7 @@ k8s-ai 是一个 Kubernetes 集群的"只读体检医生"：运维人员执行�
 | 能力          | 说明                                                                                                                 |
 | ------------- | -------------------------------------------------------------------------------------------------------------------- | --- | --------------------------------------------------------------------------- |
 | `k8s-ai chat` | 终端自然语言对话：交互/单发/stdin/JSON，会话持久化（--session 等）                                                   |
-| `k8s-ai web`  | 浏览器 chat：多会话 + SSE 流式 + 工具执行过程（Show output）+ 审批卡片                                               |
+| `k8s-ai web`  | 浏览器 chat：多会话 + SSE 流式 + 工具执行过程（Show output）+ 审批卡片 + 运行中停止按钮                                |
 | Agent 工具集  | 20 个只读工具 + 5 个诊断工具（复用一期）+ 1 个写工具（kubectl 唯一入口，删 6 个结构化写工具）                        |
 | 集群健康检查  | 节点 → 资源使用（metrics API）→ 命名空间 → Pod → 系统组件 → 警告事件 → 双评分                                        |
 | 安全执行闭环  | 诊断 → 询问"需要我修复吗？" → 审批（等效 kubectl 命令+变更+风险等级）→ 执行 → 验证；批量审批支持一轮多写操作合并确认 |
@@ -48,6 +48,20 @@ k8s-ai 是一个 Kubernetes 集群的"只读体检医生"：运维人员执行�
 - 写工具投喂 LLM 前 Text+Data 一起输出（避免摘要覆盖数据导致模型循环）；
 - 修复行为门禁：诊断类提问禁止调用写工具，先给结论并询问。
 - 写工具精简为 1 个（kubectlTool）：删除 6 个结构化写工具（scale_deployment/patch_deployment/restart_rollout/label/delete_pod/patch_configmap），写操作统一由 LLM 生成完整 kubectl 命令走审批执行。
+
+### 三期（v3.0.0-beta）：资源创建（Resource Create）
+
+**核心能力：**
+
+| 能力 | 说明 |
+| --- | --- |
+| 统一 `create_resource` | 单个通用创建 Tool（manifest/mode/verify/timeout_seconds），不按资源类型堆工具 |
+| 两阶段创建协议 | 强制先 server-side dry-run 产出提案（manifest/风险/Skill findings）→ 人工确认 → apply → verify |
+| Server-Side Apply | 写入路径仍在 `internal/executor`，client-go dynamic + SSA（fieldManager=`k8s-ai`），支持幂等与字段所有权 |
+| Code Guard | kind 黑白名单、cluster 授权闸门、命名空间存在性、未 dry-run 拒绝、未知 Kind/危险字段升档 |
+| Secret 创建通道 | `agent.secret.access=create_only`；`stringData` 只允许 `$GENERATE` / `$ASK`，明文值不进 LLM/会话/审计 |
+| 内置 Skill 元数据 | 五域 YAML（workload/config/storage/network/rbac）+ `Registry` 读接口，四期 Skill 引擎契约基线 |
+| Web/CLI 展示 | 创建提案卡、五步执行状态流、Secret 脱敏清单、刷新恢复 |
 
 ### P1 核心扫描（真实可用）
 
@@ -210,6 +224,13 @@ flowchart LR
 | scan.thinking                  | `{type: enabled}`                           | 一期 Scan 诊断思考参数                       |
 | kubernetes.qps / burst         | 20 / 40                                     | 对 API Server 的访问限速（防压垮集群）        |
 | report.directory               | ./reports                                   | 报告输出目录                                  |
+| agent.create.enabled           | true                                        | 三期 `create_resource` 总开关                  |
+| agent.create.deny_kinds        | []                                          | 创建黑名单（命中即拒绝）                      |
+| agent.create.allow_kinds       | []                                          | 创建白名单（非空时只允许列出的 Kind）         |
+| agent.create.cluster_kinds     | []                                          | cluster-scoped 资源授权白名单，默认空即禁止集群级创建 |
+| agent.create.max_objects_per_call | 3                                        | 单次 create_resource 最多对象数（1-10）       |
+| agent.create.max_manifest_bytes | 8192                                       | 单次 manifest 最大字节数（1KiB-1MiB）          |
+| agent.secret.access            | create_only                                 | off / create_only；read_write 未开放           |
 
 命令行还能临时覆盖：`--namespace`/`-n`（只扫某个命名空间）、`--since`（只看最近 N 小时日志）、`--fail-on`（达到指定严重级就返回失败退出码）、`--report-mode none|latest|daily`（报告目的地）、`--format markdown|json|yaml`（终端报告格式）、`--verbose`（终端输出完整报告）；单 Pod：`k8s-ai scan pod <name> -n <ns>`。
 
@@ -243,9 +264,14 @@ flowchart LR
 
 - **二期（v2.0.0–v2.6.0）**：chat Agent / Tool Calling / 会话记忆 / 审批执行（按 PROJECT*SPEC*二期.md）；v2.0.6–v2.0.8 迭代：四层意图决策树、放开 shell 构造、批量审批、拒绝闸门命令归一化；v2.2.1 修复诊断报告不完整、reasoning 丢失、工具前过度过滤和证据不足时提前生成写操作的问题；v2.3.2 重构为标准 OpenAI `thinking` 参数并增强思考过程展示；v2.4.0 Web 纯前端产品化升级（暗色主题、顶部状态条、横向阶段步进器、思考全程展示）；v2.5.0 P7 扫描能力补全与规则池扩展（A/B/C 12 条规则 + 规则元数据 + DocProvider/--with-doc + 报告聚合）；v2.5.1 scan 终端摘要分层（RenderTerminal 块级标题 + 表格 + 代码块）；v2.6.0 Web 工具卡结构化渲染（Data.kind 驱动表格/键值 + kubectl 原命令特例）与会话持久化补全（arguments/data/ok 落库与 SSE 回传）
 
+### 已完成的资源创建能力（三期）
+
+- **v3.0.0-beta**：统一 `create_resource` Tool（`internal/tools/create.go`）、Executor SSA/dry-run/verify（`internal/executor/apply.go`）、Code Guard 与创建风险分级（`internal/approval`）、Secret 创建带外值通道（`$GENERATE`/`$ASK`）、内置 Skill 元数据与接口冻结（`internal/skills`）、Agent 创建意图路由（`internal/agent/prompt.go`）、CLI/Web 创建提案与结果渲染、`internal/creationtest` 集成测试。
+
 ### 尚未开始的能力
 
 - scaffold 清单生成能力（未实现，可留二期）
+- 四期通用 Skill 引擎、用户自定义 Skill 目录与 Agent 可调用 Skill 消费（设计已冻结接口，实现待四期规划）
 
 ### 已知约束（LLM）
 

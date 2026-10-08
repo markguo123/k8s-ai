@@ -8,10 +8,11 @@
 
 ### 1.1 定位
 
-k8s-ai 是一个**专业的 Kubernetes AI 智能运维agent**，分两期交付：
+k8s-ai 是一个**专业的 Kubernetes AI 智能运维 Agent**，分三期推进：
 
 - **一期**：只读巡检 + 规则引擎 + 私有大模型诊断 + 报告
 - **二期**：chat 对话 Agent + web 浏览器界面 + 读写操作 + 人工确认
+- **三期**：自然语言资源创建（统一 create_resource、dry-run 提案、审批、SSA、verify）
 
 ### 1.2 核心价值
 
@@ -37,7 +38,7 @@ k8s-ai 是一个**专业的 Kubernetes AI 智能运维agent**，分两期交付�
 - **规则引擎**：35 条内置规则，A/B/C 分级，健康评分
 - **证据链**：Evidence（状态/Events/日志），脱敏处理
 - **诊断层**：Diagnosis（根因分析、修复建议）
-- **工具集**：20 只读工具 + 1 写工具（kubectl）+ 诊断工具
+- **工具集**：20 只读工具 + 1 写工具（kubectl）+ 诊断工具 + 创建工具（create_resource）
 - **审批层**：Approver（风险分级、拒绝闸门、批量审批）
 - **执行层**：Executor（kubectl argv 直调、client-go 写操作）
 - **会话层**：Session（持久化）、Audit（脱敏落盘）
@@ -350,6 +351,25 @@ k8s-ai web --addr 127.0.0.1:8081
   1. 创建 StorageClass：`kubectl apply -f storageclass.yaml`
   2. 或修改 PVC 使用现有 StorageClass
 
+### 4.6 三期：资源创建能力（v3.0.0-beta）
+
+**核心入口**：单条命令式 `create_resource`，不按资源类型堆工具。
+
+- **两阶段创建协议**：先 `dry_run` 产出创建提案（manifest、风险、内置 Skill findings）→ 人工确认 → `apply` → `verify`
+- **Server-Side Apply**：写入路径仍在 `internal/executor`，client-go dynamic + SSA（fieldManager=`k8s-ai`）
+- **安全门禁**：kind 黑白名单、cluster 授权闸门、命名空间存在性、未 dry-run 拒绝、未知 Kind/危险字段升档
+- **Secret 创建**：`$GENERATE` 由 Executor 生成、`$ASK` 由审批时用户输入；明文值永不进入 LLM/会话/审计
+- **内置 Skill 元数据**：五域 YAML + `Registry` 读接口，为四期用户自定义 Skill 与通用 Skill 引擎冻结契约
+
+**演示问法**：
+
+```text
+帮我在 k8s-ai-test 命名空间用镜像 rvm:5100/dbaas-system/mysql:8.0.20 创建 MySQL，
+数据库 mysql，管理员密码走审批输入。
+```
+
+预期呈现：Agent 先补问缺失信息 → dry-run 提案卡 → 用户确认（Secret 密码带外输入）→ 创建成功 → verify 结果卡。
+
 ---
 
 ## 五、部署方式
@@ -524,13 +544,14 @@ k8s-ai server --addr :8080
 
 - ✅ 一期：只读巡检 + 规则引擎 + 私有大模型诊断 + 报告（v1.x）
 - ✅ 二期：chat 对话 Agent + web 浏览器界面 + 读写操作 + 人工确认（v2.x，当前 v2.6.0）
+- ✅ 三期：自然语言资源创建（统一 create_resource、dry-run、审批、SSA、verify、内置 Skill 契约；v3.0.0-beta）
 
 ### 未来（Phase 3）
 
 - 🔲 MCP 外部工具集成（连接外部 MCP 服务器）
 - 🔲 可观测性集成（Prometheus/Grafana 等）
 - 🔲 额外会话后端（当前 filesystem）
-- 🔲 方法论 skill 化
+- 🔲 四期通用 Skill 引擎、用户自定义 Skill 目录与 Agent 可调用 Skill 消费
 
 ---
 
@@ -540,6 +561,7 @@ k8s-ai 是一个**专业的 Kubernetes AI 智能运维平台**：
 
 - **一期**：执行一次 `k8s-ai scan`，快速知道集群哪里有问题、为什么、影响什么、应该怎么排查和怎么修
 - **二期**：通过 `k8s-ai chat` 或 `k8s-ai web`，用自然语言与 Kubernetes 对话，自动诊断、修复、验证
+- **三期**：让 Agent 能用自然语言创建资源，先出提案、审批后提交，并对 Secret 值保持不落上下文的安全红线
 
 **核心优势**：
 

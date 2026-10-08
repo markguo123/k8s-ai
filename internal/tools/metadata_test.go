@@ -60,3 +60,22 @@ func TestKubectlSchemaMetadata(t *testing.T) {
 		}
 	}
 }
+
+// TestCreateResourceSchemaMetadata 保证创建工具把「两步走 + apply 需审批」写进 schema 描述，
+// 模型只看描述就能选对通道（三期 R3.10）。
+func TestCreateResourceSchemaMetadata(t *testing.T) {
+	r := NewRegistry()
+	// runner 为 nil：只验证 schema 元信息，不触发任何集群调用。
+	if err := r.Register(NewCreateTool(CreateOptions{DefaultNamespace: "default"}, nil, nil, "s")); err != nil {
+		t.Fatal(err)
+	}
+	specs := r.Schemas()
+	if len(specs) != 1 {
+		t.Fatalf("schemas = %d", len(specs))
+	}
+	for _, want := range []string{"[READ/WRITE]", "[RISK: MEDIUM-HIGH BY KIND/SCOPE/FIELDS]", "[APPROVAL REQUIRED FOR APPLY]"} {
+		if !strings.Contains(specs[0].Description, want) {
+			t.Fatalf("create_resource description 缺少 %q: %q", want, specs[0].Description)
+		}
+	}
+}

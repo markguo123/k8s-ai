@@ -190,3 +190,27 @@ func TestRenderMarkdown(t *testing.T) {
 		t.Fatalf("nil 渲染器应原样返回, got %q", got)
 	}
 }
+
+func TestRenderCreateToolResult(t *testing.T) {
+	var out bytes.Buffer
+	data := map[string]any{
+		"mode":        "dry_run",
+		"status":      "validated",
+		"risk":        "MEDIUM",
+		"riskReasons": []string{"namespaced Deployment", "hostPath volume"},
+		"objects": []map[string]any{
+			{"kind": "Deployment", "name": "web", "namespace": "default", "status": "validated"},
+			{"kind": "Secret", "name": "db", "namespace": "default", "status": "validated", "secretKeys": []string{"password"}, "note": "value is hidden"},
+		},
+	}
+	renderCreateToolResult(&out, data)
+	got := out.String()
+	for _, want := range []string{"dry_run", "validated", "Deployment web (default)", "Secret db (default)", "hostPath volume"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("renderCreateToolResult 缺少 %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "Gientech") {
+		t.Fatal("create_resource 渲染不得输出 Secret 原值")
+	}
+}

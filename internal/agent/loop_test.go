@@ -665,15 +665,15 @@ func TestChatBatchApprovalNo(t *testing.T) {
 	if exec1 != 0 || exec2 != 0 {
 		t.Fatalf("拒绝后不应执行: exec1=%d exec2=%d", exec1, exec2)
 	}
-	// 两条工具结果都应含 USER_EXPLICITLY_DECLINED。
+	// 批量拒绝后写调用全部不执行；第一个被拒结果触发中断，后续写调用不再逐个回推结果。
 	declinedCount := 0
 	for _, m := range sess.Messages {
 		if m.Role == "tool" && strings.Contains(m.Content, "USER_EXPLICITLY_DECLINED") {
 			declinedCount++
 		}
 	}
-	if declinedCount != 2 {
-		t.Fatalf("应有两个 DECLINED 结果，got %d", declinedCount)
+	if declinedCount != 1 {
+		t.Fatalf("批量拒绝后应只回推首个 DECLINED 结果并中断，got %d", declinedCount)
 	}
 }
 
@@ -707,6 +707,37 @@ func TestChatBatchApprovalMixedReadAndWrite(t *testing.T) {
 	}
 	if writeExec != 2 {
 		t.Fatalf("两个写工具都应执行: %d", writeExec)
+	}
+}
+
+// TestChatBatchStopsAfterWriteFailure 验证同一批次中写工具一旦失败，
+// 停止执行后续写调用并交回模型处理，避免批量审批放行后继续提交风险操作。
+func TestChatBatchStopsAfterWriteFailure(t *testing.T) {
+	exec1, exec2 := 0, 0
+	fl := &fakeLLM{responses: []*llm.ChatResponse{
+		toolCallResp(
+			call("c1", "patch_deployment", `{"namespace":"prod","name":"web","patch":"{}"}`),
+			call("c2", "scale_deployment", `{"namespace":"prod","name":"web","replicas":3}`),
+		),
+		{Content: "第一个写操作失败，先停止后续提交", Usage: llm.TokenUsage{PromptTokens: 3, CompletionTokens: 2, TotalTokens: 5}},
+	}}
+	ap := &stubApprover{choices: []string{ChoiceYes}}
+	a, _ := testAgent(t, fl, []tools.Tool{
+		&stubTool{name: "patch_deployment", readonly: false, executed: &exec1, fail: context.Canceled},
+		&stubTool{name: "scale_deployment", readonly: false, executed: &exec2},
+	}, ap)
+	_, _, err := a.Chat(context.Background(), "修复")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ap.calls != 1 {
+		t.Fatalf("批量审批应只弹 1 次，got %d", ap.calls)
+	}
+	if exec1 != 1 {
+		t.Fatalf("第一个写工具应执行: %d", exec1)
+	}
+	if exec2 != 0 {
+		t.Fatalf("第一个写工具失败后后续写工具不得执行: %d", exec2)
 	}
 }
 

@@ -1,0 +1,31 @@
+name: create-config
+domain: config
+version: 3.0.0
+source: builtin
+kinds:
+  - v1/ConfigMap
+  - v1/Secret
+requiredInputs:
+  - name
+  - data
+optionalInputs:
+  - labels
+validation:
+  - name: data_declared
+    path: data
+    condition: missing
+    severity: suggest
+    message: 没有 data 字段，建议补充配置项
+    fix: 在 data 下列出需要注入的配置键
+  - name: metadata_labels
+    path: metadata.labels
+    condition: missing
+    severity: suggest
+    message: 没有 labels，建议补充可检索的标签
+    fix: 添加 metadata.labels 以便后续选择器与审计检索
+risk:
+  default: MEDIUM
+preChecks:
+  - name: namespace_exists
+postChecks:
+  - name: object_exists

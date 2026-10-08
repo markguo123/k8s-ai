@@ -1,0 +1,834 @@
+// 三期创建工具 create_resource（R3）。
+//
+// 与 kubectl 通道的分工：kubectl 仍负责改/删等既有写操作，创建走这条结构化通道，
+// 因为创建需要「先服务端 dry run 出提案 → 人工确认 → 原样 apply」这一步，
+// shell 命令无法表达这种一致性约束（设计文档 D-09/D-12）。
+//
+// 安全语义：
+//   - mode=dry_run 只调用 apiserver 校验，不落盘 → 只读 + SAFE，自动执行；
+//   - mode=apply 必须先有同指纹的 dry run 提案，否则拒绝；
+//   - 风险按 Kind/scope/危险字段逐项判定（approval.CreateSubjectRisk），
+//     工具描述里只给可机械验证的约束，不写「注意安全」这类空话；
+//   - Secret 只接受占位符（manifestx.PlaceholderGenerate），值由执行器生成，永不进入 Data/Text。
+package tools
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/k8s-ai/k8s-ai/internal/approval"
+	"github.com/k8s-ai/k8s-ai/internal/executor"
+	"github.com/k8s-ai/k8s-ai/internal/manifestx"
+	"github.com/k8s-ai/k8s-ai/internal/model"
+	"github.com/k8s-ai/k8s-ai/internal/skills"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+)
+
+// CreateRunner 是创建通道的执行面（executor.Runner 实现；写动作只在 executor 包内发生）。
+type CreateRunner interface {
+	// MappingFor 用集群 discovery 解析 apiVersion/kind → 资源名与 scope。
+	MappingFor(apiVersion, kind string) (executor.ApplyMapping, error)
+	// GetObjectStatus 判断对象是否已存在、目标命名空间是否存在。
+	GetObjectStatus(ctx context.Context, ref executor.ObjectRef) (executor.ObjectStatus, error)
+	// Apply 以 Server-Side Apply 提交单个对象（支持 dry run 与就绪校验）。
+	Apply(ctx context.Context, req executor.ApplyRequest) (executor.ApplyResult, error)
+}
+
+// CreateOptions 是创建工具的装配参数（来自 agent.create.* 与 kubernetes.namespace）。
+type CreateOptions struct {
+	Policy           manifestx.Policy
+	Limits           manifestx.Limits
+	DefaultNamespace string
+	SecretAccess     string
+	// VerifyTimeout 是就绪等待的默认上限（LLM 可用 timeout_seconds 覆盖）。
+	VerifyTimeout time.Duration
+	// Skills 是内置/用户 Skill 注册表（R5.7）。nil 时跳过 Skill 校验。
+	Skills skills.Registry
+}
+
+// 创建工具的入参取值与错误码（稳定契约：进入审计与提示词）。
+const (
+	CreateModeDryRun = "dry_run"
+	CreateModeApply  = "apply"
+
+	errCreateInvalidArguments    = "invalid_arguments"
+	errCreateManifestRejected    = "manifest_rejected"
+	errCreateValidationFailed    = "validation_failed"
+	errCreateProposalRequired    = "proposal_required"
+	errCreateProposalNotFound    = "proposal_not_found"
+	errCreateProposalMismatch    = "proposal_mismatch"
+	errCreateAlreadyExists       = "already_exists"
+	errCreateNamespaceMissing    = "namespace_missing"
+	errCreateApplyFailed         = "apply_failed"
+	errCreateRunnerUnavail       = "runner_unavailable"
+	errCreateSecretValueRequired = "secret_value_required"
+
+	statusValidated = "validated"
+	statusApplied   = "applied"
+	statusPartial   = "partial"
+	statusRejected  = "rejected"
+)
+
+type createTool struct {
+	opts      CreateOptions
+	runner    CreateRunner
+	proposals *ProposalStore
+	sessionID string
+}
+
+// NewCreateTool 创建 create_resource 工具。
+// store/sessionID 用于跨轮次校验「apply 的内容必须就是刚预演过的那份」。
+func NewCreateTool(opts CreateOptions, runner CreateRunner, store *ProposalStore, sessionID string) Tool {
+	if store == nil {
+		store = NewProposalStore()
+	}
+	return &createTool{opts: opts, runner: runner, proposals: store, sessionID: sessionID}
+}
+
+func (t *createTool) Name() string { return "create_resource" }
+
+func (t *createTool) SchemaMetadata() string {
+	return "[READ/WRITE][RISK: MEDIUM-HIGH BY KIND/SCOPE/FIELDS][APPROVAL REQUIRED FOR APPLY]"
+}
+
+func (t *createTool) Description() string {
+	return "创建 Kubernetes 资源（YAML/JSON，支持一次多个对象）。固定两步：\n" +
+		"1) mode=dry_run（默认）：服务端全量校验并返回创建提案（对象清单、风险等级与原因、待改字段），不改变集群；\n" +
+		"2) 用户确认后用 dry_run 返回的 proposal_id 再调一次 mode=apply，即可原样复用那份已校验的清单（也可带同一 manifest 做一致性校验）；内容不一致会被拒绝，必须重新 dry_run。\n" +
+		"约束：manifest 必须是最终生效的纯 YAML/JSON，不接受 helm/kustomize 模板表达式；" +
+		"每个对象必须有 apiVersion/kind/metadata.name；namespaced 资源省略 namespace 时按默认命名空间创建。\n" +
+		"Secret 的值只允许两种来源，禁止把用户口头给的密码写进清单：\n" +
+		"  - " + manifestx.PlaceholderGenerate + "：执行器生成随机值；\n" +
+		"  - " + manifestx.PlaceholderAsk + "：值由用户在审批通过后单独填写，不进入对话、会话与审计日志。\n" +
+		"资源已存在时该对象会被拒绝并提示改用 patch/update；cluster-scoped 资源默认禁止创建。\n" +
+		"verify=true 时 apply 后会等待对象就绪并附带最近事件。"
+}
+
+func (t *createTool) InputSchema() any {
+	return objSchema(map[string]any{
+		"manifest":        strProp("YAML/JSON 清单，多个对象用 --- 分隔；必须是最终生效内容，不能含模板表达式。apply 复用 dry_run 的 proposal_id 时可省略"),
+		"proposal_id":     strProp("dry_run 成功返回的提案 ID；apply 时携带它即可复用那份已过服务端校验的原始清单"),
+		"mode":            strProp("dry_run＝服务端校验并产出提案（默认，不改变集群）；apply＝提交已确认的同一份清单"),
+		"verify":          boolProp("apply 后是否等待对象就绪（Deployment 可用副本、Pod Running 等），默认 false"),
+		"timeout_seconds": intProp("就绪等待上限秒数，仅 verify=true 时生效，默认 30"),
+	}, "mode")
+}
+
+// createArgs 是一次调用的入参视图。
+type createArgs struct {
+	manifest      string
+	proposalID    string
+	apply         bool
+	verify        bool
+	verifyTimeout time.Duration
+}
+
+func (t *createTool) parseInput(input json.RawMessage) (createArgs, error) {
+	raw, err := ParseArgs(input)
+	if err != nil {
+		return createArgs{}, err
+	}
+	mode := strings.ToLower(strings.TrimSpace(raw["mode"]))
+	if mode == "" {
+		mode = CreateModeDryRun // 缺省走安全侧
+	}
+	if mode != CreateModeDryRun && mode != CreateModeApply {
+		return createArgs{}, fmt.Errorf("%s: mode 只能是 dry_run 或 apply，当前 %q", errCreateInvalidArguments, raw["mode"])
+	}
+	args := createArgs{
+		manifest:      raw["manifest"],
+		proposalID:    strings.TrimSpace(raw["proposal_id"]),
+		apply:         mode == CreateModeApply,
+		verify:        strings.EqualFold(strings.TrimSpace(raw["verify"]), "true"),
+		verifyTimeout: t.opts.VerifyTimeout,
+	}
+	if n, err := strconv.Atoi(strings.TrimSpace(raw["timeout_seconds"])); err == nil && n > 0 {
+		args.verifyTimeout = time.Duration(n) * time.Second
+	}
+	return args, nil
+}
+
+func (t *createTool) Execute(ctx context.Context, input json.RawMessage) (ToolResult, error) {
+	args, err := t.parseInput(input)
+	if err != nil {
+		return resultWithCode(errCreateInvalidArguments, err.Error(), nil), nil
+	}
+	if t.runner == nil {
+		return resultWithCode(errCreateRunnerUnavail, "创建通道未装配（缺少集群连接）", nil), nil
+	}
+	if args.apply {
+		return t.apply(ctx, args), nil
+	}
+	if strings.TrimSpace(args.manifest) == "" {
+		return resultWithCode(errCreateInvalidArguments, "dry_run 必须提供 manifest", nil), nil
+	}
+	objs, err := manifestx.Parse(args.manifest, t.parseOptions())
+	if err != nil {
+		return resultWithCode(errCreateManifestRejected, err.Error(), nil), nil
+	}
+	if manifestx.HasErrors(objs) {
+		return t.rejected(objs, errCreateValidationFailed, "清单校验未通过，未做任何变更"), nil
+	}
+	return t.dryRun(ctx, args, objs), nil
+}
+
+// dryRun 逐对象走 apiserver 校验；只有全部通过才登记提案指纹（D-09）。
+func (t *createTool) dryRun(ctx context.Context, args createArgs, objs []manifestx.Object) ToolResult {
+	outcomes := make([]map[string]any, 0, len(objs))
+	failed := false
+	for i := range objs {
+		o := &objs[i]
+		res, err := t.runner.Apply(ctx, executor.ApplyRequest{
+			Object:    o.Content(),
+			Namespace: o.Namespace,
+			DryRun:    true,
+		})
+		item := t.baseOutcome(o)
+		if err != nil {
+			failed = true
+			item["status"] = "rejected"
+			item["error"] = err.Error()
+		} else {
+			item["status"] = statusValidated
+			item["existed"] = res.Existed
+			if res.Existed {
+				item["note"] = "同名对象已存在，apply 会被拒绝；如需修改请改用 patch/update"
+			}
+		}
+		outcomes = append(outcomes, item)
+	}
+	risk := t.riskFor(objs, false)
+	data := map[string]any{
+		"mode":        CreateModeDryRun,
+		"status":      statusValidated,
+		"risk":        risk.Level,
+		"riskReasons": risk.Reasons,
+		"objects":     outcomes,
+	}
+	if failed {
+		data["status"] = statusRejected
+		data["error"] = "服务端校验未通过，修正清单后重新 dry_run"
+		return ToolResult{Data: data, Text: t.summaryText(data)}
+	}
+	// 提案登记：apply 阶段可只凭 proposal_id 复用，也可带 manifest 走指纹一致性校验。
+	provID := fmt.Sprintf("prop-%d", time.Now().UnixNano())
+	manifestJoined := strings.Join(manifestBlocks(objs), "\n---\n")
+	t.proposals.RecordFull(t.sessionID, provID, manifestJoined, manifestx.Fingerprints(objs), describeObjects(objs), objs)
+	data["proposalId"] = provID
+	data["proposalManifest"] = manifestJoined
+	data["next"] = "把上面的提案（对象清单 + 风险原因）转述给用户确认（完整清单 YAML 已由界面展示，不要在回复里重复输出 YAML 全文）；用户同意后，用 mode=apply 且带上本次返回的 proposal_id=" + provID + " 即可复用这份已校验的原始清单"
+	if pending := PendingSecretValues(objs); len(pending) > 0 {
+		names := make([]string, 0, len(pending))
+		for _, key := range pending {
+			names = append(names, key.String())
+		}
+		data["secretValuesRequired"] = names
+		data["secretValuesNote"] = "这些 key 的值会在 mode=apply 且审批通过后由交互界面单独向用户索取；不要让用户把明文值发在对话里，也不要在回复里复述它们"
+	}
+	return ToolResult{Data: data, Text: t.summaryText(data)}
+}
+
+// apply 提交已确认的清单：优先复用 dry_run 已保存的原始对象（proposal_id），
+// 请求体不再强制重建 manifest，避免模型改写导致指纹漂移而被拒绝。
+// 逐对象独立处理，不做批量回滚（与 kubectl apply 语义一致）。
+func (t *createTool) apply(ctx context.Context, args createArgs) ToolResult {
+	objs, code, msg := t.resolveApplyObjects(args)
+	if code != "" {
+		return resultWithCode(code, msg, nil)
+	}
+	// Secret 值通道（R4.5）：$ASK 的值必须在提交前备齐，缺一个就整批不提交，
+	// 否则会留下"建了一半、剩下缺值"这种无法回滚的中间态。
+	values := SecretValuesFromContext(ctx)
+	if missing := missingSecretValues(values, PendingSecretValues(objs)); len(missing) > 0 {
+		names := make([]string, 0, len(missing))
+		for _, key := range missing {
+			names = append(names, key.String())
+		}
+		return resultWithCode(errCreateSecretValueRequired,
+			"这些 Secret key 需要由你提供值，但本次执行没有收到："+strings.Join(names, "、")+
+				"；请重新发起创建并在审批通过后填写，或把清单里的 "+manifestx.PlaceholderAsk+
+				" 改为 "+manifestx.PlaceholderGenerate+" 由执行器生成随机值", nil)
+	}
+	risk := t.riskFor(objs, true)
+	outcomes := make([]map[string]any, 0, len(objs))
+	var touches []SecretTouch
+	applied, refused := 0, 0
+	for i := range objs {
+		o := &objs[i]
+		item, block := t.precheckObject(ctx, o)
+		if block != "" {
+			refused++
+			item["status"] = "rejected"
+			item["error"] = block
+			outcomes = append(outcomes, item)
+			continue
+		}
+		res, err := t.runner.Apply(ctx, executor.ApplyRequest{
+			Object:        o.Content(),
+			Namespace:     o.Namespace,
+			Verify:        args.verify,
+			VerifyTimeout: args.verifyTimeout,
+			SecretValues:  secretValuesForObject(values, o),
+		})
+		if err != nil {
+			refused++
+			item["status"] = "failed"
+			item["error"] = err.Error()
+			outcomes = append(outcomes, item)
+			continue
+		}
+		applied++
+		item["status"] = statusApplied
+		item["uid"] = res.UID
+		if res.Summary != nil {
+			item["summary"] = res.Summary
+		}
+		if len(res.SecretKeyStatuses) > 0 {
+			// 只有 key 名、长度与 SHA-256：原值在执行器里用完即弃（R4.5/R4.6）。
+			item["secretKeys"] = res.SecretKeyStatuses
+			item["secretNote"] = "Secret 值不进入会话与模型上下文；sha256 可供用户与集群侧实际值核对"
+			touches = append(touches, SecretTouch{
+				Kind: res.Kind, Namespace: res.Namespace, Name: res.Name, Keys: res.SecretKeyStatuses,
+			})
+		}
+		if len(res.GeneratedKeys) > 0 {
+			item["generatedKeys"] = res.GeneratedKeys
+		}
+		if res.Verify != nil {
+			item["verify"] = res.Verify
+		}
+		outcomes = append(outcomes, item)
+	}
+	status := statusApplied
+	switch {
+	case applied == 0:
+		status = statusRejected
+	case refused > 0:
+		status = statusPartial
+	}
+	data := map[string]any{
+		"mode":        CreateModeApply,
+		"status":      status,
+		"risk":        risk.Level,
+		"riskReasons": risk.Reasons,
+		"applied":     applied,
+		"refused":     refused,
+		"objects":     outcomes,
+	}
+	if len(touches) > 0 {
+		data[DataSecretTouches] = touches
+	}
+	if applied == 0 {
+		data["error"] = errCreateApplyFailed + ": 所有对象都未创建成功，见 objects[].error"
+	} else if refused > 0 {
+		data["note"] = "部分对象未创建；失败对象不会回滚已成功部分（与 kubectl apply 一致），请按 objects[].error 逐个处理"
+	}
+	return ToolResult{Data: data, Text: t.summaryText(data)}
+}
+
+// resolveApplyObjects 解析 apply 阶段要提交的对象：proposal_id 优先原样复用，否则退回指纹校验。
+func (t *createTool) resolveApplyObjects(args createArgs) ([]manifestx.Object, string, string) {
+	manifest := strings.TrimSpace(args.manifest)
+	if lp := t.proposals.Get(t.sessionID, args.proposalID); len(lp) > 0 {
+		if manifest != "" {
+			parsed, err := manifestx.Parse(manifest, t.parseOptions())
+			if err != nil {
+				return nil, errCreateManifestRejected, err.Error()
+			}
+			if manifestx.HasErrors(parsed) {
+				return nil, errCreateValidationFailed, "清单校验未通过，未做任何变更"
+			}
+			if !sameSequence(manifestx.Fingerprints(parsed), manifestx.Fingerprints(lp)) {
+				return nil, errCreateProposalMismatch,
+					"携带的 manifest 与本会话提案内容不一致：请去掉 manifest 仅用 proposal_id，或重新 dry_run"
+			}
+		}
+		return lp, "", ""
+	}
+	if manifest == "" {
+		return nil, errCreateProposalNotFound,
+			"未提供 proposal_id 或它已过期/不属于本会话；请先调 mode=dry_run 拿回提案，确认后用 proposal_id 或同一 manifest 调用 mode=apply"
+	}
+	parsed, err := manifestx.Parse(manifest, t.parseOptions())
+	if err != nil {
+		return nil, errCreateManifestRejected, err.Error()
+	}
+	if manifestx.HasErrors(parsed) {
+		return nil, errCreateValidationFailed, "清单校验未通过，未做任何变更"
+	}
+	if ok, reason := t.proposals.Match(t.sessionID, manifestx.Fingerprints(parsed)); !ok {
+		return nil, errCreateProposalRequired,
+			"未执行 dry run 或清单与提案不一致，拒绝创建：" + reason +
+				"；请先用同一份 manifest 调 mode=dry_run，把提案交给用户确认"
+	}
+	return parsed, "", ""
+}
+
+// precheckObject 在提交前拦住「命名空间不存在」与「同名对象已存在」，
+// 把可预见的失败转成明确建议，而不是让 apiserver 报一句难懂的 404/409。
+func (t *createTool) precheckObject(ctx context.Context, o *manifestx.Object) (map[string]any, string) {
+	item := t.baseOutcome(o)
+	if o.IsSecret() {
+		// Secret 不查存在性：GetObjectStatus 会把已有对象整体读回进程，
+		// 与「不读取 Secret 内容值」的红线冲突（executor 同样跳过该查询）。
+		return item, ""
+	}
+	status, err := t.runner.GetObjectStatus(ctx, executor.ObjectRef{
+		APIVersion: o.APIVersion, Kind: o.Kind, Namespace: o.Namespace, Name: o.Name,
+	})
+	if err != nil {
+		return item, "" // 存在性查不动就交给 apiserver 裁决
+	}
+	if status.NamespaceMissing {
+		return item, t.guardDenyForObject(o, func(s *approval.CreateSubject) { s.NamespaceMissing = true })
+	}
+	if status.Found {
+		return item, fmt.Sprintf("%s: %s/%s 在命名空间 %s 已存在；本次调用是创建语义，不会覆盖，请改用 patch/update 或换名字",
+			errCreateAlreadyExists, o.Kind, o.Name, o.Namespace)
+	}
+	return item, ""
+}
+
+// parseOptions 组装 manifestx 解析参数：门禁、上限、默认命名空间与 discovery 映射。
+// guardDenyForObject 是执行前的第二道 Code Guard：命名空间存在性这类必须读集群
+// 才能判定的门禁，Agent 在审批前拿不到结论，这里逐对象兜底（三期 R4.2）。
+// 返回空串表示门禁放行；非空时带上门禁码，保持错误码契约不变。
+func (t *createTool) guardDenyForObject(o *manifestx.Object, mutate func(*approval.CreateSubject)) string {
+	subjects := t.subjectsFor([]manifestx.Object{*o}, true)
+	mutate(&subjects[0])
+	guard := approval.CodeGuard(approval.GuardRequest{Subjects: subjects, DryRunVerified: true})
+	if !guard.Denied() {
+		return ""
+	}
+	return "CODE_GUARD 拒绝[" + strings.Join(guard.Codes, ",") + "]：" + strings.Join(guard.Reasons, "；")
+}
+
+func (t *createTool) parseOptions() manifestx.Options {
+	return manifestx.Options{
+		Policy:           t.opts.Policy,
+		Limits:           t.opts.Limits,
+		Mapper:           createMapper{runner: t.runner},
+		DefaultNamespace: t.opts.DefaultNamespace,
+		SecretAccess:     t.opts.SecretAccess,
+	}
+}
+
+// skillFindings 执行 Skill 校验器（R5.7）。它只产生建议/升档提示，不阻断创建。
+func (t *createTool) skillFindings(o *manifestx.Object) []skills.Finding {
+	if t.opts.Skills == nil {
+		return nil
+	}
+	if val, ok := t.opts.Skills.(skills.Validator); ok {
+		return val.Validate(o.GVK, o.Content(), skills.Scope(o.Scope))
+	}
+	return nil
+}
+
+// skillEscalations 从 Skill findings 中提取风险升档消息，供 approval 决策使用。
+func skillEscalations(in []skills.Finding) []string {
+	var out []string
+	for _, f := range in {
+		if f.Risk == "" {
+			continue
+		}
+		out = append(out, "["+f.Skill+":"+f.Rule+"] "+f.Message)
+	}
+	return out
+}
+
+func (t *createTool) baseOutcome(o *manifestx.Object) map[string]any {
+	item := map[string]any{
+		"index":    o.Index,
+		"kind":     o.Kind,
+		"name":     o.Name,
+		"manifest": o.Manifest, // 已脱敏的展示版（Secret 值不在此处）
+	}
+	if o.Namespace != "" {
+		item["namespace"] = o.Namespace
+	}
+	if len(o.SecretKeys) > 0 {
+		// 提案阶段只带占位符标记或脱敏指纹，不含原值。
+		item["secretKeys"] = o.SecretKeys
+	}
+	if warns := o.Warnings(); len(warns) > 0 {
+		item["findings"] = warns
+	}
+	if finds := t.skillFindings(o); len(finds) > 0 {
+		item["skills"] = finds
+	}
+	return item
+}
+
+// riskFor 给出风险结论。解析失败已在前面拒绝，这里只处理合法清单。
+func (t *createTool) riskFor(objs []manifestx.Object, apply bool) approval.CreateRisk {
+	return approval.CreateSubjectRisk(t.subjectsFor(objs, apply))
+}
+
+// subjectsFor 把解析结果翻译成风险与门禁要素。名单类结论从 manifestx 的 finding code
+// 映射成布尔位，approval 因此不必依赖 manifestx（依赖方向保持 tools → approval + manifestx）。
+func (t *createTool) subjectsFor(objs []manifestx.Object, apply bool) []approval.CreateSubject {
+	subjects := make([]approval.CreateSubject, 0, len(objs))
+	for i := range objs {
+		o := &objs[i]
+		finds := t.skillFindings(o)
+		subjects = append(subjects, approval.CreateSubject{
+			Group:             o.GVK.Group,
+			Kind:              o.Kind,
+			Scope:             scopeString(o.Scope),
+			Dangerous:         o.Dangerous,
+			Escalations:       skillEscalations(finds),
+			Unknown:           o.UnknownKind,
+			Secret:            o.IsSecret(),
+			DryRun:            !apply,
+			Namespace:         o.Namespace,
+			Denied:            o.HasFinding(manifestx.CodeDeniedKind),
+			NotAllowed:        o.HasFinding(manifestx.CodeKindNotAllowed),
+			ClusterKindDenied: o.HasFinding(manifestx.CodeClusterKindDenied),
+		})
+	}
+	return subjects
+}
+
+// GuardRequest 实现 tools.GuardPlanner：apply 前必须有同指纹的 dry run 记录，
+// 其余门禁要素全部来自清单解析与配置，不需要额外读集群（R4.2 审批前的第一道闸）。
+func (t *createTool) GuardRequest(input json.RawMessage) (approval.GuardRequest, bool) {
+	args, err := t.parseInput(input)
+	if err != nil {
+		return approval.GuardRequest{}, false
+	}
+	if !args.apply {
+		// dry_run 不产生写动作，门禁仅按清单静态要素判定。
+		objs, perr := manifestx.Parse(args.manifest, t.parseOptions())
+		if perr != nil || manifestx.HasErrors(objs) {
+			return approval.GuardRequest{}, false
+		}
+		return approval.GuardRequest{Subjects: t.subjectsFor(objs, false), DryRunVerified: true}, true
+	}
+	objs, code, _ := t.resolveApplyObjects(args)
+	if code != "" {
+		return approval.GuardRequest{}, false
+	}
+	return approval.GuardRequest{Subjects: t.subjectsFor(objs, true), DryRunVerified: true}, true
+}
+
+// PendingSecretValues 实现 tools.SecretValuePlanner：申报本次 apply 需要向用户索取的 Secret 值。
+// dry_run 不申报（提案阶段还不需要值），避免在只读预演时打扰用户。
+func (t *createTool) PendingSecretValues(input json.RawMessage) ([]SecretValuePrompt, bool) {
+	args, err := t.parseInput(input)
+	if err != nil || !args.apply {
+		return nil, false
+	}
+	objs, code, _ := t.resolveApplyObjects(args)
+	if code != "" {
+		return nil, false
+	}
+	keys := PendingSecretValues(objs)
+	if len(keys) == 0 {
+		return nil, false
+	}
+	prompts := make([]SecretValuePrompt, 0, len(keys))
+	for _, key := range keys {
+		prompts = append(prompts, SecretValuePrompt{Key: key,
+			Prompt: "请输入 " + key.String() + " 的值（该值不会写入对话、会话与审计日志；留空或输入 no 取消本次创建）"})
+	}
+	return prompts, true
+}
+
+func (t *createTool) IsReadOnly(input json.RawMessage) bool {
+	args, err := t.parseInput(input)
+	return err == nil && !args.apply
+}
+
+func (t *createTool) Risk(input json.RawMessage) model.RiskLevel {
+	args, err := t.parseInput(input)
+	if err != nil {
+		return model.RiskHigh // 入参都解析不动时按高风险走人工审批
+	}
+	if !args.apply {
+		return model.RiskSafe
+	}
+	objs, code, _ := t.resolveApplyObjects(args)
+	if code != "" {
+		return model.RiskHigh
+	}
+	return t.riskFor(objs, true).Level
+}
+
+// Describe 给审批卡片提供命令与变更说明（R4.9）：先给"要动哪些对象 + 为什么有风险 +
+// 需要你补什么"，再附脱敏后的清单；绝不把转义 JSON 甩给人工审批人。
+func (t *createTool) Describe(input json.RawMessage) (command, change string) {
+	args, err := t.parseInput(input)
+	if err != nil {
+		return "create_resource", "入参解析失败：" + err.Error()
+	}
+	mode := CreateModeDryRun
+	if args.apply {
+		mode = CreateModeApply
+	}
+	var objs []manifestx.Object
+	if args.apply {
+		resolved, code, msg := t.resolveApplyObjects(args)
+		objs = resolved
+		if code != "" {
+			// 提案不可用但请求体带 manifest 时仍展示脱敏清单供人工核对。
+			if strings.TrimSpace(args.manifest) != "" {
+				if parsed, perr := manifestx.Parse(args.manifest, t.parseOptions()); perr == nil && !manifestx.HasErrors(parsed) {
+					objs = parsed
+				}
+			}
+			if len(objs) == 0 {
+				return "create_resource mode=" + mode, "无法确定要创建的对象：" + code + ": " + msg
+			}
+		}
+	} else {
+		var perr error
+		objs, perr = manifestx.Parse(args.manifest, t.parseOptions())
+		if perr != nil {
+			return "create_resource mode=" + mode, "清单无法解析：" + perr.Error()
+		}
+	}
+	command = "create_resource mode=" + mode + " objects=" + strings.Join(describeObjects(objs), ", ")
+
+	var sb strings.Builder
+	if args.apply {
+		sb.WriteString("将真正创建以下对象（逐个提交，失败不自动回滚）：")
+	} else {
+		sb.WriteString("服务端预演，不改变集群；提案对象：")
+	}
+	for i := range objs {
+		o := &objs[i]
+		target := o.Kind + "/" + o.Name
+		if o.Namespace != "" {
+			target = o.Kind + "/" + o.Namespace + "/" + o.Name
+		}
+		fmt.Fprintf(&sb, "\n%d. %s（%s）", i+1, target, scopeString(o.Scope))
+		for _, f := range o.Errors() {
+			fmt.Fprintf(&sb, "\n   阻断 %s：%s", f.Code, f.Message)
+		}
+		for _, f := range o.Warnings() {
+			fmt.Fprintf(&sb, "\n   提示 %s：%s", f.Code, f.Message)
+		}
+		for _, f := range t.skillFindings(o) {
+			loc := f.Path
+			if loc == "" {
+				loc = f.Rule
+			}
+			if f.Risk != "" {
+				fmt.Fprintf(&sb, "\n   技能风险 %s (%s) [%s]：%s", f.Skill, loc, f.Risk, f.Message)
+			} else {
+				fmt.Fprintf(&sb, "\n   技能提示 %s (%s)：%s", f.Skill, loc, f.Message)
+			}
+		}
+		for _, k := range o.SecretKeys {
+			switch {
+			case k.Ask:
+				fmt.Fprintf(&sb, "\n   Secret key %s：值待你在本卡片通过后单独填写（不进对话与日志）", k.Key)
+			case k.Generated:
+				fmt.Fprintf(&sb, "\n   Secret key %s：值由执行器随机生成（不落任何记录）", k.Key)
+			default:
+				fmt.Fprintf(&sb, "\n   Secret key %s：长度 %d，sha256=%s", k.Key, k.Length, shortSum(k.SHA256))
+			}
+		}
+	}
+	risk := t.riskFor(objs, args.apply)
+	fmt.Fprintf(&sb, "\n\n风险等级 %s", risk.Level)
+	for _, reason := range risk.Reasons {
+		sb.WriteString("\n· " + reason)
+	}
+	if pending := PendingSecretValues(objs); args.apply && len(pending) > 0 {
+		sb.WriteString("\n\n通过后还需你单独提供这些 Secret 的值：")
+		for _, key := range pending {
+			sb.WriteString("\n· " + key.String())
+		}
+	}
+	if len(objs) > 0 {
+		sb.WriteString("\n\n清单（Secret 值已脱敏）：\n")
+		sb.WriteString(truncateText(strings.Join(manifestBlocks(objs), "\n---\n"), describeManifestBytes))
+	}
+	return command, sb.String()
+}
+
+// shortSum 截短指纹，够人工核对又不占审批卡片篇幅。
+func shortSum(sum string) string {
+	if len(sum) > 12 {
+		return sum[:12]
+	}
+	if sum == "" {
+		return "待生成"
+	}
+	return sum
+}
+
+// GrantTarget 限定「本次会话不再询问」的可复用范围：
+// 单对象创建授权到具体 kind/name，多对象不产生可复用授权。
+func (t *createTool) GrantTarget(input json.RawMessage) (kind, name, namespace string, ok bool) {
+	args, err := t.parseInput(input)
+	if err != nil || !args.apply {
+		return "", "", "", false
+	}
+	objs, code, _ := t.resolveApplyObjects(args)
+	if code != "" || len(objs) != 1 {
+		return "", "", "", false
+	}
+	o := objs[0]
+	// 三期 R4.4：只有「单个 + namespaced + MEDIUM」的创建才允许会话级免询问。
+	// Secret（含值通道）与任何 HIGH/CRITICAL 对象（cluster-scoped、未知 Kind、
+	// 危险字段、非良性 Kind）每次都重新人工确认；Code Guard 的 REVIEW 档同理，
+	// 因为免询问等于让后续同 kind/name 的调用绕过审批面板。
+	if o.IsSecret() || o.Scope != manifestx.ScopeNamespaced || !o.Mapped {
+		return "", "", "", false
+	}
+	if t.riskFor([]manifestx.Object{o}, true).Level != model.RiskMedium {
+		return "", "", "", false
+	}
+	return o.Kind, o.Name, o.Namespace, true
+}
+
+func (t *createTool) summaryText(data map[string]any) string {
+	mode, _ := data["mode"].(string)
+	status, _ := data["status"].(string)
+	objects, _ := data["objects"].([]map[string]any)
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "create_resource %s：%s（%d 个对象，风险 %s）", mode, status, len(objects), data["risk"])
+	for _, item := range objects {
+		line := fmt.Sprintf("\n- %v/%v", item["kind"], item["name"])
+		if ns, okk := item["namespace"].(string); okk && ns != "" {
+			line += " ns=" + ns
+		}
+		line += " " + stringOf(item["status"])
+		if statuses, okk := item["secretKeys"].([]executor.SecretKeyStatus); okk && len(statuses) > 0 {
+			names := make([]string, 0, len(statuses))
+			for _, st := range statuses {
+				names = append(names, fmt.Sprintf("%s(len=%d,sha256=%s)", st.Key, st.Length, shortSum(st.SHA256)))
+			}
+			line += " Secret[" + strings.Join(names, ",") + "]"
+		}
+		if errText := stringOf(item["error"]); errText != "" {
+			line += "：" + errText
+		}
+		sb.WriteString(line)
+	}
+	if reasons, ok := data["riskReasons"].([]string); ok {
+		for _, reason := range reasons {
+			sb.WriteString("\n风险原因：" + reason)
+		}
+	}
+	return sb.String()
+}
+
+// describeObjects 渲染对象标识（Kind/ns/name）。
+func describeObjects(objs []manifestx.Object) []string {
+	out := make([]string, 0, len(objs))
+	for _, o := range objs {
+		s := o.Kind + "/" + o.Name
+		if o.Namespace != "" {
+			s = o.Kind + "/" + o.Namespace + "/" + o.Name
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+func manifestBlocks(objs []manifestx.Object) []string {
+	out := make([]string, 0, len(objs))
+	for _, o := range objs {
+		out = append(out, o.Manifest)
+	}
+	return out
+}
+
+// describeManifestBytes 限制审批卡片里清单的长度，避免长清单把提示冲垮。
+const describeManifestBytes = 2048
+
+func truncateText(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "\n…[TRUNCATED]"
+}
+
+func stringOf(v any) string {
+	s, _ := v.(string)
+	return s
+}
+
+func scopeString(s manifestx.Scope) string {
+	switch s {
+	case manifestx.ScopeNamespaced:
+		return approval.CreateScopeNamespaced
+	case manifestx.ScopeCluster:
+		return approval.CreateScopeCluster
+	default:
+		return approval.CreateScopeUnknown
+	}
+}
+
+// resultWithCode 产出带错误码的工具结果（Data.error 存在即被 Agent 判定为失败）。
+func resultWithCode(code, message string, extra map[string]any) ToolResult {
+	data := map[string]any{"error": code + ": " + message, "code": code, "message": message}
+	for k, v := range extra {
+		data[k] = v
+	}
+	return ToolResult{Data: data, Text: "错误：" + code + ": " + message}
+}
+
+// rejected 把阻断级校验结论一次性摊开给模型（不逐个试错）。
+func (t *createTool) rejected(objs []manifestx.Object, code, headline string) ToolResult {
+	items := make([]map[string]any, 0, len(objs))
+	var lines []string
+	for i := range objs {
+		o := &objs[i]
+		if !o.HasErrors() {
+			continue
+		}
+		errs := o.Errors()
+		items = append(items, map[string]any{
+			"index": o.Index, "kind": o.Kind, "name": o.Name,
+			"namespace": o.Namespace, "findings": errs,
+		})
+		for _, f := range errs {
+			target := f.Field
+			if target == "" {
+				target = fmt.Sprintf("objects[%d]", o.Index)
+			}
+			fix := ""
+			if f.Fix != "" {
+				fix = "；建议：" + f.Fix
+			}
+			lines = append(lines, fmt.Sprintf("- %s %s: %s%s", target, f.Code, f.Message, fix))
+		}
+	}
+	data := map[string]any{
+		"error":   code + ": " + headline,
+		"code":    code,
+		"objects": items,
+	}
+	text := "错误：" + code + ": " + headline + "\n" + strings.Join(lines, "\n")
+	return ToolResult{Data: data, Text: text}
+}
+
+// createMapper 把 executor 的 discovery 结论适配成 manifestx.Mapper。
+type createMapper struct{ runner CreateRunner }
+
+func (m createMapper) MappingFor(gvk schema.GroupVersionKind) (manifestx.Mapping, error) {
+	apiVersion := gvk.Version
+	if gvk.Group != "" {
+		apiVersion = gvk.Group + "/" + gvk.Version
+	}
+	mapping, err := m.runner.MappingFor(apiVersion, gvk.Kind)
+	if err != nil {
+		return manifestx.Mapping{}, err
+	}
+	scope := manifestx.ScopeCluster
+	if mapping.Namespaced {
+		scope = manifestx.ScopeNamespaced
+	}
+	return manifestx.Mapping{
+		Resource: schema.GroupVersionResource{Group: gvk.Group, Version: gvk.Version, Resource: mapping.Resource},
+		Scope:    scope,
+	}, nil
+}

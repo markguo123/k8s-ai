@@ -72,7 +72,8 @@ type Server struct {
 
 	mu           sync.Mutex
 	broadcasters map[string]*Broadcaster
-	pending      map[string]chan string // sessionID → 当前 Chat 的审批响应通道
+	pending      map[string]chan string        // sessionID → 当前 Chat 的审批响应通道
+	runs         map[string]context.CancelFunc // sessionID → 当前 Chat 运行取消函数
 }
 
 // New 创建 Web UI 服务。
@@ -82,6 +83,7 @@ func New(chat chatService, model string) *Server {
 		model:        model,
 		broadcasters: map[string]*Broadcaster{},
 		pending:      map[string]chan string{},
+		runs:         map[string]context.CancelFunc{},
 	}
 }
 
@@ -96,6 +98,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sessions/{id}/stream", s.handleStream)
 	mux.HandleFunc("POST /api/sessions/{id}/send-message", s.handleSendMessage)
 	mux.HandleFunc("POST /api/sessions/{id}/approve", s.handleApprove)
+	mux.HandleFunc("POST /api/sessions/{id}/cancel", s.handleCancel)
 	return mux
 }
 
@@ -172,8 +175,12 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
+	if cancel, ok := s.runs[id]; ok {
+		cancel()
+	}
 	delete(s.broadcasters, id)
 	delete(s.pending, id)
+	delete(s.runs, id)
 	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]string{"deleted": id})
 }
@@ -239,11 +246,12 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond := make(chan string, 1)
+	chatCtx, cancelChat := context.WithCancel(context.Background())
 	s.pending[id] = respond
+	s.runs[id] = cancelChat
 	s.mu.Unlock()
 
 	// Chat 生命周期独立于 HTTP 请求：请求返回后 SSE 仍需持续推送。
-	chatCtx, cancelChat := context.WithCancel(context.Background())
 	events, err := s.chat.Chat(chatCtx, service.ChatRequest{
 		SessionID:       id,
 		Query:           body.Query,
@@ -253,6 +261,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		cancelChat()
 		s.mu.Lock()
 		delete(s.pending, id)
+		delete(s.runs, id)
 		s.mu.Unlock()
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -263,6 +272,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			s.mu.Lock()
 			delete(s.pending, id)
+			delete(s.runs, id)
 			s.mu.Unlock()
 		}()
 		for ev := range events {
@@ -275,6 +285,20 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	writeJSON(w, http.StatusAccepted, map[string]string{"sessionId": id})
+}
+
+// handleCancel 取消当前会话正在执行的 Chat 运行。
+func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	s.mu.Lock()
+	cancel, ok := s.runs[id]
+	s.mu.Unlock()
+	if !ok {
+		writeError(w, http.StatusConflict, fmt.Errorf("no active run for session %s", id))
+		return
+	}
+	cancel()
+	writeJSON(w, http.StatusOK, map[string]string{"sessionId": id})
 }
 
 // handleApprove 把审批选择回传给当前 Chat 的 respond 通道。
@@ -296,7 +320,8 @@ func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
 	}
 	select {
 	case respond <- body.Choice:
-		writeJSON(w, http.StatusOK, map[string]string{"choice": body.Choice})
+		// 不回显 choice：Secret 值经此通道提交，响应体必须原样返回会话 id。
+		writeJSON(w, http.StatusOK, map[string]string{"sessionId": id})
 	default:
 		writeError(w, http.StatusConflict, fmt.Errorf("approval already answered"))
 	}

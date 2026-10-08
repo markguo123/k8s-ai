@@ -1,8 +1,9 @@
 # k8s-ai 安装部署手册
 
-> 版本：2.0.8（一期巡检 + 二期 Agent）
+> 版本：v3.0.0-beta（一期巡检 + 二期 Agent + 三期资源创建）
 > 适用：本地命令行 / 浏览器 chat / 集群内 CronJob 每日巡检
-> 说明：一期 `scan` 只读巡检；二期 `chat`/`web` 支持读写操作，写操作（含 shell 构造）需人工确认；批量审批支持一轮多写操作合并确认
+> 说明：一期 `scan` 只读巡检；二期 `chat`/`web` 支持读写操作，写操作（含 shell 构造）需人工确认；批量审批支持一轮多写操作合并确认；
+> 三期 `create_resource` 提供 dry-run 先行、审批提案、Server-Side Apply、创建后 verify 与 Secret 创建专用通道（值不透传 LLM）。
 
 ---
 
@@ -109,6 +110,25 @@ scan:
 report:
   directory: "./reports" # 报告目录（集群内 CronJob 用 /reports）
   format: markdown
+
+agent:
+  max_iterations: 15 # Agent 往返上限
+  max_tool_calls: 20 # 单轮工具调用上限
+  timeout: 5m # Agent 单次会话超时
+  tool_calling: native # native | shim | auto
+  require_approval: true # 写操作必须人工确认
+  skip_permissions: false # 非交互自动化，慎用
+  session_dir: "~/.k8s-ai/sessions"
+  audit_dir: "~/.k8s-ai/audit"
+  create:
+    enabled: true # 三期 create_resource 开关
+    deny_kinds: [] # 黑名单，默认空
+    allow_kinds: [] # 白名单，默认空
+    cluster_kinds: [] # cluster-scoped 授权白名单，默认空即禁止集群级资源
+    max_objects_per_call: 3 # 单次最多对象数（1-10）
+    max_manifest_bytes: 8192 # 单次 manifest 最大字节数（1KiB-1MiB）
+  secret:
+    access: "create_only" # off | create_only；read_write 未开放
 
 rules:
   enabled: [] # 非空则只启用这些规则

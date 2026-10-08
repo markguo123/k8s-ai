@@ -99,6 +99,38 @@ type AgentConfig struct {
 	SessionDir      string        `mapstructure:"session_dir"`
 	AuditDir        string        `mapstructure:"audit_dir"`
 	DisabledTools   []string      `mapstructure:"disabled_tools"`
+	Create          CreateConfig  `mapstructure:"create"`
+	Secret          SecretConfig  `mapstructure:"secret"`
+}
+
+// CreateConfig controls the Phase 3 resource-creation capability
+// (docs/RESOURCE_CREATE_DESIGN.md, docs/DEVELOPMENT_PLAN_三期.md R0.2).
+type CreateConfig struct {
+	// Enabled turns the create_resource tool on/off. Disabled tools are removed
+	// from the LLM tool registry at assembly time.
+	Enabled bool `mapstructure:"enabled"`
+	// DenyKinds is a hard blacklist of kinds that can never be created
+	// (D-11: the only kind-level restriction; empty = no extra blacklist).
+	DenyKinds []string `mapstructure:"deny_kinds"`
+	// AllowKinds optionally narrows creation to a whitelist. Empty means
+	// "no whitelist": every kind not in DenyKinds is accepted.
+	AllowKinds []string `mapstructure:"allow_kinds"`
+	// ClusterKinds lists cluster-scoped kinds the operator authorizes for
+	// creation. Empty means cluster-scoped creation is refused (D-11 gate).
+	ClusterKinds []string `mapstructure:"cluster_kinds"`
+	// MaxObjectsPerCall caps how many objects a single call may carry (D-10).
+	MaxObjectsPerCall int `mapstructure:"max_objects_per_call"`
+	// MaxManifestBytes caps the manifest size of a single call (D-10).
+	MaxManifestBytes int `mapstructure:"max_manifest_bytes"`
+}
+
+// SecretConfig controls the Secret create channel (D-06/D-12). Reading Secret
+// content values stays a hard red line in every mode.
+type SecretConfig struct {
+	// Access is "off" (no Secret creation), "create_only" (default: create with
+	// values that never enter the LLM context) or "read_write" (reserved,
+	// rejected by Validate until a later phase).
+	Access string `mapstructure:"access"`
 }
 
 // WebUIConfig 控制二期 Web UI 监听地址。
@@ -218,6 +250,15 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("agent.history_turns", 20)
 	v.SetDefault("agent.session_dir", "~/.k8s-ai/sessions")
 	v.SetDefault("agent.audit_dir", "~/.k8s-ai/audit")
+
+	// Phase 3 resource creation (RESOURCE_CREATE_DESIGN.md / DEVELOPMENT_PLAN_三期.md).
+	v.SetDefault("agent.create.enabled", true)
+	v.SetDefault("agent.create.deny_kinds", []string{})
+	v.SetDefault("agent.create.allow_kinds", []string{})
+	v.SetDefault("agent.create.cluster_kinds", []string{})
+	v.SetDefault("agent.create.max_objects_per_call", 3)
+	v.SetDefault("agent.create.max_manifest_bytes", 8*1024)
+	v.SetDefault("agent.secret.access", "create_only")
 
 	v.SetDefault("webui.addr", "127.0.0.1:8081")
 
@@ -370,8 +411,32 @@ func (c *Config) Validate() error {
 	if c.Agent.SessionDir == "" || c.Agent.AuditDir == "" {
 		return fmt.Errorf("agent.session_dir and agent.audit_dir must not be empty")
 	}
+	// Phase 3: creation limits (D-10 object/byte caps are configurable but bounded).
+	if c.Agent.Create.MaxObjectsPerCall <= 0 || c.Agent.Create.MaxObjectsPerCall > 10 {
+		return fmt.Errorf("agent.create.max_objects_per_call must be between 1 and 10")
+	}
+	if c.Agent.Create.MaxManifestBytes < 1024 || c.Agent.Create.MaxManifestBytes > 1024*1024 {
+		return fmt.Errorf("agent.create.max_manifest_bytes must be between 1KiB and 1MiB")
+	}
+	if err := validateSecretAccess(c.Agent.Secret.Access); err != nil {
+		return err
+	}
 	if c.WebUI.Addr == "" {
 		return fmt.Errorf("webui.addr must not be empty")
 	}
 	return nil
+}
+
+// validateSecretAccess enforces the Phase 3 Secret channel gate (D-12/R4.7):
+// only "off" and "create_only" are available; reading Secret content values
+// ("read_write") stays out of scope and is rejected instead of silently ignored.
+func validateSecretAccess(access string) error {
+	switch access {
+	case "", "off", "create_only":
+		return nil
+	case "read_write":
+		return fmt.Errorf("agent.secret.access=read_write is not supported: reading Secret content values stays a red line")
+	default:
+		return fmt.Errorf("agent.secret.access must be one of off, create_only")
+	}
 }

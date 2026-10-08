@@ -17,12 +17,15 @@ const module = "github.com/k8s-ai/k8s-ai"
 
 var forbiddenImports = []string{
 	"k8s.io/client-go/kubernetes/fake",
-	"k8s.io/client-go/dynamic",
 }
 
-// packageScopedImports 只允许指定生产包出现的 import（相对 internal/ 的包路径）。
+// packageScopedImports 只允许指定生产包出现的 import（key 是 import 路径，value 是允许的包，相对 internal/）。
+//
+// 三期创建通道（R2.10）：dynamic 客户端是"把 manifest 写进集群"的唯一入口，
+// 因此与 os/exec 同级收紧到 internal/executor 独有；其余包要提交资源只能经执行器 API。
 var packageScopedImports = map[string][]string{
-	"executor": {"os/exec"},
+	"os/exec":                  {"executor"},
+	"k8s.io/client-go/dynamic": {"executor"},
 }
 
 // forbiddenMethodCalls 是 client-go 写方法调用；仅 internal/executor 允许。
@@ -31,9 +34,9 @@ var forbiddenMethodCalls = []string{
 }
 
 // Secret 内容值红线（AGENTS.md LLM Safety）：
-//  - StringData 是 corev1.Secret 的原始内容值（写入）字段，生产代码任何位置都禁止触碰；
-//  - Secret 元数据/键级读取只允许发生在只读门面 internal/kubernetes（采集边界剥离 data 值，
-//    只向应用暴露名称/类型/键集合，内容值不进入证据/LLM/会话/审计）。
+//   - StringData 是 corev1.Secret 的原始内容值（写入）字段，生产代码任何位置都禁止触碰；
+//   - Secret 元数据/键级读取只允许发生在只读门面 internal/kubernetes（采集边界剥离 data 值，
+//     只向应用暴露名称/类型/键集合，内容值不进入证据/LLM/会话/审计）。
 const forbiddenSecretValueField = "StringData"
 const secretReadAllowedPkg = "kubernetes"
 

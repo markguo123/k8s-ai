@@ -1,0 +1,295 @@
+# k8s-ai 四期开发计划：平台化升级（Platform）
+
+- 版本：v1.1
+- 日期：2026-09-30
+- 状态：计划稿（未开工）
+- 需求输入：[k8s-ai 四期需求规格（平台化）v1.2.md](./k8s-ai%20四期需求规格（平台化）v1.2.md)、AGENTS.md、三期设计文档与代码现状
+- 编号说明：本计划主线用 **P0–P6** 表示，任务编号为 `P0.1`、`P1.1` 等。P0 是规格与设计基线，P1/P2 是平台底座与 Web Shell，P3/P4 是平台能力与治理，P5/P6 是 Memory/Retention 与生产准出。任务状态表格可用于内部汇报在线表格逐格映射。
+- 目标版本线：v4.0（平台底座 + Web Shell + 平台能力）、v4.1（治理能力）、v4.2（Memory/Retention），最终发布按 v1.2 §31 版本规划执行。
+
+## 修订记录
+
+| 版本 | 日期 | 修订人 | 说明 |
+| --- | --- | --- | --- |
+| v1.0 | 2026-09-30 | | 初版：基于四期需求 v1.2 拆分 P0–P6，71 条任务，估 57.50 人日（串行口径） |
+| v1.1 | 2026-09-30 | | P2 补充会话 Token 用量持久化与展示任务；任务数 72，估 58.00 人日 |
+
+---
+
+## 1. 范围与非目标
+
+**范围内**
+
+- Vue 3 + TypeScript + Vite SPA，Web 入口平台化；
+- `/api/v1` API Contract、`request_id`、统一错误/分页；
+- Store 抽象 + SQLite/MySQL 双驱动 + 统一 migration；
+- 产品内用户与角色：viewer / operator（P0 仅 viewer + admin，operator 保留模型）；权限只作用于 Web/API，不进入 CLI；
+- Session / Turn / Step / SSE 事件模型，并兼容三期 WebChat 旧事件；
+- 单集群管理、kubeconfig 上传/粘贴/校验/安全存储；
+- Skill 平台：内置 Skill 完整支持、custom YAML 导入、third-party Loader/Validation Contract 预留；
+- 配置中心：模型 / Skill / Approval / Memory / Retention / MCP 展示位 / 运维；
+- Approval v2 平台化：审批中心、策略可视化、Authorization Grant、审批审计；
+- Audit 中心：登录、Session、Tool Call、Approval、Grant、写操作、配置、Skill、集群；
+- Memory：Session Summary、长期记忆、作用域、策略；
+- Retention：Session / Audit / Scan / Skill Run / Memory / Config History / Credential 的清理与归档；
+- 单进程部署、K8s Deployment 部署、一键安装脚本；
+- 四期写执行决策：镜像内写执行统一走 client-go（推荐，待签收），不因平台化新增 shell 写通道；
+- 三期资源创建、SSA、Approval、Code Guard、Executor 能力继续复用。
+
+**非目标（本计划不做）**
+
+- CLI 登录 / CLI 用户体系 / CLI RBAC；
+- 多集群 Web UI；
+- MCP 真实接入；
+- Redis；
+- 多租户 / 组织管理 / 复杂 IAM / Skill 在线市场 / Skill 远程仓库完整实现；
+- 应用层 namespace RBAC：真实资源权限仍由 kubeconfig / ServiceAccount RBAC 决定；
+- 为 Deployment、StatefulSet、Service 等逐资源新增大量写 Tool；
+- 把旧 HTML 直接拆成 Vue 文件的“低质量迁移”作为主方案。
+
+---
+
+## 2. 决策基线
+
+| 编号 | 决策 | 结论 | 状态 |
+| --- | --- | --- | --- |
+| D-01 | 前端技术栈 | Vite + Vue 3 + TypeScript + Vue Router + Pinia + Element Plus | 已定 |
+| D-02 | Web 集群范围 | 单集群接入，数据模型预留 `cluster_id`，UI 不做多集群 | 已定 |
+| D-03 | API 形态 | 统一 `/api/v1`，Chat 走 SSE；CLI 直接调用 Application Service，不走 HTTP | 已定 |
+| D-04 | Store 后端 | SQLite 默认 + MySQL 可选；业务层仅依赖 Store 接口；共用统一 schema 与 migration | 已定 |
+| D-05 | 产品内身份 | Web/API 有产品内用户体系；CLI 不进入该用户体系 | 已定 |
+| D-06 | 镜像写执行 | 推荐镜像内写执行统一走 client-go（与三期 `create_resource` 一致）；kubectl 受控通道仅保留给显式配置 `kubectl_path` 的非容器场景 | 推荐值待签收 |
+| D-07 | Skill 定位 | Skill 是方法论/校验/风险约束，不是执行器；所有写操作必须走 Tool → Approval → Code Guard → Executor | 已定 |
+| D-08 | SSE 兼容 | 四期 Event Catalog 与三期旧事件兼容，迁移期提供事件映射层，未完成映射不得移除旧事件 | 已定 |
+| D-09 | 用户角色 | P0 开放 viewer / admin；operator 保留模型但页面/接口暂不放量 | 已定 |
+| D-10 | Memory/Retention | 四期真实实现 Session Summary、长期记忆、保留策略与调度器，不是假开关 | 已定 |
+| D-11 | MCP | 保留配置页面与接口展示位，真实接入不入本计划 | 已定 |
+| D-12 | 部署 | 支持单进程二进制与 Kubernetes Deployment 双轨；默认只读 RBAC，写权限显式开启 | 已定 |
+| D-13 | 数据迁移 | 四期 migration 不得导致三期 session/audit/skill/config/报告无提示丢失；无法迁移的数据必须显式说明 | 已定 |
+| D-14 | 版本规划 | v4.0 平台基础、v4.1 治理、v4.2 长期数据；按里程碑释放 | 已定 |
+
+---
+
+## 3. 里程碑
+
+| 里程碑 | 内容 | 可演示成果 | 大概任务数 |
+| --- | --- | --- | --- |
+| M1 | P0 全部 + P1 全部 | API Contract、Store/SQLite/MySQL、Auth/Permission、Session/Turn/Step、SSE Event、Config、Audit、Migration 命令运行成功 | 19 |
+| M2 | P2 全部 | Vue SPA 登录 + 聊天 + SSE + Agent 时间线 + Tool Card + Approval Card + Token 用量展示，三期 Chat 行为可完整运行 | 13 |
+| M3 | P3 全部 | 集群接入、Skill 管理/导入/命中、配置中心、用户与权限管理 | 13 |
+| M4 | P4 全部 | 审批中心、Approval v2 可视化、Authorization Grant、Audit 时间线 | 9 |
+| M5 | P5 全部 | Session Summary、长期记忆、Retention 调度与清理、安全红线测试 | 8 |
+| M6 | P6 全部 | 单进程/K8s 部署、一键安装、安全/E2E/Migration 测试、文档与版本准出 | 10 |
+
+---
+
+## 4. 依赖与并行
+
+```mermaid
+flowchart LR
+  P0["P0 规格与设计基线"] --> P1["P1 平台底座"]
+  P1 --> P2["P2 Web Shell"]
+  P1 --> P3["P3 平台能力"]
+  P1 --> P4["P4 Governance"]
+  P3 --> P5["P5 Memory/Retention"]
+  P4 --> P5
+  P2 --> P6["P6 Production/Release"]
+  P3 --> P6
+  P4 --> P6
+  P5 --> P6
+```
+
+并行建议：P0 冻结后，P1.1 Vite 脚手架可与 P1.2 Store 并行；P2 的布局/登录可先于 Agent Runtime 完成后端接口启动前端开发（用 mock 契约）；P3 的 Skill 与 Cluster、P3 的用户权限与 P4 的审批中心可并行；P5 建议在 P3 配置中心与 P4 审批中心落定后再排。
+
+---
+
+## 5. 任务分解
+
+> 列说明：规模 S≈0.25d / M≈0.5d / L≈1d / XL≈1.5d；状态取值：未开始 / 进行中 / 已完成 / 阻塞。
+
+### P0 规格与设计基线（约 3.50d）
+
+| 编号 | 任务项 | 交付物 | 验收标准 | 依赖 | 规模 | 预估 | 里程碑 | 状态 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| P0.1 | 四期需求与范围复审、决策签收 D-01~D-14 | 本文档 §2、需求 v1.2 决策状态回写 | D-06 等推荐值有结论并回写文档；每阶段“决策 needed/not needed”状态清晰 | 需求 v1.2 | M | 0.5d | M1 | 未开始 |
+| P0.2 | `/api/v1` API Contract v1 冻结 | docs/API_V4.md：认证、集群、Skill、配置、用户、Approval、Audit、Chat SSE 与通用错误/分页 | 前端可基于该 Contract mock 开发；错误码与权限码定义完整 | P0.1 | L | 1d | M1 | 未开始 |
+| P0.3 | Store Interface 与 migration 策略冻结 | internal/store 接口草案、SQLite/MySQL schema 与版本迁移策略 | 业务层依赖接口；migration 可升级，不无提示丢数据 | P0.1 | L | 1d | M1 | 未开始 |
+| P0.4 | SSE Event Catalog v1 与旧事件映射冻结 | docs/SSE_EVENT_V4.md：session/turn/step 事件 + 三期 answer-delta/reasoning-delta/tool-call/tool-result 映射 | 每个事件必有 session_id/turn_id/step_id/timestamp/event_type；迁移映射可用 | P0.2 | M | 0.5d | M1 | 未开始 |
+| P0.5 | 前端信息架构与目录规范 | web/ 目录、页面侧栏、权限前端三视图（Route/Component/Button）设计 | 与 v1.2 §10/§11 一致；权限仅 UX，后端强校验原则写明 | P0.2 | M | 0.5d | M1 | 未开始 |
+| P0.6 | 三期数据/配置迁移基线 | docs/MIGRATION_V4.md：旧 config.yaml、旧 Skill、旧 Session/Chat、旧 Approval、旧 Report、旧配置目录 | 每个数据源都有迁移/显式拒绝两条结论；验收用例可追踪 | P0.1 | M | 0.5d | M1 | 未开始 |
+
+### P1 平台底座（约 12.00d）
+
+| 编号 | 任务项 | 交付物 | 验收标准 | 依赖 | 规模 | 预估 | 里程碑 | 状态 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| P1.1 | Vite + Vue3 + TS 工程骨架 | web/ 工程、package.json、lint/format、CI build 步骤 | `npm run build` 与 `npm run lint` 通过；基础路由可访问 | P0.5 | L | 1d | M1 | 未开始 |
+| P1.2 | Store 接口与 SQLite 驱动 | internal/store：User/Session/Role/Audit/Settings/Skill/Approval/Memory/Retention/Cluster/Credential Store；SQLite 实现与迁移 | 各 Store CRUD 单测覆盖；SQLite 迁移幂等 | P0.3 | L | 1d | M1 | 未开始 |
+| P1.3 | MySQL 驱动与统一迁移 | MySQL 实现、迁移入口与测试库用例 | SQLite/MySQL 共用 schema 版本；两驱动业务测试等价 | P1.2 | XL | 1.5d | M1 | 未开始 |
+| P1.4 | HTTP 基础中间件 | request_id、统一 error envelope、分页、CORS、认证占位 | 所有 `/api/v1` 响应含 request_id/error.code/timestamp；分页字段稳定 | P0.2 | M | 0.5d | M1 | 未开始 |
+| P1.5 | 用户/角色模型与登录认证 | User/Role 模型、argon2 密码哈希、Session Token、/auth/login/logout/me | 可登录、可退出、可获取当前用户；密码/Token 不以明文落日志 | P1.2 | L | 1d | M1 | 未开始 |
+| P1.6 | Permission Middleware | Role→Permission→Policy 判定与中间件 | API 越权返回 401/403；业务代码不散落 `role == "admin"` | P1.5 | M | 0.5d | M1 | 未开始 |
+| P1.7 | Session/Turn/Step 模型与存储 | Agent Session 三模型入库、列表/详情、状态更新 | 多轮 Agent 运行可回放；状态推进有单测 | P1.2 | L | 1d | M1 | 未开始 |
+| P1.8 | Agent Runtime 生命周期接入 | service/agent 每 Turn 创建 Session/Turn/Step；Reason/Tool/Observe/Approval/Response 埋点 | Agent 循环仍保持动态 Reason→Tool→Observe，Step 记录完整；审批暂停/恢复可续跑 | P1.7 | XL | 1.5d | M1 | 未开始 |
+| P1.9 | SSE 事件路由与旧事件映射层 | SSE 路由、事件序列化、三期旧事件映射 | Chat SSE 收到统一新事件；旧事件在映射期内仍可消费 | P0.4, P1.8 | L | 1d | M1 | 未开始 |
+| P1.10 | Config Service | SettingsStore 与 groups API：模型/Skill/Approval/Memory/Retention/MCP/运维 | 配置 CRUD 走 Store；敏感字段只在写接口接收，读接口脱敏 | P1.2 | L | 1d | M1 | 未开始 |
+| P1.11 | Audit 模型与系统事件写入 | AuditStore、Audit Event 枚举、登录/工具/审批/写/配置/Skill/集群事件落库 | 记录字段满足 v1.2 §19；无 Secret/kubeconfig 明文 | P1.2, P1.8 | M | 0.5d | M1 | 未开始 |
+| P1.12 | Migration 命令与旧数据导入 | 新增 `k8s-ai migrate`，处理旧 config/session/audit/skill/report | 三期数据可导入或显式报告不可迁移；导入过程不丢数据 | P0.6, P1.3 | L | 1d | M1 | 未开始 |
+| P1.13 | Store/Auth/Agent/SSE 测试集 | internal/store、auth、agentsession、sse、migrate 单测 | `go test ./...` 相关包绿；红线专项无 Secret/kubeconfig 内容值 | P1.12 | M | 0.5d | M1 | 未开始 |
+
+### P2 Web Shell（约 8.50d）
+
+| 编号 | 任务项 | 交付物 | 验收标准 | 依赖 | 规模 | 预估 | 里程碑 | 状态 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| P2.1 | App Layout 与侧边栏 | 备注栏七个入口：聊天/集群/Skill/审批中心/审计/配置中心/用户与权限 | 路由与菜单可跳转；移动端布局不重叠 | P1.1 | M | 0.5d | M2 | 未开始 |
+| P2.2 | 登录页与前端路由守卫 | /login、/app/* 路由守卫、401 跳登录 | 未登录不可访问业务页；登录后保留路由 | P1.5 | M | 0.5d | M2 | 未开始 |
+| P2.3 | API Client 与分页类型 | web/src/api、通用 request 封装、错误解析 | 统一错误可展示；分页类型与后端 Contract 一致 | P0.2, P2.2 | M | 0.5d | M2 | 未开始 |
+| P2.4 | 会话列表与历史会话加载 | ConversationList、创建/选择/删除会话 | 可切换历史 Session；列表与后端 SessionStore 一致 | P1.7, P2.3 | M | 0.5d | M2 | 未开始 |
+| P2.5 | SSE Client 与事件归一 | EventSource/fetch SSE、重连、消息归一到 Agent Event 类型 | 断线重连不重复丢失消息；旧事件可被映射层译为统一事件 | P1.9, P2.3 | L | 1d | M2 | 未开始 |
+| P2.6 | MessageTimeline 与消息流展示 | timeline、message.delta/message.completed 渲染 | 最终报告与流式增量一致；不直接猜状态 | P2.5 | M | 0.5d | M2 | 未开始 |
+| P2.7 | AgentStep 卡片 | Reason/Thinking Tool Observation Approval Error 类型组件 | Agent 有多少 Step，UI 展示多少 Step；思考框推理中展开、报告后折叠 | P2.5 | L | 1d | M2 | 未开始 |
+| P2.8 | ToolCallCard | 工具名、输入输出摘要、展开/收起、敏感值脱敏展示 | 工具卡结果即时展开并保持；Secret 值/凭据不回显 | P2.7 | M | 0.5d | M2 | 未开始 |
+| P2.9 | ApprovalCard | 审批卡：风险、Tool、参数摘要、资源、审批/拒绝、Secret 占位输入 | 可完成 approve/reject；无权用户按钮隐藏且后端仍强校验 | P1.6, P2.7 | L | 1d | M2 | 未开始 |
+| P2.10 | Composer 与消息发送流程 | 输入框、发送、停止、Session 绑定 | 发送后进入 Turn，SSE 驱动状态更新；每轮步进器/执行状态重置 | P2.6 | M | 0.5d | M2 | 未开始 |
+| P2.11 | 三期 Chat 行为回归 | 工具卡、思考框、审批卡、结论折叠与展开行为对比 | 迁移期 Web Chat 可完整运行；与三期行为一致 | P2.8, P2.9 | M | 0.5d | M2 | 未开始 |
+| P2.12 | 前端测试与构建门禁 | web/src/**/*.test.ts、E2E 冒烟、lint/build | 路由、store、组件关键交互有测试；`npm run lint` 与 `npm run build` 绿 | P2.11 | L | 1d | M2 | 未开始 |
+| P2.13 | 会话 Token 用量持久化与展示 | Session/Turn 记录 `llm.TokenUsage`；Web 右下角会话级 Token 统计 | 刷新/重开会话后 Token 用量仍可读；随 `answer` 事件 usage 更新；不含 Secret/敏感数据 | P1.7, P1.8 | M | 0.5d | M2 | 未开始 |
+
+### P3 平台能力（约 11.00d）
+
+| 编号 | 任务项 | 交付物 | 验收标准 | 依赖 | 规模 | 预估 | 里程碑 | 状态 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| P3.1 | Cluster/Credential 模型与安全存储 | internal/cluster：Cluster/Credential、加密存储 | kubeconfig 加密落库；Credential 与 Cluster 分离；不进入 LLM/Session/Audit | P1.2 | L | 1d | M3 | 未开始 |
+| P3.2 | kubeconfig 上传/粘贴/校验/连接测试 | POST /clusters、POST /clusters/test | 可解析、可校验、可连接测试；错误路径清晰 | P3.1 | L | 1d | M3 | 未开始 |
+| P3.3 | 集群状态 API | GET /clusters、GET /clusters/current、版本/Context/健康 | 单集群状态可读；多集群数据模型预留 | P3.2 | M | 0.5d | M3 | 未开始 |
+| P3.4 | 集群管理 UI | 上传/粘贴/连接测试/展示状态/删除 | 页面上看不到 kubeconfig 明文；断连与失败可展示 | P3.2, P2.3 | L | 1d | M3 | 未开始 |
+| P3.5 | Skill 平台模型与 Store | internal/skills：Builtin/Custom/ThirdParty、版本、来源、enabled、validation_status、运行统计 | 支持 v1.2 §13 字段；Skill 无执行动作字段；架构测试继续锁定 | P1.2, 三期 R5.9 | L | 1d | M3 | 未开始 |
+| P3.6 | Skill 导入与校验 | POST /skills/import、YAML schema 校验、来源标记 | 非法 YAML 明确报错；custom Skill 可入库；third-party 仅 Contract | P3.5 | L | 1d | M3 | 未开始 |
+| P3.7 | Skill 启停与命中记录 | PATCH /skills/{name}/enabled、hit_count/last_hit/last_validation 更新 | 启停生效；命中与风险结果记录完整 | P3.6 | M | 0.5d | M3 | 未开始 |
+| P3.8 | Skill 接入资源创建校验与风险升档 | create_resource dry-run 消费 Skill findings；Approval Risk Escalations 只升不降 | Pod 危险字段、StorageClass 缺失、IngressClass 等由 Skill 给出 findings 并可提升风险 | P3.5, 三期 R5.7/R4.1 | L | 1d | M3 | 未开始 |
+| P3.9 | 配置中心 API 与分组管理 | Settings groups CRUD：模型/Skill/Approval/Memory/Retention/MCP/运维 | 分组可读可改；模型 api_key 等敏感字段加密存储且读接口脱敏 | P1.10 | L | 1d | M3 | 未开始 |
+| P3.10 | 敏感字段安全展示 | API Mask 规则、前端不回显、日志脱敏 | 页面/日志/接口不含 api_key、Secret 值、kubeconfig 明文 | P3.9 | M | 0.5d | M3 | 未开始 |
+| P3.11 | 用户/角色管理后端 | /users、/roles、viewer/admin（operator 保留）、Token 管理 | 可建用户、分配角色，权限矩阵可按 Permission 校验 | P1.5, P1.6 | L | 1d | M3 | 未开始 |
+| P3.12 | 用户/权限管理前端 | 用户列表、角色列表、权限矩阵、路由/按钮显隐 | 页面可用；但后端越权仍拦截 | P3.11, P2.3 | L | 1d | M3 | 未开始 |
+| P3.13 | 平台能力测试与红线回归 | Cluster/Skill/Config/User 测试集 | `go test ./...` 相关包绿；Secret/kubeconfig/API key 隔离测试通过 | P3.12 | M | 0.5d | M3 | 未开始 |
+
+### P4 Governance（约 6.50d）
+
+| 编号 | 任务项 | 交付物 | 验收标准 | 依赖 | 规模 | 预估 | 里程碑 | 状态 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| P4.1 | 待审批列表 API 与页面 | Pending 列表、筛选、分页 | 与 ApprovalStore 数据一致；页面可读风险/资源/集群 | P1.2 | M | 0.5d | M4 | 未开始 |
+| P4.2 | 审批详情 Drawer | 风险、Tool、参数摘要、资源、Cluster、Grant、关联 Audit | 一个审批能从“为什么”角度完整解释 | P4.1, P1.11 | L | 1d | M4 | 未开始 |
+| P4.3 | Approve/Reject 后端与暂停恢复 | POST /approvals/{id}/approve、reject；Agent 暂停/恢复 | 拒绝后可重新生成方案；审批结果回写 Audit | P1.8, P4.1 | M | 0.5d | M4 | 未开始 |
+| P4.4 | 审批历史与决策解释 | History 列表、Decision AUTO/REQUIRE_APPROVAL/DENY 说明 | 每条审批可展示 Risk/Mode/Grant/MatchReason | P4.3 | M | 0.5d | M4 | 未开始 |
+| P4.5 | Approval Policy 可视化配置 | Strict/Smart、Risk Policy、Shell Policy、DenyOps、Secret Policy、Grant Policy UI | 配置保存后立即影响决策；Code Guard DENY 不被绕过 | P1.10, P4.4, 三期 approval | L | 1d | M4 | 未开始 |
+| P4.6 | Authorization Grant API 与 UI | Grant 列表/创建/删除、匹配原因展示 | Grant 命中与不命中有明确原因；只豁免允许范围 | P1.2, P4.5 | M | 0.5d | M4 | 未开始 |
+| P4.7 | Audit 中心页面与时间线 | AuditStore 查询 API、页面筛选 user/cluster/session/event/time | 可回放一次 Agent 操作链路；无明文敏感值 | P1.11 | L | 1d | M4 | 未开始 |
+| P4.8 | 审批/Grant/Audit 越权与一致性测试 | API 越权用例、审批恢复用例、风险升档用例 | 非 admin 不能执行审批操作；风险只升不降 | P4.7 | L | 1d | M4 | 未开始 |
+| P4.9 | Observability 关联回填 | request_id/session_id/turn_id/step_id 在 Agent/API/Approval/Audit 全链路关联 | 能找到“谁发的、为什么执行、命中什么、结果如何” | P1.8, P4.7 | M | 0.5d | M4 | 未开始 |
+
+### P5 Memory/Retention（约 7.00d）
+
+| 编号 | 任务项 | 交付物 | 验收标准 | 依赖 | 规模 | 预估 | 里程碑 | 状态 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| P5.1 | Session Summary 服务 | Agent 每 Session 完成后生成摘要，摘要经脱敏 | 摘要进入 Memory Candidate；Secret/kubeconfig/未脱敏日志不入摘要 | P1.8 | XL | 1.5d | M5 | 未开始 |
+| P5.2 | Memory Store 与作用域策略 | User/Namespace/Cluster 三类作用域、Policy 可配置 | 可存取不同作用域记忆；查询隔离正确 | P1.2, P1.10 | L | 1d | M5 | 未开始 |
+| P5.3 | 长期记忆召回与注入 | Agent 启动时读取相关长期记忆，按 Policy 注入上下文 | 只注入允许内容；Secret/kubeconfig 红线有回归用例 | P5.2 | L | 1d | M5 | 未开始 |
+| P5.4 | Retention 模型与分组配置 | Session/Audit/Scan/SkillRun/Memory/ConfigHistory/Credential 保留策略 | 每类数据独立配置 enabled/retention_days/max_count/cleanup_mode | P1.10 | M | 0.5d | M5 | 未开始 |
+| P5.5 | Retention Scheduler | 后台调度器，按 cleanup_frequency 执行清理/归档 | 可跑通 Session/Audit/SkillRun/Memory 清理；日志与结果可审计 | P5.4 | L | 1d | M5 | 未开始 |
+| P5.6 | Archive/Delete 动作与页面 | 数据归档、恢复开关、清理页面 | 归档不破坏四期业务；恢复逻辑可验证 | P5.5 | L | 1d | M5 | 未开始 |
+| P5.7 | Memory/Retention 配置 UI | 配置中心 Memory/Retention 分组页面 | 页面可保存生效；测试数据不误删 | P3.9, P5.5 | M | 0.5d | M5 | 未开始 |
+| P5.8 | Memory/Retention 安全测试 | 摘要、召回、清理测试集 | 全程无 Secret/kubeconfig 明文；误删场景有保护 | P5.6 | M | 0.5d | M5 | 未开始 |
+
+### P6 Production/Release（约 9.50d）
+
+| 编号 | 任务项 | 交付物 | 验收标准 | 依赖 | 规模 | 预估 | 里程碑 | 状态 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| P6.1 | 单进程部署强化 | `k8s-ai web` 启动参数、初始 admin 引导、健康检查 | 单进程配置启动后可初始化用户/数据库/迁移；旧配置兼容 | P1.12 | M | 0.5d | M6 | 未开始 |
+| P6.2 | Kubernetes 部署清单 | Deployment/ConfigMap/Secret/PVC/Service/Ingress/RBAC | 默认只读 RBAC；写权限显式开启；PVC 持久化可调度 | P1.12, D-12 | L | 1d | M6 | 未开始 |
+| P6.3 | 镜像写执行方案 | Dockerfile/builder 改为四期写执行依赖：client-go 统一执行或固定版本 kubectl | D-06 签收并落地；镜像内无新增 shell 写通道；Code Guard + executor 仍唯一 | P6.2, D-06 | XL | 1.5d | M6 | 未开始 |
+| P6.4 | deploy/install.sh 一键安装 | 参数 IMAGE/TAG/NAMESPACE/STORAGE_CLASS/INGRESS_HOST/ENABLE_WRITE/ADMIN_PASSWORD | 一键部署到 K8s；不替代正式 YAML；幂等可重跑 | P6.2 | L | 1d | M6 | 未开始 |
+| P6.5 | 数据库持久化与迁移部署 | K8s Job/initContainer 执行 migration；PVC 挂载 SQLite 或 MySQL DSN | 重启不丢数据；迁移失败阻塞启动并可查看日志 | P6.2 | M | 0.5d | M6 | 未开始 |
+| P6.6 | 安全红线测试 | Secret/kubeconfig 不入 LLM/Audit/Memory/Session；API 鉴权；SSE 鉴权；角色越权 | 专项测试全绿；fail 时禁止准出 | P1.5, P1.11, P5.8 | L | 1d | M6 | 未开始 |
+| P6.7 | E2E 冒烟 | 单进程与 K8s 两套：登录 → 集群连接 → Chat → 审批 → 资源创建 → Audit/Memory 观察 | 两条部署路径可完整跑通一期冒烟 | P6.1, P6.4 | XL | 1.5d | M6 | 未开始 |
+| P6.8 | 三期数据迁移测试 | 旧 config/session/audit/skill/report 全量导入测试 | 无提示丢失用例通过；不可迁移数据有显式报告 | P1.12, P6.5 | L | 1d | M6 | 未开始 |
+| P6.9 | 文档与版本准出 | CHANGELOG/VERSIONING/README/INSTALLATION/TECHNICAL_GUIDE/PROJECT_STATUS/RELEASE_NOTES | 术语、版本、能力口径与 v1.2 一致；发布命令可复制 | P6.7 | L | 1d | M6 | 未开始 |
+| P6.10 | 全量门禁与打包 | `go test ./...`、`go vet ./...`、tests/arch、前端 lint/build、既有打包脚本 | 全绿；`bin/` 产物版本注入正确；沿用既有构建脚本 | P6.9 | M | 0.5d | M6 | 未开始 |
+
+---
+
+## 6. 出口标准
+
+```text
+go test ./...                全绿（含 store/auth/session/sse/skills/cluster/approval/audit/memory/retention）
+go vet ./...                 无告警
+tests/arch                   绿：Skill 不新增执行通道、写边界仅 executor、Secret/kubeconfig 不进 LLM/审计/会话/记忆、
+                             CLI 不进入 Web 用户体系、依赖方向不变
+frontend lint/build          `npm run lint`、`npm run build` 通过
+安全专项                     Secret 值、kubeconfig、API key 隔离测试通过；前端隐藏不是安全机制；API 后端强鉴权
+SSE 兼容                     三期旧事件映射期可消费；未完成映射不得移除旧事件
+审批/风险                    Code Guard DENY 优先于 Policy/Grant；Risk Escalations 只升不降；决策可解释
+平台能力                     Cluster 连接、Skill 导入启用、Config 持久化、User/Role/Permission、Audit、Memory、Retention 可演示
+部署                        单进程 `k8s-ai web` 与 K8s Deployment 各跑通登录→Chat→审批→创建→审计/E2E
+迁移                       三期 session/audit/skill/config/报告可导入或显式报告不可迁移；无提示丢失为空
+版本                        v4.0/v4.1/v4.2 版本线、CHANGELOG/文档/打包口径一致
+```
+
+---
+
+## 7. 关键代码落点
+
+| 位置 | 变更性质 |
+| --- | --- |
+| `internal/store/`（新建） | Store 接口、SQLite/MySQL 驱动、统一 migration |
+| `internal/auth/`（新建） | 用户/角色、登录、Token |
+| `internal/rbac/`（新建） | Role→Permission→Policy、中间件 |
+| `internal/session/` 或 `internal/agentsession/`（新建/扩展） | Session/Turn/Step 模型与持久化 |
+| `internal/sse/`（新建） | SSE 路由、事件模型、旧事件映射层 |
+| `internal/service/` | Agent Runtime 生命周期接入、平台 API Service |
+| `internal/apitransport/`（新建） | `/api/v1` Handler，不直接操作 K8s/LLM/Store/Executor |
+| `internal/skills/` | 扩展为平台 Store、导入/校验/启停/命中统计，仍禁止执行动作 |
+| `internal/cluster/`（新建） | Cluster/Credential 模型、kubeconfig 安全存储与测试 |
+| `internal/approval/` | 审批中心、Grant API、策略可视化数据源；Code Guard 不变 |
+| `internal/audit/` | Audit Event 枚举与查询/时间线 |
+| `internal/memory/`（新建） | Session Summary、长期记忆、作用域策略 |
+| `internal/retention/`（新建） | 保留策略与调度器 |
+| `internal/config/` | 配置中心持久化、敏感字段加密与脱敏 |
+| `internal/executor/` | 镜像写执行方案（D-06 签收后收敛）；仍为唯一写执行边界 |
+| `internal/llm/` | Session Summary 接入、Memory 召回注入 |
+| `web/`（新建） | Vue3 + TS SPA：chat/cluster/skill/approval/audit/settings/users |
+| `deploy/` | Deployment/CM/Secret/PVC/Service/Ingress/RBAC、`install.sh` |
+| `Dockerfile` / build | 四期镜像写执行依赖与构建门禁 |
+| `docs/` | API_V4、SSE_EVENT_V4、MIGRATION_V4、INSTALLATION、CHANGELOG、VERSIONING、PROJECT_STATUS |
+
+---
+
+## 8. 风险与应对
+
+| 风险 | 影响 | 应对 |
+| --- | --- | --- |
+| 四期范围过大，串行推进周期长 | 迟迟不能阶段性交付 | 按 P1–P6 里程碑分版本交付；P0 先冻结 API/Store/SSE 契约；operator 角色、MCP 真实接入明确不做 |
+| 前端重构过程中三期 Chat 回归 | Web 不可用 | P2 以“三期 Chat 行为可完整运行”为前置出口；SSE 旧事件映射不完成不移除旧事件 |
+| Skill 平台化后形成新写通道 | 突破安全边界 | D-07 架构测试锁定 Skill 不执行写；所有写仍走 Tool → Approval → Code Guard → Executor |
+| 镜像无 kubectl 导致 K8s 部署写能力缺位 | 部署失败 | D-06 在 P6.3 前签收；推荐 client-go 统一写执行，与非容器 CLI 场景分开 |
+| 三期数据迁移丢数据 | 用户历史与审计不可用 | P0.6/P1.12 提前定义迁移规则；P6.8 全量迁移测试；不可迁移数据显式报告 |
+| SQLite/MySQL 行为不一致 | 主备环境跑挂 | P1.2/P1.3 共用 schema；两驱动等价业务测试；迁移入口统一 |
+| 权限只做前端隐藏 | 越权访问 | API 后端强校验；P4.8/P6.6 做越权专项测试；前端 Route/Component/Button 仅 UX |
+| 审批/风险在平台化后被绕过 | 安全回归 | 复用三期 Policy；Code Guard DENY 始终优先；审批偏离高风险操作必须人工审批 |
+
+---
+
+## 9. 工作量汇总
+
+| 主线 | 人日 |
+| --- | --- |
+| P0 规格与设计基线 | 3.50 |
+| P1 平台底座 | 12.00 |
+| P2 Web Shell | 8.50 |
+| P3 平台能力 | 11.00 |
+| P4 Governance | 6.50 |
+| P5 Memory/Retention | 7.00 |
+| P6 Production/Release | 9.50 |
+| **合计** | **58.00** |
+
+说明：按串行估算（单人口径，72 条任务）。并行推进 P1.1/P1.2、P2 前端 mock、P3 Cluster/Skill/User、P4 审批与 P5 Memory 可压缩约 8–10 人日。
+纯新增代码规模预计约 5–7k 行 Go/TS（不含依赖），其中前端 Vue 工程、Store、Auth、Session/SSE、平台 API 是大头。
+文档/版本/术语统一按 P6.9 收口，不在 P1–P5 阶段反复回改需求口径。

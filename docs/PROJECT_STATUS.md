@@ -33,14 +33,15 @@
 - [x] 二期迭代 v2.5.0：P7 扫描能力补全与规则池扩展（A/B/C 12 条规则 + 规则元数据体系 + DocProvider/--with-doc + 报告聚合）
 - [x] 二期迭代 v2.5.1：scan 终端报告渲染分层优化（RenderTerminal 块级标题 + 表格 + 代码块，替换单一巨大无序列表）
 - [x] 二期迭代 v2.6.0：Web 工具卡片结构化渲染（Data.kind 驱动表格/键值 + kubectl 原命令特例）+ 会话持久化补全（arguments/data/ok 落库与 SSE 回传）
+- [x] 三期 v3.0.0-beta：资源创建能力（统一 create_resource、dry-run 提案、审批、Server-Side Apply、verify、Secret create_only 通道、内置 Skill 元数据与接口冻结、CLI/Web 渲染、Web 运行中停止按钮、集成测试与 R8 准出门禁）
 
 ## 进行中
 
-- 无：一期（v1.0.x）与二期（v2.0.x–v2.3.x）均已交付，当前版本 v2.6.0
+- 无：一期、二期与三期（v3.0.0-beta）均已交付，当前版本 v3.0.0-beta
 
 ## 下一步
 
-- 迭代按 CHANGELOG / VERSIONING 推进；如需发布二进制或新版本，按 docs/VERSIONING.md 发布流程执行
+- 迭代按 CHANGELOG / VERSIONING 推进；R8 准出门禁已跑通，真实集群端到端与用户验收按需执行
 
 ## 已知事项
 
