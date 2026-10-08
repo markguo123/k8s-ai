@@ -41,6 +41,7 @@ type ScanJob struct {
 // Server 最小化 HTTP 服务。
 type Server struct {
 	svc     service.ScanService
+	auth    authService
 	mu      sync.Mutex
 	jobs    map[string]*ScanJob
 	running bool
@@ -51,12 +52,22 @@ func New(svc service.ScanService) *Server {
 	return &Server{svc: svc, jobs: map[string]*ScanJob{}}
 }
 
+// NewWithAuth 创建服务并启用产品内认证端点（P1.5）。
+func NewWithAuth(svc service.ScanService, auth authService) *Server {
+	s := New(svc)
+	s.auth = auth
+	return s
+}
+
 // Handler 返回路由。
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
 	mux.HandleFunc("GET /version", s.handleVersion)
+	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
+	mux.HandleFunc("POST /api/v1/auth/logout", s.handleLogout)
+	mux.HandleFunc("GET /api/v1/auth/me", s.handleMe)
 	mux.HandleFunc("POST /api/v1/scans", s.handleCreateScan)
 	mux.HandleFunc("GET /api/v1/scans/{id}", s.handleGetScan)
 	return WithMiddleware(mux, DefaultCORS())

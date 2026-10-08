@@ -18,6 +18,7 @@
 | v1.4 | 2026-10-08 | | P2.1 信息架构调整：侧栏按 工作区/治理/平台管理 三组分栏；Admin 不再作为侧栏一级菜单，当前用户信息与「管理控制台」移入右上角 User Menu |
 | v1.5 | 2026-10-08 | | P1.3 MySQL 驱动与统一迁移完成：抽出共享 `dbStore` + dialect 方言层（SQLite/MySQL 共用 schema 与 CRUD），新增 `OpenMySQL(dsn)`、迁移入口统一与两驱动等价测试；MySQL 集成用例由 `K8S_AI_TEST_MYSQL_DSN` 环境变量启用 |
 | v1.6 | 2026-10-08 | | P1.4 HTTP 基础中间件完成：request_id 生成/透传（X-Request-ID）、统一响应信封（request_id/timestamp/data/error/pagination）、分页解析（page/page_size，兼容 pageSize）、CORS（默认放行 localhost:5173）、认证占位（Bearer/Cookie，仅注入上下文不拒请求）；含中间件与信封单测 |
+| v1.7 | 2026-10-08 | | P1.5 用户/角色模型与登录认证完成：argon2id 密码哈希、内存 Session Token（24h）、`/api/v1/auth/login|logout|me`、server 命令 SQLite 首次引导（`K8S_AI_ADMIN_PASSWORD` 初始化 admin 角色与用户）；含认证服务与 handler 单测，全量门禁通过 |
 
 ---
 
@@ -132,7 +133,7 @@ flowchart LR
 | P1.2 | Store 接口与 SQLite 驱动 | internal/store：User/Session/Role/Audit/Settings/Skill/Approval/Memory/Retention/Cluster/Credential Store；SQLite 实现与迁移 | 各 Store CRUD 单测覆盖；SQLite 迁移幂等 | P0.3 | L | 1d | M1 | 已完成 |
 | P1.3 | MySQL 驱动与统一迁移 | MySQL 实现、迁移入口与测试库用例 | SQLite/MySQL 共用 schema 版本；两驱动业务测试等价 | P1.2 | XL | 1.5d | M1 | 已完成 |
 | P1.4 | HTTP 基础中间件 | request_id、统一 error envelope、分页、CORS、认证占位 | 所有 `/api/v1` 响应含 request_id/error.code/timestamp；分页字段稳定 | P0.2 | M | 0.5d | M1 | 已完成 |
-| P1.5 | 用户/角色模型与登录认证 | User/Role 模型、argon2 密码哈希、Session Token、/auth/login/logout/me | 可登录、可退出、可获取当前用户；密码/Token 不以明文落日志 | P1.2 | L | 1d | M1 | 未开始 |
+| P1.5 | 用户/角色模型与登录认证 | User/Role 模型、argon2 密码哈希、Session Token、/auth/login/logout/me | 可登录、可退出、可获取当前用户；密码/Token 不以明文落日志 | P1.2 | L | 1d | M1 | 已完成 |
 | P1.6 | Permission Middleware | Role→Permission→Policy 判定与中间件 | API 越权返回 401/403；业务代码不散落 `role == "admin"` | P1.5 | M | 0.5d | M1 | 未开始 |
 | P1.7 | Session/Turn/Step 模型与存储 | Agent Session 三模型入库、列表/详情、状态更新 | 多轮 Agent 运行可回放；状态推进有单测 | P1.2 | L | 1d | M1 | 未开始 |
 | P1.8 | Agent Runtime 生命周期接入 | service/agent 每 Turn 创建 Session/Turn/Step；Reason/Tool/Observe/Approval/Response 埋点 | Agent 循环仍保持动态 Reason→Tool→Observe，Step 记录完整；审批暂停/恢复可续跑 | P1.7 | XL | 1.5d | M1 | 未开始 |
