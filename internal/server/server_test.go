@@ -39,6 +39,32 @@ func (f *fakeScan) Validate(ctx context.Context, opts model.ScanOptions) (string
 	return "v1.28.13", nil
 }
 
+// decodeData 解析统一响应信封，把 data 解到 dst 并返回信封元数据。
+func decodeData(t *testing.T, resp *http.Response, dst any) *apiResponse {
+	t.Helper()
+	defer resp.Body.Close()
+	var env apiResponse
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		t.Fatalf("解析响应信封失败: %v", err)
+	}
+	if env.RequestID == "" {
+		t.Fatal("响应缺少 request_id")
+	}
+	if env.Timestamp.IsZero() {
+		t.Fatal("响应缺少 timestamp")
+	}
+	if env.Data != nil && dst != nil {
+		raw, err := json.Marshal(env.Data)
+		if err != nil {
+			t.Fatalf("data 序列化失败: %v", err)
+		}
+		if err := json.Unmarshal(raw, dst); err != nil {
+			t.Fatalf("data 解析失败: %v", err)
+		}
+	}
+	return &env
+}
+
 func TestHealthReadyVersion(t *testing.T) {
 	srv := New(&fakeScan{})
 	ts := httptest.NewServer(srv.Handler())
@@ -54,9 +80,12 @@ func TestHealthReadyVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	var v map[string]string
-	_ = json.NewDecoder(resp.Body).Decode(&v)
+	decodeData(t, resp, &v)
 	if v["version"] == "" {
 		t.Fatal("version 为空")
+	}
+	if resp.Header.Get("X-Request-ID") == "" {
+		t.Fatal("响应缺少 X-Request-ID 头")
 	}
 }
 
@@ -70,7 +99,7 @@ func TestCreateAndGetScan(t *testing.T) {
 		t.Fatalf("create = %v %v", resp, err)
 	}
 	var job ScanJob
-	_ = json.NewDecoder(resp.Body).Decode(&job)
+	decodeData(t, resp, &job)
 	if job.ID == "" || (job.Status != StatusRunning && job.Status != StatusSucceeded) {
 		t.Fatalf("job = %+v", job)
 	}
@@ -79,7 +108,7 @@ func TestCreateAndGetScan(t *testing.T) {
 	for time.Now().Before(deadline) {
 		r2, _ := http.Get(ts.URL + "/api/v1/scans/" + job.ID)
 		var j2 ScanJob
-		_ = json.NewDecoder(r2.Body).Decode(&j2)
+		decodeData(t, r2, &j2)
 		if j2.Status == StatusSucceeded {
 			return
 		}
@@ -111,12 +140,43 @@ func TestUnknownAndBadBody(t *testing.T) {
 	defer ts.Close()
 	if r, _ := http.Get(ts.URL + "/api/v1/scans/nope"); r.StatusCode != http.StatusNotFound {
 		t.Fatalf("404 expected, got %d", r.StatusCode)
+	} else {
+		env := decodeData(t, r, nil)
+		if env.Error == nil || env.Error.Code != codeNotFound {
+			t.Fatalf("404 响应缺少统一错误码: %+v", env.Error)
+		}
 	}
 	r, _ := http.Post(ts.URL+"/api/v1/scans", "application/json", bytes.NewBufferString("{bad"))
 	if r.StatusCode != http.StatusBadRequest {
 		t.Fatalf("400 expected, got %d", r.StatusCode)
+	} else {
+		env := decodeData(t, r, nil)
+		if env.Error == nil || env.Error.Code != codeInvalidArgument {
+			t.Fatalf("400 响应缺少统一错误码: %+v", env.Error)
+		}
 	}
 	if !strings.Contains(r.Header.Get("Content-Type"), "json") {
 		t.Fatalf("响应应含 JSON Content-Type")
+	}
+}
+
+func TestRequestIDPassThrough(t *testing.T) {
+	srv := New(&fakeScan{})
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/version", nil)
+	req.Header.Set("X-Request-ID", "req-abc-123")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resp.Header.Get("X-Request-ID"); got != "req-abc-123" {
+		t.Fatalf("应透传调用方 request_id, got %q", got)
+	}
+	var v map[string]string
+	env := decodeData(t, resp, &v)
+	if env.RequestID != "req-abc-123" {
+		t.Fatalf("信封 request_id 不匹配, got %q", env.RequestID)
 	}
 }

@@ -59,7 +59,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /version", s.handleVersion)
 	mux.HandleFunc("POST /api/v1/scans", s.handleCreateScan)
 	mux.HandleFunc("GET /api/v1/scans/{id}", s.handleGetScan)
-	return mux
+	return WithMiddleware(mux, DefaultCORS())
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -74,7 +74,7 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{
+	writeOK(w, r, http.StatusOK, map[string]string{
 		"version": version.Version,
 		"commit":  version.Commit,
 		"date":    version.Date,
@@ -85,13 +85,13 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 	var opts model.ScanOptions
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&opts); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body: " + err.Error()})
+		writeError(w, r, http.StatusBadRequest, codeInvalidArgument, "invalid body: "+err.Error())
 		return
 	}
 	s.mu.Lock()
 	if s.running {
 		s.mu.Unlock()
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "a scan is already running"})
+		writeError(w, r, http.StatusConflict, codeConflict, "a scan is already running")
 		return
 	}
 	s.running = true
@@ -104,7 +104,7 @@ func (s *Server) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 	job.StartedAt = &started
 	go s.runJob(job, opts)
 
-	writeJSON(w, http.StatusAccepted, job)
+	writeOK(w, r, http.StatusAccepted, job)
 }
 
 // runJob 后台执行扫描（ctx 带 opts.Timeout 预算）。
@@ -136,16 +136,10 @@ func (s *Server) handleGetScan(w http.ResponseWriter, r *http.Request) {
 	job, ok := s.jobs[id]
 	s.mu.Unlock()
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "scan not found"})
+		writeError(w, r, http.StatusNotFound, codeNotFound, "scan not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, job)
-}
-
-func writeJSON(w http.ResponseWriter, code int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
+	writeOK(w, r, http.StatusOK, job)
 }
 
 func newID() string {
