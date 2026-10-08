@@ -145,5 +145,5 @@ var (
 	_ RetentionStore  = (*retentionStore)(nil)
 	_ ClusterStore    = (*clusterStore)(nil)
 	_ CredentialStore = (*credentialStore)(nil)
-	_ Store           = (*sqliteStore)(nil)
+	_ Store           = (*dbStore)(nil)
 )

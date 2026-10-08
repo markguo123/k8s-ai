@@ -43,7 +43,7 @@ func TestMigrateIdempotent(t *testing.T) {
 		}
 	}
 	// schema_migrations 只应有一条迁移记录。
-	st := s.(*sqliteStore)
+	st := s.(*dbStore)
 	var n int
 	if err := st.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
 		t.Fatalf("count migrations: %v", err)
@@ -53,8 +53,7 @@ func TestMigrateIdempotent(t *testing.T) {
 	}
 }
 
-func TestUserCRUD(t *testing.T) {
-	s := newTestStore(t)
+func runUserCRUD(t *testing.T, s Store) {
 	ctx := context.Background()
 	u := &User{ID: "u1", Username: "alice", DisplayName: "Alice", PasswordHash: "hash", RoleID: "r1", Status: "active"}
 	if err := s.Users().Create(ctx, u); err != nil {
@@ -86,8 +85,7 @@ func TestUserCRUD(t *testing.T) {
 	}
 }
 
-func TestRoleCRUD(t *testing.T) {
-	s := newTestStore(t)
+func runRoleCRUD(t *testing.T, s Store) {
 	ctx := context.Background()
 	r := &Role{ID: "r1", Name: "admin", Description: "Admin", Permissions: []string{"approve", "clusters.write"}}
 	if err := s.Roles().Create(ctx, r); err != nil {
@@ -116,8 +114,7 @@ func TestRoleCRUD(t *testing.T) {
 	}
 }
 
-func TestSessionCRUD(t *testing.T) {
-	s := newTestStore(t)
+func runSessionCRUD(t *testing.T, s Store) {
 	ctx := context.Background()
 	sess := &session.Session{ID: "s1", Name: "troubleshoot", Namespace: "default", State: "idle"}
 	sess.AddMessage(session.Message{Role: "user", Content: "hello"})
@@ -147,8 +144,7 @@ func TestSessionCRUD(t *testing.T) {
 	}
 }
 
-func TestAuditStoreRedactsSensitive(t *testing.T) {
-	s := newTestStore(t)
+func runAuditStoreRedactsSensitive(t *testing.T, s Store) {
 	ctx := context.Background()
 	e := &AuditEvent{
 		RequestID: "rid-1",
@@ -179,8 +175,7 @@ func TestAuditStoreRedactsSensitive(t *testing.T) {
 	}
 }
 
-func TestSettingsStore(t *testing.T) {
-	s := newTestStore(t)
+func runSettingsStore(t *testing.T, s Store) {
 	ctx := context.Background()
 	if err := s.Settings().Set(ctx, &Settings{Group: "model", Key: "endpoint", Value: `"http://x"`}); err != nil {
 		t.Fatalf("set: %v", err)
@@ -208,8 +203,7 @@ func TestSettingsStore(t *testing.T) {
 	}
 }
 
-func TestSkillStore(t *testing.T) {
-	s := newTestStore(t)
+func runSkillStore(t *testing.T, s Store) {
 	ctx := context.Background()
 	sk := &Skill{
 		Name:    "pod-safety",
@@ -243,8 +237,7 @@ func TestSkillStore(t *testing.T) {
 	}
 }
 
-func TestApprovalStoreRedactsSensitive(t *testing.T) {
-	s := newTestStore(t)
+func runApprovalStoreRedactsSensitive(t *testing.T, s Store) {
 	ctx := context.Background()
 	now := time.Now()
 	a := &Approval{
@@ -285,8 +278,7 @@ func TestApprovalStoreRedactsSensitive(t *testing.T) {
 	}
 }
 
-func TestMemoryStore(t *testing.T) {
-	s := newTestStore(t)
+func runMemoryStore(t *testing.T, s Store) {
 	ctx := context.Background()
 	m := &Memory{ID: "m1", UserID: "u1", Scope: "namespace", Namespace: "ns1", Content: "prefer 2 replicas"}
 	if err := s.Memories().Create(ctx, m); err != nil {
@@ -315,8 +307,7 @@ func TestMemoryStore(t *testing.T) {
 	}
 }
 
-func TestRetentionStore(t *testing.T) {
-	s := newTestStore(t)
+func runRetentionStore(t *testing.T, s Store) {
 	ctx := context.Background()
 	if err := s.Retention().Upsert(ctx, &RetentionPolicy{Name: "audit", Enabled: true, RetentionDays: 30, MaxCount: 5000, CleanupMode: "archive"}); err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -340,8 +331,7 @@ func TestRetentionStore(t *testing.T) {
 	}
 }
 
-func TestClusterCredentialCRUD(t *testing.T) {
-	s := newTestStore(t)
+func runClusterCredentialCRUD(t *testing.T, s Store) {
 	ctx := context.Background()
 	c := &Cluster{ID: "c1", Name: "prod", Context: "prod-context", Server: "https://x", Status: "reachable"}
 	if err := s.Clusters().Create(ctx, c); err != nil {
@@ -379,4 +369,25 @@ func TestClusterCredentialCRUD(t *testing.T) {
 	if _, err := s.Clusters().Get(ctx, "c1"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
+}
+
+// runAllStoreCRUD 在任意驱动上跑一遍全部子 Store 的等价 CRUD 用例。
+func runAllStoreCRUD(t *testing.T, s Store) {
+	t.Helper()
+	runUserCRUD(t, s)
+	runRoleCRUD(t, s)
+	runSessionCRUD(t, s)
+	runAuditStoreRedactsSensitive(t, s)
+	runSettingsStore(t, s)
+	runSkillStore(t, s)
+	runApprovalStoreRedactsSensitive(t, s)
+	runMemoryStore(t, s)
+	runRetentionStore(t, s)
+	runClusterCredentialCRUD(t, s)
+}
+
+// TestStoresSQLite 覆盖 SQLite 默认驱动的全量 CRUD。
+func TestStoresSQLite(t *testing.T) {
+	s := newTestStore(t)
+	runAllStoreCRUD(t, s)
 }

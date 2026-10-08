@@ -7,14 +7,14 @@ import (
 )
 
 // schemaVersion 是统一的逻辑 schema 版本。SQLite/MySQL 共用该版本号，
-// migrations 按版本逐个应用（P0.3/P1.12）。只允许追加，禁止回跳。
+// migrations 按版本逐个应用（P0.3/P1.12/P1.3）。只允许追加，禁止回跳。
 const schemaVersion = 1
 
-// migration 是一条单向升级步骤。
+// migration 是一条单向升级步骤，通过 dialect 适配两个驱动。
 type migration struct {
 	version int
 	name    string
-	up      func(ctx context.Context, tx *sql.Tx) error
+	up      func(ctx context.Context, tx *sql.Tx, d dialect) error
 }
 
 // migrations 是全部升级步骤（按 version 升序）。
@@ -26,170 +26,194 @@ var migrations = []migration{
 	},
 }
 
-// migrateV1 建表：users / roles / sessions / audit_events / settings /
+// schemaV1 描述建表：users / roles / sessions / audit_events / settings /
 // skills / approvals / memories / retention_policies / clusters / credentials。
+//
 // 敏感字段约定：password_hash、credential kubeconfig 只进库不回读明文字段；
-// audit 与 approval 的 payload/params 在写入前由上层 redactor 脱敏。
-func migrateV1(_ context.Context, tx *sql.Tx) error {
-	stmts := []string{
-		`CREATE TABLE IF NOT EXISTS schema_migrations (
-			version INTEGER PRIMARY KEY,
-			name    TEXT NOT NULL,
-			applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-		);`,
+// audit 与 approval 的 payload/params 在写入前由上层 redactor 脱敏。长文本列
+// （colLong）存放 JSON，业务侧始终显式写入。
+var schemaV1 = []tableSpec{
+	{
+		name: "roles",
+		cols: []column{
+			{name: "id", kind: colText, primary: true},
+			{name: "name", kind: colText, unique: true},
+			{name: "description", kind: colLong, def: "''"},
+			{name: "permissions", kind: colLong, def: "'[]'"},
+			{name: "created_at", kind: colTime},
+			{name: "updated_at", kind: colTime},
+		},
+	},
+	{
+		name: "users",
+		cols: []column{
+			{name: "id", kind: colText, primary: true},
+			{name: "username", kind: colText, unique: true},
+			{name: "display_name", kind: colLong, def: "''"},
+			{name: "password_hash", kind: colText},
+			{name: "role_id", kind: colText, def: "''"},
+			{name: "status", kind: colText, def: "'active'"},
+			{name: "created_at", kind: colTime},
+			{name: "updated_at", kind: colTime},
+		},
+	},
+	{
+		name: "sessions",
+		cols: []column{
+			{name: "id", kind: colText, primary: true},
+			{name: "user_id", kind: colText, def: "''"},
+			{name: "name", kind: colText, def: "''"},
+			{name: "cluster_id", kind: colText, def: "''"},
+			{name: "namespace", kind: colText, def: "''"},
+			{name: "model", kind: colText, def: "''"},
+			{name: "state", kind: colText, def: "''"},
+			{name: "data", kind: colLong, def: "'{}'"},
+			{name: "created_at", kind: colTime},
+			{name: "last_modified", kind: colTime},
+		},
+	},
+	{
+		name: "audit_events",
+		cols: []column{
+			{name: "id", kind: colInt, autoIncrement: true},
+			{name: "timestamp", kind: colTime},
+			{name: "request_id", kind: colText, def: "''"},
+			{name: "session_id", kind: colText, def: "''"},
+			{name: "turn_id", kind: colText, def: "''"},
+			{name: "step_id", kind: colText, def: "''"},
+			{name: "user_id", kind: colText, def: "''"},
+			{name: "cluster_id", kind: colText, def: "''"},
+			{name: "action", kind: colText},
+			{name: "payload", kind: colLong, def: "''"},
+		},
+	},
+	{
+		name: "settings",
+		cols: []column{
+			{name: "group_name", kind: colText},
+			{name: "key_name", kind: colText},
+			{name: "value", kind: colLong, def: "''"},
+			{name: "sensitive", kind: colBool, def: "0"},
+			{name: "created_at", kind: colTime},
+			{name: "updated_at", kind: colTime},
+		},
+		primaryKey: []string{"group_name", "key_name"},
+	},
+	{
+		name: "skills",
+		cols: []column{
+			{name: "name", kind: colText, primary: true},
+			{name: "spec", kind: colLong},
+			{name: "source", kind: colText, def: "'builtin'"},
+			{name: "enabled", kind: colBool, def: "1"},
+			{name: "validation_status", kind: colText, def: "''"},
+			{name: "hit_count", kind: colInt, def: "0"},
+			{name: "last_hit", kind: colTimeOrNull},
+			{name: "last_validation", kind: colTimeOrNull},
+			{name: "created_at", kind: colTime},
+			{name: "updated_at", kind: colTime},
+		},
+	},
+	{
+		name: "approvals",
+		cols: []column{
+			{name: "id", kind: colText, primary: true},
+			{name: "session_id", kind: colText, def: "''"},
+			{name: "turn_id", kind: colText, def: "''"},
+			{name: "cluster_id", kind: colText, def: "''"},
+			{name: "tool", kind: colText, def: "''"},
+			{name: "resource", kind: colText, def: "''"},
+			{name: "params", kind: colLong, def: "''"},
+			{name: "risk_level", kind: colText, def: "''"},
+			{name: "mode", kind: colText, def: "''"},
+			{name: "status", kind: colText, def: "'pending'"},
+			{name: "decision", kind: colText, def: "''"},
+			{name: "match_reason", kind: colText, def: "''"},
+			{name: "grant_id", kind: colText, def: "''"},
+			{name: "created_at", kind: colTime},
+			{name: "decided_at", kind: colTimeOrNull},
+		},
+	},
+	{
+		name: "memories",
+		cols: []column{
+			{name: "id", kind: colText, primary: true},
+			{name: "user_id", kind: colText, def: "''"},
+			{name: "scope", kind: colText},
+			{name: "namespace", kind: colText, def: "''"},
+			{name: "cluster_id", kind: colText, def: "''"},
+			{name: "content", kind: colLong},
+			{name: "created_at", kind: colTime},
+			{name: "updated_at", kind: colTime},
+		},
+	},
+	{
+		name: "retention_policies",
+		cols: []column{
+			{name: "name", kind: colText, primary: true},
+			{name: "enabled", kind: colBool, def: "0"},
+			{name: "retention_days", kind: colInt, def: "0"},
+			{name: "max_count", kind: colInt, def: "0"},
+			{name: "cleanup_mode", kind: colText, def: "'delete'"},
+			{name: "updated_at", kind: colTime},
+		},
+	},
+	{
+		name: "clusters",
+		cols: []column{
+			{name: "id", kind: colText, primary: true},
+			{name: "name", kind: colText},
+			{name: "context", kind: colText, def: "''"},
+			{name: "server", kind: colText, def: "''"},
+			{name: "version", kind: colText, def: "''"},
+			{name: "status", kind: colText, def: "'unknown'"},
+			{name: "created_at", kind: colTime},
+			{name: "updated_at", kind: colTime},
+		},
+	},
+	{
+		name: "credentials",
+		cols: []column{
+			{name: "id", kind: colText, primary: true},
+			{name: "cluster_id", kind: colText, unique: true},
+			{name: "kubeconfig_secret", kind: colLong},
+			{name: "created_at", kind: colTime},
+			{name: "updated_at", kind: colTime},
+		},
+	},
+}
 
-		`CREATE TABLE IF NOT EXISTS roles (
-			id          TEXT PRIMARY KEY,
-			name        TEXT NOT NULL UNIQUE,
-			description TEXT NOT NULL DEFAULT '',
-			permissions TEXT NOT NULL DEFAULT '[]',
-			created_at  TIMESTAMP NOT NULL,
-			updated_at  TIMESTAMP NOT NULL
-		);`,
+// schemaV1Indexes 是初始 Schema 的二级索引。
+var schemaV1Indexes = []indexSpec{
+	{name: "idx_audit_timestamp", table: "audit_events", cols: "timestamp"},
+	{name: "idx_audit_session", table: "audit_events", cols: "session_id"},
+	{name: "idx_sessions_user", table: "sessions", cols: "user_id"},
+	{name: "idx_approvals_session", table: "approvals", cols: "session_id"},
+	{name: "idx_memories_scope", table: "memories", cols: "scope"},
+}
 
-		`CREATE TABLE IF NOT EXISTS users (
-			id            TEXT PRIMARY KEY,
-			username      TEXT NOT NULL UNIQUE,
-			display_name  TEXT NOT NULL DEFAULT '',
-			password_hash TEXT NOT NULL,
-			role_id       TEXT NOT NULL DEFAULT '',
-			status        TEXT NOT NULL DEFAULT 'active',
-			created_at    TIMESTAMP NOT NULL,
-			updated_at    TIMESTAMP NOT NULL
-		);`,
-
-		`CREATE TABLE IF NOT EXISTS sessions (
-			id            TEXT PRIMARY KEY,
-			user_id       TEXT NOT NULL DEFAULT '',
-			name          TEXT NOT NULL DEFAULT '',
-			cluster_id    TEXT NOT NULL DEFAULT '',
-			namespace     TEXT NOT NULL DEFAULT '',
-			model         TEXT NOT NULL DEFAULT '',
-			state         TEXT NOT NULL DEFAULT '',
-			data          TEXT NOT NULL DEFAULT '{}',
-			created_at    TIMESTAMP NOT NULL,
-			last_modified TIMESTAMP NOT NULL
-		);`,
-
-		`CREATE TABLE IF NOT EXISTS audit_events (
-			id         INTEGER PRIMARY KEY AUTOINCREMENT,
-			timestamp  TIMESTAMP NOT NULL,
-			request_id TEXT NOT NULL DEFAULT '',
-			session_id TEXT NOT NULL DEFAULT '',
-			turn_id    TEXT NOT NULL DEFAULT '',
-			step_id    TEXT NOT NULL DEFAULT '',
-			user_id    TEXT NOT NULL DEFAULT '',
-			cluster_id TEXT NOT NULL DEFAULT '',
-			action     TEXT NOT NULL,
-			payload    TEXT NOT NULL DEFAULT ''
-		);`,
-
-		`CREATE TABLE IF NOT EXISTS settings (
-			group_name TEXT NOT NULL,
-			key_name   TEXT NOT NULL,
-			value      TEXT NOT NULL DEFAULT '',
-			sensitive  INTEGER NOT NULL DEFAULT 0,
-			created_at TIMESTAMP NOT NULL,
-			updated_at TIMESTAMP NOT NULL,
-			PRIMARY KEY (group_name, key_name)
-		);`,
-
-		`CREATE TABLE IF NOT EXISTS skills (
-			name              TEXT PRIMARY KEY,
-			spec              TEXT NOT NULL,
-			source            TEXT NOT NULL DEFAULT 'builtin',
-			enabled           INTEGER NOT NULL DEFAULT 1,
-			validation_status TEXT NOT NULL DEFAULT '',
-			hit_count         INTEGER NOT NULL DEFAULT 0,
-			last_hit          TIMESTAMP,
-			last_validation   TIMESTAMP,
-			created_at        TIMESTAMP NOT NULL,
-			updated_at        TIMESTAMP NOT NULL
-		);`,
-
-		`CREATE TABLE IF NOT EXISTS approvals (
-			id           TEXT PRIMARY KEY,
-			session_id   TEXT NOT NULL DEFAULT '',
-			turn_id      TEXT NOT NULL DEFAULT '',
-			cluster_id   TEXT NOT NULL DEFAULT '',
-			tool         TEXT NOT NULL DEFAULT '',
-			resource     TEXT NOT NULL DEFAULT '',
-			params       TEXT NOT NULL DEFAULT '',
-			risk_level   TEXT NOT NULL DEFAULT '',
-			mode         TEXT NOT NULL DEFAULT '',
-			status       TEXT NOT NULL DEFAULT 'pending',
-			decision     TEXT NOT NULL DEFAULT '',
-			match_reason TEXT NOT NULL DEFAULT '',
-			grant_id     TEXT NOT NULL DEFAULT '',
-			created_at   TIMESTAMP NOT NULL,
-			decided_at   TIMESTAMP
-		);`,
-
-		`CREATE TABLE IF NOT EXISTS memories (
-			id         TEXT PRIMARY KEY,
-			user_id    TEXT NOT NULL DEFAULT '',
-			scope      TEXT NOT NULL,
-			namespace  TEXT NOT NULL DEFAULT '',
-			cluster_id TEXT NOT NULL DEFAULT '',
-			content    TEXT NOT NULL,
-			created_at TIMESTAMP NOT NULL,
-			updated_at TIMESTAMP NOT NULL
-		);`,
-
-		`CREATE TABLE IF NOT EXISTS retention_policies (
-			name           TEXT PRIMARY KEY,
-			enabled        INTEGER NOT NULL DEFAULT 0,
-			retention_days INTEGER NOT NULL DEFAULT 0,
-			max_count      INTEGER NOT NULL DEFAULT 0,
-			cleanup_mode   TEXT NOT NULL DEFAULT 'delete',
-			updated_at     TIMESTAMP NOT NULL
-		);`,
-
-		`CREATE TABLE IF NOT EXISTS clusters (
-			id         TEXT PRIMARY KEY,
-			name       TEXT NOT NULL,
-			context    TEXT NOT NULL DEFAULT '',
-			server     TEXT NOT NULL DEFAULT '',
-			version    TEXT NOT NULL DEFAULT '',
-			status     TEXT NOT NULL DEFAULT 'unknown',
-			created_at TIMESTAMP NOT NULL,
-			updated_at TIMESTAMP NOT NULL
-		);`,
-
-		`CREATE TABLE IF NOT EXISTS credentials (
-			id               TEXT PRIMARY KEY,
-			cluster_id       TEXT NOT NULL UNIQUE,
-			kubeconfig_secret TEXT NOT NULL,
-			created_at       TIMESTAMP NOT NULL,
-			updated_at       TIMESTAMP NOT NULL
-		);`,
-
-		`CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_events (timestamp);`,
-		`CREATE INDEX IF NOT EXISTS idx_audit_session ON audit_events (session_id);`,
-		`CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id);`,
-		`CREATE INDEX IF NOT EXISTS idx_approvals_session ON approvals (session_id);`,
-		`CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories (scope);`,
+// migrateV1 建全部表与索引，SQL 由 dialect 按驱动渲染。
+func migrateV1(ctx context.Context, tx *sql.Tx, d dialect) error {
+	for _, t := range schemaV1 {
+		if _, err := tx.ExecContext(ctx, d.createTable(t)); err != nil {
+			return fmt.Errorf("create table %s: %w", t.name, err)
+		}
 	}
-
-	for _, q := range stmts {
-		if _, err := tx.Exec(q); err != nil {
-			return fmt.Errorf("apply v1 migration %q: %w", firstWord(q), err)
+	for _, idx := range schemaV1Indexes {
+		q := d.createIndex(idx.name, idx.table, idx.cols)
+		if _, err := tx.ExecContext(ctx, q); err != nil {
+			// MySQL 无 CREATE INDEX IF NOT EXISTS；重复执行时容忍已存在索引。
+			if d.isDuplicateIndexErr(err) {
+				continue
+			}
+			return fmt.Errorf("create index %s: %w", idx.name, err)
 		}
 	}
 	return nil
 }
 
-func firstWord(s string) string {
-	for i := 0; i < len(s); i++ {
-		if s[i] == ' ' || s[i] == '\n' || s[i] == '\t' {
-			return s[:i]
-		}
-	}
-	return s
-}
-
-// Migrate 把数据库升级到当前 schemaVersion。幂等：重复调用返回 nil。
-func (s *sqliteStore) Migrate(ctx context.Context) error {
+// Migrate 把数据库升级到当前 schemaVersion（幂等），两驱动共用。
+func (s *dbStore) Migrate(ctx context.Context) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin migration: %w", err)
@@ -217,7 +241,7 @@ func (s *sqliteStore) Migrate(ctx context.Context) error {
 		if applied > 0 {
 			continue
 		}
-		if err := m.up(ctx, tx); err != nil {
+		if err := m.up(ctx, tx, s.dialect); err != nil {
 			return fmt.Errorf("migration %d (%s): %w", m.version, m.name, err)
 		}
 		if _, err := tx.ExecContext(ctx,

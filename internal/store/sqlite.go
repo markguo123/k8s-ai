@@ -5,32 +5,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"time"
 
-	"github.com/k8s-ai/k8s-ai/internal/security"
 	"github.com/k8s-ai/k8s-ai/internal/session"
 
 	// pure-Go SQLite 驱动（无需 CGO，Windows 交叉编译 Linux amd64 可用）。
 	_ "modernc.org/sqlite"
 )
-
-// sqliteStore 是 Store 的 SQLite 实现（D-04 默认驱动）。
-type sqliteStore struct {
-	db *sql.DB
-
-	users       *userStore
-	roles       *roleStore
-	sessions    *sessionStore
-	audit       *auditStore
-	settings    *settingsStore
-	skills      *skillStore
-	approvals   *approvalStore
-	memories    *memoryStore
-	retention   *retentionStore
-	clusters    *clusterStore
-	credentials *credentialStore
-}
 
 // OpenSQLite 打开或创建 path 处的 SQLite 库并返回 Store。
 // URI 形式（如 ":memory:"、"file:...?...&=shared"）由底层驱动支持。
@@ -41,18 +22,7 @@ func OpenSQLite(path string) (Store, error) {
 	}
 	// 单连接：串行化写事务，避免 in-memory/文件锁竞争。
 	db.SetMaxOpenConns(1)
-	s := &sqliteStore{db: db}
-	s.users = &userStore{s}
-	s.roles = &roleStore{s}
-	s.sessions = &sessionStore{s}
-	s.audit = &auditStore{s}
-	s.settings = &settingsStore{s}
-	s.skills = &skillStore{s}
-	s.approvals = &approvalStore{s}
-	s.memories = &memoryStore{s}
-	s.retention = &retentionStore{s}
-	s.clusters = &clusterStore{s}
-	s.credentials = &credentialStore{s}
+	s := newDBStore(db, sqliteDialect{})
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("ping sqlite %q: %w", path, err)
@@ -60,131 +30,9 @@ func OpenSQLite(path string) (Store, error) {
 	return s, nil
 }
 
-func (s *sqliteStore) Close() error { return s.db.Close() }
-
-func (s *sqliteStore) Users() UserStore             { return s.users }
-func (s *sqliteStore) Roles() RoleStore             { return s.roles }
-func (s *sqliteStore) Sessions() SessionStore       { return s.sessions }
-func (s *sqliteStore) Audit() AuditStore            { return s.audit }
-func (s *sqliteStore) Settings() SettingsStore      { return s.settings }
-func (s *sqliteStore) Skills() SkillStore           { return s.skills }
-func (s *sqliteStore) Approvals() ApprovalStore     { return s.approvals }
-func (s *sqliteStore) Memories() MemoryStore        { return s.memories }
-func (s *sqliteStore) Retention() RetentionStore    { return s.retention }
-func (s *sqliteStore) Clusters() ClusterStore       { return s.clusters }
-func (s *sqliteStore) Credentials() CredentialStore { return s.credentials }
-
-// redactor 对审计/审批敏感字段统一脱敏（与 audit/session 同一策略）。
-var auditRedactor = security.NewRedactor()
-
-// sensitiveKeyName 覆盖配置/审批/审计 JSON 负载中的敏感键名（含 kubeconfig）。
-var sensitiveKeyName = regexp.MustCompile(`(?i)(password|passwd|secret|token|api[_-]?key|credential|kubeconfig|client[_-]?secret)`)
-
-// redactJSONPayload 对 JSON 负载做 JSON 感知脱敏：
-//   - 敏感键名的值整体替换为 [REDACTED]（含 kubeconfig，保证审计/审批零明文）；
-//   - 非敏感键名的字符串再走 security.Redactor 兜底（JWT/bearer/API Key 等）。
-//
-// 若负载不是合法 JSON，退回纯文本脱敏。
-func redactJSONPayload(payload string) string {
-	var v any
-	if err := json.Unmarshal([]byte(payload), &v); err != nil {
-		return auditRedactor.Redact(payload)
-	}
-	redactInPlace(&v)
-	if out, err := json.Marshal(v); err == nil {
-		return string(out)
-	}
-	return auditRedactor.Redact(payload)
-}
-
-func redactInPlace(v *any) {
-	switch val := (*v).(type) {
-	case map[string]any:
-		for k, item := range val {
-			if sensitiveKeyName.MatchString(k) {
-				val[k] = "[REDACTED]"
-				continue
-			}
-			redactInPlace(&item)
-			val[k] = item
-		}
-	case []any:
-		for i := range val {
-			redactInPlace(&val[i])
-		}
-	case string:
-		*v = auditRedactor.Redact(val)
-	}
-}
-
-// ---- helpers ----
-
-func boolInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
-}
-
-func nilTime(t *time.Time) any {
-	if t == nil {
-		return nil
-	}
-	return *t
-}
-
-func mapErr(err error, op string) error {
-	if err == nil {
-		return nil
-	}
-	if err == sql.ErrNoRows {
-		return fmt.Errorf("%w: %s", ErrNotFound, op)
-	}
-	if containsFold(err.Error(), "unique") {
-		return fmt.Errorf("%w: %s", ErrExists, err)
-	}
-	return fmt.Errorf("%s: %w", op, err)
-}
-
-func ensureAffected(res sql.Result, op string) error {
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-	if n == 0 {
-		return fmt.Errorf("%w: %s", ErrNotFound, op)
-	}
-	return nil
-}
-
-func containsFold(s, sub string) bool {
-	ls := toLowerASCII(s)
-	lsub := toLowerASCII(sub)
-	return len(ls) >= len(lsub) && indexIn(ls, lsub) >= 0
-}
-
-func indexIn(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
-}
-
-func toLowerASCII(s string) string {
-	b := []byte(s)
-	for i := range b {
-		if b[i] >= 'A' && b[i] <= 'Z' {
-			b[i] += 'a' - 'A'
-		}
-	}
-	return string(b)
-}
-
 // ---- Users ----
 
-type userStore struct{ s *sqliteStore }
+type userStore struct{ s *dbStore }
 
 func (st *userStore) Create(ctx context.Context, u *User) error {
 	now := time.Now()
@@ -266,7 +114,7 @@ func (st *userStore) Delete(ctx context.Context, id string) error {
 
 // ---- Roles ----
 
-type roleStore struct{ s *sqliteStore }
+type roleStore struct{ s *dbStore }
 
 func (st *roleStore) Create(ctx context.Context, r *Role) error {
 	now := time.Now()
@@ -350,7 +198,7 @@ func (st *roleStore) Delete(ctx context.Context, id string) error {
 
 // ---- Sessions ----
 
-type sessionStore struct{ s *sqliteStore }
+type sessionStore struct{ s *dbStore }
 
 func (st *sessionStore) marshal(sess *session.Session) (string, error) {
 	data, err := json.Marshal(sess)
@@ -440,7 +288,7 @@ func (st *sessionStore) Delete(ctx context.Context, id string) error {
 
 // ---- Audit ----
 
-type auditStore struct{ s *sqliteStore }
+type auditStore struct{ s *dbStore }
 
 func (st *auditStore) Write(ctx context.Context, e *AuditEvent) error {
 	if e.Timestamp.IsZero() {
@@ -495,7 +343,7 @@ func (st *auditStore) List(ctx context.Context) ([]*AuditEvent, error) {
 
 // ---- Settings ----
 
-type settingsStore struct{ s *sqliteStore }
+type settingsStore struct{ s *dbStore }
 
 func (st *settingsStore) Set(ctx context.Context, set *Settings) error {
 	now := time.Now()
@@ -503,11 +351,10 @@ func (st *settingsStore) Set(ctx context.Context, set *Settings) error {
 		set.CreatedAt = now
 	}
 	set.UpdatedAt = now
-	_, err := st.s.db.ExecContext(ctx, `
-		INSERT INTO settings (group_name, key_name, value, sensitive, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT(group_name, key_name) DO UPDATE SET
-			value=excluded.value, sensitive=excluded.sensitive, updated_at=excluded.updated_at`,
+	_, err := st.s.db.ExecContext(ctx, st.s.dialect.upsert("settings",
+		[]string{"group_name", "key_name", "value", "sensitive", "created_at", "updated_at"},
+		[]string{"group_name", "key_name"},
+		[]string{"value", "sensitive", "updated_at"}),
 		set.Group, set.Key, set.Value, boolInt(set.Sensitive), set.CreatedAt, set.UpdatedAt)
 	return mapErr(err, "set setting")
 }
@@ -557,7 +404,7 @@ func (st *settingsStore) Delete(ctx context.Context, group, key string) error {
 
 // ---- Skills ----
 
-type skillStore struct{ s *sqliteStore }
+type skillStore struct{ s *dbStore }
 
 func (st *skillStore) Upsert(ctx context.Context, sk *Skill) error {
 	now := time.Now()
@@ -569,13 +416,12 @@ func (st *skillStore) Upsert(ctx context.Context, sk *Skill) error {
 	if err != nil {
 		return fmt.Errorf("marshal skill spec: %w", err)
 	}
-	_, err = st.s.db.ExecContext(ctx, `
-		INSERT INTO skills (name, spec, source, enabled, validation_status, hit_count, last_hit, last_validation, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(name) DO UPDATE SET
-			spec=excluded.spec, source=excluded.source, enabled=excluded.enabled,
-			validation_status=excluded.validation_status, hit_count=excluded.hit_count,
-			last_hit=excluded.last_hit, last_validation=excluded.last_validation, updated_at=excluded.updated_at`,
+	_, err = st.s.db.ExecContext(ctx, st.s.dialect.upsert("skills",
+		[]string{"name", "spec", "source", "enabled", "validation_status", "hit_count",
+			"last_hit", "last_validation", "created_at", "updated_at"},
+		[]string{"name"},
+		[]string{"spec", "source", "enabled", "validation_status", "hit_count",
+			"last_hit", "last_validation", "updated_at"}),
 		sk.Name, string(spec), sk.Source, boolInt(sk.Enabled), sk.ValidationStatus,
 		sk.HitCount, nilTime(sk.LastHit), nilTime(sk.LastValidation), sk.CreatedAt, sk.UpdatedAt)
 	return mapErr(err, "upsert skill")
@@ -636,7 +482,7 @@ func (st *skillStore) Delete(ctx context.Context, name string) error {
 
 // ---- Approvals ----
 
-type approvalStore struct{ s *sqliteStore }
+type approvalStore struct{ s *dbStore }
 
 func scanApproval(scanner interface{ Scan(...any) error }) (*Approval, error) {
 	a := &Approval{}
@@ -717,7 +563,7 @@ func (st *approvalStore) Delete(ctx context.Context, id string) error {
 
 // ---- Memories ----
 
-type memoryStore struct{ s *sqliteStore }
+type memoryStore struct{ s *dbStore }
 
 func (st *memoryStore) Create(ctx context.Context, m *Memory) error {
 	now := time.Now()
@@ -795,16 +641,14 @@ func (st *memoryStore) Delete(ctx context.Context, id string) error {
 
 // ---- Retention ----
 
-type retentionStore struct{ s *sqliteStore }
+type retentionStore struct{ s *dbStore }
 
 func (st *retentionStore) Upsert(ctx context.Context, p *RetentionPolicy) error {
 	p.UpdatedAt = time.Now()
-	_, err := st.s.db.ExecContext(ctx, `
-		INSERT INTO retention_policies (name, enabled, retention_days, max_count, cleanup_mode, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT(name) DO UPDATE SET
-			enabled=excluded.enabled, retention_days=excluded.retention_days,
-			max_count=excluded.max_count, cleanup_mode=excluded.cleanup_mode, updated_at=excluded.updated_at`,
+	_, err := st.s.db.ExecContext(ctx, st.s.dialect.upsert("retention_policies",
+		[]string{"name", "enabled", "retention_days", "max_count", "cleanup_mode", "updated_at"},
+		[]string{"name"},
+		[]string{"enabled", "retention_days", "max_count", "cleanup_mode", "updated_at"}),
 		p.Name, boolInt(p.Enabled), p.RetentionDays, p.MaxCount, p.CleanupMode, p.UpdatedAt)
 	return mapErr(err, "upsert retention policy")
 }
@@ -859,7 +703,7 @@ func (st *retentionStore) Delete(ctx context.Context, name string) error {
 
 // ---- Clusters ----
 
-type clusterStore struct{ s *sqliteStore }
+type clusterStore struct{ s *dbStore }
 
 func (st *clusterStore) Create(ctx context.Context, c *Cluster) error {
 	now := time.Now()
@@ -935,7 +779,7 @@ func (st *clusterStore) Delete(ctx context.Context, id string) error {
 
 // ---- Credentials ----
 
-type credentialStore struct{ s *sqliteStore }
+type credentialStore struct{ s *dbStore }
 
 func scanCredential(scanner interface{ Scan(...any) error }) (*Credential, error) {
 	c := &Credential{}
