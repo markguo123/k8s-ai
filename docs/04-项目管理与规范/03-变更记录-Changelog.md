@@ -2,9 +2,9 @@
 
 本项目遵循 docs/VERSIONING.md 的里程碑阶梯约定。
 
-## [v3.0.0-beta] - 2026-09-30
+## [v3.0.0] - 2026-10-08
 
-三期资源创建能力完成（R0–R8）：自然语言创建资源进入统一 `create_resource` 通道，支持 dry-run 提案、人工审批、Server-Side Apply、创建后 verify，并为四期 Skill 引擎冻结数据模型与读接口。
+三期交付封版（v3.0.0，2026-10-08）：资源创建能力完成（R0–R8）：自然语言创建资源进入统一 `create_resource` 通道，支持 dry-run 提案、人工审批、Server-Side Apply、创建后 verify，并为四期 Skill 引擎冻结数据模型与读接口。
 
 ### Added
 
