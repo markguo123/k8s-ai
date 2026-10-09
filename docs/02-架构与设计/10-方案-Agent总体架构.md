@@ -1,11 +1,12 @@
-# Agent 架构审查与最小改动方案
+# Agent 总体架构（二期/三期已落地）
 
-> 范围说明：本文档基于当前 `F:\Documents Library\personal collection\编程\Golang\code\k8s-ai` 代码完成，只做架构分析和方案设计，不包含任何代码改动。最近一次未提交的 `internal/agent/prompt.go` 决策树增量不纳入本次文档结论，也不参与提交；下文讨论的是 Agent、Tools、Scanner/Rule、Approval/Executor、Agent Loop 的稳定职责边界。
->
-> 本文档使用三段标注：
-> - **CURRENT**：当前代码实际状态。
-> - **TARGET**：建议的最小改动目标状态。
-> - **MIGRATION**：从 CURRENT 到 TARGET 的迁移路径。
+- 版本：v3.0.0
+- 日期：2026-10-08
+- 状态：已封版（二期 Agent / 三期创建闭环，v3.0.0 基线）
+
+> 范围说明：本文档定义 Agent 的稳定职责边界——Agent、Tools、Scanner/Rule、
+> Approval/Executor、Agent Loop 如何协作。对应能力已在二期/三期实现并随 v3.0.0 封版；
+> 正文中保留的 CURRENT / TARGET / MIGRATION 标注仅用于记录设计论证过程，不代表当前仍未实现。
 
 ---
 

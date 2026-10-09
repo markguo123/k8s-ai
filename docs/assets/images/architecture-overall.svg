@@ -1,0 +1,137 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 860" style="background:#fff">
+  <defs>
+    <linearGradient id="ao-g1" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#667eea;stop-opacity:1"/>
+      <stop offset="100%" style="stop-color:#764ba2;stop-opacity:1"/>
+    </linearGradient>
+    <linearGradient id="ao-g2" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#f093fb;stop-opacity:1"/>
+      <stop offset="100%" style="stop-color:#f5576c;stop-opacity:1"/>
+    </linearGradient>
+    <linearGradient id="ao-g3" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#4facfe;stop-opacity:1"/>
+      <stop offset="100%" style="stop-color:#00f2fe;stop-opacity:1"/>
+    </linearGradient>
+    <linearGradient id="ao-g4" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#43e97b;stop-opacity:1"/>
+      <stop offset="100%" style="stop-color:#38f9d7;stop-opacity:1"/>
+    </linearGradient>
+    <filter id="ao-shadow" x="-4%" y="-4%" width="108%" height="108%">
+      <feDropShadow dx="1" dy="2" stdDeviation="3" flood-opacity="0.14"/>
+    </filter>
+  </defs>
+
+  <text x="500" y="40" font-family="Arial, sans-serif" font-size="26" font-weight="bold" text-anchor="middle" fill="#222">k8s-ai 整体架构（三期封版 v3.0.0 + 四期平台化规划）</text>
+
+  <!-- ============ Phase 3 (已交付封版) ============ -->
+  <text x="60" y="80" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#047857">已交付 · 三期封版能力（v3.0.0）</text>
+
+  <!-- Layer 1: User Interaction -->
+  <rect x="40" y="100" width="920" height="86" rx="14" fill="#EEF2FF" stroke="#6366F1" stroke-width="2" filter="url(#ao-shadow)"/>
+  <text x="60" y="124" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="#4338CA">用户交互层</text>
+  <rect x="70" y="132" width="200" height="42" rx="8" fill="#6366F1"/>
+  <text x="170" y="151" font-family="Arial, sans-serif" font-size="14" font-weight="bold" text-anchor="middle" fill="#fff">k8s-ai chat</text>
+  <text x="170" y="167" font-family="Arial, sans-serif" font-size="11" text-anchor="middle" fill="#C7D2FE">终端 Agent</text>
+  <rect x="300" y="132" width="200" height="42" rx="8" fill="#6366F1"/>
+  <text x="400" y="151" font-family="Arial, sans-serif" font-size="14" font-weight="bold" text-anchor="middle" fill="#fff">k8s-ai web</text>
+  <text x="400" y="167" font-family="Arial, sans-serif" font-size="11" text-anchor="middle" fill="#C7D2FE">浏览器 Web UI</text>
+  <rect x="530" y="132" width="200" height="42" rx="8" fill="#6366F1"/>
+  <text x="630" y="151" font-family="Arial, sans-serif" font-size="14" font-weight="bold" text-anchor="middle" fill="#fff">k8s-ai scan</text>
+  <text x="630" y="167" font-family="Arial, sans-serif" font-size="11" text-anchor="middle" fill="#C7D2FE">一键巡检（一期）</text>
+  <text x="790" y="150" font-family="Arial, sans-serif" font-size="13" text-anchor="middle" fill="#4338CA">统一复用同源 Service</text>
+
+  <line x1="500" y1="186" x2="500" y2="206" stroke="#555" stroke-width="2" marker-end="url(#ao-arr)"/>
+
+  <!-- Layer 2: Service + Session/Audit -->
+  <rect x="40" y="206" width="920" height="92" rx="14" fill="#FDF6EC" stroke="#F5A623" stroke-width="2" filter="url(#ao-shadow)"/>
+  <text x="60" y="230" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="#B45309">服务与状态层（跨三端复用）</text>
+  <rect x="70" y="240" width="280" height="46" rx="8" fill="#F5A623"/>
+  <text x="210" y="262" font-family="Arial, sans-serif" font-size="14" font-weight="bold" text-anchor="middle" fill="#fff">ScanService（一期巡检）</text>
+  <text x="210" y="279" font-family="Arial, sans-serif" font-size="11" text-anchor="middle" fill="#FEF3C7">CLI/Web/CronJob 复用</text>
+  <rect x="390" y="240" width="280" height="46" rx="8" fill="#F5A623"/>
+  <text x="530" y="262" font-family="Arial, sans-serif" font-size="14" font-weight="bold" text-anchor="middle" fill="#fff">ChatService（二期 Agent）</text>
+  <text x="530" y="279" font-family="Arial, sans-serif" font-size="11" text-anchor="middle" fill="#FEF3C7">CLI/Web 复用 + 会话/审计</text>
+  <rect x="700" y="240" width="240" height="46" rx="8" fill="#B75B3B"/>
+  <text x="820" y="262" font-family="Arial, sans-serif" font-size="14" font-weight="bold" text-anchor="middle" fill="#fff">Session / Audit</text>
+  <text x="820" y="279" font-family="Arial, sans-serif" font-size="11" text-anchor="middle" fill="#FDE8E0">持久化 + 脱敏落盘</text>
+
+  <line x1="500" y1="298" x2="500" y2="318" stroke="#555" stroke-width="2" marker-end="url(#ao-arr)"/>
+
+  <!-- Layer 3: Agent Core -->
+  <rect x="40" y="318" width="920" height="150" rx="14" fill="#FFF1F2" stroke="#EF4444" stroke-width="2" filter="url(#ao-shadow)"/>
+  <text x="60" y="342" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="#B91C1C">Agent 核心层（二期自然语言 Agent + 三期资源创建）</text>
+  <rect x="360" y="356" width="280" height="52" rx="10" fill="#EF4444"/>
+  <text x="500" y="379" font-family="Arial, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="#fff">Agent Loop</text>
+  <text x="500" y="398" font-family="Arial, sans-serif" font-size="11" text-anchor="middle" fill="#FECACA">消息循环 · 四层意图决策树 · 流式 SSE</text>
+
+  <rect x="70" y="356" width="260" height="52" rx="8" fill="#FB7185"/>
+  <text x="200" y="378" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="#fff">工具集 Tools（29 个）</text>
+  <text x="200" y="397" font-family="Arial, sans-serif" font-size="11" text-anchor="middle" fill="#FFE4E6">22 只读 + 5 诊断 + 1 写 + 1 创建</text>
+
+  <rect x="670" y="356" width="260" height="52" rx="8" fill="#FB7185"/>
+  <text x="800" y="378" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="#fff">LLM 引擎</text>
+  <text x="800" y="397" font-family="Arial, sans-serif" font-size="11" text-anchor="middle" fill="#FFE4E6">OpenAI 兼容 · 流式/思考型</text>
+
+  <rect x="70" y="420" width="410" height="40" rx="8" fill="#FDA4AF"/>
+  <text x="275" y="446" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="#7F1D1D">审批层 Approver · 风险分级 · 拒绝闸门</text>
+  <rect x="500" y="420" width="430" height="40" rx="8" fill="#FDA4AF"/>
+  <text x="715" y="446" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="#7F1D1D">执行层 Executor · kubectl argv · client-go · SSA</text>
+
+  <line x1="500" y1="468" x2="500" y2="492" stroke="#555" stroke-width="2" marker-end="url(#ao-arr)"/>
+
+  <!-- Layer 4: Phase 1 inherited -->
+  <rect x="40" y="492" width="920" height="120" rx="14" fill="#ECFDF5" stroke="#10B981" stroke-width="2" filter="url(#ao-shadow)"/>
+  <text x="60" y="518" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="#047857">巡检诊断层（一期能力继承）</text>
+  <rect x="70" y="532" width="160" height="64" rx="8" fill="#10B981"/>
+  <text x="150" y="556" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="#fff">扫描引擎</text>
+  <text x="150" y="576" font-family="Arial, sans-serif" font-size="10" text-anchor="middle" fill="#A7F3D0">7 大维度并发采集</text>
+  <rect x="250" y="532" width="160" height="64" rx="8" fill="#10B981"/>
+  <text x="330" y="556" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="#fff">规则引擎</text>
+  <text x="330" y="576" font-family="Arial, sans-serif" font-size="10" text-anchor="middle" fill="#A7F3D0">35 条 A/B/C 规则</text>
+  <rect x="430" y="532" width="180" height="64" rx="8" fill="#10B981"/>
+  <text x="520" y="556" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="#fff">证据链 Evidence</text>
+  <text x="520" y="576" font-family="Arial, sans-serif" font-size="10" text-anchor="middle" fill="#A7F3D0">状态/Events/日志关键行</text>
+  <rect x="630" y="532" width="150" height="64" rx="8" fill="#10B981"/>
+  <text x="705" y="556" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="#fff">健康评分</text>
+  <text x="705" y="576" font-family="Arial, sans-serif" font-size="10" text-anchor="middle" fill="#A7F3D0">0-100 + 历史对比</text>
+  <rect x="800" y="532" width="140" height="64" rx="8" fill="#10B981"/>
+  <text x="870" y="556" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="#fff">报告输出</text>
+  <text x="870" y="576" font-family="Arial, sans-serif" font-size="10" text-anchor="middle" fill="#A7F3D0">MD/JSON/终端摘要</text>
+
+  <line x1="500" y1="612" x2="500" y2="636" stroke="#555" stroke-width="2" marker-end="url(#ao-arr)"/>
+
+  <!-- Kubernetes -->
+  <rect x="300" y="636" width="400" height="52" rx="12" fill="#326CE5" filter="url(#ao-shadow)"/>
+  <text x="500" y="662" font-family="Arial, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="#fff">Kubernetes API Server</text>
+  <text x="500" y="680" font-family="Arial, sans-serif" font-size="11" text-anchor="middle" fill="#BFDBFE">client-go · kubectl binary · dynamic + SSA (fieldManager=k8s-ai)</text>
+
+  <!-- ============ Phase 4 (规划 dotted) ============ -->
+  <text x="60" y="716" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#6D28D9">规划中 · 四期企业化/平台化方向（不属封版交付）</text>
+  <g stroke="#7c3aed" stroke-width="1.5" stroke-dasharray="6 4" fill="#EDE9FE" opacity="0.9">
+    <rect x="40" y="730" width="180" height="70" rx="10"/>
+    <rect x="240" y="730" width="180" height="70" rx="10"/>
+    <rect x="440" y="730" width="180" height="70" rx="10"/>
+    <rect x="640" y="730" width="180" height="70" rx="10"/>
+    <rect x="840" y="730" width="120" height="70" rx="10"/>
+  </g>
+  <text x="130" y="758" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="#5B21B6">多集群接入</text>
+  <text x="130" y="778" font-family="Arial, sans-serif" font-size="11" text-anchor="middle" fill="#6D28D9">集群注册/切换</text>
+  <text x="330" y="758" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="#5B21B6">租户/RBAC</text>
+  <text x="330" y="778" font-family="Arial, sans-serif" font-size="11" text-anchor="middle" fill="#6D28D9">多租户隔离</text>
+  <text x="530" y="758" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="#5B21B6">通用 Skill 引擎</text>
+  <text x="530" y="778" font-family="Arial, sans-serif" font-size="11" text-anchor="middle" fill="#6D28D9">用户自定义 Skill</text>
+  <text x="730" y="758" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="#5B21B6">MCP 外部工具</text>
+  <text x="730" y="778" font-family="Arial, sans-serif" font-size="11" text-anchor="middle" fill="#6D28D9">连接外部服务器</text>
+  <text x="900" y="752" font-family="Arial, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#5B21B6">可观测/</text>
+  <text x="900" y="770" font-family="Arial, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#5B21B6">后端扩展</text>
+
+  <!-- Security band -->
+  <rect x="40" y="816" width="920" height="34" rx="8" fill="#d63031" opacity="0.9"/>
+  <text x="500" y="838" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="#fff">安全贯穿：只读自动 | 写必须审批 | Secret 内容值拒读 | 双重脱敏 | LLM 无执行能力 | Prompt 注入防护</text>
+
+  <defs>
+    <marker id="ao-arr" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#555"/>
+    </marker>
+  </defs>
+</svg>
