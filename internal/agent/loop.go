@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/k8s-ai/k8s-ai/internal/approval"
 	"github.com/k8s-ai/k8s-ai/internal/audit"
@@ -27,6 +28,27 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 	a.Session.AddMessage(session.Message{Role: "user", Type: "text", Content: query})
 	a.Emit(Message{Source: SourceUser, Type: MessageTypeText, Payload: query})
 	a.audit(ctx, audit.ActionUserInput, map[string]any{"query": query})
+
+	// P1.8: 记录本轮运行轨迹（pending → running），供 service 层持久化回放。
+	a.stepSeq = 0
+	a.turn = &session.Turn{
+		ID:        newID(),
+		SessionID: a.Session.ID,
+		UserID:    a.TurnUserID,
+		Status:    session.TurnPending,
+		Input:     query,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	_ = a.turn.Start()
+	a.trace().TurnStarted(ctx, a.turn)
+	// 任何退出路径都要广播一次 Turn 终态；显式 Complete/Fail 的路径不受影响。
+	defer func() {
+		if a.turn.Status == session.TurnRunning || a.turn.Status == session.TurnWaiting {
+			_ = a.turn.Fail("agent run ended without terminal turn state")
+		}
+		a.trace().TurnUpdated(ctx, a.turn)
+	}()
 
 	mode := a.ToolCalling
 	if mode != "shim" {
@@ -58,21 +80,36 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 			}
 			a.audit(ctx, audit.ActionLLMError, map[string]any{"error": err.Error()})
 			a.EmitCritical(Message{Source: SourceAgent, Type: MessageTypeError, Payload: err.Error()})
+			a.turn.Token = toSessionUsage(usage)
+			_ = a.turn.Fail(err.Error())
 			return "", usage, err
 		}
 		a.audit(ctx, audit.ActionLLMResponse, map[string]any{"usage": resp.Usage, "toolCalls": len(resp.ToolCalls), "stream": streamed})
 		usage = addUsage(usage, resp.Usage)
 
+		// P1.8: 记录本轮模型思考 Step（有工具调用时记工具名，否则记正文摘要）。
+		reason := a.beginStep(ctx, session.StepReason, "", "")
+
 		step, err := a.parseStep(mode, resp)
 		if err != nil {
 			a.EmitCritical(Message{Source: SourceAgent, Type: MessageTypeError, Payload: err.Error()})
+			a.completeStep(ctx, reason, false, err.Error())
+			a.turn.Token = toSessionUsage(usage)
+			_ = a.turn.Fail(err.Error())
 			return "", usage, err
 		}
 		if step.answer != "" {
 			a.Session.AddMessage(session.Message{Role: "assistant", Type: "text", Content: step.answer})
+			a.completeStep(ctx, reason, true, summarizeReason(mode, resp))
+			// P1.8: 最终回答输出 Step。
+			response := a.beginStep(ctx, session.StepResponse, "", "")
+			a.completeStep(ctx, response, true, truncateText(step.answer, 240))
+			_ = a.turn.Complete(step.answer)
+			a.turn.Token = toSessionUsage(usage)
 			// 最终回答只经 service 的 answer 事件推送一次，避免 UI 重复渲染。
 			return step.answer, usage, nil
 		}
+		a.completeStep(ctx, reason, true, summarizeReason(mode, resp))
 
 		// 记录 assistant 消息（native 带 tool_calls，shim 带 JSON）。
 		if mode == "native" {
@@ -87,11 +124,16 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 		for _, call := range step.calls {
 			toolCallsTotal++
 			if toolCallsTotal > a.MaxToolCalls {
-				return "", usage, fmt.Errorf("agent exceeded max tool calls (%d)", a.MaxToolCalls)
+				err := fmt.Errorf("agent exceeded max tool calls (%d)", a.MaxToolCalls)
+				a.turn.Token = toSessionUsage(usage)
+				_ = a.turn.Fail(err.Error())
+				return "", usage, err
 			}
 			failureKey := toolCallFailureKey(call)
 			var tr tools.ToolResult
 			toolExecuted := false
+			// P1.8: 工具调用 Step（参数在落库前由 Store 统一脱敏）。
+			toolStep := a.beginStep(ctx, session.StepTool, call.Name, string(call.Arguments))
 			if failedToolCalls[failureKey] > 0 {
 				// 同一工具、同一参数已经失败过，禁止原样重试；
 				// 让 LLM 更换参数或选择替代工具，避免耗尽工具调用预算。
@@ -109,10 +151,14 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 				}
 				tr = a.executeTool(ctx, call, batchApproved[call.ID])
 			}
+			ok := toolResultOK(tr)
+			a.completeStep(ctx, toolStep, ok, truncateText(tr.Text, 240))
+			// P1.8: 工具结果观察 Step（成功 done / 失败 failed）。
+			observe := a.beginStep(ctx, session.StepObserve, call.Name, "")
+			a.completeStep(ctx, observe, ok, truncateText(tr.Text, 240))
 			if toolExecuted && toolResultHasError(tr) {
 				failedToolCalls[failureKey]++
 			}
-			ok := toolResultOK(tr)
 			text, truncated := tools.MarshalForLLM(tr, a.ResultMaxBytes)
 			turnBytes += len(text)
 			budgetExceeded := turnBytes > a.TurnMaxBytes
@@ -141,7 +187,10 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 			}
 		}
 	}
-	return "", usage, fmt.Errorf("agent exceeded max iterations (%d)", a.MaxIterations)
+	err := fmt.Errorf("agent exceeded max iterations (%d)", a.MaxIterations)
+	a.turn.Token = toSessionUsage(usage)
+	_ = a.turn.Fail(err.Error())
+	return "", usage, err
 }
 
 func toolCallFailureKey(call llm.ToolCall) string {
@@ -692,6 +741,9 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolCall, batchApprove
 				prompt += "\n\n工具：" + call.Name + "\n参数：" + string(call.Arguments)
 			}
 			prompt += "\n\n是否执行？"
+			// P1.8: 审批 Step（挂起到等待用户确认）。
+			approvalStep := a.beginStep(ctx, session.StepApproval, call.Name, "")
+			a.waitStep(ctx, approvalStep)
 			choice, err := a.Approver.Confirm(ctx, prompt, []UserChoiceOption{
 				{Label: "是", Value: ChoiceYes},
 				{Label: "是，本次会话不再询问", Value: ChoiceYesNoAskAgain},
@@ -699,10 +751,12 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolCall, batchApprove
 			})
 			if err != nil {
 				a.audit(ctx, audit.ActionApprovalDenied, map[string]any{"name": call.Name, "reason": err.Error()})
+				a.completeStep(ctx, approvalStep, false, err.Error())
 				return tools.ResultError("approval error: " + err.Error())
 			}
 			switch choice {
 			case ChoiceYesNoAskAgain:
+				a.completeStep(ctx, approvalStep, true, "approved_forever")
 				a.Session.AddApproved(key)
 				grantAudit := map[string]any{"name": call.Name, "choice": choice}
 				if g, ok := approval.NewGrant(a.grantRequestFor(t, call.Arguments)); ok {
@@ -715,8 +769,10 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolCall, batchApprove
 				}
 				a.audit(ctx, audit.ActionApprovalGranted, grantAudit)
 			case ChoiceYes:
+				a.completeStep(ctx, approvalStep, true, "approved")
 				a.audit(ctx, audit.ActionApprovalGranted, map[string]any{"name": call.Name, "choice": choice})
 			default:
+				a.completeStep(ctx, approvalStep, false, "declined")
 				total := a.Session.AddDeclined(key)
 				a.Session.RemoveGrantMatching(a.grantRequestFor(t, call.Arguments))
 				a.audit(ctx, audit.ActionApprovalDenied, map[string]any{

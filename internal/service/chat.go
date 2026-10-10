@@ -20,6 +20,7 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/scanner"
 	"github.com/k8s-ai/k8s-ai/internal/session"
 	"github.com/k8s-ai/k8s-ai/internal/skills"
+	"github.com/k8s-ai/k8s-ai/internal/store"
 	"github.com/k8s-ai/k8s-ai/internal/tools"
 	k8stools "github.com/k8s-ai/k8s-ai/internal/tools/k8s"
 )
@@ -107,10 +108,16 @@ type chatService struct {
 	// proposals 跨轮次保存创建提案指纹：每轮 Chat 都会重建工具实例，
 	// dry run 与 apply 通常不在同一轮，所以缓存必须挂在服务上。
 	proposals *tools.ProposalStore
+	// store 是四期 SQLite/MySQL 统一持久化门面：非空时把 Turn/Step 生命周期记录落库（P1.8）。
+	store store.Store
 }
 
 // NewChat 创建二期 Agent 服务。
 func NewChat(cfg *config.Config, newReader func() (scanner.Reader, error), llmFactory func(llm.Options) llm.LLMClient, scanFactory func() tools.ScanRunner, newWriteRunner func() (tools.WriteRunner, error)) ChatService {
+	return newChat(cfg, newReader, llmFactory, scanFactory, newWriteRunner, nil)
+}
+
+func newChat(cfg *config.Config, newReader func() (scanner.Reader, error), llmFactory func(llm.Options) llm.LLMClient, scanFactory func() tools.ScanRunner, newWriteRunner func() (tools.WriteRunner, error), st store.Store) ChatService {
 	var store session.Store
 	store, err := session.NewFileStore(cfg.Agent.SessionDir)
 	if err != nil {
@@ -134,7 +141,14 @@ func NewChat(cfg *config.Config, newReader func() (scanner.Reader, error), llmFa
 		scanFactory:    scanFactory,
 		newWriteRunner: newWriteRunner,
 		proposals:      tools.NewProposalStore(),
+		store:          st,
 	}
+}
+
+// NewChatWithStore 用 Store 持久化创建四期 Agent 服务（P1.8）：非空 store 时把每轮
+// Session/Turn 及其 Reason/Tool/Observe/Approval/Response Step 记录入库，与三期文件会话并存。
+func NewChatWithStore(cfg *config.Config, newReader func() (scanner.Reader, error), llmFactory func(llm.Options) llm.LLMClient, scanFactory func() tools.ScanRunner, newWriteRunner func() (tools.WriteRunner, error), st store.Store) ChatService {
+	return newChat(cfg, newReader, llmFactory, scanFactory, newWriteRunner, st)
 }
 
 // chatReader 从配置构建只读 Kubernetes 门面（chat 用）。
@@ -328,6 +342,7 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 		Approver:       approver,
 		ApprovalPolicy: &pol,
 		Recorder:       recorder,
+		Tracer:         s.chatTracer(ctx, sess),
 		MaxIterations:  s.cfg.Agent.MaxIterations,
 		MaxToolCalls:   s.cfg.Agent.MaxToolCalls,
 		Timeout:        s.cfg.Agent.Timeout,
@@ -338,6 +353,49 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 	})
 	go s.runChat(ctx, ag, sess, req, events, recorder)
 	return events, nil
+}
+
+// chatTracer 在配置了四期 Store 时返回持久化 Tracer：先把 Session 快照写入 SQLite，
+// 再把 Agent 运行生命周期（Turn/Step）实时落库。数据库不可用时不阻塞聊天，仅回退为不持久化。
+func (s *chatService) chatTracer(ctx context.Context, sess *session.Session) agent.Tracer {
+	if s.store == nil {
+		return nil
+	}
+	if err := s.store.Sessions().Create(ctx, sess); err != nil && !errors.Is(err, store.ErrExists) {
+		slog.Warn("chat: 四期会话初始化失败，本轮跳过 Turn/Step 持久化", "session", sess.ID, "error", err)
+		return nil
+	}
+	return &persistTracer{store: s.store}
+}
+
+// persistTracer 把 Agent 生命周期回调写入四期 Store（P1.8）。落库前由 Store 侧统一脱敏，
+// 回调为观察性质，所有写失败只记日志、不中断 Agent 主循环。
+type persistTracer struct {
+	store store.Store
+}
+
+func (t *persistTracer) TurnStarted(ctx context.Context, turn *session.Turn) {
+	if err := t.store.Turns().Create(ctx, turn); err != nil {
+		slog.Warn("chat: Turn 写入失败", "turn", turn.ID, "error", err)
+	}
+}
+
+func (t *persistTracer) TurnUpdated(ctx context.Context, turn *session.Turn) {
+	if err := t.store.Turns().Update(ctx, turn); err != nil {
+		slog.Warn("chat: Turn 更新失败", "turn", turn.ID, "error", err)
+	}
+}
+
+func (t *persistTracer) StepStarted(ctx context.Context, step *session.Step) {
+	if err := t.store.Steps().Create(ctx, step); err != nil {
+		slog.Warn("chat: Step 写入失败", "turn", step.TurnID, "step", step.ID, "error", err)
+	}
+}
+
+func (t *persistTracer) StepUpdated(ctx context.Context, step *session.Step) {
+	if err := t.store.Steps().Update(ctx, step); err != nil {
+		slog.Warn("chat: Step 更新失败", "turn", step.TurnID, "step", step.ID, "error", err)
+	}
 }
 
 // newAuditRecorder 为会话创建 JSONL 审计记录器（目录不存在自动创建；失败回退日志记录器）。
@@ -402,6 +460,11 @@ func (s *chatService) runChat(ctx context.Context, ag *agent.Agent, sess *sessio
 	<-done
 	if err := s.sessions.Update(sess); err != nil {
 		slog.Warn("chat: 保存会话失败", "session", sess.ID, "error", err)
+	}
+	if s.store != nil {
+		if err := s.store.Sessions().Update(ctx, sess); err != nil {
+			slog.Warn("chat: 四期会话保存失败", "session", sess.ID, "error", err)
+		}
 	}
 	events <- ChatEvent{Type: ChatEventAnswer, Text: answer, Usage: &usage}
 	if chatErr != nil {

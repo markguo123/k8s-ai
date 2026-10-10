@@ -31,6 +31,10 @@ type Options struct {
 	Session  *session.Session
 	Approver Approver
 	Recorder audit.Recorder
+	// Tracer 观察 Agent 运行生命周期（P1.8），service 层用它持久化 Turn/Step；nil 时跳过。
+	Tracer Tracer
+	// TurnUserID 记录本轮 Turn 归属的产品内用户（P1.5），可为空。
+	TurnUserID string
 	// ApprovalPolicy 是统一的写操作审批决策；nil 时采用 strict + 要求审批（等价 v1）。
 	ApprovalPolicy *approval.Policy
 
@@ -59,6 +63,8 @@ type Agent struct {
 	Approver       Approver
 	Recorder       audit.Recorder
 	ApprovalPolicy *approval.Policy
+	Tracer         Tracer
+	TurnUserID     string
 
 	MaxIterations  int
 	MaxToolCalls   int
@@ -67,6 +73,10 @@ type Agent struct {
 	ResultMaxBytes int
 	TurnMaxBytes   int
 	HistoryTurns   int
+
+	// turn 是当前聊天轮的运行轨迹（P1.8），Chat 执行期间非 nil。
+	turn    *session.Turn
+	stepSeq int
 }
 
 // New 创建 Agent 实例并应用默认值。
@@ -82,6 +92,8 @@ func New(opts Options) *Agent {
 		Approver:       opts.Approver,
 		Recorder:       opts.Recorder,
 		ApprovalPolicy: opts.ApprovalPolicy,
+		Tracer:         opts.Tracer,
+		TurnUserID:     opts.TurnUserID,
 		MaxIterations:  opts.MaxIterations,
 		MaxToolCalls:   opts.MaxToolCalls,
 		Timeout:        opts.Timeout,
