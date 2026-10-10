@@ -1,8 +1,8 @@
-# k8s-ai 一期架构决策记录（ADR）
+# k8s-ai 架构决策记录（ADR）
 
-- 版本：v1.0
-- 日期：2026-08-12
-- 状态：已封版（2026-10-08，三期 v3.0.0 基线）
+- 版本：v1.0 → v4.0.0（四期新增 ADR）
+- 日期：2026-08-12（首版） / 2026-10-10（四期平台底座 ADR）
+- 状态：已封版 一期~三期（v3.0.0 基线）；四期落地中（ADR-020~024）
 
 ## ADR-001 两阶段扫描
 
@@ -137,6 +137,67 @@
 - **决策**：P12 的"对比层 + 迭代诊断层"主要消费者是二期 Chat Agent（scan_cluster Tool 自动读取 latest.json 的历史指纹对比与上次诊断上下文，作为会话记忆），而非手动反复 scan 的人类用户；人读日报趋势降级为次要产出。
 - **理由**：人类手动对比两份报告的边际价值低，而 Agent 记忆是该数据的放大器；一期只产出结构化契约（latest.json），符合 AGENTS.md"为二期预留接口"的要求，不提前实现会话功能。
 - **后果**：latest.json 的 findings[].id 与 diagnoses[] 设计保持稳定并加注释标注；二期规划约束"scan_cluster 自动携带历史差异，无需用户手动挂载"写入 API.md §12。
+
+## ADR-020 前端工程改为 Vite + Vue3 + TS 单仓（四期 P1.1/P2.1）
+
+- **状态**：已接受（2026-10-08 落地 P1.1，2026-10-08 调整 P2.1 信息架构）
+- **决策**：四期前端在 `web/` 下新建 Vite + Vue3 + TypeScript 工程，替代三期单体
+  `internal/webui/index.html`；侧栏一级导航按 工作区（聊天/集群）/ 治理（审批中心/审计）/
+  平台管理（Skill/配置中心/用户与权限）三组分栏，Admin 不再作为侧栏一级菜单，
+  当前用户信息与「管理控制台」迁入右上角 User Menu。
+- **理由**：三期单文件 SPA 便于零服务端改动交付，但平台化需要组件化、路由与权限三视图
+  （Route/Component/Button）支持（需求 v1.2 §10/§11，决策 D-15）；Vue3 + TS + Vite 与
+  现栈一致且工程门槛低。
+- **后果**：前端与后端解耦为 `web/` 工程（dev server 5173 与 server 端口分离）；
+  权限判定仅为 UX 展示，后端强校验原则不变；三期 Web Chat 事件契约在迁移期由映射层兼容。
+
+## ADR-021 统一 Store + SQLite/MySQL 方言层（四期 P1.2/P1.3）
+
+- **状态**：已接受（P1.2 2026-10-08，P1.3 2026-10-08）
+- **决策**：`internal/store` 提供统一 `Store` 接口（User/Role/Session/Audit/Settings/Skill/
+  Approval/Memory/Retention/Cluster/Credential + Turns/Steps），SQLite 为默认驱动，
+  MySQL 通过共享 schema 与方言层（dialect）等价实现；迁移入口统一、幂等，schemaVersion=2。
+- **理由**：SQLite 面向单进程/单实例，MySQL 面向多副本或已有数据库（需求 v1.2 §20）；
+  业务层只依赖 Store 接口，两驱动行为等价由统一 CRUD 测试保证。
+- **后果**：新增表需同步提升 schemaVersion 并补迁移 + 双方言测试；MySQL 集成用例由
+  `K8S_AI_TEST_MYSQL_DSN` 环境变量启用。
+
+## ADR-022 产品内登录认证为内存 Session Token（四期 P1.5）
+
+- **状态**：已接受（P1.5 2026-10-08）
+- **决策**：产品内认证采用 User/Role 模型 + argon2id 密码哈希 + 内存 Session Token
+  （TTL 24h，无持久化）；`server` 命令 SQLite 首次引导用 `K8S_AI_ADMIN_PASSWORD`
+  初始化 admin 角色与用户。
+- **理由**：平台化优先打通登录闭环与越权门禁；Session 持久化/刷新令牌/SSO 属四期后续
+  P3 范围（需求 v1.2 §18§19）。
+- **后果**：认证中间件目前只注入用户上下文、不阻断未登录请求（占位阶段）；重启后会话
+  失效需重新登录；产品内权限不进入 CLI 执行路径。
+
+## ADR-023 后端强制权限门禁（Role→Permission→Policy，四期 P1.6）
+
+- **状态**：已接受（P1.6 2026-10-08）
+- **决策**：`internal/permission` 定义 Permission 常量、Rule/Policy、Enforcer（支持精确、
+  `*` 全量通配与 `cluster.*` 段通配）；`internal/server` 对 `/api/v1` 统一门禁：
+  未登录 401、越权 403、未登记路由默认 403；业务代码只声明所需 Permission，
+  不散落 `role == "admin"` 判断。
+- **理由**：前端权限仅 UX，后端必须是强校验边界（需求 v1.2 §17）；未登记默认拒绝
+  避免新增接口漏配权限造成越权。
+- **后果**：新增 API 路由需在注册处登记权限规则；产品内权限不影响 kubeconfig RBAC
+  决定的真实读写能力。
+
+## ADR-024 Turn/Step 生命周期用观察者持久化（四期 P1.7/P1.8）
+
+- **状态**：已接受（P1.7 2026-10-08，P1.8 2026-10-10）
+- **决策**：Agent 领域新增 `session.Turn`（6 态：pending/running/waiting/done/failed/
+  canceled）与 `session.Step`（4 态：running/waiting/done/failed，类型 reason/tool/
+  observe/approval/response）状态机，token 用量持久化；`internal/agent` 通过可挂载
+  `Tracer` 观察者把生命周期广播给 service 层（`NewChatWithStore` 落 SQLite）。
+  Agent 本身不依赖 Store，回调一律观察性质，写库失败只告警不阻塞主循环。
+- **理由**：保持 Agent 循环纯业务化、可测试（AGENTS.md 分层），同时为多轮回放
+  （P1.7 验收）与全链路可观测关联（P4.9）提供统一数据结构。
+- **后果**：每轮 Chat 产生 1 Turn + N Step（reason/tool/observe/approval/response）；
+  `session.Store`（三期文件会话）与 `store.Store`（四期持久化）并存；
+  `NewChat` 旧签名保持兼容，`NewChatWithStore` 为持久化入口。
 
 ## 待决策事项（需在编码前确认）
 
