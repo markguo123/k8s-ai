@@ -1,11 +1,12 @@
 # k8s-ai API 接口契约设计
 
-- 版本：v3.0.0
-- 日期：2026-08-12（首版） / 2026-10-08（补齐二期、三期）
-- 状态：一期~三期已封版（2026-10-08，v3.0.0 基线）；四期为规划口径
+- 版本：v3.0.0 → v4.0.0（四期落地跟踪）
+- 日期：2026-08-12（首版） / 2026-10-08（补齐二期、三期） / 2026-10-10（四期中间件/认证/权限落地）
+- 状态：一期~三期已封版（2026-10-08，v3.0.0 基线）；四期落地中
 - 范围：本文档统一描述 k8s-ai 的 Go 层接口契约与 HTTP API。一期只读巡检提供 `/api/v1/*`
   最小服务；二期加入 Web Chat 会话与 SSE 流（`/api/sessions/*`）；三期在会话通道上叠加
-  结构化资源创建（`create_resource`，dry run → apply 两阶段）。
+  结构化资源创建（`create_resource`，dry run → apply 两阶段）；四期新增统一响应信封、
+  认证与后端权限门禁，并为 Session/Turn/Step 提供持久化底座。
 
 ## 1. 接口设计原则
 
@@ -172,7 +173,17 @@ type Decision string // auto | require_approval | deny
 
 实现于 `internal/server`，复用 `ScanService.Run`，任务注册表为内存实现，单次扫描并发限制。
 `k8s-ai server --addr :8080` 启动。历史差异（internal/history）按 Finding 指纹对比
-新增/持续/恢复，写入 `latest.json` 的 history 字段。
+新增/持续/恢复，写入 `latest.json` 的 history 字段。四期 P1.4-P1.6 在该层叠加了
+统一中间件与认证/权限门禁：
+
+- **统一响应信封**：`/api/v1/*` 响应统一携带 `request_id / timestamp / data / error / pagination`；
+  非 `2xx` 走 `error.code + error.message`，分页解析兼容 `page/page_size` 与 `pageSize`。
+- **request_id 链路**：请求入口生成并透传 `X-Request-ID`，供审计与全链路关联（P4.9 复用）。
+- **CORS**：默认放行 `localhost:5173`（Vite 前端），可在服务端配置调整。
+- **认证**：`login` 公开、`logout/me` 要求已登录；当前为内存 Session Token（24h），
+  认证中间件只注入用户上下文，不阻断未登录请求（占位阶段）。
+- **权限门禁（P1.6）**：`/api/v1` 路由由 `permission.DefaultAPIPolicy` 判定，业务代码只声明
+  Permission；未登录 401、越权 403、未登记路由默认 403。
 
 ```text
 GET  /healthz
@@ -185,10 +196,15 @@ POST /api/v1/scans          // body: ScanOptions；返回 202 {scanId}；已有�
 GET  /api/v1/scans/{id}     // 状态: pending/running/succeeded/failed + result
 ```
 
+> 四期产品内权限仅作用于 Web 页面、API 入口与审批策略，不进入 CLI 执行路径；
+> namespace / resource 的真实权限仍由 kubeconfig 对应 RBAC 决定（需求 v1.2 §17）。
+
 ## 9. HTTP + SSE API（二期/三期 Web Chat，`internal/webui`）
 
 浏览器通过 SSE 消费会话事件流（先 `history` 快照，后实时增量），写操作通过
 `send-message` / `approve` / `cancel` 三组端点编排，实现运行中可停止。
+四期起（P1.9）同一 SSE 通道双轨承载：三期旧事件线格式原样保留供迁移期继续消费，
+统一新事件（`internal/sse`）按 `session_id` 扇出到会话缓冲，供 Web Shell 新前端驱动展示。
 
 ```text
 GET  /                                  // 单文件 SPA（嵌入式 index.html）
@@ -218,6 +234,45 @@ POST /api/sessions/{id}/cancel          // 取消当前运行（context cancel�
 
 > 后端当前主要下发 `answer-delta` 流；`reasoning-delta` / `tool-call` / `answer` 事件经 SSE
 > 转发给前端驱动三个阶段（推理展开 → 工具卡 → 最终回答折叠）。
+
+### 9.2 四期统一事件流（P1.9）
+
+统一事件信封 JSON（snake_case，每个事件必带）：
+
+```text
+session_id
+turn_id
+step_id
+timestamp
+event_type
+data        // 各事件专属载荷，可为 null
+```
+
+支持的事件类型：
+
+```text
+session.created
+turn.started
+turn.completed
+reason.started
+reason.completed
+tool.started
+tool.completed
+observation.created
+approval.required
+approval.approved
+approval.rejected
+message.delta
+message.completed
+session.completed
+session.failed
+```
+
+数据面：`internal/sse` 提供 Marshal / Frame（多行 data 兼容）/ MarshalLegacy 与
+`MapFromLegacy` / `MapToLegacy` 双向映射层。三期旧事件（answer-delta /
+reasoning-delta / tool-call / tool-response / choice-request 等）在映射期内继续可消费，
+未完成映射前不得移除。所有出站 `params` / `result` / 回答负载在封装前统一经
+`store.RedactJSONPayload` 脱敏，Secret / kubeconfig / API Key 明文永不进入 SSE。
 
 ## 10. 一期~三期依赖矩阵
 

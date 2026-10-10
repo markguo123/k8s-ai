@@ -2,6 +2,35 @@
 
 本项目遵循 docs/VERSIONING.md 的里程碑阶梯约定。
 
+## [v4.0.0] - 开发中（2026-10-10）
+
+四期平台化 M1 平台底座推进中：前端工程与信息架构、统一 Store、HTTP 中间件、认证与权限门禁、
+Session/Turn/Step 模型与存储、Agent Runtime 生命周期持久化、SSE 事件路由与旧事件映射层
+（P1.1-P1.9 已完成）。
+
+### Added
+
+- **前端工程（P1.1）**：`web/` 新建 Vite + Vue3 + TS 单仓工程，src 骨架 + 7 个侧栏路由入口与登录路由，`npm run lint` / `typecheck` / `build` 通过。
+- **信息架构（P2.1）**：侧栏按 工作区/治理/平台管理 三组分栏；Admin 不再作为侧栏一级菜单，当前用户信息与「管理控制台」移入右上角 User Menu。
+- **统一 Store（P1.2/P1.3）**：`internal/store` 统一 `Store` 接口 + SQLite 驱动 + MySQL 方言层 + 幂等迁移（schemaVersion=2），覆盖 11 类平台模型 CRUD 与双方言等价测试。
+- **HTTP 基础中间件（P1.4）**：request_id 生成/透传（X-Request-ID）、统一响应信封（request_id/timestamp/data/error/pagination）、分页解析（page/page_size，兼容 pageSize）、CORS（放行 localhost:5173）、认证占位（仅注入上下文不拒请求）；含中间件与信封单测。
+- **用户/角色与登录认证（P1.5）**：argon2id 密码哈希、内存 Session Token（24h）、`POST/GET /api/v1/auth/login|logout|me`、`server` 命令 SQLite 首次引导（`K8S_AI_ADMIN_PASSWORD` 初始化 admin 角色与用户）；含认证服务与 handler 单测。
+- **Permission Middleware（P1.6）**：`internal/permission` Role→Permission→Policy 判定（精确 / `*` / 段通配）+ `internal/server` 权限门禁（未登录 401、越权 403、`/api/v1` 未登记路由默认 403）；默认路由权限对齐标准 Permission 常量，越权门禁测试通过。
+- **Session/Turn/Step 模型与存储（P1.7）**：`internal/session/turn.go` 状态机（Turn 6 态 / Step 4 态 + token 用量）；Store 增加 `Turns()`/`Steps()` 与对应 CRUD/List，schemaVersion 2 新增 `turns`/`steps` 表与索引，写前脱敏与可空时间字段落地；含状态机与双方言 CRUD 单测。
+- **Agent Runtime 生命周期接入（P1.8）**：`internal/agent` 新增 `Tracer` 观察者接口，每轮 Chat 创建 Turn 并广播 Reason/Tool/Observe/Approval/Response Step 全生命周期，Turn 终态（done/fail）统一收尾；`internal/service` 新增 `NewChatWithStore`（旧 `NewChat` 签名兼容）经 `persistTracer` 落 SQLite，写库失败仅告警不阻塞 Agent；含生命周期时序与持久化断言单测。
+- **SSE 事件路由与旧事件映射层（P1.9）**：新 `internal/sse` 定义 15 类统一事件（session/turn/reason/tool/observation/approval/message 全生命周期）+ 必带信封字段（session_id/turn_id/step_id/timestamp/event_type），提供 Marshal/Frame 帧序列化与三期旧事件双向映射（MapFromLegacy/MapToLegacy）；`service` 新增 `NewChatWithSink`/`NewChatWithStoreAndSink`/`SetSink`，Chat 全生命周期（含审批 required/approved/rejected）双轨广播统一事件与旧 ChatEvent JSON，`webui.Server` 按 `session_id` 扇出统一事件到会话 Broadcaster；所有出站负载统一经 `store.RedactJSONPayload` 脱敏（Secret/kubeconfig/API Key 明文不出站）；含统一事件时序、并发作用域与 webui 路由断言单测。
+
+### Changed
+
+- `docs/02-架构与设计/01-系统架构与技术方案.md`、`02-数据模型与数据字典.md`、`03-API接口文档.md`、`04-架构决策记录-ADR.md` 同步四期落地状态（含 ADR-020~024）。
+- `docs/04-项目管理与规范/01-版本计划与发布规则.md`、`02-项目状态.md` 同步四期 M1 进度。
+
+### Tests
+
+- `go test ./...` 通过（含新增 `internal/agent/trace_test.go`、`internal/service/chat_persist_test.go`、`internal/sse/*_test.go`、`internal/service/chat_sse_test.go`、`internal/webui/sse_test.go`）
+- `go vet ./...` 通过
+- `tests/arch` 通过
+
 ## [v3.0.0] - 2026-10-08
 
 三期交付封版（v3.0.0，2026-10-08）：资源创建能力完成（R0–R8）：自然语言创建资源进入统一 `create_resource` 通道，支持 dry-run 提案、人工审批、Server-Side Apply、创建后 verify，并为四期 Skill 引擎冻结数据模型与读接口。
