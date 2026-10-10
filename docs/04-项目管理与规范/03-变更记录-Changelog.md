@@ -5,7 +5,8 @@
 ## [v4.0.0] - 开发中（2026-10-10）
 
 四期平台化 M1 平台底座推进中：前端工程与信息架构、统一 Store、HTTP 中间件、认证与权限门禁、
-Session/Turn/Step 模型与存储、Agent Runtime 生命周期持久化（P1.1-P1.8 已完成）。
+Session/Turn/Step 模型与存储、Agent Runtime 生命周期持久化、SSE 事件路由与旧事件映射层
+（P1.1-P1.9 已完成）。
 
 ### Added
 
@@ -17,6 +18,7 @@ Session/Turn/Step 模型与存储、Agent Runtime 生命周期持久化（P1.1-P
 - **Permission Middleware（P1.6）**：`internal/permission` Role→Permission→Policy 判定（精确 / `*` / 段通配）+ `internal/server` 权限门禁（未登录 401、越权 403、`/api/v1` 未登记路由默认 403）；默认路由权限对齐标准 Permission 常量，越权门禁测试通过。
 - **Session/Turn/Step 模型与存储（P1.7）**：`internal/session/turn.go` 状态机（Turn 6 态 / Step 4 态 + token 用量）；Store 增加 `Turns()`/`Steps()` 与对应 CRUD/List，schemaVersion 2 新增 `turns`/`steps` 表与索引，写前脱敏与可空时间字段落地；含状态机与双方言 CRUD 单测。
 - **Agent Runtime 生命周期接入（P1.8）**：`internal/agent` 新增 `Tracer` 观察者接口，每轮 Chat 创建 Turn 并广播 Reason/Tool/Observe/Approval/Response Step 全生命周期，Turn 终态（done/fail）统一收尾；`internal/service` 新增 `NewChatWithStore`（旧 `NewChat` 签名兼容）经 `persistTracer` 落 SQLite，写库失败仅告警不阻塞 Agent；含生命周期时序与持久化断言单测。
+- **SSE 事件路由与旧事件映射层（P1.9）**：新 `internal/sse` 定义 15 类统一事件（session/turn/reason/tool/observation/approval/message 全生命周期）+ 必带信封字段（session_id/turn_id/step_id/timestamp/event_type），提供 Marshal/Frame 帧序列化与三期旧事件双向映射（MapFromLegacy/MapToLegacy）；`service` 新增 `NewChatWithSink`/`NewChatWithStoreAndSink`/`SetSink`，Chat 全生命周期（含审批 required/approved/rejected）双轨广播统一事件与旧 ChatEvent JSON，`webui.Server` 按 `session_id` 扇出统一事件到会话 Broadcaster；所有出站负载统一经 `store.RedactJSONPayload` 脱敏（Secret/kubeconfig/API Key 明文不出站）；含统一事件时序、并发作用域与 webui 路由断言单测。
 
 ### Changed
 
@@ -25,7 +27,7 @@ Session/Turn/Step 模型与存储、Agent Runtime 生命周期持久化（P1.1-P
 
 ### Tests
 
-- `go test ./...` 通过（含新增 `internal/agent/trace_test.go`、`internal/service/chat_persist_test.go`）
+- `go test ./...` 通过（含新增 `internal/agent/trace_test.go`、`internal/service/chat_persist_test.go`、`internal/sse/*_test.go`、`internal/service/chat_sse_test.go`、`internal/webui/sse_test.go`）
 - `go vet ./...` 通过
 - `tests/arch` 通过
 

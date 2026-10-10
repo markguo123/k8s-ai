@@ -20,6 +20,7 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/scanner"
 	"github.com/k8s-ai/k8s-ai/internal/session"
 	"github.com/k8s-ai/k8s-ai/internal/skills"
+	"github.com/k8s-ai/k8s-ai/internal/sse"
 	"github.com/k8s-ai/k8s-ai/internal/store"
 	"github.com/k8s-ai/k8s-ai/internal/tools"
 	k8stools "github.com/k8s-ai/k8s-ai/internal/tools/k8s"
@@ -110,6 +111,9 @@ type chatService struct {
 	proposals *tools.ProposalStore
 	// store 是四期 SQLite/MySQL 统一持久化门面：非空时把 Turn/Step 生命周期记录落库（P1.8）。
 	store store.Store
+	// sink 非空时把统一 SSE 事件（P1.9 事件路由）实时广播给会话客户端；
+	// 三期 ChatEvent 事件流原样保留（D-08：迁移期旧事件继续可消费）。
+	sink func(sse.Event)
 }
 
 // NewChat 创建二期 Agent 服务。
@@ -149,6 +153,26 @@ func newChat(cfg *config.Config, newReader func() (scanner.Reader, error), llmFa
 // Session/Turn 及其 Reason/Tool/Observe/Approval/Response Step 记录入库，与三期文件会话并存。
 func NewChatWithStore(cfg *config.Config, newReader func() (scanner.Reader, error), llmFactory func(llm.Options) llm.LLMClient, scanFactory func() tools.ScanRunner, newWriteRunner func() (tools.WriteRunner, error), st store.Store) ChatService {
 	return newChat(cfg, newReader, llmFactory, scanFactory, newWriteRunner, st)
+}
+
+// NewChatWithSink 创建四期 Agent 服务：保留三期事件流，并通过 sink 实时广播统一 SSE 事件（P1.9）。
+// 无 Store 参与，仅做事件路由广播。
+func NewChatWithSink(cfg *config.Config, newReader func() (scanner.Reader, error), llmFactory func(llm.Options) llm.LLMClient, scanFactory func() tools.ScanRunner, newWriteRunner func() (tools.WriteRunner, error), sink func(sse.Event)) ChatService {
+	svc := newChat(cfg, newReader, llmFactory, scanFactory, newWriteRunner, nil).(*chatService)
+	svc.sink = sink
+	return svc
+}
+
+// NewChatWithStoreAndSink 创建四期 Agent 服务：同时做 Store 持久化（P1.8）与统一 SSE 事件广播（P1.9）。
+func NewChatWithStoreAndSink(cfg *config.Config, newReader func() (scanner.Reader, error), llmFactory func(llm.Options) llm.LLMClient, scanFactory func() tools.ScanRunner, newWriteRunner func() (tools.WriteRunner, error), st store.Store, sink func(sse.Event)) ChatService {
+	svc := newChat(cfg, newReader, llmFactory, scanFactory, newWriteRunner, st).(*chatService)
+	svc.sink = sink
+	return svc
+}
+
+// SetSink 挂载统一 SSE 事件广播（P1.9 事件路由入口，Web 用可选接口断言注入）。
+func (s *chatService) SetSink(sink func(sse.Event)) {
+	s.sink = sink
 }
 
 // chatReader 从配置构建只读 Kubernetes 门面（chat 用）。
@@ -317,11 +341,14 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 		SkipPermissions: req.SkipPermissions || s.cfg.Agent.SkipPermissions,
 		DenyOps:         s.cfg.Agent.DenyOps,
 	}
+	// P1.9: 生命周期观察器同时负责 Store 持久化与统一事件广播，approver 复用同一
+	// runScope 给 approval.required 补全关联字段。
+	tracer, scope := s.chatTracer(ctx, sess)
 	approver := &chatApprover{
-		events:      events,
-		respond:     respond,
-		skip:        false,
-		autoApprove: false,
+		events:  events,
+		respond: respond,
+		sink:    s.sink,
+		scope:   scope,
 	}
 	client := s.llmFactory(llm.Options{
 		Endpoint:        s.cfg.LLM.Endpoint,
@@ -335,6 +362,10 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 		DisableStream:   !s.cfg.LLM.Stream, // llm.stream=false：ChatStream 退化为非流式
 	})
 	recorder := s.newAuditRecorder(sess.ID)
+	// P1.9: 会话创建即广播 session.created；后续 Turn/Step 生命周期由 Tracer 转发。
+	if s.sink != nil {
+		s.sink(sse.New(sess.ID, "", "", sse.EventSessionCreated, sse.SessionData{State: sess.State}))
+	}
 	ag := agent.New(agent.Options{
 		LLM:            client,
 		Tools:          reg,
@@ -342,7 +373,7 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 		Approver:       approver,
 		ApprovalPolicy: &pol,
 		Recorder:       recorder,
-		Tracer:         s.chatTracer(ctx, sess),
+		Tracer:         tracer,
 		MaxIterations:  s.cfg.Agent.MaxIterations,
 		MaxToolCalls:   s.cfg.Agent.MaxToolCalls,
 		Timeout:        s.cfg.Agent.Timeout,
@@ -351,21 +382,27 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 		TurnMaxBytes:   s.cfg.Agent.TurnMaxBytes,
 		HistoryTurns:   s.cfg.Agent.HistoryTurns,
 	})
-	go s.runChat(ctx, ag, sess, req, events, recorder)
+	go s.runChat(ctx, ag, sess, req, events, recorder, s.sink, scope)
 	return events, nil
 }
 
-// chatTracer 在配置了四期 Store 时返回持久化 Tracer：先把 Session 快照写入 SQLite，
-// 再把 Agent 运行生命周期（Turn/Step）实时落库。数据库不可用时不阻塞聊天，仅回退为不持久化。
-func (s *chatService) chatTracer(ctx context.Context, sess *session.Session) agent.Tracer {
-	if s.store == nil {
-		return nil
+// chatTracer 装配生命周期观察器：同时返回统一事件广播器（P1.9）与当前运行
+// turn/step 作用域（供 runChat 补充 message.delta 关联字段）。
+// 数据库不可用时不阻塞聊天，仅回退为不持久化。
+func (s *chatService) chatTracer(ctx context.Context, sess *session.Session) (agent.Tracer, *runScope) {
+	scope := &runScope{sessID: sess.ID}
+	var persist agent.Tracer
+	if s.store != nil {
+		if err := s.store.Sessions().Create(ctx, sess); err != nil && !errors.Is(err, store.ErrExists) {
+			slog.Warn("chat: 四期会话初始化失败，本轮跳过 Turn/Step 持久化", "session", sess.ID, "error", err)
+		} else {
+			persist = &persistTracer{store: s.store}
+		}
 	}
-	if err := s.store.Sessions().Create(ctx, sess); err != nil && !errors.Is(err, store.ErrExists) {
-		slog.Warn("chat: 四期会话初始化失败，本轮跳过 Turn/Step 持久化", "session", sess.ID, "error", err)
-		return nil
+	if s.sink == nil && persist == nil {
+		return nil, scope
 	}
-	return &persistTracer{store: s.store}
+	return &fanOutTracer{scope: scope, persist: persist, sink: s.sink}, scope
 }
 
 // persistTracer 把 Agent 生命周期回调写入四期 Store（P1.8）。落库前由 Store 侧统一脱敏，
@@ -409,7 +446,7 @@ func (s *chatService) newAuditRecorder(sessionID string) audit.Recorder {
 	return r
 }
 
-func (s *chatService) runChat(ctx context.Context, ag *agent.Agent, sess *session.Session, req ChatRequest, events chan<- ChatEvent, recorder audit.Recorder) {
+func (s *chatService) runChat(ctx context.Context, ag *agent.Agent, sess *session.Session, req ChatRequest, events chan<- ChatEvent, recorder audit.Recorder, sink func(sse.Event), scope *runScope) {
 	defer close(events)
 	defer func() { _ = recorder.Close() }()
 	done := make(chan struct{})
@@ -418,18 +455,23 @@ func (s *chatService) runChat(ctx context.Context, ag *agent.Agent, sess *sessio
 		var pendingAnswer strings.Builder
 		var reasoning strings.Builder
 		hadToolCall := false
+		msgIndex := 0
 		for m := range ag.Output {
 			if ev, ok := translateEvent(m); ok {
 				switch ev.Type {
 				case ChatEventReasoningDelta:
 					reasoning.WriteString(ev.Text)
 					events <- ev
+					emitMessageDelta(sink, scope, "reasoning", ev.Text, msgIndex)
+					msgIndex++
 				case ChatEventProgress:
 					events <- ev
 				case ChatEventAnswerDelta, ChatEventDelta:
 					// 先缓存回答增量。若后续发现本轮实际包含工具调用，
 					// 这段内容只能是工具前的中间说明，不能提前展示为报告。
 					pendingAnswer.WriteString(ev.Text)
+					emitMessageDelta(sink, scope, "assistant", ev.Text, msgIndex)
+					msgIndex++
 				case ChatEventToolCall:
 					if progress := summarizeToolPrelude(pendingAnswer.String()); progress != "" {
 						events <- ChatEvent{Type: ChatEventProgress, Text: progress}
@@ -455,6 +497,20 @@ func (s *chatService) runChat(ctx context.Context, ag *agent.Agent, sess *sessio
 	}()
 	answer, usage, chatErr := ag.Chat(ctx, req.Query)
 	sess.State = string(ag.State)
+	if sink != nil {
+		if chatErr != nil {
+			sink(sse.New(sess.ID, scope.turn(), "", sse.EventSessionFailed, sse.SessionData{
+				State: sess.State, Reason: chatErr.Error(),
+			}))
+		} else {
+			sink(sse.New(sess.ID, scope.turn(), "", sse.EventSessionCompleted, sse.SessionData{State: sess.State}))
+		}
+		if answer != "" {
+			sink(sse.New(sess.ID, scope.turn(), "", sse.EventMessageCompleted, sse.MessageData{
+				Role: "assistant", Delta: store.RedactJSONPayload(answer),
+			}))
+		}
+	}
 	// 关闭 Agent 输出通道，让事件转发协程结束。
 	close(ag.Output)
 	<-done
@@ -470,6 +526,16 @@ func (s *chatService) runChat(ctx context.Context, ag *agent.Agent, sess *sessio
 	if chatErr != nil {
 		events <- ChatEvent{Type: ChatEventError, Text: chatErr.Error()}
 	}
+}
+
+// emitMessageDelta 通过 sink 广播统一 message.delta 事件（携带当前 turn/step 作用域）。
+func emitMessageDelta(sink func(sse.Event), scope *runScope, role, delta string, index int) {
+	if sink == nil {
+		return
+	}
+	sink(sse.New(scope.session(), scope.turn(), scope.step(), sse.EventMessageDelta, sse.MessageData{
+		Role: role, Delta: delta, Index: index,
+	}))
 }
 
 func persistReasoning(sess *session.Session, text string) {
@@ -551,6 +617,9 @@ type chatApprover struct {
 	respond     <-chan string
 	skip        bool
 	autoApprove bool
+	// sink 非空时以统一事件顺带广播审批请求（P1.9）。
+	sink  func(sse.Event)
+	scope *runScope
 }
 
 func (a *chatApprover) Confirm(ctx context.Context, prompt string, options []agent.UserChoiceOption) (string, error) {
@@ -562,6 +631,15 @@ func (a *chatApprover) Confirm(ctx context.Context, prompt string, options []age
 		opts = append(opts, ChatChoiceOption{Label: o.Label, Value: o.Value})
 	}
 	a.events <- ChatEvent{Type: ChatEventChoice, Choice: &ChatChoice{Prompt: prompt, Options: opts}}
+	if a.sink != nil {
+		sseOpts := make([]sse.ChoiceOption, 0, len(options))
+		for _, o := range options {
+			sseOpts = append(sseOpts, sse.ChoiceOption{Label: o.Label, Value: o.Value})
+		}
+		a.sink(sse.New(a.scope.session(), a.scope.turn(), a.scope.step(), sse.EventApprovalRequired, sse.ApprovalData{
+			Prompt: prompt, Options: sseOpts,
+		}))
+	}
 	select {
 	case <-ctx.Done():
 		return "", ctx.Err()
@@ -577,6 +655,12 @@ func (a *chatApprover) RequestSecretValue(ctx context.Context, prompt string) (s
 		return "", errors.New("非交互模式下无法向用户索取 Secret 值，请改用 $GENERATE 由 k8s-ai 随机生成")
 	}
 	a.events <- ChatEvent{Type: ChatEventChoice, Choice: &ChatChoice{Prompt: prompt, Secret: true}}
+	if a.sink != nil {
+		// 只下发 secret=true 标记，明文值从不进入事件流（AGENTS.md 红线）。
+		a.sink(sse.New(a.scope.session(), a.scope.turn(), a.scope.step(), sse.EventApprovalRequired, sse.ApprovalData{
+			Prompt: prompt, Secret: true,
+		}))
+	}
 	select {
 	case <-ctx.Done():
 		return "", ctx.Err()

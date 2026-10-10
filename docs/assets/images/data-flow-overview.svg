@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 800" style="background:#fff" font-family="'Microsoft YaHei','PingFang SC','Noto Sans CJK SC',Arial,sans-serif">
+  <defs>
+    <filter id="df-shadow" x="-8%" y="-8%" width="116%" height="122%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0f172a" flood-opacity="0.13"/>
+    </filter>
+    <marker id="df-arr" markerWidth="11" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M0,0 L11,4 L0,8 Z" fill="#475569"/>
+    </marker>
+    <marker id="df-arrd" markerWidth="11" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M0,0 L11,4 L0,8 Z" fill="#be123c" opacity="0.8"/>
+    </marker>
+  </defs>
+
+  <text x="500" y="30" font-size="24" font-weight="bold" text-anchor="middle" fill="#0f172a">k8s-ai Agent 工作数据流</text>
+  <text x="500" y="50" font-size="13" text-anchor="middle" fill="#64748b">一次自然语言运维的完整闭环：理解 → 决策 → 执行 → 回报 → 留痕</text>
+
+  <!-- ============ 节点 1 用户请求 ============ -->
+  <rect x="60" y="66" width="560" height="54" rx="10" fill="#1e293b" filter="url(#df-shadow)"/>
+  <text x="340" y="93" font-size="15" font-weight="bold" text-anchor="middle" fill="#ffffff">① 用户发起自然语言请求</text>
+  <text x="340" y="112" font-size="11" text-anchor="middle" fill="#cbd5e1">CLI chat / Web UI · 巡检、诊断、变更、资源创建</text>
+  <line x1="340" y1="120" x2="340" y2="148" stroke="#475569" stroke-width="2" marker-end="url(#df-arr)"/>
+
+  <!-- ============ 节点 2 会话接入 ============ -->
+  <rect x="60" y="148" width="560" height="54" rx="10" fill="#0f766e" filter="url(#df-shadow)"/>
+  <text x="340" y="175" font-size="15" font-weight="bold" text-anchor="middle" fill="#ffffff">② 统一接入 · 会话恢复 · 审计登记</text>
+  <text x="340" y="194" font-size="11" text-anchor="middle" fill="#99f6e4">ChatService 分发 · 加载历史上下文 · 登记本次会话</text>
+  <line x1="340" y1="202" x2="340" y2="230" stroke="#475569" stroke-width="2" marker-end="url(#df-arr)"/>
+
+  <!-- ============ 节点 3 Agent Loop ============ -->
+  <rect x="60" y="230" width="560" height="60" rx="10" fill="#4f46e5" filter="url(#df-shadow)"/>
+  <text x="340" y="258" font-size="15" font-weight="bold" text-anchor="middle" fill="#ffffff">③ Agent Loop · 意图理解与规划</text>
+  <text x="340" y="278" font-size="11" text-anchor="middle" fill="#c7d2fe">LLM 推理 · 生成执行计划 · 展示思考过程（reasoning）</text>
+
+  <!-- 分支箭头 -->
+  <line x1="230" y1="290" x2="230" y2="318" stroke="#475569" stroke-width="2" marker-end="url(#df-arr)"/>
+  <line x1="470" y1="290" x2="470" y2="318" stroke="#be123c" stroke-width="2" marker-end="url(#df-arrd)"/>
+  <text x="236" y="308" font-size="10" font-weight="bold" fill="#15803d">读 / 自动</text>
+  <text x="476" y="308" font-size="10" font-weight="bold" fill="#be123c">写 / 审批</text>
+
+  <!-- ============ 读路径 ============ -->
+  <rect x="64" y="318" width="270" height="140" rx="10" fill="#ecfdf5" stroke="#22c55e"/>
+  <text x="199" y="342" font-size="13" font-weight="bold" text-anchor="middle" fill="#166534">读 / 诊断路径 · 自动执行</text>
+  <text x="199" y="366" font-size="11" text-anchor="middle" fill="#15803d">结构化读工具 · 22 只读 + 5 诊断</text>
+  <text x="199" y="384" font-size="11" text-anchor="middle" fill="#15803d">扫描引擎 · 规则引擎 · 证据链</text>
+  <text x="199" y="402" font-size="11" text-anchor="middle" fill="#15803d">状态 / Events / 日志 / 事件采集</text>
+  <text x="199" y="424" font-size="11" font-weight="bold" text-anchor="middle" fill="#047857">结果脱敏后进入 LLM 推理</text>
+
+  <!-- ============ 写路径 ============ -->
+  <rect x="364" y="318" width="256" height="140" rx="10" fill="#fff1f2" stroke="#fda4af"/>
+  <text x="492" y="342" font-size="13" font-weight="bold" text-anchor="middle" fill="#9f1239">写 / 创建路径 · 强制审批</text>
+  <text x="492" y="362" font-size="11" text-anchor="middle" fill="#be123c">变更工具：kubectl / create_resource</text>
+  <rect x="384" y="372" width="216" height="30" rx="6" fill="#f59e0b"/>
+  <text x="492" y="391" font-size="10.5" font-weight="bold" text-anchor="middle" fill="#7c2d12">审批层 · 人工确认（风险分级 · 拒绝闸门）</text>
+  <line x1="492" y1="402" x2="492" y2="410" stroke="#be123c" stroke-width="2" marker-end="url(#df-arrd)"/>
+  <rect x="384" y="410" width="216" height="30" rx="6" fill="#e11d48"/>
+  <text x="492" y="429" font-size="10.5" font-weight="bold" text-anchor="middle" fill="#ffffff">执行层 · dry-run → apply（SSA）→ verify</text>
+  <text x="492" y="451" font-size="10" text-anchor="middle" fill="#9f1239">变更全程脱敏留痕</text>
+
+  <!-- 汇聚箭头 -->
+  <line x1="199" y1="458" x2="199" y2="486" stroke="#475569" stroke-width="2" marker-end="url(#df-arr)"/>
+  <line x1="480" y1="458" x2="480" y2="486" stroke="#475569" stroke-width="2" marker-end="url(#df-arr)"/>
+
+  <!-- ============ 节点 Kubernetes ============ -->
+  <rect x="60" y="486" width="560" height="66" rx="10" fill="#326ce5" filter="url(#df-shadow)"/>
+  <text x="340" y="512" font-size="15" font-weight="bold" text-anchor="middle" fill="#ffffff">④ Kubernetes 集群 · 受控访问</text>
+  <text x="340" y="531" font-size="11" text-anchor="middle" fill="#bfdbfe">API Server · client-go / kubectl / dynamic + SSA（fieldManager=k8s-ai）</text>
+  <text x="340" y="546" font-size="10" text-anchor="middle" fill="#dbeafe">权限边界来自 Kubernetes RBAC · Secret 仅键级元数据读取</text>
+  <line x1="340" y1="552" x2="340" y2="580" stroke="#475569" stroke-width="2" marker-end="url(#df-arr)"/>
+
+  <!-- ============ 节点 结果整合与流式回报 ============ -->
+  <rect x="60" y="580" width="560" height="56" rx="10" fill="#166534" filter="url(#df-shadow)"/>
+  <text x="340" y="607" font-size="15" font-weight="bold" text-anchor="middle" fill="#ffffff">⑤ 结果整合 · 流式回报</text>
+  <text x="340" y="627" font-size="11" text-anchor="middle" fill="#a7f3d0">SSE：思考过程 → 工具卡片 → 结论 / 修复建议 / 命令回显</text>
+  <line x1="340" y1="636" x2="340" y2="664" stroke="#475569" stroke-width="2" marker-end="url(#df-arr)"/>
+
+  <!-- ============ 节点 全链路落库 ============ -->
+  <rect x="60" y="664" width="560" height="54" rx="10" fill="#0e7490" filter="url(#df-shadow)"/>
+  <text x="340" y="691" font-size="15" font-weight="bold" text-anchor="middle" fill="#ffffff">⑥ 全链路落库 · 可追溯可问责</text>
+  <text x="340" y="710" font-size="11" text-anchor="middle" fill="#a5f3fc">Session 会话 · Audit 审计 · Report 报告（全程脱敏持久化）</text>
+
+  <!-- ============ 安全红线侧栏 ============ -->
+  <rect x="660" y="200" width="280" height="352" rx="12" fill="#fef2f2" stroke="#fca5a5"/>
+  <line x1="660" y1="232" x2="940" y2="232" stroke="#fca5a5" stroke-width="1"/>
+  <text x="800" y="222" font-size="14" font-weight="bold" text-anchor="middle" fill="#b91c1c">安全红线 · 贯穿全链路</text>
+  <text x="682" y="262" font-size="11" fill="#7f1d1d">· Secret 内容值零进入</text>
+  <text x="692" y="280" font-size="11" fill="#7f1d1d">LLM / 会话 / 审计</text>
+  <text x="682" y="306" font-size="11" fill="#7f1d1d">· 双重脱敏 · 定界只读</text>
+  <text x="682" y="332" font-size="11" fill="#7f1d1d">· 写操作必须人工审批</text>
+  <text x="682" y="358" font-size="11" fill="#7f1d1d">· LLM 无执行能力</text>
+  <text x="682" y="376" font-size="11" fill="#7f1d1d">· RBAC 划权限边界</text>
+  <text x="682" y="402" font-size="11" fill="#7f1d1d">· 拒绝闸门 · 防反复误操作</text>
+  <text x="682" y="428" font-size="11" fill="#7f1d1d">· Prompt 注入防护</text>
+  <text x="682" y="454" font-size="11" fill="#7f1d1d">· 每次变更可追溯可问责</text>
+  <text x="682" y="504" font-size="11" font-weight="bold" fill="#b91c1c">一切数据留在企业内网，</text>
+  <text x="682" y="522" font-size="11" font-weight="bold" fill="#b91c1c">模型可私有化部署。</text>
+
+  <!-- ============ 底部安全横条 ============ -->
+  <rect x="40" y="748" width="920" height="34" rx="8" fill="#dc2626"/>
+  <text x="500" y="770" font-size="13" font-weight="bold" text-anchor="middle" fill="#ffffff">读自动 · 写审批 · Secret 拒读 · 全链留痕 —— AI 敢用、用得放心</text>
+</svg>

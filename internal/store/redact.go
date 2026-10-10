@@ -30,6 +30,12 @@ func redactJSONPayload(payload string) string {
 	return auditRedactor.Redact(payload)
 }
 
+// RedactJSONPayload 是对外统一 JSON 脱敏入口（SSE 事件流 / 审批 / 审计等所有
+// 出站负载共用同一策略）：敏感键名整值替换 + 自由文本兜底，Secret 明文不落任何出口。
+func RedactJSONPayload(payload string) string {
+	return redactJSONPayload(payload)
+}
+
 func redactInPlace(v *any) {
 	switch val := (*v).(type) {
 	case map[string]any:

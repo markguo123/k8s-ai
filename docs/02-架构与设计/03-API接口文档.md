@@ -203,6 +203,8 @@ GET  /api/v1/scans/{id}     // 状态: pending/running/succeeded/failed + result
 
 浏览器通过 SSE 消费会话事件流（先 `history` 快照，后实时增量），写操作通过
 `send-message` / `approve` / `cancel` 三组端点编排，实现运行中可停止。
+四期起（P1.9）同一 SSE 通道双轨承载：三期旧事件线格式原样保留供迁移期继续消费，
+统一新事件（`internal/sse`）按 `session_id` 扇出到会话缓冲，供 Web Shell 新前端驱动展示。
 
 ```text
 GET  /                                  // 单文件 SPA（嵌入式 index.html）
@@ -232,6 +234,45 @@ POST /api/sessions/{id}/cancel          // 取消当前运行（context cancel�
 
 > 后端当前主要下发 `answer-delta` 流；`reasoning-delta` / `tool-call` / `answer` 事件经 SSE
 > 转发给前端驱动三个阶段（推理展开 → 工具卡 → 最终回答折叠）。
+
+### 9.2 四期统一事件流（P1.9）
+
+统一事件信封 JSON（snake_case，每个事件必带）：
+
+```text
+session_id
+turn_id
+step_id
+timestamp
+event_type
+data        // 各事件专属载荷，可为 null
+```
+
+支持的事件类型：
+
+```text
+session.created
+turn.started
+turn.completed
+reason.started
+reason.completed
+tool.started
+tool.completed
+observation.created
+approval.required
+approval.approved
+approval.rejected
+message.delta
+message.completed
+session.completed
+session.failed
+```
+
+数据面：`internal/sse` 提供 Marshal / Frame（多行 data 兼容）/ MarshalLegacy 与
+`MapFromLegacy` / `MapToLegacy` 双向映射层。三期旧事件（answer-delta /
+reasoning-delta / tool-call / tool-response / choice-request 等）在映射期内继续可消费，
+未完成映射前不得移除。所有出站 `params` / `result` / 回答负载在封装前统一经
+`store.RedactJSONPayload` 脱敏，Secret / kubeconfig / API Key 明文永不进入 SSE。
 
 ## 10. 一期~三期依赖矩阵
 

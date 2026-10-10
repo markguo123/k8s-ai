@@ -15,6 +15,7 @@ import (
 
 	"github.com/k8s-ai/k8s-ai/internal/service"
 	"github.com/k8s-ai/k8s-ai/internal/session"
+	"github.com/k8s-ai/k8s-ai/internal/sse"
 )
 
 //go:embed index.html
@@ -27,6 +28,13 @@ type chatService interface {
 	ListSessions() ([]session.Session, error)
 	DeleteSession(id string) error
 	RenameSession(id, name string) error
+}
+
+// sseEmitter 是可为 ChatService 挂载统一事件广播的可选接口（P1.9）。
+// 三期实现不需要支持；四期服务通过 NewChatWithSink/NewChatWithStoreAndSink 构造后实现，
+// 使 SSE 同时承载统一新事件与三期旧事件（D-08：迁移期旧事件继续可消费）。
+type sseEmitter interface {
+	SetSink(sink func(sse.Event))
 }
 
 // Broadcaster 每会话一个，SSE 消息扇出（设计借鉴 kubectl-ai）。
@@ -78,13 +86,26 @@ type Server struct {
 
 // New 创建 Web UI 服务。
 func New(chat chatService, model string) *Server {
-	return &Server{
+	s := &Server{
 		chat:         chat,
 		model:        model,
 		broadcasters: map[string]*Broadcaster{},
 		pending:      map[string]chan string{},
 		runs:         map[string]context.CancelFunc{},
 	}
+	// 服务端事件路由：统一事件按 session_id 扇出到对应 Broadcaster；
+	// 旧 ChatEvent JSON 仍在 handleSendMessage 里并行广播，两者不互相覆盖。
+	if em, ok := chat.(sseEmitter); ok {
+		em.SetSink(func(e sse.Event) {
+			raw, err := json.Marshal(e)
+			if err != nil {
+				slog.Warn("webui: 统一事件序列化失败", "error", err)
+				return
+			}
+			s.broadcaster(e.SessionID).broadcast(raw)
+		})
+	}
+	return s
 }
 
 // Handler 返回路由。
