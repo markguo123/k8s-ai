@@ -290,31 +290,77 @@ func (st *sessionStore) Delete(ctx context.Context, id string) error {
 
 type auditStore struct{ s *dbStore }
 
+// auditSelectColumns 是 audit_events 的读取列（顺序与 scanAudit 一致）。
+const auditSelectColumns = `id, timestamp, request_id, session_id, turn_id, step_id,
+		user_id, cluster_id, action, payload, event_type, resource_kind, resource_name,
+		operation, risk, decision, approval_id, grant_id, match_reason,
+		parameter_summary, result_summary, status`
+
+// maxAuditSummary 是摘要列的字符上限：MySQL 侧 parameter_summary/result_summary
+// 是 VARCHAR(1024)，超写会被严格模式拒绝，因此写入前统一截断。
+const maxAuditSummary = 1024
+
+// auditSummary 归一化摘要列：先按敏感键名脱敏，再按上限截断。
+func auditSummary(s string) string {
+	s = redactJSONPayload(s)
+	r := []rune(s)
+	if len(r) <= maxAuditSummary {
+		return s
+	}
+	return string(r[:maxAuditSummary-1]) + "…"
+}
+
+// scanAudit 扫描一行审计记录（Get/List 共用）。
+func scanAudit(row interface{ Scan(...any) error }) (*AuditEvent, error) {
+	e := &AuditEvent{}
+	err := row.Scan(&e.ID, &e.Timestamp, &e.RequestID, &e.SessionID, &e.TurnID, &e.StepID,
+		&e.UserID, &e.ClusterID, &e.Action, &e.Payload, &e.EventType, &e.ResourceKind,
+		&e.ResourceName, &e.Operation, &e.Risk, &e.Decision, &e.ApprovalID, &e.GrantID,
+		&e.MatchReason, &e.ParameterSummary, &e.ResultSummary, &e.Status)
+	if err != nil {
+		return nil, err
+	}
+	return e, nil
+}
+
+// Write 落一条审计事件。EventType 缺省时由 Action 推导；payload 与两个摘要列
+// 在写库前脱敏，确保 Secret 值 / kubeconfig / API Key 明文永不入库（AGENTS.md）。
 func (st *auditStore) Write(ctx context.Context, e *AuditEvent) error {
 	if e.Timestamp.IsZero() {
 		e.Timestamp = time.Now()
 	}
+	if e.EventType == "" {
+		e.EventType = EventTypeForAction(e.Action)
+	}
 	payload := redactJSONPayload(e.Payload)
+	e.Payload = payload
 	res, err := st.s.db.ExecContext(ctx, `
-		INSERT INTO audit_events (timestamp, request_id, session_id, turn_id, step_id, user_id, cluster_id, action, payload)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		e.Timestamp, e.RequestID, e.SessionID, e.TurnID, e.StepID, e.UserID, e.ClusterID, e.Action, payload)
+		INSERT INTO audit_events (timestamp, request_id, session_id, turn_id, step_id,
+			user_id, cluster_id, action, payload, event_type, resource_kind, resource_name,
+			operation, risk, decision, approval_id, grant_id, match_reason,
+			parameter_summary, result_summary, status)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.Timestamp, e.RequestID, e.SessionID, e.TurnID, e.StepID, e.UserID, e.ClusterID,
+		e.Action, payload, e.EventType, e.ResourceKind, e.ResourceName, e.Operation,
+		e.Risk, e.Decision, e.ApprovalID, e.GrantID, e.MatchReason,
+		auditSummary(e.ParameterSummary), auditSummary(e.ResultSummary), e.Status)
 	if err != nil {
 		return fmt.Errorf("write audit event: %w", err)
 	}
+	// 回写自增主键与归一化后的字段，便于调用方直接引用（失败不影响写入）。
 	if id, err := res.LastInsertId(); err == nil {
 		e.ID = id
 	}
+	e.ParameterSummary = auditSummary(e.ParameterSummary)
+	e.ResultSummary = auditSummary(e.ResultSummary)
 	return nil
 }
 
 func (st *auditStore) Get(ctx context.Context, id int64) (*AuditEvent, error) {
-	e := &AuditEvent{}
-	err := st.s.db.QueryRowContext(ctx, `
-		SELECT id, timestamp, request_id, session_id, turn_id, step_id, user_id, cluster_id, action, payload
-		FROM audit_events WHERE id = ?`, id).
-		Scan(&e.ID, &e.Timestamp, &e.RequestID, &e.SessionID, &e.TurnID, &e.StepID,
-			&e.UserID, &e.ClusterID, &e.Action, &e.Payload)
+	row := st.s.db.QueryRowContext(ctx, `
+		SELECT `+auditSelectColumns+`
+		FROM audit_events WHERE id = ?`, id)
+	e, err := scanAudit(row)
 	if err != nil {
 		return nil, mapErr(err, "get audit event")
 	}
@@ -323,17 +369,16 @@ func (st *auditStore) Get(ctx context.Context, id int64) (*AuditEvent, error) {
 
 func (st *auditStore) List(ctx context.Context) ([]*AuditEvent, error) {
 	rows, err := st.s.db.QueryContext(ctx, `
-		SELECT id, timestamp, request_id, session_id, turn_id, step_id, user_id, cluster_id, action, payload
-		FROM audit_events ORDER BY timestamp DESC`)
+		SELECT `+auditSelectColumns+`
+		FROM audit_events ORDER BY timestamp DESC, id DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list audit events: %w", err)
 	}
 	defer rows.Close()
 	var out []*AuditEvent
 	for rows.Next() {
-		e := &AuditEvent{}
-		if err := rows.Scan(&e.ID, &e.Timestamp, &e.RequestID, &e.SessionID, &e.TurnID, &e.StepID,
-			&e.UserID, &e.ClusterID, &e.Action, &e.Payload); err != nil {
+		e, err := scanAudit(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan audit event: %w", err)
 		}
 		out = append(out, e)

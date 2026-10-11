@@ -45,6 +45,10 @@ type ScanJob struct {
 type Server struct {
 	svc     service.ScanService
 	auth    authService
+	// settings 是配置中心应用服务（P1.10），nil 时配置端点返回 501。
+	settings settingsService
+	// auditlog 写系统事件（LOGIN/LOGOUT 等，P1.11），nil 时跳过。
+	auditlog auditWriter
 	perms   *permission.Enforcer
 	mu      sync.Mutex
 	jobs    map[string]*ScanJob
@@ -67,6 +71,15 @@ func NewWithAuth(svc service.ScanService, auth authService) *Server {
 	return s
 }
 
+// NewWithPlatform 创建服务并装配四期平台底座依赖（P1.10/P1.11）：
+// 配置中心应用服务与系统事件审计写入。auth 仍由调用方按需注入。
+func NewWithPlatform(svc service.ScanService, auth authService, settingsSvc settingsService, audit auditWriter) *Server {
+	s := NewWithAuth(svc, auth)
+	s.settings = settingsSvc
+	s.auditlog = audit
+	return s
+}
+
 // Handler 返回路由。
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -78,6 +91,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/auth/me", s.handleMe)
 	mux.HandleFunc("POST /api/v1/scans", s.handleCreateScan)
 	mux.HandleFunc("GET /api/v1/scans/{id}", s.handleGetScan)
+	mux.HandleFunc("GET /api/v1/settings/{group}", s.handleGetSettings)
+	mux.HandleFunc("PATCH /api/v1/settings/{group}", s.handlePatchSettings)
 	return WithMiddleware(mux, DefaultCORS(), s.perms, s.principal)
 }
 

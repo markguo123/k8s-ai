@@ -48,6 +48,20 @@ type CreateOptions struct {
 	VerifyTimeout time.Duration
 	// Skills 是内置/用户 Skill 注册表（R5.7）。nil 时跳过 Skill 校验。
 	Skills skills.Registry
+	// OnSkillRun 在每次 Skill 校验完成后回调（四期 P1.11 的 SKILL_RUN 审计来源）。
+	// 可选：nil 时不回调。工具层只上报观测数据，不感知审计/存储实现。
+	OnSkillRun func(SkillRunReport)
+}
+
+// SkillRunReport 是一次 Skill 校验的观测数据（对象粒度，一次工具调用内每个对象一条）。
+type SkillRunReport struct {
+	Kind      string
+	Name      string
+	Namespace string
+	// Skills 是命中的 Skill 名（去重、按首次出现顺序）。
+	Skills     []string
+	Findings   int
+	Escalation int
 }
 
 // 创建工具的入参取值与错误码（稳定契约：进入审计与提示词）。
@@ -457,10 +471,34 @@ func (t *createTool) baseOutcome(o *manifestx.Object) map[string]any {
 	if warns := o.Warnings(); len(warns) > 0 {
 		item["findings"] = warns
 	}
-	if finds := t.skillFindings(o); len(finds) > 0 {
+	finds := t.skillFindings(o)
+	if len(finds) > 0 {
 		item["skills"] = finds
 	}
+	reportSkillRun(t.opts.OnSkillRun, o, finds)
 	return item
+}
+
+// reportSkillRun 把本次 Skill 校验上报给应用层。回调是观察性质，不改变创建结果。
+func reportSkillRun(fn func(SkillRunReport), o *manifestx.Object, finds []skills.Finding) {
+	if fn == nil {
+		return
+	}
+	report := SkillRunReport{
+		Kind:       o.Kind,
+		Name:       o.Name,
+		Namespace:  o.Namespace,
+		Findings:   len(finds),
+		Escalation: len(skillEscalations(finds)),
+	}
+	seen := make(map[string]bool, len(finds))
+	for _, f := range finds {
+		if f.Skill != "" && !seen[f.Skill] {
+			seen[f.Skill] = true
+			report.Skills = append(report.Skills, f.Skill)
+		}
+	}
+	fn(report)
 }
 
 // riskFor 给出风险结论。解析失败已在前面拒绝，这里只处理合法清单。

@@ -296,6 +296,8 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 	if err != nil {
 		return nil, err
 	}
+	// 本轮运行的 turn/step 作用域要在工具装配前创建：Skill 观测回调要用它补关联字段。
+	scope := &runScope{sessID: sess.ID}
 	reg := tools.NewRegistry()
 	if err := k8stools.RegisterAll(reg, reader); err != nil {
 		return nil, err
@@ -326,6 +328,7 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 				return nil, err
 			}
 			opts.Skills = skillReg
+			opts.OnSkillRun = s.skillRunAuditor(ctx, sess, scope)
 			if err := reg.Register(tools.NewCreateTool(opts, runner, s.proposals, sess.ID)); err != nil {
 				return nil, err
 			}
@@ -343,7 +346,7 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 	}
 	// P1.9: 生命周期观察器同时负责 Store 持久化与统一事件广播，approver 复用同一
 	// runScope 给 approval.required 补全关联字段。
-	tracer, scope := s.chatTracer(ctx, sess)
+	tracer := s.chatTracer(ctx, sess, scope)
 	approver := &chatApprover{
 		events:  events,
 		respond: respond,
@@ -361,7 +364,7 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 		ReasoningFields: s.cfg.LLM.ReasoningFields,
 		DisableStream:   !s.cfg.LLM.Stream, // llm.stream=false：ChatStream 退化为非流式
 	})
-	recorder := s.newAuditRecorder(sess.ID)
+	recorder := s.newAuditRecorder(sess, scope)
 	// P1.9: 会话创建即广播 session.created；后续 Turn/Step 生命周期由 Tracer 转发。
 	if s.sink != nil {
 		s.sink(sse.New(sess.ID, "", "", sse.EventSessionCreated, sse.SessionData{State: sess.State}))
@@ -386,11 +389,10 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 	return events, nil
 }
 
-// chatTracer 装配生命周期观察器：同时返回统一事件广播器（P1.9）与当前运行
-// turn/step 作用域（供 runChat 补充 message.delta 关联字段）。
+// chatTracer 装配生命周期观察器：统一事件广播器（P1.9）+ Store 持久化（P1.8），
+// 两者共用调用方创建的 runScope（当前 turn/step 作用域）。
 // 数据库不可用时不阻塞聊天，仅回退为不持久化。
-func (s *chatService) chatTracer(ctx context.Context, sess *session.Session) (agent.Tracer, *runScope) {
-	scope := &runScope{sessID: sess.ID}
+func (s *chatService) chatTracer(ctx context.Context, sess *session.Session, scope *runScope) agent.Tracer {
 	var persist agent.Tracer
 	if s.store != nil {
 		if err := s.store.Sessions().Create(ctx, sess); err != nil && !errors.Is(err, store.ErrExists) {
@@ -400,9 +402,9 @@ func (s *chatService) chatTracer(ctx context.Context, sess *session.Session) (ag
 		}
 	}
 	if s.sink == nil && persist == nil {
-		return nil, scope
+		return nil
 	}
-	return &fanOutTracer{scope: scope, persist: persist, sink: s.sink}, scope
+	return &fanOutTracer{scope: scope, persist: persist, sink: s.sink}
 }
 
 // persistTracer 把 Agent 生命周期回调写入四期 Store（P1.8）。落库前由 Store 侧统一脱敏，
@@ -435,15 +437,25 @@ func (t *persistTracer) StepUpdated(ctx context.Context, step *session.Step) {
 	}
 }
 
-// newAuditRecorder 为会话创建 JSONL 审计记录器（目录不存在自动创建；失败回退日志记录器）。
-func (s *chatService) newAuditRecorder(sessionID string) audit.Recorder {
-	path := filepath.Join(s.cfg.Agent.AuditDir, sessionID+".jsonl")
-	r, err := audit.NewFileRecorder(path)
+// newAuditRecorder 为会话创建审计记录器（目录不存在自动创建；失败回退日志记录器）。
+// 装配了四期 Store 时同一事件同时落 AuditStore（P1.11），关联字段取自会话与本轮 turn/step。
+func (s *chatService) newAuditRecorder(sess *session.Session, scope *runScope) audit.Recorder {
+	path := filepath.Join(s.cfg.Agent.AuditDir, sess.ID+".jsonl")
+	var inner audit.Recorder
+	fileRecorder, err := audit.NewFileRecorder(path)
 	if err != nil {
 		slog.Warn("chat: 审计文件不可用，回退日志记录器", "path", path, "error", err)
-		return &audit.LogRecorder{}
+		inner = &audit.LogRecorder{}
+	} else {
+		inner = fileRecorder
 	}
-	return r
+	if s.store == nil {
+		return inner
+	}
+	return newStoreAuditRecorder(inner, s.store, scope, AuditScope{
+		SessionID: sess.ID,
+		ClusterID: sess.Cluster,
+	})
 }
 
 func (s *chatService) runChat(ctx context.Context, ag *agent.Agent, sess *session.Session, req ChatRequest, events chan<- ChatEvent, recorder audit.Recorder, sink func(sse.Event), scope *runScope) {

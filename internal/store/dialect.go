@@ -21,6 +21,9 @@ const (
 	colTime
 	// colTimeOrNull 可空时间列。
 	colTimeOrNull
+	// colTextMedium 中等长度文本：不建索引，可安全 ALTER 追加（SQLite TEXT，
+	// MySQL VARCHAR(1024)）。用于审计摘要这类需要补列且必须带 DEFAULT 的字段。
+	colTextMedium
 )
 
 // column 描述统一 schema 的一列。
@@ -61,6 +64,11 @@ type dialect interface {
 	upsert(table string, cols, conflictCols, updateCols []string) string
 	// isDuplicateIndexErr 判断"索引已存在"错误（MySQL 幂等迁移需忽略）。
 	isDuplicateIndexErr(err error) bool
+	// addColumn 渲染补列语句。只允许追加带常量默认值的非空列，
+	// 保证 SQLite（不支持非常量默认值）与 MySQL 都能幂等执行。
+	addColumn(table string, c column) string
+	// isDuplicateColumnErr 判断"列已存在"错误（补列幂等需忽略）。
+	isDuplicateColumnErr(err error) bool
 }
 
 // sqliteDialect 是 SQLite 的 SQL 方言。
@@ -101,10 +109,24 @@ func (sqliteDialect) upsert(table string, cols, conflictCols, updateCols []strin
 
 func (sqliteDialect) isDuplicateIndexErr(error) bool { return false }
 
+func (sqliteDialect) addColumn(table string, c column) string {
+	return fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s;", table, renderSQLiteColumn(c))
+}
+
+// SQLite 的重复补列错误文本为 "duplicate column name: x"。
+func (sqliteDialect) isDuplicateColumnErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return containsFold(err.Error(), "duplicate column name")
+}
+
 func renderSQLiteColumn(c column) string {
 	var typ string
 	switch c.kind {
 	case colText, colLong:
+		typ = "TEXT"
+	case colTextMedium:
 		typ = "TEXT"
 	case colInt, colBool:
 		typ = "INTEGER"
@@ -177,11 +199,25 @@ func (mysqlDialect) isDuplicateIndexErr(err error) bool {
 	return containsFold(err.Error(), "duplicate key name")
 }
 
+func (mysqlDialect) addColumn(table string, c column) string {
+	return fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s;", table, renderMySQLColumn(c))
+}
+
+// MySQL 的重复补列错误文本为 "Duplicate column name 'x'"（NO.1060）。
+func (mysqlDialect) isDuplicateColumnErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return containsFold(err.Error(), "duplicate column name")
+}
+
 func renderMySQLColumn(c column) string {
 	var typ string
 	switch c.kind {
 	case colText:
 		typ = "VARCHAR(191)"
+	case colTextMedium:
+		typ = "VARCHAR(1024)"
 	case colLong:
 		typ = "TEXT"
 	case colInt:

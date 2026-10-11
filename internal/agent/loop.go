@@ -798,7 +798,9 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolCall, batchApprove
 		_, hasErr = m["error"]
 	}
 	a.audit(ctx, audit.ActionToolCallResponse, map[string]any{
+		// readonly/risk 让四期审计能把非只读工具响应归类为 RESOURCE_MUTATION（P1.11）。
 		"name": call.Name, "truncated": tr.Truncated, "error": hasErr,
+		"readonly": t.IsReadOnly(call.Arguments), "risk": string(t.Risk(call.Arguments)),
 	})
 	if touches := tools.SecretTouchesFromData(tr.Data); len(touches) > 0 {
 		// 三期 R4.6：审计只记 key/长度/SHA-256/来源，明文值从不落盘。

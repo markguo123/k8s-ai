@@ -2,11 +2,11 @@
 
 本项目遵循 docs/VERSIONING.md 的里程碑阶梯约定。
 
-## [v4.0.0] - 开发中（2026-10-10）
+## [v4.0.0] - 开发中（2026-10-11）
 
 四期平台化 M1 平台底座推进中：前端工程与信息架构、统一 Store、HTTP 中间件、认证与权限门禁、
 Session/Turn/Step 模型与存储、Agent Runtime 生命周期持久化、SSE 事件路由与旧事件映射层
-（P1.1-P1.9 已完成）。
+（P1.1-P1.10 已完成，P1.11 进行中）。
 
 ### Added
 
@@ -19,6 +19,8 @@ Session/Turn/Step 模型与存储、Agent Runtime 生命周期持久化、SSE �
 - **Session/Turn/Step 模型与存储（P1.7）**：`internal/session/turn.go` 状态机（Turn 6 态 / Step 4 态 + token 用量）；Store 增加 `Turns()`/`Steps()` 与对应 CRUD/List，schemaVersion 2 新增 `turns`/`steps` 表与索引，写前脱敏与可空时间字段落地；含状态机与双方言 CRUD 单测。
 - **Agent Runtime 生命周期接入（P1.8）**：`internal/agent` 新增 `Tracer` 观察者接口，每轮 Chat 创建 Turn 并广播 Reason/Tool/Observe/Approval/Response Step 全生命周期，Turn 终态（done/fail）统一收尾；`internal/service` 新增 `NewChatWithStore`（旧 `NewChat` 签名兼容）经 `persistTracer` 落 SQLite，写库失败仅告警不阻塞 Agent；含生命周期时序与持久化断言单测。
 - **SSE 事件路由与旧事件映射层（P1.9）**：新 `internal/sse` 定义 15 类统一事件（session/turn/reason/tool/observation/approval/message 全生命周期）+ 必带信封字段（session_id/turn_id/step_id/timestamp/event_type），提供 Marshal/Frame 帧序列化与三期旧事件双向映射（MapFromLegacy/MapToLegacy）；`service` 新增 `NewChatWithSink`/`NewChatWithStoreAndSink`/`SetSink`，Chat 全生命周期（含审批 required/approved/rejected）双轨广播统一事件与旧 ChatEvent JSON，`webui.Server` 按 `session_id` 扇出统一事件到会话 Broadcaster；所有出站负载统一经 `store.RedactJSONPayload` 脱敏（Secret/kubeconfig/API Key 明文不出站）；含统一事件时序、并发作用域与 webui 路由断言单测。
+- **Config Service（P1.10）**：`internal/settings` 落地配置中心应用服务——需求 v1.2 §15 七组目录（`model`/`skill`/`approval`/`memory`/`retention`/`mcp`/`ops`），键定义携带类型、默认值、枚举、取值范围、敏感标记与三期 config 路径；读视图把目录默认值与已存值合并，写路径先整批校验再落库（任一未知键/枚举越界/类型不符即整批 400，同批合法键不留半成品），取值未变不产生写入与审计；`ImportConfig` 支持三期配置导入（等同默认值不入库）。API 新增 `GET|PATCH /api/v1/settings/{group}`，登记 `settings.read`/`settings.write` 权限。敏感键（`model.api_key`、`ops.kubeconfig`、`mcp.servers`）只在 PATCH 接收，GET 恒回 `value:null` + `hasValue`，明文不进响应、审计与日志。`server` 命令改用 `server.NewWithPlatform` 装配配置中心与 `service.AuditService`（此前配置端点在真实进程中不可达）。
+- **Audit 模型与系统事件写入（P1.11，进行中）**：`internal/store/audit_event.go` 成为 §19 事件类型枚举与「动作 → 事件分类」映射的唯一所有者（LOGIN/LOGOUT/SESSION/APPROVAL/GRANT/TOOL_CALL/RESOURCE_MUTATION/CONFIG_CHANGE/SKILL_RUN/CLUSTER_CHANGE + USER_INPUT/LLM_CALL/SECRET_READ/OTHER），`AuditEvent` 补齐 eventType / resourceKind / resourceName / operation / risk / decision / approvalId / grantId / matchReason / parameterSummary / resultSummary / status 字段，schemaVersion 提升到 3（`audit_events` 补列 + 历史记录回填）；`service.AuditService` 统一写前脱敏与事件分类，登录/登出（LOGIN/LOGOUT）与配置变更（CONFIG_CHANGE）系统事件落库，载荷只含分组与键名，不含口令、Token 或敏感取值。CLUSTER_CHANGE 写入随 P3.2 集群管理 API 落地。
 
 ### Changed
 
@@ -27,7 +29,7 @@ Session/Turn/Step 模型与存储、Agent Runtime 生命周期持久化、SSE �
 
 ### Tests
 
-- `go test ./...` 通过（含新增 `internal/agent/trace_test.go`、`internal/service/chat_persist_test.go`、`internal/sse/*_test.go`、`internal/service/chat_sse_test.go`、`internal/webui/sse_test.go`）
+- `go test ./...` 通过（含新增 `internal/agent/trace_test.go`、`internal/service/chat_persist_test.go`、`internal/sse/*_test.go`、`internal/service/chat_sse_test.go`、`internal/webui/sse_test.go`、`internal/settings/service_test.go`、`internal/server/settings_test.go`）
 - `go vet ./...` 通过
 - `tests/arch` 通过
 

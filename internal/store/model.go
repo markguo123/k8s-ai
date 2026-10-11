@@ -48,6 +48,10 @@ type Settings struct {
 
 // AuditEvent 是带全链路关联字段的结构化审计记录（P1.11 / v1.2 §19）。
 // payload 先经 redactor 脱敏再落库（与 audit.Event 同源，但增加关联字段）。
+//
+// 四期 §19 分类字段（EventType/ResourceKind/... /Status）由写入方填充；
+// Action 保留为「来源动作」（三期 audit.Action* 原始字符串），用于回放与
+// EventType 反查，两者都不承载任何 Secret/kubeconfig 明文。
 type AuditEvent struct {
 	ID        int64     `json:"id"`
 	Timestamp time.Time `json:"timestamp"`
@@ -59,6 +63,23 @@ type AuditEvent struct {
 	ClusterID string    `json:"clusterId,omitempty"`
 	Action    string    `json:"action"`
 	Payload   string    `json:"payload,omitempty"`
+
+	// EventType 是 §19 的事件分类（LOGIN/TOOL_CALL/APPROVAL/...），
+	// 由 EventTypeForAction 或写入方显式设置。
+	EventType string `json:"eventType,omitempty"`
+	// ResourceKind/ResourceName/Operation 描述被操作对象（可空）。
+	ResourceKind   string `json:"resourceKind,omitempty"`
+	ResourceName   string `json:"resourceName,omitempty"`
+	Operation      string `json:"operation,omitempty"`
+	Risk           string `json:"risk,omitempty"`
+	Decision       string `json:"decision,omitempty"`
+	ApprovalID     string `json:"approvalId,omitempty"`
+	GrantID        string `json:"grantId,omitempty"`
+	MatchReason    string `json:"matchReason,omitempty"`
+	ParameterSummary string `json:"parameterSummary,omitempty"`
+	ResultSummary    string `json:"resultSummary,omitempty"`
+	// Status 是结果状态：success | error | pending。
+	Status string `json:"status,omitempty"`
 }
 
 // Skill 是四期 Skill 平台记录：复用三期 skills.Skill 作为不可执行的结构化

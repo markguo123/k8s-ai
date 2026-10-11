@@ -39,6 +39,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusUnauthorized, codeUnauthorized, "invalid username or password")
 		return
 	}
+	// P1.11：登录成功写 LOGIN 事件（不含口令、不含 Token）。
+	s.recordAuthEvent(r, store.ActionAuthLogin, store.AuditEventLogin, sess.User.ID)
 	writeOK(w, r, http.StatusOK, map[string]any{
 		"token":     sess.Token,
 		"expiresAt": sess.ExpiresAt,
@@ -59,6 +61,10 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, r, http.StatusInternalServerError, codeInternal, "logout failed")
 		return
+	}
+	// P1.11：登出成功写 LOGOUT 事件（用户来自认证中间件注入的上下文）。
+	if u := UserFrom(r.Context()); u != nil {
+		s.recordAuthEvent(r, store.ActionAuthLogout, store.AuditEventLogout, u.ID)
 	}
 	writeOK(w, r, http.StatusOK, map[string]string{"logout": "ok"})
 }

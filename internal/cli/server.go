@@ -15,6 +15,8 @@ import (
 
 	"github.com/k8s-ai/k8s-ai/internal/auth"
 	"github.com/k8s-ai/k8s-ai/internal/server"
+	"github.com/k8s-ai/k8s-ai/internal/service"
+	"github.com/k8s-ai/k8s-ai/internal/settings"
 	"github.com/k8s-ai/k8s-ai/internal/store"
 )
 
@@ -43,9 +45,12 @@ func newServerCmd(deps Dependencies) *cobra.Command {
 			if err := authSvc.Bootstrap(cmd.Context(), os.Getenv("K8S_AI_ADMIN_PASSWORD")); err != nil {
 				return fmt.Errorf("bootstrap admin: %w (first start requires K8S_AI_ADMIN_PASSWORD)", err)
 			}
+			// 四期平台底座：配置中心与系统事件审计由同一 Store 装配（P1.10/P1.11）。
+			settingsSvc := settings.New(st)
+			auditSvc := service.NewAuditService(st)
 			srv := &http.Server{
 				Addr:              addr,
-				Handler:           server.NewWithAuth(deps.NewScan(), authSvc).Handler(),
+				Handler:           server.NewWithPlatform(deps.NewScan(), authSvc, settingsSvc, auditSvc).Handler(),
 				ReadHeaderTimeout: 10 * time.Second,
 			}
 			logger.Info("k8s-ai server listening", "addr", addr, "db", path)

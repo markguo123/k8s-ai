@@ -8,7 +8,7 @@ import (
 
 // schemaVersion 是统一的逻辑 schema 版本。SQLite/MySQL 共用该版本号，
 // migrations 按版本逐个应用（P0.3/P1.12/P1.3）。只允许追加，禁止回跳。
-const schemaVersion = 2
+const schemaVersion = 3
 
 // migration 是一条单向升级步骤，通过 dialect 适配两个驱动。
 type migration struct {
@@ -28,6 +28,11 @@ var migrations = []migration{
 		version: 2,
 		name:    "agent session turn and step model",
 		up:      migrateV2,
+	},
+	{
+		version: 3,
+		name:    "audit event v4 classification fields",
+		up:      migrateV3,
 	},
 }
 
@@ -249,6 +254,31 @@ var schemaV2Indexes = []indexSpec{
 	{name: "idx_steps_session", table: "steps", cols: "session_id"},
 }
 
+// auditV4Columns 是第 3 版给 audit_events 追加的 §19 分类列。
+//
+// 约束：补列必须带常量默认值且非空（SQLite 不接受非常量默认值），因此摘要列
+// 用 colTextMedium（MySQL VARCHAR(1024)）而不是 colLong；写入侧负责截断。
+var auditV4Columns = []column{
+	{name: "event_type", kind: colText, def: "''"},
+	{name: "resource_kind", kind: colText, def: "''"},
+	{name: "resource_name", kind: colText, def: "''"},
+	{name: "operation", kind: colText, def: "''"},
+	{name: "risk", kind: colText, def: "''"},
+	{name: "decision", kind: colText, def: "''"},
+	{name: "approval_id", kind: colText, def: "''"},
+	{name: "grant_id", kind: colText, def: "''"},
+	{name: "match_reason", kind: colText, def: "''"},
+	{name: "parameter_summary", kind: colTextMedium, def: "''"},
+	{name: "result_summary", kind: colTextMedium, def: "''"},
+	{name: "status", kind: colText, def: "''"},
+}
+
+// schemaV3Indexes 是第 3 版为审计查询新增的二级索引（P4.7 过滤条件用）。
+var schemaV3Indexes = []indexSpec{
+	{name: "idx_audit_event_type", table: "audit_events", cols: "event_type"},
+	{name: "idx_audit_user", table: "audit_events", cols: "user_id"},
+}
+
 // migrateV1 建全部表与索引，SQL 由 dialect 按驱动渲染。
 func migrateV1(ctx context.Context, tx *sql.Tx, d dialect) error {
 	for _, t := range schemaV1 {
@@ -283,6 +313,65 @@ func migrateV2(ctx context.Context, tx *sql.Tx, d dialect) error {
 				continue
 			}
 			return fmt.Errorf("create index %s: %w", idx.name, err)
+		}
+	}
+	return nil
+}
+
+// migrateV3 给 audit_events 追加 §19 分类列、建查询索引，并回填历史行的
+// event_type（用 EventTypeForAction 在 Go 侧单源映射，避免 SQL 里再写一份 CASE）。
+func migrateV3(ctx context.Context, tx *sql.Tx, d dialect) error {
+	for _, c := range auditV4Columns {
+		if _, err := tx.ExecContext(ctx, d.addColumn("audit_events", c)); err != nil {
+			if d.isDuplicateColumnErr(err) {
+				continue
+			}
+			return fmt.Errorf("add column audit_events.%s: %w", c.name, err)
+		}
+	}
+	for _, idx := range schemaV3Indexes {
+		q := d.createIndex(idx.name, idx.table, idx.cols)
+		if _, err := tx.ExecContext(ctx, q); err != nil {
+			if d.isDuplicateIndexErr(err) {
+				continue
+			}
+			return fmt.Errorf("create index %s: %w", idx.name, err)
+		}
+	}
+	return backfillAuditEventType(ctx, tx)
+}
+
+// backfillAuditEventType 给历史审计行补 event_type（只处理空值，可重复执行）。
+func backfillAuditEventType(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx,
+		`SELECT id, action FROM audit_events WHERE event_type = ''`)
+	if err != nil {
+		return fmt.Errorf("scan audit actions: %w", err)
+	}
+	type pair struct {
+		id     int64
+		action string
+	}
+	var pending []pair
+	for rows.Next() {
+		var p pair
+		if err := rows.Scan(&p.id, &p.action); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan audit action: %w", err)
+		}
+		pending = append(pending, p)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	for _, p := range pending {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE audit_events SET event_type = ? WHERE id = ?`,
+			EventTypeForAction(p.action), p.id); err != nil {
+			return fmt.Errorf("backfill audit event_type: %w", err)
 		}
 	}
 	return nil
