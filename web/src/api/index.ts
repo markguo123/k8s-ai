@@ -3,4 +3,7 @@
  */
 export * from './types'
 export * from './request'
+export * from './auth'
+export * from './sessions'
 export * as authApi from './auth'
+export * as sessionsApi from './sessions'
