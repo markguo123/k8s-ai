@@ -90,6 +90,32 @@ export async function renameSession(id: string, name: string): Promise<{ id: str
   )
 }
 
+/** 发起一轮 Chat（webui `POST /api/sessions/{id}/send-message`），SSE 流随后推送事件。 */
+export async function sendMessage(
+  id: string,
+  payload: { query: string; skipPermissions?: boolean },
+): Promise<{ sessionId: string }> {
+  return sessionFetch<{ sessionId: string }>(
+    `/api/sessions/${encodeURIComponent(id)}/send-message`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  )
+}
+
+/** 取消当前会话正在执行的 Chat 运行。 */
+export async function cancelRun(id: string): Promise<{ sessionId: string }> {
+  return sessionFetch<{ sessionId: string }>(`/api/sessions/${encodeURIComponent(id)}/cancel`, {
+    method: 'POST',
+  })
+}
+
+/** 回传审批选择（webui `POST /api/sessions/{id}/approve`）。choice 不写回响应体。 */
+export async function approveRun(id: string, choice: string): Promise<{ sessionId: string }> {
+  return sessionFetch<{ sessionId: string }>(
+    `/api/sessions/${encodeURIComponent(id)}/approve`,
+    { method: 'POST', body: JSON.stringify({ choice }) },
+  )
+}
+
 export async function deleteSession(id: string): Promise<{ deleted: string }> {
   return sessionFetch<{ deleted: string }>(`/api/sessions/${encodeURIComponent(id)}`, {
     method: 'DELETE',

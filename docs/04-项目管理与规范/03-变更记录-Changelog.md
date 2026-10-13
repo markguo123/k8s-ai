@@ -8,7 +8,8 @@
 认证与权限门禁、Session/Turn/Step 模型与存储、Agent Runtime 生命周期持久化、SSE 事件路由与
 旧事件映射层、配置中心、审计模型与系统事件写入、旧数据导入与测试集（P1.1-P1.13 已完成；审计
 CLUSTER_CHANGE 写入随 P3.2 集群管理 API 落地）。M2 已完成 P2.1 信息架构、P2.2 登录与路由守卫、
-P2.3 API Client、P2.4 会话列表与历史会话加载。2026-10-13 完成审批与授权架构修订（见
+P2.3 API Client、P2.4 会话列表与历史会话加载、P2.5 SSE Client 与事件归一。2026-10-13 完成审批
+与授权架构修订（见
 `docs/02-架构与设计/13-方案-企业级身份权限与审批中心.md`，计划回写 v1.12/v1.13）。
 
 ### 设计修订（2026-10-13）
@@ -33,6 +34,7 @@ P2.3 API Client、P2.4 会话列表与历史会话加载。2026-10-13 完成审�
 
 ### Added
 
+- **SSE Client 与事件归一（P2.5）**：新增 `web/src/api/sse.ts`——基于 fetch 的 SSE 传输（兼容 `event:`/`data:` 帧与 CRLF，AbortSignal 控制连接）与归一帧类型（历史快照 / 统一事件 / 旧帧），并实现三期旧 ChatEvent（camelCase）→ 统一 AgentEvent（snake_case，15 类事件）映射，与后端 `internal/sse/legacy.go` 的 MapFromLegacy 同源；新增 `web/src/composables/useChatStream.ts` 管理会话级连接生命周期（切换会话用 AbortController 中止旧连接、断线指数退避 + 抖动自动重连、以历史快照为断点重建时间线并清空实时事件去重）；`sessions.ts` 补全 webui send-message / approve / cancel 端点客户端；`ChatView.vue` 接入真实 SSE 流，展示连接状态徽标、重连控制、历史消息回放与归一事件流（message.delta 按 turn+role 聚合为流式文本）。`npm run lint`/`typecheck`/`build` 通过。
 - **会话列表与历史会话加载（P2.4）**：新增 `web/src/api/sessions.ts` 对接 webui `/api/sessions` 端点（`SessionSummary`/`SessionDetail` 对齐后端 `internal/session/session.go`，裸对象/数组非 `/api/v1` 信封单独封装，复用 fetch 客户端错误归一思维），新增 `web/src/utils/format.ts`（相对时间与 Agent 状态徽标映射）与 `web/src/components/chat/ConversationList.vue`（新建、选择、删除带确认、重命名内联编辑、刷新，展示 messageCount/lastModified/state）；`ChatView.vue` 改为两栏布局接入真实会话端点，SessionStore 数据驱动，支持切换历史会话，当前会话状态持久于 sessionStorage。`npm run lint`/`typecheck`/`build` 通过。
 - **前端工程（P1.1）**：`web/` 新建 Vite + Vue3 + TS 单仓工程，src 骨架 + 7 个侧栏路由入口与登录路由，`npm run lint` / `typecheck` / `build` 通过。
 - **信息架构（P2.1）**：侧栏按 工作区/治理/平台管理 三组分栏；Admin 不再作为侧栏一级菜单，当前用户信息与「管理控制台」移入右上角 User Menu。
