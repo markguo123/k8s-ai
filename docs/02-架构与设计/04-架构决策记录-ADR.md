@@ -2,7 +2,7 @@
 
 - 版本：v1.0 → v4.0.0（四期新增 ADR）
 - 日期：2026-08-12（首版） / 2026-10-10（四期平台底座 ADR）
-- 状态：已封版 一期~三期（v3.0.0 基线）；四期落地中（ADR-020~024）
+- 状态：已封版 一期~三期（v3.0.0 基线）；四期落地中（ADR-020~028）
 
 ## ADR-001 两阶段扫描
 
@@ -198,6 +198,51 @@
 - **后果**：每轮 Chat 产生 1 Turn + N Step（reason/tool/observe/approval/response）；
   `session.Store`（三期文件会话）与 `store.Store`（四期持久化）并存；
   `NewChat` 旧签名保持兼容，`NewChatWithStore` 为持久化入口。
+
+## ADR-025 平台主体映射 + namespace 授权与 RBAC 派生/对账（四期 P4.6）
+
+- **状态**：已接受（2026-10-13 方案评审）
+- **决策**：平台用户映射为 Kubernetes 主体 `k8s-ai:user:<id>`、组为 `k8s-ai:group:<id>`；
+  授权以 namespace 为唯一边界，AuthzGrant 为唯一权威、Kubernetes Role/RoleBinding 为
+  派生结果；受管 RBAC 带 `k8s-ai.io/managed=true` 与 ownerReference，定期 reconcile
+  消除漂移与孤儿对象，grant 撤销/过期即删；执行前 SubjectAccessReview 只验权限。
+- **理由**：强制点必须在 API Server；避免平台与集群出现"两套真相"；撤销/过期能立即回收
+  集群权限。
+- **后果**：`internal/store` 新增 `AuthzGrant`；`internal/kubernetes/client.go` 支持按
+  平台主体构造客户端（impersonation / OIDC 预留）并执行 SAR。
+
+## ADR-026 多 Agent 注册表 + 首个 Approval Agent（四期 P4.10）
+
+- **状态**：已接受（2026-10-13 方案评审）
+- **决策**：平台演进为多 Agent 编排架构；建立统一 Agent 注册契约（agent_id / name /
+  desc / capabilities / scope / executor / policy_binding / lifecycle）；首个实现为
+  审批子 agent（Approval Agent），主 Agent 按 capability + scope 路由。
+- **理由**：自动审批不是散落的 if 分支，而是独立执行主体；为后续可观测/安全/成本类
+  能力型子 Agent 预留统一权限与审计接入口。
+- **后果**：`internal/agent` 新增 registry 与调度契约；所有子 agent 写仍走统一
+  风险目录 → 审批策略 → SAR → Code Guard → Executor → 准入控制 → 审计，不设豁免。
+
+## ADR-027 销毁类仅 admin + operator 显式委派 + 确定性拒绝（四期 P3/P4）
+
+- **状态**：已接受（2026-10-13 方案评审）
+- **决策**：`delete namespace / delete pvc / delete pv` 默认仅 admin；operator 需要时由
+  admin 显式委派（记录在案、可回收、有过期时间）；user 与未被委派的 operator 发起时
+  确定性拒绝并提示联系管理员，不发起审批申请、不阻塞等待；有授权销毁类二次确认并留痕。
+- **理由**：避免普通用户触发跨 namespace / 销毁级等待审批；销毁权限全部收敛给 admin，
+  委派可回收，权限面可审计。
+- **后果**：审批中心增加"确定性拒绝（联系管理员）"记录；权限矩阵与前端原型同步刷新。
+
+## ADR-028 自动审批显式白名单 + 总开关/会话开关（四期 P4.5）
+
+- **状态**：已接受（2026-10-13 方案评审）
+- **决策**：自动审批采用显式白名单（`get/list/watch/describe/logs/events` 与
+  `dry-run/diff/plan` 恒自动；`scale` 有界可自动；`rollout restart` 需确认；白名单外写
+  至少自确认；delete namespace/pvc/pv、shell、未知/危险字段、回收类、无法解析命令
+  永不自动）。总开关默认关闭，开启后会话级可开关；每次 AUTO 记录
+  `whitelist_key + plan_hash + reason` 并写审计；总开关不能覆盖高危类。
+- **理由**：以"可逆"判定自动范围模糊且危险；显式白名单可审计、可配置、可解释。
+- **后果**：审批决策链增加"风险目录 → 自动审批白名单 → scope/RBAC → 自确认判定"；
+  Approval 记录模型增补 `whitelist_key` 等字段。
 
 ## 待决策事项（需在编码前确认）
 

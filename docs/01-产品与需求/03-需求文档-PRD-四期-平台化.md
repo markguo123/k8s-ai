@@ -1,6 +1,6 @@
 # k8s-ai 四期需求规格（平台化）
 
-> 版本：v1.2  
+> 版本：v1.3  
 > 状态：四期最终需求方案  
 > 目标：在不推翻三期 Agent、Skill、SSA、审批、安全执行链路的前提下，将 k8s-ai 从 Agent 工具升级为可持续演进的平台化 Kubernetes 运维 Agent。
 
@@ -187,10 +187,12 @@ Web 只负责将 Agent Runtime 的真实状态可视化。
 
 ### 用户
 
-- viewer
+- user
 - operator
 - admin
 - Session Token
+- namespace 授权（用户零权限起步，admin 划分 namespace）
+- 销毁类权限（delete namespace / delete pvc / delete pv 默认仅 admin，operator 由 admin 显式委派）
 - 权限矩阵
 - 后端 API 强校验
 
@@ -254,9 +256,10 @@ Web 只负责将 Agent Runtime 的真实状态可视化。
 - 复杂 IAM
 - Skill 在线市场
 - Skill 远程仓库完整实现
-- 应用层 namespace RBAC
+- 应用层手写 namespace RBAC（如手动编辑 RoleBinding / ClusterRole）
 
-namespace / resource 真实权限继续由 Kubernetes RBAC / kubeconfig / ServiceAccount 决定。
+namespace / resource 真实权限由平台 AuthzGrant 派生、下行到 Kubernetes RBAC，并在 API
+Server 强校验；不设计与应用库平行运行的独立权限体系，也不做多租户/组织管理/复杂 IAM。
 
 ---
 
@@ -839,21 +842,30 @@ created_at
 角色：
 
 ```text
-viewer
+user
 operator
 admin
 ```
 
-四期 P0：
+三角色只决定「权限上限」，不决定「谁来审批」：
 
 ```text
-viewer
-admin
+user      获得 admin 授权的 namespace 后，拥有该 namespace 内除销毁类外的全部读写能力；
+          未授权 namespace 零操作（也不能发起查询/诊断）；销毁类（delete namespace /
+          delete pvc / delete pv）不授予，发起时确定性拒绝并提示联系管理员处理
+operator  与 user 相同的 namespace 授权，另加跨 namespace 与节点级运维；销毁类需 admin
+          显式委派（记录在案、可回收、有过期时间），委派后仍需二次确认并强制留痕
+admin     平台与集群全部能力；销毁类操作二次确认，操作仍落审计
 ```
 
-operator 保留模型但可暂不开放。
+审批与角色解耦：是否确认由平台统一策略决定；审批主体只有操作者本人自确认或审批子
+agent（Approval Agent）自动两类，不引入「他人在线审批」，任何情况下不能审批自己的
+请求（会话内操作者自确认是其自身操作，不受该约束）。
 
-产品内权限仅作用于 Web 页面、API 入口与审批策略，不进入 CLI 执行路径；namespace / resource 真实权限仍由 kubeconfig 对应 RBAC 决定。
+产品内权限仅作用于 Web 页面、API 入口与审批策略，不进入 CLI 执行路径；namespace /
+resource 真实权限由平台 AuthzGrant 派生到 Kubernetes RBAC 并在 API Server 强校验。
+Agent 在 Chat 内的诊断行为与角色统一，不因用户角色产生诊断差异；读取放开不等于
+写入放开，变更与销毁仍走统一确认与执行门禁。
 
 权限不要在业务代码中大量直接判断：
 
@@ -913,6 +925,38 @@ user.manage
 - 查看 Cluster
 - 查看 Grant
 - 查看审计关联
+
+## 18.1 审批主体
+
+审批主体只有两类：
+
+```text
+本人自确认            会话内操作者弹框确认，复用三期 Approval v2 与 WebUI pending 通道
+审批子 agent 自动     Approval Agent 仅接管自动审批路径，只处理白名单「可自动」项
+```
+
+不存在第三类「他人选择审批人」。审批中心的增量在于：自动路径决策主体是非人类（策略 /
+子 agent，落 AUTO 记录）；定时任务 / CI / MCP 等无人在线的执行面由中心统一定义决策
+主体；资质约束为 scope 级（需持有对应 scope 的 approval.execute 且非请求发起人），
+禁止第三方代确认、禁止把销毁类转成「找人在线审批」。
+
+## 18.2 自动审批白名单
+
+自动审批采用显式白名单，不依赖「可逆」等模糊定义：
+
+```text
+恒自动（读取/提案）    get / list / watch / describe / logs / events、
+                       dry-run / diff / plan（只产提案，不落地）
+可自动（有界）         scale：仅授权 namespace 内可伸缩资源，副本数受上下限与
+                       单次变动阈值约束
+需确认                 rollout restart（可能引发雪崩，默认不自动）
+永不自动               白名单外写操作至少自确认；delete namespace / pvc / pv、
+                       shell 构造、未知/危险字段、回收类、无法可靠解析的命令恒人工
+```
+
+总开关默认关闭；开启后用户可在会话内自行开关，每次 AUTO 放行必须写审批中心记录并
+落审计，总开关不能覆盖高危类。平台 AuthzGrant 为授权权威，Kubernetes RBAC 为派生，
+定期对账回收，执行前 SAR 只验权限、操作安全由 Code Guard + 准入控制把关。
 
 ---
 
@@ -1336,6 +1380,12 @@ ADMIN_PASSWORD
 12. 产品角色不替代 Kubernetes RBAC。
 13. `skip_permissions` 等配置不能绕过 Code Guard。
 14. Shell 的安全约束不能因为 Web 平台化而降低。
+15. 产品授权以 namespace 为唯一边界，AuthzGrant 为权威、Kubernetes RBAC 为派生并对账
+    回收；执行前 SAR 只验权限，操作安全仍由 Code Guard + 准入控制把关。
+16. 销毁类（delete namespace / pvc / pv）仅 admin，operator 需 admin 显式委派；未授权
+    发起时确定性拒绝并提示联系管理员，不建审批、不阻塞等待。
+17. 自动审批仅限显式白名单「可自动」项，默认关闭 + 会话开关；白名单外至少自确认、
+    高危类与 shell 永不自动，总开关不能覆盖高危类。
 
 ---
 
@@ -1650,3 +1700,4 @@ Security Boundary Unchanged
 | v1.0-draft | 2026-09-30 | 初版：四期平台化需求与范围 |
 | v1.1 | 2026-09-30 | 架构基线：Agent Runtime / SSE / Approval v2 平台化 / Skill 非执行器 / Storage / 部署双轨 |
 | v1.2 | 2026-09-30 | 最终需求方案：双层安全边界、写工具统一受控通道、SSE 兼容迁移、镜像写执行方案、双驱动存储迁移、权限作用域、验收测试细化 |
+| v1.3 | 2026-10-13 | 审批与授权方案修订（见 `docs/02-架构与设计/13-方案-企业级身份权限与审批中心.md`）：角色收敛为 user/operator/admin；授权以 namespace 为唯一边界、零权限起步、admin 划分 namespace；销毁类仅 admin 并支持 operator 委派、未授权直接提示联系管理员；审批主体只有本人自确认或审批子 agent 自动；自动审批显式白名单（默认关闭+会话开关）；AuthzGrant 权威 + RBAC 派生对账 + 执行前 SAR；平台演进为多 Agent 编排并引入 Approval Agent；修正 P4.8 审批人约束 |

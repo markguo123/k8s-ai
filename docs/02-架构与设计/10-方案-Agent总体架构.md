@@ -386,6 +386,60 @@ TARGET 只是减少 prompt 上的重复安全措辞，不改变 Code Guard 位�
 
 ---
 
+## 八、四期多 Agent 编排扩展（2026-10-13）
+
+> 对应四期 P4.10 与 `13-方案-企业级身份权限与审批中心.md` §6。本期起平台演进为
+> 多 Agent 编排架构：主 Agent 负责任务编排与会话上下文，子 Agent 各自持专精能力，
+> 最终安全边界不变。
+
+### 8.1 架构
+
+```text
+用户 / 定时任务 / CI / MCP
+        ↓
+主 Agent（责任：会话编排、工具路由、上下文预算、最终报告）
+        ├── 统一 Agent 注册表（agent registry）
+        └── 子 Agent
+             └── Approval Agent（首个子 Agent，承担自动审批路径）
+```
+
+- 主 Agent 按 `capability + scope` 路由任务到子 Agent；
+- 子 Agent 写路径与用户写路径一致，不设豁免；
+- 统一审批中心负责"是否确认、由谁确认（本人自确认 / 子 agent 自动）、为什么、结果"。
+
+### 8.2 Agent 注册契约（扩展口）
+
+```text
+agent_id          唯一标识
+name / desc       显示名与职责说明
+capabilities      可处理的操作类型与工具集声明
+scope             允许触达的集群 / namespace / 资源范围（后续可收敛到 AuthzGrant 校验）
+executor          是否可下发写操作（Approval Agent 为 false，仅签发决策）
+policy_binding    绑定的审批策略版本
+lifecycle         注册 / 下架 / 能力变更均写审计
+```
+
+- 预留统一注册表与调度口，供后续能力型子 Agent（可观测性 / 安全巡检 / 成本治理等）接入；
+- 每次注册、下架、能力变更必须写审计，避免出现未经治理的 Agent 新执行通道。
+
+### 8.3 Approval Agent 职责边界
+
+- **策略执行器，不是策略制定者**：风险目录、白名单、denyOps、Secret 策略、scope 授权
+  均由 admin 在平台配置，Agent 只按规则裁决；
+- 无独立写动力：只能对"已通过全部前置校验的白名单提案"签发放行；
+- 每条自动放行输出结构化决定：`decided_by=approval-agent`、`whitelist_key / plan_hash /
+  reason` 必填，不输出自由文本"放行了"；
+- 可关闭：总开关关闭时 Approval Agent 不可用，自动路径退化为自确认；
+- 不作为安全兜底：SAR 与准入控制仍在链路上，Agent 放行不等于永久信任。
+
+### 8.4 与三期单体 Agent 的收敛关系
+
+- 三期 Agent 为单体，审批决策散在 loop / chatApprover / Session Grant；
+- 四期把"审批决策"从主循环抽出到统一策略中枢与 Approval Agent，主循环只负责编排与交互；
+- 会话内自确认、推送、pending 通道保持三期实现，仅接入新的决策层，不做大拆除。
+
+---
+
 ## 七、需要确认的架构决策
 
 1. **是否把 `remediationGate` 的 PVC 修复偏好从 prompt 下沉到 Tool Schema/executor 校验**：即“patch storageClassName 优先、delete pvc 必须同时列出 patch 方案”继续保持为产品策略，但只维护一份文本。

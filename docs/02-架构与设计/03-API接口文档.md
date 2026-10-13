@@ -198,12 +198,14 @@ GET  /api/v1/settings/{group}   // 配置中心（P1.10）：目录默认值与�
 PATCH /api/v1/settings/{group}  // body 为扁平 {key: value}，任一非法整批 400；需 settings.write
 ```
 
-> 配置分组为 `model|skill|approval|memory|retention|mcp|ops`（需求 v1.2 §15）。敏感键
+> 配置分组为 `model|skill|approval|memory|retention|mcp|ops`（需求 v1.3 §15）。敏感键
 > （`model.api_key`、`ops.kubeconfig`、`mcp.servers`）只在 PATCH 接收，GET 恒回
 > `value: null` + `hasValue`；成功变更写 `CONFIG_CHANGE` 审计，载荷只含分组与键名。
 
 > 四期产品内权限仅作用于 Web 页面、API 入口与审批策略，不进入 CLI 执行路径；
-> namespace / resource 的真实权限仍由 kubeconfig 对应 RBAC 决定（需求 v1.2 §17）。
+> namespace / resource 真实权限由平台 AuthzGrant 派生到 Kubernetes RBAC 并在 API Server
+> 强校验（需求 v1.3 §17）：平台 AuthzGrant 为授权权威，Role/ClusterRoleBinding 为其派生
+> 并由平台打标、定期对账；执行前做 SAR（仅验权限），操作安全由 Code Guard + 准入控制把关。
 
 ## 9. HTTP + SSE API（二期/三期 Web Chat，`internal/webui`）
 
