@@ -1,0 +1,42 @@
+/**
+ * P2.3 认证端点客户端：POST /api/v1/auth/login、POST /api/v1/auth/logout、
+ * GET /api/v1/auth/me。登录/登出为公开端点，401 不触发跳转。
+ */
+import {
+  ErrorCode,
+  type LoginRequest,
+  type LoginResponse,
+  type MeResponse,
+} from './types'
+import request, { ApiRequestError } from './request'
+
+export async function login(payload: LoginRequest): Promise<LoginResponse> {
+  const res = await request<LoginResponse>('/auth/login', {
+    method: 'POST',
+    body: payload,
+    redirectOnUnauthorized: false,
+  })
+  if (!res.data) {
+    throw new ApiRequestError(200, ErrorCode.internal, 'auth: empty login response')
+  }
+  return res.data
+}
+
+export async function logout(): Promise<void> {
+  try {
+    await request<never>('/auth/logout', {
+      method: 'POST',
+      redirectOnUnauthorized: false,
+    })
+  } catch {
+    // 服务端会话可能已失效或不可达；前端侧仍然执行本地清理。
+  }
+}
+
+export async function me(): Promise<MeResponse> {
+  const res = await request<MeResponse>('/auth/me')
+  if (!res.data) {
+    throw new ApiRequestError(200, ErrorCode.internal, 'auth: empty me response')
+  }
+  return res.data
+}

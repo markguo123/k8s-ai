@@ -4,14 +4,39 @@
 
 ## [v4.0.0] - 开发中（2026-10-11）
 
-四期平台化 M1 平台底座推进中：前端工程与信息架构、统一 Store、HTTP 中间件、认证与权限门禁、
-Session/Turn/Step 模型与存储、Agent Runtime 生命周期持久化、SSE 事件路由与旧事件映射层
-（P1.1-P1.10 已完成，P1.11 进行中）。
+四期平台化 M1 平台底座完成、M2 Web Shell 推进中：前端工程与信息架构、统一 Store、HTTP 中间件、
+认证与权限门禁、Session/Turn/Step 模型与存储、Agent Runtime 生命周期持久化、SSE 事件路由与
+旧事件映射层、配置中心、审计模型与系统事件写入、旧数据导入与测试集（P1.1-P1.13 已完成；审计
+CLUSTER_CHANGE 写入随 P3.2 集群管理 API 落地）。M2 已完成 P2.1 信息架构、P2.2 登录与路由守卫、
+P2.3 API Client。2026-10-13 完成审批与授权架构修订（见
+`docs/02-架构与设计/13-方案-企业级身份权限与审批中心.md`，计划回写 v1.12/v1.13）。
+
+### 设计修订（2026-10-13）
+
+- **角色收敛**：产品角色改为 user / operator / admin 三角色，废弃 viewer。
+- **namespace 即边界**：用户零权限起步，admin 按 namespace 授权；获得授权的 namespace 内
+  拥有除销毁类外全部能力，未授权范围零操作；诊断读取与角色解耦但不放开写入。
+- **销毁类收敛**：delete namespace / delete pvc / delete pv 默认仅 admin；operator 需 admin
+  显式委派（可回收、带过期时间）；未授权确定性拒绝并提示联系管理员，不建审批、不阻塞等待。
+- **审批主体**：只有本人自确认或审批子 agent（Approval Agent）自动两类，废弃"他人在线各自
+  审批"模型并修正原 P4.8；任何情况下不能审批自己的请求，审批人须持有对应 scope 的
+  approval.execute 且非请求人。
+- **自动审批白名单**：显式白名单替代"可逆"模糊定义；读取/提案恒自动、scale 有界可自动、
+  rollout restart 需确认、白名单外至少自确认、高危类/shell 永不自动；总开关默认关闭 +
+  会话开关 + scope 判定，AUTO 以 whitelist_key/plan_hash/reason 落审计且总开关不能覆盖高危。
+- **AuthzGrant + RBAC 派生**：平台 AuthzGrant 为授权权威，Kubernetes RBAC 为派生；
+  受管 RoleBinding/ClusterRoleBinding 带平台标签与 ownerReference；定期 reconcile 清理
+  漂移/孤儿，撤销/过期即删；执行前 SAR 只验权限，操作安全由 Code Guard + 准入控制把关。
+- **多 Agent 平台**：主 Agent 编排 + 统一 agent 注册表（agent_id/name/capabilities/scope/
+  executor/policy_binding/lifecycle），首个实现为 Approval Agent，后续能力型子 Agent 预留
+  接入口；所有子 Agent 写路径与用户一致，不设豁免。
 
 ### Added
 
 - **前端工程（P1.1）**：`web/` 新建 Vite + Vue3 + TS 单仓工程，src 骨架 + 7 个侧栏路由入口与登录路由，`npm run lint` / `typecheck` / `build` 通过。
 - **信息架构（P2.1）**：侧栏按 工作区/治理/平台管理 三组分栏；Admin 不再作为侧栏一级菜单，当前用户信息与「管理控制台」移入右上角 User Menu。
+- **登录页与前端路由守卫（P2.2）**：新增 `/login` 登录页、`/app/*` 路由守卫与 401/未登录跳登录，登录后保留 `redirect` 回跳。
+- **API Client 与分页类型（P2.3）**：新增 `web/src/api`（`types.ts` 与后端 `internal/server/response.go`/`auth.go` 一一对应的统一信封、分页、错误码、认证契约；`request.ts` 基于 fetch 的 `/api/v1` 客户端，Bearer 认证头、`page`/`page_size` 分页序列化、信封解析、错误码归一，401 清除会话并跳登录；`auth.ts` 登录/登出/me 端点）；`stores/auth.ts` 接入真实 `/api/v1/auth/login|logout|me`，应用启动经 `/me` 恢复会话并校正角色；登录页显性展示统一错误。`npm run lint`/`typecheck`/`build` 通过。
 - **统一 Store（P1.2/P1.3）**：`internal/store` 统一 `Store` 接口 + SQLite 驱动 + MySQL 方言层 + 幂等迁移（schemaVersion=2），覆盖 11 类平台模型 CRUD 与双方言等价测试。
 - **HTTP 基础中间件（P1.4）**：request_id 生成/透传（X-Request-ID）、统一响应信封（request_id/timestamp/data/error/pagination）、分页解析（page/page_size，兼容 pageSize）、CORS（放行 localhost:5173）、认证占位（仅注入上下文不拒请求）；含中间件与信封单测。
 - **用户/角色与登录认证（P1.5）**：argon2id 密码哈希、内存 Session Token（24h）、`POST/GET /api/v1/auth/login|logout|me`、`server` 命令 SQLite 首次引导（`K8S_AI_ADMIN_PASSWORD` 初始化 admin 角色与用户）；含认证服务与 handler 单测。

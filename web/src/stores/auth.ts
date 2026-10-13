@@ -1,56 +1,84 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
-export type Role = 'admin' | 'viewer' | 'operator'
+import { authApi, type AuthUser as ApiAuthUser } from '@/api'
+import { clearSession, readStoredUser, readToken, saveSession } from '@/api/request'
 
+/** 产品角色：新设计为 user/operator/admin，viewer 仅保留三期兼容读取。 */
+export type Role = 'admin' | 'operator' | 'viewer' | 'user'
+
+/** 前端会话视图：仅暴露展示所需字段，不含任何敏感信息。 */
 export interface AuthUser {
+  userId: string
   username: string
+  displayName: string
   role: Role
 }
 
-const TOKEN_KEY = 'k8s_ai_token'
-const USER_KEY = 'k8s_ai_user'
-
-function readStoredUser(): AuthUser | null {
-  const raw = localStorage.getItem(USER_KEY)
-  if (!raw) {
-    return null
+function normalizeRole(name?: string | null): Role {
+  const key = name?.trim().toLowerCase()
+  if (key === 'admin' || key === 'operator' || key === 'user') {
+    return key
   }
-  try {
-    return JSON.parse(raw) as AuthUser
-  } catch {
-    return null
+  return 'viewer'
+}
+
+function toAuthUser(apiUser: ApiAuthUser, roleName?: string): AuthUser {
+  return {
+    userId: apiUser.id,
+    username: apiUser.username,
+    displayName: apiUser.displayName || apiUser.username,
+    role: normalizeRole(roleName ?? apiUser.roleId),
   }
 }
 
-/**
- * P1.1 骨架：本地会话占位，真实认证在 P1.5/P2.2 接入 /api/v1/auth/login。
- */
 export const useAuthStore = defineStore('auth', () => {
-  const token = ref<string | null>(localStorage.getItem(TOKEN_KEY))
-  const user = ref<AuthUser | null>(readStoredUser())
+  const token = ref<string | null>(readToken())
+  const user = ref<AuthUser | null>(readStoredUser<AuthUser>())
 
   const isAuthenticated = computed(() => token.value !== null)
   const role = computed<Role>(() => user.value?.role ?? 'viewer')
 
   async function login(username: string, password: string): Promise<void> {
-    void password
-    const session = {
-      username: username.trim() || 'admin',
-      role: 'admin' as const,
-    }
-    token.value = `demo-${Date.now()}`
-    user.value = session
-    localStorage.setItem(TOKEN_KEY, token.value)
-    localStorage.setItem(USER_KEY, JSON.stringify(session))
+    const session = await authApi.login({ username, password })
+    token.value = session.token
+    user.value = toAuthUser(session.user)
+    saveSession(session.token, user.value)
+    await refreshMe()
   }
 
-  function logout(): void {
+  async function refreshMe(): Promise<void> {
+    const me = await authApi.me()
+    if (!user.value) {
+      return
+    }
+    user.value = { ...user.value, role: normalizeRole(me.role.name) }
+    saveSession(token.value ?? '', user.value)
+  }
+
+  /** 应用启动时恢复本地会话，并用 /auth/me 校正角色（401 时由 request 清理并跳登录）。 */
+  async function restore(): Promise<void> {
+    const storedUser = readStoredUser<AuthUser>()
+    const storedToken = readToken()
+    if (!storedUser || !storedToken) {
+      clearSession()
+      return
+    }
+    token.value = storedToken
+    user.value = storedUser
+    try {
+      await refreshMe()
+    } catch {
+      // 网络异常时保留本地会话；401 已在 request 内部处理。
+    }
+  }
+
+  async function logout(): Promise<void> {
+    await authApi.logout()
+    clearSession()
     token.value = null
     user.value = null
-    localStorage.removeItem(TOKEN_KEY)
-    localStorage.removeItem(USER_KEY)
   }
 
-  return { token, user, role, isAuthenticated, login, logout }
+  return { token, user, role, isAuthenticated, login, logout, restore }
 })

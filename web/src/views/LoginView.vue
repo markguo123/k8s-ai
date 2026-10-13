@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 
 import { useAuthStore } from '@/stores/auth'
+import { ApiRequestError } from '@/api'
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -11,13 +13,20 @@ const router = useRouter()
 const username = ref('admin')
 const password = ref('')
 const loading = ref(false)
+const errorMessage = ref('')
 
 async function handleLogin(): Promise<void> {
   loading.value = true
+  errorMessage.value = ''
   try {
     await auth.login(username.value, password.value)
     const redirect = route.query.redirect
     router.push(typeof redirect === 'string' ? redirect : '/app/chat')
+  } catch (err) {
+    const message =
+      err instanceof ApiRequestError ? err.message : '登录失败，请稍后重试'
+    errorMessage.value = message
+    ElMessage.error(message)
   } finally {
     loading.value = false
   }
@@ -42,6 +51,9 @@ async function handleLogin(): Promise<void> {
             show-password
             autocomplete="current-password"
           />
+        </el-form-item>
+        <el-form-item v-if="errorMessage" class="login-error">
+          <el-alert :title="errorMessage" type="error" :closable="false" show-icon />
         </el-form-item>
         <el-button class="login-submit" type="primary" size="large" :loading="loading" @click="handleLogin">
           登录
@@ -95,5 +107,9 @@ async function handleLogin(): Promise<void> {
 .login-submit {
   width: 100%;
   margin-top: 4px;
+}
+
+.login-error {
+  margin-bottom: 4px;
 }
 </style>
