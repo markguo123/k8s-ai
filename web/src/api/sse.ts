@@ -227,10 +227,9 @@ export function normalizeFrame(payload: unknown): ChatStreamFrame | null {
   }
   if (typeof record.type === 'string') {
     const legacy = record as unknown as LegacyEvent
-    const mapped = mapLegacyToEvent(legacy)
-    if (mapped) {
-      return { kind: 'event', event: mapped }
-    }
+    // 服务端在四期模式会并行下发统一事件与三期旧事件（D-08 迁移期兼容）。
+    // 为避免同一语义（工具调用/思考/报告/审批）被渲染两份，旧事件在此保持
+    // 独立帧，由消费方忽略；统一事件流是唯一展示数据源。
     return { kind: 'legacy', event: legacy }
   }
   return { kind: 'unknown', payload: record }

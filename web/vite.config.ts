@@ -13,11 +13,9 @@ export default defineConfig({
   server: {
     port: 5173,
     // 四期后端走 /api/v1（P2 接入时联调）。
-    proxy: {
-      '/api': {
-        target: process.env.VITE_API_PROXY ?? 'http://127.0.0.1:8081',
-        changeOrigin: true,
-      },
-    },
+   proxy: {
+  '/api/v1': { target: 'http://127.0.0.1:8080', changeOrigin: true },
+  '/api/sessions': { target: 'http://127.0.0.1:8081', changeOrigin: true },
+  },
   },
 })

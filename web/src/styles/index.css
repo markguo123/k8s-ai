@@ -1,23 +1,34 @@
 :root {
-  --app-bg: #f5f6f8;
-  --app-text: #1f2329;
-  --app-muted: #6b7280;
-  --app-border: #e5e7eb;
-  --app-sidebar: #151920;
+  /* 平台深色底座（对齐原型 §8 默认深色） */
+  --app-bg: #0d1117;
+  --app-surface: #161b22;
+  --app-surface-2: #1c2128;
+  --app-text: #e6edf3;
+  --app-strong: #ffffff;
+  --app-muted: #8b949e;
+  --app-faint: #6e7681;
+  --app-border: #30363d;
+  --app-sidebar: #0a0d12;
   --app-sidebar-text: #c9cdd4;
-  --app-sidebar-muted: #7a818c;
+  --app-sidebar-muted: #788393;
   --app-accent: #6366f1;
-  --app-accent-soft: rgba(99, 102, 241, 0.12);
-  --app-surface: #ffffff;
+  --app-accent-soft: rgba(99, 102, 241, 0.16);
   --app-radius: 8px;
 
-  --el-color-primary: #4f46e5;
-  --el-color-primary-light-3: #818cf8;
-  --el-color-primary-light-5: #a5b4fc;
-  --el-color-primary-light-7: #c7d2fe;
-  --el-color-primary-light-8: #ddd6fe;
-  --el-color-primary-light-9: #eef2ff;
-  --el-color-primary-dark-2: #4338ca;
+  /* Semantic（Element Plus dark css-vars 之上再压一层品牌强调色） */
+  --app-success: #3fb950;
+  --app-danger: #f85149;
+  --app-warning: #d29922;
+  --app-info: #58a6ff;
+
+  /* Element Plus 主色跟随品牌（indigo），保持深色对比度 */
+  --el-color-primary: #6366f1;
+  --el-color-primary-light-3: #7c7ff2;
+  --el-color-primary-light-5: #6366f1;
+  --el-color-primary-light-7: #4f52d9;
+  --el-color-primary-light-8: #3f42b8;
+  --el-color-primary-light-9: #2c2f8f;
+  --el-color-primary-dark-2: #8b8df5;
 }
 
 * {
@@ -43,4 +54,33 @@ body {
     sans-serif;
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
+}
+
+/* 全局滚动条走侧栏/深色风格，避免亮色硬编码残留。 */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #484f58;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.dark .el-popover.el-popper,
+.dark .el-dropdown__popper.el-popper {
+  background: var(--app-surface);
+  border-color: var(--app-border);
+  color: var(--app-text);
 }

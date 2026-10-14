@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ArrowDown,
@@ -8,6 +8,8 @@ import {
   Document,
   Finished,
   MagicStick,
+  Expand,
+  Fold,
   Setting,
   User,
 } from '@element-plus/icons-vue'
@@ -17,6 +19,13 @@ import { useAuthStore } from '@/stores/auth'
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
+
+const SIDEBAR_KEY = 'k8s_ai_sidebar_collapsed'
+const sidebarCollapsed = ref(localStorage.getItem(SIDEBAR_KEY) === '1')
+
+watch(sidebarCollapsed, (collapsed) => {
+  localStorage.setItem(SIDEBAR_KEY, collapsed ? '1' : '0')
+})
 
 const menuGroups = [
   {
@@ -49,6 +58,9 @@ const displayName = computed(() => auth.user?.username ?? '未登录')
 const displayRole = computed(() => auth.user?.role ?? 'viewer')
 const userInitial = computed(() => displayName.value.charAt(0).toUpperCase() || 'K')
 
+const PLATFORM_VERSION = 'v4.0.0-dev'
+const isAdmin = computed(() => auth.user?.role === 'admin')
+
 function handleUserCommand(command: string | number | object): void {
   if (command === 'logout') {
     auth.logout()
@@ -60,34 +72,54 @@ function handleUserCommand(command: string | number | object): void {
 </script>
 
 <template>
-  <el-container class="app-shell">
-    <el-aside width="232px" class="app-aside">
+  <el-container class="app-shell" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
+    <el-aside :width="sidebarCollapsed ? '64px' : '232px'" class="app-aside">
       <div class="brand">
-        <el-icon class="brand-mark"><Connection /></el-icon>
-        <div class="brand-text">
+        <div class="brand-logo">
+          <el-icon class="brand-mark"><Connection /></el-icon>
+        </div>
+        <div v-show="!sidebarCollapsed" class="brand-text">
           <strong>K8S-AI</strong>
-          <span>Platform</span>
         </div>
       </div>
 
+      <!-- 主侧栏：展开为分组菜单，收起为 64px 图标栏（data-tip 自绘 tooltip） -->
       <el-menu :default-active="activeMenu" router class="app-menu">
-        <el-sub-menu v-for="group in menuGroups" :key="group.title" :index="group.title">
-          <template #title>
-            <span class="group-title">{{ group.title }}</span>
-          </template>
-          <el-menu-item v-for="item in group.items" :key="item.index" :index="item.index">
-            <el-icon><component :is="item.icon" /></el-icon>
-            <span>{{ item.title }}</span>
+        <template v-for="group in menuGroups" :key="group.title">
+          <div class="menu-group" :title="group.title" aria-hidden="true">
+            {{ group.title }}
+          </div>
+          <el-menu-item
+            v-for="item in group.items"
+            :key="item.index"
+            :index="item.index"
+            :data-tip="item.title"
+          >
+            <el-icon class="menu-icon"><component :is="item.icon" /></el-icon>
+            <span class="menu-label">{{ item.title }}</span>
           </el-menu-item>
-        </el-sub-menu>
+        </template>
       </el-menu>
+
+      <div class="sidebar-foot">
+        <span>K8S-AI · Operations Console</span>
+      </div>
     </el-aside>
 
     <el-container class="app-body">
       <el-header class="app-header" height="56px">
-        <h1>{{ pageTitle }}</h1>
+        <div class="header-left">
+          <button
+            type="button"
+            class="icon-btn"
+            :title="sidebarCollapsed ? '展开侧栏' : '收起侧栏'"
+            @click="sidebarCollapsed = !sidebarCollapsed"
+          >
+            <el-icon><Expand v-if="sidebarCollapsed" /><Fold v-else /></el-icon>
+          </button>
+          <h1>{{ pageTitle }}</h1>
+        </div>
         <div class="header-right">
-          <el-tag size="small" effect="plain" type="info">v4.0.0-dev</el-tag>
           <el-dropdown trigger="click" @command="handleUserCommand">
             <div class="user-menu">
               <el-avatar :size="28" class="user-avatar">{{ userInitial }}</el-avatar>
@@ -105,7 +137,13 @@ function handleUserCommand(command: string | number | object): void {
                     <span>{{ displayRole }}</span>
                   </div>
                 </el-dropdown-item>
-                <el-dropdown-item divided command="admin">管理控制台</el-dropdown-item>
+                <el-dropdown-item disabled class="user-version">
+                  <span>平台版本</span>
+                  <el-tag size="small" effect="plain" type="info">{{ PLATFORM_VERSION }}</el-tag>
+                </el-dropdown-item>
+                <el-dropdown-item v-if="isAdmin" divided command="admin">
+                  管理控制台
+                </el-dropdown-item>
                 <el-dropdown-item command="logout">退出登录</el-dropdown-item>
               </el-dropdown-menu>
             </template>
@@ -129,81 +167,238 @@ function handleUserCommand(command: string | number | object): void {
   flex-direction: column;
   background: var(--app-sidebar);
   color: var(--app-sidebar-text);
+  transition: width 0.2s ease;
+  overflow: hidden;
 }
 
 .brand {
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   gap: 10px;
   height: 56px;
   padding: 0 16px;
-  border-bottom: 1px solid #232a36;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex: none;
+  transition: padding 0.2s ease;
+}
+
+.brand-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--app-accent), #a855f7);
 }
 
 .brand-mark {
-  font-size: 22px;
-  color: var(--app-accent);
+  font-size: 16px;
+  color: #fff;
 }
 
 .brand-text {
   display: flex;
   flex-direction: column;
   line-height: 1.15;
+  min-width: 0;
 }
 
 .brand-text strong {
   font-size: 15px;
   color: #fff;
-  letter-spacing: 0;
-}
-
-.brand-text span {
-  font-size: 11px;
-  color: var(--app-sidebar-muted);
+  letter-spacing: 0.3px;
+  white-space: nowrap;
 }
 
 .app-menu {
   flex: 1;
   border-right: none;
   background: transparent;
-  padding: 8px;
+  padding: 10px 8px;
+  --el-menu-bg-color: transparent;
+  --el-menu-text-color: var(--app-sidebar-text);
+  --el-menu-hover-text-color: #fff;
+  --el-menu-hover-bg-color: rgba(255, 255, 255, 0.06);
+  --el-menu-active-color: var(--app-accent);
+  transition: padding 0.2s ease;
+}
+
+.menu-group {
+  padding: 12px 10px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--app-sidebar-muted);
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 .app-menu :deep(.el-menu-item) {
-  height: 40px;
-  line-height: 40px;
+  height: 36px;
+  line-height: 36px;
   color: var(--app-sidebar-text);
   border-radius: 6px;
   margin-bottom: 2px;
+  white-space: nowrap;
 }
 
 .app-menu :deep(.el-menu-item:hover) {
   background: rgba(255, 255, 255, 0.06);
+  color: #fff;
 }
 
 .app-menu :deep(.el-menu-item.is-active) {
   color: #fff;
   background: var(--app-accent-soft);
+  border: 1px solid rgba(99, 102, 241, 0.4);
 }
 
 .app-menu :deep(.el-menu-item.is-active .el-icon) {
   color: var(--app-accent);
 }
 
-.app-menu :deep(.el-sub-menu__title) {
-  height: 34px;
-  line-height: 34px;
-  color: var(--app-sidebar-muted);
-  font-size: 12px;
+.menu-icon {
+  font-size: 15px;
+  flex: none;
 }
 
-.app-menu :deep(.el-sub-menu__title:hover) {
-  background: transparent;
+.sidebar-foot {
+  flex: none;
+  padding: 10px 16px;
+  font-size: 11px;
   color: var(--app-sidebar-muted);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  white-space: nowrap;
+  overflow: hidden;
 }
 
-.group-title {
-  font-weight: 600;
+/* ---------- 收起态：64px 图标栏 + 自绘 tooltip ---------- */
+.app-shell.sidebar-collapsed .app-aside {
+  width: 64px;
+}
+
+.app-shell.sidebar-collapsed .brand {
+  justify-content: center;
+  padding: 13px 0;
+  gap: 0;
+}
+
+.app-shell.sidebar-collapsed .brand-text {
+  display: none;
+}
+
+.app-shell.sidebar-collapsed .app-menu {
+  padding: 8px 0;
+}
+
+.app-shell.sidebar-collapsed .menu-group {
+  font-size: 0;
+  height: 1px;
+  margin: 8px 10px;
+  padding: 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.app-shell.sidebar-collapsed .menu-group:first-of-type {
+  border-top: none;
+}
+
+.app-shell.sidebar-collapsed .app-menu :deep(.el-menu-item) {
+  justify-content: center;
+  padding: 0;
+  margin: 2px 8px;
+  height: 40px;
+  line-height: 40px;
+}
+
+.app-shell.sidebar-collapsed .menu-label {
+  display: none;
+}
+
+.app-shell.sidebar-collapsed .app-menu :deep(.el-menu-item) {
+  position: relative;
+}
+
+.app-shell.sidebar-collapsed .app-menu :deep(.el-menu-item[data-tip]::after) {
+  content: attr(data-tip);
+  position: absolute;
+  left: calc(100% + 12px);
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 5px 9px;
+  border-radius: 6px;
+  background: #0b0e14;
+  color: #e8eaf0;
+  font-size: 11.5px;
+  white-space: nowrap;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  z-index: 80;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 0.12s ease 0.05s,
+    visibility 0.12s;
+}
+
+.app-shell.sidebar-collapsed .app-menu :deep(.el-menu-item[data-tip]::before) {
+  content: '';
+  position: absolute;
+  left: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  border: 5px solid transparent;
+  border-right-color: #0b0e14;
+  z-index: 80;
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 0.12s ease 0.05s,
+    visibility 0.12s;
+}
+
+.app-shell.sidebar-collapsed .app-menu :deep(.el-menu-item[data-tip]:hover::after),
+.app-shell.sidebar-collapsed .app-menu :deep(.el-menu-item[data-tip]:hover::before) {
+  opacity: 1;
+  visibility: visible;
+}
+
+.app-shell.sidebar-collapsed .sidebar-foot {
+  display: none;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-surface-2);
+  color: var(--app-muted);
+  cursor: pointer;
+  font-size: 15px;
+  transition:
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.icon-btn:hover {
+  color: var(--app-text);
+  border-color: var(--app-accent);
 }
 
 .header-right {
@@ -276,6 +471,16 @@ function handleUserCommand(command: string | number | object): void {
   font-size: 11px;
   color: var(--app-muted);
   text-transform: capitalize;
+}
+
+.user-version {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  font-size: 12px;
+  color: var(--app-muted);
 }
 
 .app-body {

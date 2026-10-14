@@ -1,194 +1,474 @@
-<!--
-  P2.6 MessageTimeline：统一渲染历史快照与实时 SSE 归一事件。
-
-  关键约定（对齐 PRD §8「最终报告与流式增量一致、不直接猜状态」）：
-  - 消息文本只由事件驱动拼接（message.delta 追加、message.completed 收敛全文），
-    不根据时间/倒计时猜测完成态；
-  - message.delta 按 turn+role 聚合成单个消息块，流式中保持开启；message.completed
-    以事件携带的全文覆盖并标记完成，状态只吃事件本身；
-  - 统一事件携带 turn/step id；旧事件映射后 id 为空——同一 role 已有 turn 级流式
-    块时跳过旧事件增量，避免 legacy 全文与 stream 增量重复累加。
--->
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { Loading, Lock, Tools, View } from '@element-plus/icons-vue'
 
 import type { AgentEvent } from '@/api/sse'
 import type { HistorySnapshot } from '@/api/sse'
+import type { TurnUiData } from './turn'
+import type { ToolUiData } from './ToolCallCard.vue'
+import type { ApprovalUiData } from './ApprovalCard.vue'
+import TurnBlock from './TurnBlock.vue'
+import { parseJsonLoose } from './render/constants'
+
+/**
+ * P2.6 MessageTimeline：以「回合 turn」为单位分组渲染。
+ * - 历史快照按 user 消息切分出历史回合；实时统一事件按 turn_id 归入回合；
+ * - 状态只吃事件本身（§8）：streaming/done 均由 message.delta/completed 等驱动；
+ * - 旧事件（无 turn_id）兜底归入当前进行中的回合，避免硬失效；
+ * - Secret 值永不进入时间线（仅展示脱敏指纹，值由后端统一脱敏）。
+ */
 
 const props = defineProps<{
   history: HistorySnapshot | null
   events: AgentEvent[]
 }>()
 
+const emit = defineEmits<{
+  (e: 'approve', value: string): void
+  (e: 'reject'): void
+}>()
+
 const rollRef = ref<HTMLElement | null>(null)
 
-/** 消息块：流式增量聚合 + message.completed 收敛后的展示形态。 */
-interface MessageBlock {
-  key: string
-  role: string
-  text: string
-  streaming: boolean
-  completed: boolean
-  time: string
+/** 工具调用：从历史 tool 消息构建展示对象。 */
+function toolFromHistoryMessage(
+  message: { name?: string; ok?: boolean; data?: unknown; content?: string },
+  key: string,
+): ToolUiData {
+  const name = message.name ?? '工具调用'
+  const raw = message.content ?? ''
+  const params = message.data ?? null
+  const command = summarizeCommand(name, params)
+  return {
+    key,
+    name,
+    shortName: shortNameOf(name, command),
+    command,
+    risk: '',
+    status: message.ok ? 'done' : 'error',
+    ok: message.ok ?? false,
+    params,
+    result: message.data ?? message.content ?? null,
+    raw,
+    duration: null,
+    createResource: detectCreateResource(name, message.data ?? null, message.ok ?? false),
+  }
 }
 
-/** 时间线条目：消息块或需要单独展示的事件（tool/approval/turn/session 等）。 */
-type TimelineRow = { kind: 'message'; block: MessageBlock } | { kind: 'event'; key: string; event: AgentEvent }
-
-/** 事件展示侧栏小标签。 */
-const STAGE_LABEL: Record<string, string> = {
-  'session.created': '会话',
-  'turn.started': '回合',
-  'turn.completed': '回合完成',
-  'reason.started': '分析',
-  'reason.completed': '分析完成',
-  'tool.started': '工具',
-  'tool.completed': '工具完成',
-  'observation.created': '结果',
-  'approval.required': '审批',
-  'approval.approved': '已通过',
-  'approval.rejected': '已拒绝',
-  'session.completed': '结束',
-  'session.failed': '失败',
+/** 解析统一事件里的 StepData（reason/tool.*），转成工具展示对象。 */
+function toolFromEvent(event: AgentEvent, key: string, data: Record<string, unknown>): ToolUiData {
+  const name = typeof data.tool === 'string' && data.tool ? data.tool : '工具调用'
+  const status: ToolUiData['status'] =
+    event.event_type === 'tool.completed' ? (data.error ? 'error' : 'done') : 'running'
+  const ok = data.status === 'ok' || (data.error === undefined && status === 'done')
+  const paramsRaw = typeof data.params === 'string' ? data.params : ''
+  const params = (() => {
+    const parsed = parseJsonLoose(paramsRaw)
+    return parsed !== paramsRaw ? parsed : data.params
+  })()
+  const command = summarizeCommand(name, params)
+  return {
+    key,
+    name,
+    shortName: shortNameOf(name, command),
+    command,
+    risk: typeof data.risk === 'string' ? data.risk : '',
+    status,
+    ok,
+    params,
+    result:
+      data.result !== undefined && data.result !== null
+        ? data.result
+        : typeof data.error === 'string'
+          ? data.error
+          : null,
+    raw: (typeof data.result === 'string' ? data.result : '') || paramsRaw,
+    duration: null,
+    error: typeof data.error === 'string' ? data.error : undefined,
+    createResource: detectCreateResource(name, params, ok),
+  }
 }
 
-function eventLabel(event: AgentEvent): string {
-  return STAGE_LABEL[event.event_type] ?? event.event_type
+function detectCreateResource(
+  name: string,
+  params: unknown,
+  ok: boolean,
+): ToolUiData['createResource'] {
+  if (!/create_resource|create-resource/.test(name)) {
+    return null
+  }
+  const record = params && typeof params === 'object' ? (params as Record<string, unknown>) : {}
+  const manifest =
+    (typeof record.manifest === 'string' && record.manifest) ||
+    (typeof record.command === 'string' && record.command) ||
+    ''
+  const status = typeof record.status === 'string' ? record.status : ''
+  return {
+    manifest,
+    dryRun: /dry.?run/i.test(status) || manifest.length > 0,
+    validated: ok || /validated|ready/i.test(status),
+    applied: ok || /applied/.test(status),
+  }
 }
 
-/** 单事件概览：只展示非敏感字段，Secret 值永不进入时间线。 */
-function eventSummary(event: AgentEvent): string {
-  const data = (event.data ?? {}) as Record<string, unknown>
-  const parts: string[] = []
-  if (typeof data.tool === 'string' && data.tool) parts.push(data.tool)
-  if (typeof data.risk === 'string' && data.risk) parts.push(data.risk)
-  if (typeof data.status === 'string' && data.status) parts.push(data.status)
-  if (typeof data.decision === 'string' && data.decision) parts.push(data.decision)
-  if (typeof data.name === 'string' && data.name) parts.push(data.name)
-  if (typeof data.state === 'string' && data.state) parts.push(data.state)
-  if (typeof data.result === 'string' && data.result) parts.push(data.result.slice(0, 140))
-  if (typeof data.reason === 'string' && data.reason) parts.push(data.reason.slice(0, 140))
-  return parts.join(' · ')
-}
-
-function timeLabel(value?: string): string {
-  if (!value) return ''
-  const d = new Date(value)
-  if (Number.isNaN(d.getTime())) return ''
-  const pad = (n: number): string => String(n).padStart(2, '0')
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-}
-
-/**
- * 把历史快照消息 + 实时事件折叠为统一时间线。
- * 归一旦遇到 message.delta/message.completed 时按 turn:role 聚合/收敛；
- * 旧事件（无 turn_id）仅在该 role 尚无 turn 级块时按 raw 兜底，避免重复累加。
- */
-const rows = computed<TimelineRow[]>(() => {
-  const out: TimelineRow[] = []
-  const blocks = new Map<string, MessageBlock>()
-  const turnRoles = new Set<string>()
-  const rawRoles = new Set<string>()
-
-  const roleOf = (role: unknown): string => (typeof role === 'string' && role ? role : 'assistant')
-  const deltaOf = (delta: unknown): string => (typeof delta === 'string' ? delta : '')
-  const keyFor = (turnId: string | undefined, role: string): string =>
-    turnId ? `${turnId}:${role}` : `raw:${role}`
-
-  const hasTurnBlock = (role: string): boolean =>
-    Array.from(turnRoles).some((key) => key.endsWith(`:${role}`))
-
-  const pushMessage = (key: string, role: string, text: string, streaming: boolean, completed: boolean, time: string): void => {
-    let block = blocks.get(key)
-    if (!block) {
-      block = { key, role, text, streaming, completed, time }
-      blocks.set(key, block)
-      out.push({ kind: 'message', block })
-      return
+function summarizeCommand(tool: string, params: unknown): string {
+  if (typeof params === 'string') {
+    const trimmed = params.trim()
+    if (/^\s*kubectl\b/.test(trimmed) || /\s/.test(trimmed)) {
+      return trimmed.slice(0, 160)
     }
-    if (text) block.text = `${block.text}${text}`
-    if (completed) {
-      block.completed = true
-      block.streaming = false
+    const record = parseJsonLoose(trimmed)
+    if (record !== trimmed && record && typeof record === 'object') {
+      return summarizeRecord(tool, record as Record<string, unknown>)
     }
-    if (!block.time && time) block.time = time
+    return ''
+  }
+  if (params && typeof params === 'object' && !Array.isArray(params)) {
+    return summarizeRecord(tool, params as Record<string, unknown>)
+  }
+  return ''
+}
+
+function summarizeRecord(tool: string, record: Record<string, unknown>): string {
+  for (const key of ['command', 'cmd', 'exec']) {
+    const value = record[key]
+    if (typeof value === 'string' && value) {
+      return value.slice(0, 160)
+    }
+  }
+  const argv =
+    (Array.isArray(record['argv']) && record['argv']) ||
+    (Array.isArray(record['args']) && record['args'])
+  if (argv) {
+    return (argv as unknown[]).map(String).join(' ').slice(0, 160)
+  }
+  if (typeof record['namespace'] === 'string' && record['namespace']) {
+    return `${tool} --namespace ${record['namespace']}`
+  }
+  return ''
+}
+
+function shortNameOf(tool: string, command: string): string {
+  const match = command.trim().match(/\b(?:kubectl|helm|k8sai|kubescape)\s+([\w-]+)/i)
+  if (match) {
+    return match[1]
+  }
+  if (command.trim()) {
+    return command.trim().split(/\s+/)[0].slice(0, 12)
+  }
+  const parts = tool.split(/[.\-_:]/).filter(Boolean)
+  return (parts[parts.length - 1] || tool).slice(0, 12)
+}
+
+/** 历史快照（已落库消息）→ 按 user 消息切分的回合列表。 */
+function buildHistoryTurns(): TurnUiData[] {
+  const messages = props.history?.messages ?? []
+  const list: TurnUiData[] = []
+  let current: TurnUiData | null = null
+  let seq = 0
+
+  for (let i = 0; i < messages.length; i += 1) {
+    const message = messages[i]
+    const base = `hist:${i}`
+    if (message.role === 'user') {
+      seq += 1
+      current = {
+        key: base,
+        seq,
+        input: message.content ?? '',
+        status: 'completed',
+        startedAt: message.timestamp || undefined,
+        completedAt: message.timestamp || undefined,
+        items: [],
+      }
+      list.push(current)
+      continue
+    }
+    if (!current) {
+      // 无 user 开头的孤立消息：为其生成独立回合（保留上下文）。
+      seq += 1
+      current = {
+        key: base,
+        seq,
+        input: '',
+        status: message.role === 'tool' && message.ok === false ? 'failed' : 'completed',
+        startedAt: message.timestamp || undefined,
+        completedAt: message.timestamp || undefined,
+        items: [],
+      }
+      list.push(current)
+    }
+    if (message.role === 'tool') {
+      current.items.push({ type: 'tool', data: toolFromHistoryMessage(message, `${base}:tool`) })
+      continue
+    }
+    if (message.type === 'reasoning') {
+      current.items.push({
+        type: 'reasoning',
+        data: { key: `${base}:reasoning`, text: message.content ?? '', streaming: false, done: true },
+      })
+      continue
+    }
+    if (message.type === 'error') {
+      current.status = 'failed'
+      current.error = message.content || '会话执行失败'
+      current.items.push({
+        type: 'report',
+        data: { key: `${base}:error`, text: message.content ?? '', streaming: false, done: true },
+      })
+      continue
+    }
+    // assistant text（最终报告）
+    const index = current.items.filter((item) => item.type === 'report').length
+    current.items.push({
+      type: 'report',
+      data: { key: `${base}:report:${index}`, text: message.content ?? '', streaming: false, done: true },
+    })
   }
 
-  // 历史快照（已落库消息）统一视为完成态，作为时间线起点。
-  const historyMessages = props.history?.messages ?? []
-  for (let i = 0; i < historyMessages.length; i += 1) {
-    const m = historyMessages[i]
-    out.push({
-      kind: 'message',
-      block: {
-        key: `history:${m.timestamp ?? ''}:${i}`,
-        role: m.role || 'assistant',
-        text: m.content ?? '',
-        streaming: false,
-        completed: true,
-        time: m.timestamp ?? '',
-      },
-    })
+  return list
+}
+
+const turns = computed<TurnUiData[]>(() => {
+  const list = buildHistoryTurns()
+  const byKey = new Map<string, TurnUiData>()
+  for (const turn of list) {
+    byKey.set(turn.key, turn)
+  }
+
+  let seq = list.length
+  let live: TurnUiData | null = null
+
+  const attachTurn = (event: AgentEvent): TurnUiData => {
+    const turnId = typeof event.turn_id === 'string' && event.turn_id ? event.turn_id : undefined
+    if (turnId) {
+      const existing = byKey.get(turnId)
+      if (existing) {
+        live = existing
+        return existing
+      }
+      seq += 1
+      const turn: TurnUiData = {
+        key: turnId,
+        seq,
+        input: '',
+        status: 'running',
+        startedAt: event.timestamp || undefined,
+        items: [],
+      }
+      list.push(turn)
+      byKey.set(turnId, turn)
+      live = turn
+      return turn
+    }
+    if (!live) {
+      seq += 1
+      const key = `live:${seq}`
+      const turn: TurnUiData = {
+        key,
+        seq,
+        input: '',
+        status: 'waiting',
+        startedAt: event.timestamp || undefined,
+        items: [],
+      }
+      list.push(turn)
+      byKey.set(key, turn)
+      live = turn
+    }
+    return live
   }
 
   for (const event of props.events ?? []) {
     const data = (event.data ?? {}) as Record<string, unknown>
-    const turnId = typeof event.turn_id === 'string' ? event.turn_id : undefined
+    const eventType = event.event_type
 
-    if (event.event_type === 'message.delta') {
-      const role = roleOf(data.role)
-      const delta = deltaOf(data.delta)
-      if (!delta) continue
-      if (turnId) {
-        const key = keyFor(turnId, role)
-        turnRoles.add(key)
-        pushMessage(key, role, delta, true, false, event.timestamp ?? '')
-      } else if (!hasTurnBlock(role)) {
-        // 旧事件兜底：仅当该 role 尚无 turn 级流式块时采用。
-        const key = keyFor(undefined, role)
-        if (!rawRoles.has(key)) {
-          rawRoles.add(key)
-          pushMessage(key, role, delta, true, false, event.timestamp ?? '')
+    if (
+      eventType === 'session.created' ||
+      eventType === 'session.completed' ||
+      eventType === 'session.failed'
+    ) {
+      continue
+    }
+
+    if (eventType === 'turn.started') {
+      const turn = attachTurn(event)
+      const input = typeof data.input === 'string' ? data.input : ''
+      if (input) {
+        turn.input = input
+      }
+      turn.status = 'running'
+      turn.startedAt = turn.startedAt || event.timestamp
+      turn.token = (data.token as TurnUiData['token']) ?? turn.token
+      continue
+    }
+
+    if (eventType === 'turn.completed') {
+      const turn = attachTurn(event)
+      turn.status = data.error ? 'failed' : 'completed'
+      turn.error = typeof data.error === 'string' ? data.error : turn.error
+      if (typeof data.output === 'string' && data.output) {
+        turn.items.push({
+          type: 'report',
+          data: { key: `${turn.key}:out`, text: data.output, streaming: false, done: true },
+        })
+      }
+      turn.token = (data.token as TurnUiData['token']) ?? turn.token
+      turn.completedAt = event.timestamp || turn.completedAt
+      continue
+    }
+
+    if (eventType === 'reason.started' || eventType === 'reason.completed') {
+      const turn = attachTurn(event)
+      if (eventType === 'reason.started') {
+        turn.items.push({
+          type: 'reasoning',
+          data: { key: `${turn.key}:reason:${turn.items.length}`, text: '', streaming: true, done: false },
+        })
+      } else {
+        const item = [...turn.items]
+          .reverse()
+          .find((entry) => entry.type === 'reasoning' && entry.data.streaming)
+        if (item && item.type === 'reasoning') {
+          item.data.streaming = false
+          item.data.done = true
         }
       }
       continue
     }
 
-    if (event.event_type === 'message.completed') {
-      const role = roleOf(data.role)
-      const finalText = deltaOf(data.delta)
-      if (turnId) {
-        const key = keyFor(turnId, role)
-        turnRoles.add(key)
-        if (blocks.has(key)) {
-          const block = blocks.get(key) as MessageBlock
-          if (finalText) block.text = finalText
-          block.streaming = false
-          block.completed = true
-          if (!block.time) block.time = event.timestamp ?? ''
-        } else {
-          pushMessage(key, role, finalText, false, true, event.timestamp ?? '')
-        }
-      } else if (!hasTurnBlock(role)) {
-        const key = keyFor(undefined, role)
-        if (blocks.has(key)) {
-          const block = blocks.get(key) as MessageBlock
-          if (finalText) block.text = finalText
-          block.streaming = false
-          block.completed = true
-          if (!block.time) block.time = event.timestamp ?? ''
-        } else {
-          pushMessage(key, role, finalText, false, true, event.timestamp ?? '')
+    if (eventType === 'tool.started') {
+      const turn = attachTurn(event)
+      turn.items.push({
+        type: 'tool',
+        data: toolFromEvent(event, `${turn.key}:tool:${turn.items.length}`, data),
+      })
+      continue
+    }
+
+    if (eventType === 'tool.completed' || eventType === 'observation.created') {
+      const turn = attachTurn(event)
+      const toolName = typeof data.tool === 'string' && data.tool ? data.tool : ''
+      const item = [...turn.items]
+        .reverse()
+        .find(
+          (entry) =>
+            entry.type === 'tool' &&
+            (!toolName || entry.data.name === toolName || entry.data.shortName === toolName),
+        )
+      if (item && item.type === 'tool') {
+        if (eventType === 'tool.completed') {
+          item.data.status = data.error ? 'error' : 'done'
+          item.data.ok = item.data.status === 'done'
+          item.data.error = typeof data.error === 'string' ? data.error : undefined
+          if (data.result !== undefined && data.result !== null) {
+            item.data.result = data.result
+          }
+        } else if (data.result !== undefined && data.result !== null) {
+          item.data.result = data.result
+          item.data.ok = item.data.ok || data.ok === true
+          if (data.ok === true) {
+            item.data.status = 'done'
+          }
         }
       }
       continue
     }
 
-    out.push({ kind: 'event', key: `${event.step_id ?? ''}:${event.event_type}:${out.length}`, event })
+    if (
+      eventType === 'approval.required' ||
+      eventType === 'approval.approved' ||
+      eventType === 'approval.rejected'
+    ) {
+      const turn = attachTurn(event)
+      if (eventType === 'approval.required') {
+        const options = Array.isArray(data.options)
+          ? (data.options as Array<{ label: string; value: string }>)
+          : []
+        const approval: ApprovalUiData = {
+          key: `${turn.key}:approval:${turn.items.length}`,
+          prompt: typeof data.prompt === 'string' ? data.prompt : '需要你的审批确认',
+          options,
+          secret: data.secret === true,
+          decision: /auto/i.test((data.decision as string) || '') ? 'auto' : 'pending',
+          tool: typeof data.tool === 'string' ? data.tool : '',
+          risk: typeof data.risk === 'string' ? data.risk : '',
+          summary: typeof data.params === 'string' ? data.params.slice(0, 300) : '',
+          resource: data.resource ?? null,
+          reason: typeof data.reason === 'string' ? data.reason : '',
+        }
+        turn.items.push({ type: 'approval', data: approval })
+      } else {
+        const target = [...turn.items]
+          .reverse()
+          .find((entry) => entry.type === 'approval' && entry.data.decision === 'pending')
+        if (target && target.type === 'approval') {
+          target.data.decision = eventType === 'approval.approved' ? 'approved' : 'rejected'
+        }
+      }
+      continue
+    }
+
+    if (eventType === 'message.delta' || eventType === 'message.completed') {
+      const turn = attachTurn(event)
+      const role = typeof data.role === 'string' && data.role ? data.role : 'assistant'
+      const delta = typeof data.delta === 'string' ? data.delta : ''
+      const index = typeof data.index === 'number' ? data.index : 0
+
+      if (role === 'reasoning') {
+        const item = [...turn.items]
+          .reverse()
+          .find((entry) => entry.type === 'reasoning' && entry.data.streaming)
+        if (item && item.type === 'reasoning') {
+          if (delta) item.data.text = `${item.data.text}${delta}`
+          if (eventType === 'message.completed') {
+            item.data.streaming = false
+            item.data.done = true
+          }
+        }
+        continue
+      }
+
+      if (role === 'assistant') {
+        const key = `${turn.key}:report:${index}`
+        const existing = turn.items.find(
+          (entry) => entry.type === 'report' && entry.data.key === key,
+        )
+        if (existing && existing.type === 'report') {
+          if (eventType === 'message.completed') {
+            if (delta) existing.data.text = delta
+            existing.data.streaming = false
+            existing.data.done = true
+          } else if (delta) {
+            existing.data.text = `${existing.data.text}${delta}`
+          }
+        } else {
+          turn.items.push({
+            type: 'report',
+            data: {
+              key,
+              text: delta,
+              streaming: eventType === 'message.delta',
+              done: eventType === 'message.completed',
+            },
+          })
+        }
+      }
+      continue
+    }
   }
 
-  return out
+  // 收尾兜底：运行中回合有最终报告且无活动态时，稳定为完成（仅当 turn.completed 缺失时）。
+  for (const turn of list) {
+    if (turn.status === 'running') {
+      const hasFinalReport = turn.items.some((entry) => entry.type === 'report' && entry.data.done)
+      if (hasFinalReport) {
+        turn.status = 'completed'
+        turn.completedAt = turn.completedAt || turn.startedAt
+      }
+    }
+  }
+
+  return list
 })
 
 /** 追加行后滚动到底部（保持最新消息可见）。 */
@@ -206,33 +486,18 @@ watch(
   { deep: false },
 )
 
-defineExpose({ rows })
+defineExpose({ turns })
 </script>
 
 <template>
   <div ref="rollRef" class="timeline">
-    <template v-if="rows.length">
-      <div v-for="row in rows" :key="row.kind === 'message' ? row.block.key : row.key" class="timeline-row">
-        <!-- 消息块：按 role 区分左右对齐与底色 -->
-        <article v-if="row.kind === 'message'" class="message" :class="[row.block.role, { streaming: row.block.streaming }]">
-          <div class="message-head">
-            <span class="message-role">{{ row.block.role }}</span>
-            <span v-if="row.block.streaming" class="message-state"><el-icon class="spin"><Loading /></el-icon>输出中</span>
-            <span v-else-if="row.block.completed" class="message-state done">已完成</span>
-            <time v-if="row.block.time" class="message-time">{{ timeLabel(row.block.time) }}</time>
-          </div>
-          <p class="message-body">{{ row.block.text || (row.block.streaming ? '等待输出…' : '') }}</p>
-        </article>
-
-        <!-- 事件条目：工具/审批/回合等过程事件 -->
-        <article v-else class="event">
-          <el-icon class="event-icon"><Lock v-if="row.event.event_type.startsWith('approval')" /><Tools v-else-if="row.event.event_type.endsWith('.started') || row.event.event_type === 'observation.created'" /><View v-else /></el-icon>
-          <div class="event-main">
-            <span class="event-label">{{ eventLabel(row.event) }}</span>
-            <span v-if="eventSummary(row.event)" class="event-summary">{{ eventSummary(row.event) }}</span>
-          </div>
-          <time v-if="row.event.timestamp" class="event-time">{{ timeLabel(row.event.timestamp) }}</time>
-        </article>
+    <template v-if="turns.length">
+      <div v-for="turn in turns" :key="turn.key" class="turn-wrap">
+        <TurnBlock
+          :turn="turn"
+          @approve="emit('approve', $event)"
+          @reject="emit('reject')"
+        />
       </div>
     </template>
     <el-empty v-else description="暂无消息，开始对话后将在此展示" :image-size="72" />
@@ -244,132 +509,15 @@ defineExpose({ rows })
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   min-height: 0;
   padding: 16px;
   overflow-y: auto;
 }
 
-.timeline-row {
-  display: flex;
-  flex-direction: column;
-}
-
-.message {
-  max-width: 760px;
-  align-self: flex-start;
-  min-width: 120px;
-  padding: 10px 12px;
-  border: 1px solid var(--app-border);
-  border-radius: var(--app-radius);
-  background: var(--app-surface);
-}
-
-.message.user {
-  align-self: flex-end;
-  background: var(--app-accent-soft);
-  border-color: var(--app-accent);
-}
-
-.message.streaming {
-  border-color: var(--app-accent);
-  box-shadow: 0 0 0 1px var(--app-accent);
-}
-
-.message-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 4px;
-}
-
-.message-role {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: capitalize;
-  color: var(--app-muted);
-}
-
-.message.user .message-role {
-  color: var(--app-accent);
-}
-
-.message-state {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  font-size: 11px;
-  color: var(--app-accent);
-}
-
-.message-state.done {
-  color: var(--app-success, #67c23a);
-}
-
-.message-state .spin {
-  animation: rotate 1s linear infinite;
-}
-
-.message-time,
-.event-time {
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--app-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.message-body {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.55;
-}
-
-.event {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  max-width: 760px;
-  align-self: flex-start;
-  padding: 6px 10px;
-  border: 1px dashed var(--app-border);
-  border-radius: var(--app-radius);
-  background: var(--app-bg);
-}
-
-.event-icon {
-  color: var(--app-muted);
-  flex: none;
-}
-
-.event-main {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  min-width: 0;
-}
-
-.event-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--app-strong, #1f2937);
-  flex: none;
-}
-
-.event-summary {
-  font-size: 12px;
-  color: var(--app-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-@keyframes rotate {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
+.turn-wrap {
+  max-width: 820px;
+  width: 100%;
+  align-self: center;
 }
 </style>

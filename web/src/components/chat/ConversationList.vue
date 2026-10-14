@@ -1,14 +1,15 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { ChatDotRound, Delete, EditPen, Plus, Refresh } from '@element-plus/icons-vue'
+import { computed, ref } from 'vue'
+import { ChatDotRound, Delete, EditPen, Fold, Plus, Refresh, Expand } from '@element-plus/icons-vue'
 
 import type { SessionSummary } from '@/api/sessions'
 import { formatRelativeTime, sessionStateTagType } from '@/utils/format'
 
-defineProps<{
+const props = defineProps<{
   sessions: SessionSummary[]
   activeId: string | null
   loading: boolean
+  collapsed?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -17,6 +18,7 @@ const emit = defineEmits<{
   (e: 'delete', session: SessionSummary): void
   (e: 'rename', payload: { id: string; name: string }): void
   (e: 'refresh'): void
+  (e: 'toggle'): void
 }>()
 
 const editingId = ref<string | null>(null)
@@ -39,26 +41,43 @@ function commitRename(id: string): void {
 function cancelRename(): void {
   editingId.value = null
 }
+
+const collapsed = computed(() => props.collapsed === true)
 </script>
 
 <template>
-  <aside class="conversation-list">
+  <aside class="conversation-list" :class="{ collapsed }">
     <div class="list-head">
-      <div class="list-title">
-        <h3>会话</h3>
-        <span class="list-count">{{ sessions.length }}</span>
-      </div>
-      <div class="list-actions">
-        <el-tooltip content="刷新">
-          <el-button :icon="Refresh" circle plain size="small" @click="emit('refresh')" />
-        </el-tooltip>
-        <el-tooltip content="新建会话">
+      <template v-if="!collapsed">
+        <div class="list-title">
+          <h3>会话</h3>
+          <span class="list-count">{{ sessions.length }}</span>
+        </div>
+        <div class="list-actions">
+          <el-tooltip content="刷新">
+            <el-button :icon="Refresh" circle plain size="small" @click="emit('refresh')" />
+          </el-tooltip>
+          <el-tooltip content="新建会话">
+            <el-button :icon="Plus" circle type="primary" size="small" @click="emit('create')" />
+          </el-tooltip>
+        </div>
+      </template>
+      <template v-else>
+        <el-tooltip content="新建会话" placement="right">
           <el-button :icon="Plus" circle type="primary" size="small" @click="emit('create')" />
         </el-tooltip>
-      </div>
+      </template>
+      <button
+        type="button"
+        class="ctx-toggle"
+        :title="collapsed ? '展开会话栏' : '收起会话栏'"
+        @click="emit('toggle')"
+      >
+        <el-icon><Fold v-if="!collapsed" /><Expand v-else /></el-icon>
+      </button>
     </div>
 
-    <div v-loading="loading" class="list-body">
+    <div v-if="!collapsed" v-loading="loading" class="list-body">
       <el-empty v-if="!loading && sessions.length === 0" description="暂无会话" :image-size="72" />
       <ul v-else class="session-items">
         <li
@@ -87,7 +106,12 @@ function cancelRename(): void {
                   {{ session.name || session.id }}
                 </strong>
                 <div class="session-meta">
-                  <el-tag size="small" effect="plain" :type="sessionStateTagType(session.state)" class="session-state">
+                  <el-tag
+                    size="small"
+                    effect="plain"
+                    :type="sessionStateTagType(session.state)"
+                    class="session-state"
+                  >
                     {{ session.state }}
                   </el-tag>
                   <span>{{ session.messageCount }} 条</span>
@@ -142,6 +166,7 @@ function cancelRename(): void {
   gap: 8px;
   padding: 12px 14px;
   border-bottom: 1px solid var(--app-border);
+  flex: none;
 }
 
 .list-title {
@@ -267,5 +292,35 @@ function cancelRename(): void {
 .session-item:hover .session-tools,
 .session-item.active .session-tools {
   display: flex;
+}
+
+.conversation-list.collapsed .list-head {
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 0;
+}
+
+.ctx-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--app-muted);
+  cursor: pointer;
+  font-size: 13px;
+  transition:
+    color 0.15s ease,
+    background 0.15s ease;
+}
+
+.ctx-toggle:hover {
+  color: var(--app-text);
+  background: var(--app-surface-2);
 }
 </style>
