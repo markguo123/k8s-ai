@@ -267,12 +267,14 @@ func (a *Agent) chatOnce(ctx context.Context, mode string, req llm.ChatRequest) 
 func (a *Agent) chatOnceTyped(ctx context.Context, sc llm.TypedStreamClient, req llm.ChatRequest) (*llm.ChatResponse, bool, error) {
 	received := false
 	var pending strings.Builder
+	var think strings.Builder
 	resp, err := sc.ChatStreamEvents(ctx, req, func(ev llm.StreamEvent) {
 		switch ev.Type {
 		case llm.StreamReasoningDelta:
 			if ev.Text == "" {
 				return
 			}
+			think.WriteString(ev.Text)
 			a.Emit(Message{Source: SourceModel, Type: MessageTypeReasoningDelta, Payload: ev.Text})
 		case llm.StreamContentDelta:
 			if ev.Text == "" {
@@ -282,6 +284,10 @@ func (a *Agent) chatOnceTyped(ctx context.Context, sc llm.TypedStreamClient, req
 			pending.WriteString(ev.Text)
 		}
 	})
+	// 思考内容按“每轮 LLM 调用一条消息”就地落库：位置先于本轮的思考终态，
+	// 也先于随后追加的工具消息。这样历史视图回放时自然得到
+	// 「思考 → 工具 → 观察 → 思考 → 报告」的顺序与分组，而不是把整轮思考揉成一块。
+	a.persistRoundReasoning(think.String())
 	if err != nil && !received {
 		a.audit(ctx, "stream_fallback", map[string]any{"reason": err.Error()})
 		resp, err = a.LLM.Chat(ctx, req)
@@ -294,6 +300,17 @@ func (a *Agent) chatOnceTyped(ctx context.Context, sc llm.TypedStreamClient, req
 		a.Emit(Message{Source: SourceModel, Type: MessageTypeText, Payload: pending.String()})
 	}
 	return resp, true, err
+}
+
+// persistRoundReasoning 把一轮 LLM 调用累积的思考内容写成一条会话消息。
+// 就地追加（而不是等整轮结束再插到报告之前）是历史视图保持顺序与分组的前提：
+// 消息在 sess.Messages 中的位置，就是它在回合中的位置。
+func (a *Agent) persistRoundReasoning(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" || a.Session == nil {
+		return
+	}
+	a.Session.AddMessage(session.Message{Role: "assistant", Type: "reasoning", Content: text})
 }
 
 // llmStep 是一轮 LLM 输出的解析结果。

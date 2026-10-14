@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/k8s-ai/k8s-ai/internal/agent"
 	"github.com/k8s-ai/k8s-ai/internal/approval"
@@ -465,7 +464,6 @@ func (s *chatService) runChat(ctx context.Context, ag *agent.Agent, sess *sessio
 	go func() {
 		defer close(done)
 		var pendingAnswer strings.Builder
-		var reasoning strings.Builder
 		hadToolCall := false
 		// 分片序号按 role 各自计数：reasoning 与 assistant 共用一个计数器会让
 		// 报告的“第几段”被思考分片推高，消费方无法据此排序。
@@ -475,7 +473,6 @@ func (s *chatService) runChat(ctx context.Context, ag *agent.Agent, sess *sessio
 			if ev, ok := translateEvent(m); ok {
 				switch ev.Type {
 				case ChatEventReasoningDelta:
-					reasoning.WriteString(ev.Text)
 					events <- ev
 					emitMessageDelta(sink, scope, "reasoning", ev.Text, reasoningIndex)
 					reasoningIndex++
@@ -505,9 +502,6 @@ func (s *chatService) runChat(ctx context.Context, ag *agent.Agent, sess *sessio
 		}
 		if !hadToolCall && pendingAnswer.Len() > 0 {
 			events <- ChatEvent{Type: ChatEventAnswerDelta, Text: pendingAnswer.String()}
-		}
-		if reasoning.Len() > 0 {
-			persistReasoning(sess, reasoning.String())
 		}
 	}()
 	answer, usage, chatErr := ag.Chat(ctx, req.Query)
@@ -555,28 +549,6 @@ func emitMessageDelta(sink func(sse.Event), scope *runScope, role, delta string,
 	sink(sse.New(scope.session(), scope.turn(), scope.step(), sse.EventMessageDelta, sse.MessageData{
 		Role: role, Delta: store.RedactJSONPayload(delta), Index: index,
 	}))
-}
-
-func persistReasoning(sess *session.Session, text string) {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return
-	}
-	message := session.Message{Role: "assistant", Type: "reasoning", Content: text}
-	insertAt := -1
-	for i, existing := range sess.Messages {
-		if existing.Role == "assistant" && existing.Type == "text" {
-			insertAt = i
-		}
-	}
-	if insertAt >= 0 {
-		sess.Messages = append(sess.Messages, session.Message{})
-		copy(sess.Messages[insertAt+1:], sess.Messages[insertAt:])
-		sess.Messages[insertAt] = message
-		sess.LastModified = time.Now()
-		return
-	}
-	sess.AddMessage(message)
 }
 
 // summarizeToolPrelude 保留工具调用前的短进度说明，避免把真正的诊断文本直接丢掉。
