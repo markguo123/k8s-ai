@@ -40,23 +40,71 @@ func TestSummarizeToolPrelude(t *testing.T) {
 	}
 }
 
-func TestPersistReasoningInsertsBeforeLatestAssistant(t *testing.T) {
-	sess := &session.Session{Messages: []session.Message{
-		{Role: "user", Type: "text", Content: "u1"},
-		{Role: "assistant", Type: "text", Content: "a1"},
-		{Role: "user", Type: "text", Content: "u2"},
-		{Role: "assistant", Type: "text", Content: "a2"},
+// TestChatServicePersistsReasoningInRoundOrder 锁定“刷新后保持顺序与分组”：
+// 思考按“每轮 LLM 调用一条消息”就地落库，位置先于本轮追加的工具消息，
+// 历史视图回放时才能得到「思考 → 工具 → 思考 → 报告」，而不是把整轮思考
+// 揉成一块塞在报告之前（此前 persistReasoning 的行为）。
+func TestChatServicePersistsReasoningInRoundOrder(t *testing.T) {
+	fl := &typedStreamLLM{rounds: []typedRound{
+		{
+			reasoning: []string{"先看 ", "Pod 列表"},
+			toolCall:  &llm.ToolCall{ID: "c1", Name: "get_resources", Arguments: json.RawMessage(`{"kind":"pods"}`)},
+		},
+		{reasoning: []string{"汇总异常项"}, content: "## 巡检报告\n\n发现 1 个异常项"},
 	}}
-	persistReasoning(sess, "思考过程")
-	if len(sess.Messages) != 5 {
-		t.Fatalf("messages = %+v", sess.Messages)
+	col := &collector{}
+	svc := testChatServiceWithSink(t, fl, col)
+	if _, err := svc.GetOrCreateSession("hist-order", "", "qwen-plus"); err != nil {
+		t.Fatal(err)
 	}
-	if sess.Messages[3].Type != "reasoning" || sess.Messages[3].Content != "思考过程" {
-		t.Fatalf("reasoning message = %+v", sess.Messages[3])
+
+	respond := make(chan string, 1)
+	events, err := svc.Chat(context.Background(), ChatRequest{SessionID: "hist-order", Query: "检查集群"}, respond)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if sess.Messages[4].Content != "a2" {
-		t.Fatalf("latest assistant position = %+v", sess.Messages)
+	for range events {
 	}
+
+	// 会话已落盘，重新读回最终形态（fileStore 每次 Get 返回独立副本）。
+	sess, err := svc.GetOrCreateSession("hist-order", "", "qwen-plus")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs := sess.Messages
+	firstReasoning := indexOfMessageType(msgs, "reasoning", false)
+	firstTool := indexOfMessageType(msgs, "tool-call-response", false)
+	lastReasoning := indexOfMessageType(msgs, "reasoning", true)
+	textIndex := indexOfMessageType(msgs, "text", true)
+
+	if !(firstReasoning >= 0 && firstTool > firstReasoning && lastReasoning > firstTool && textIndex > lastReasoning) {
+		types := make([]string, 0, len(msgs))
+		for _, m := range msgs {
+			types = append(types, m.Type)
+		}
+		t.Fatalf("历史顺序错误，期望 思考→工具→思考→报告，实际 %v", types)
+	}
+	if got := msgs[firstReasoning].Content; got != "先看 Pod 列表" {
+		t.Fatalf("第一段思考 = %q", got)
+	}
+	if got := msgs[lastReasoning].Content; got != "汇总异常项" {
+		t.Fatalf("第二段思考 = %q（说明思考未按轮分组）", got)
+	}
+}
+
+// indexOfMessageType 返回指定 type 的首个/最后一个下标，找不到返回 -1。
+func indexOfMessageType(msgs []session.Message, typ string, last bool) int {
+	found := -1
+	for i, m := range msgs {
+		if m.Type != typ {
+			continue
+		}
+		if !last {
+			return i
+		}
+		found = i
+	}
+	return found
 }
 
 func TestTranslateReasoningDeltaEvent(t *testing.T) {

@@ -2,7 +2,7 @@ import { mount } from '@vue/test-utils'
 import ElementPlus from 'element-plus'
 import { describe, expect, it } from 'vitest'
 
-import type { AgentEvent, AgentEventType } from '@/api/sse'
+import type { AgentEvent, AgentEventType, HistorySnapshot } from '@/api/sse'
 import MessageTimeline from '../MessageTimeline.vue'
 
 /**
@@ -97,5 +97,49 @@ describe('MessageTimeline 回合聚合', () => {
 
     expect(wrapper.findAll('.report-block')).toHaveLength(1)
     expect(wrapper.findAll('.reasoning')).toHaveLength(0)
+  })
+
+  it('刷新后的历史快照保持「思考 → 工具 → 思考 → 报告」的顺序与分组', () => {
+    const history: HistorySnapshot = {
+      type: 'history',
+      sessionId: 'sess-1',
+      state: 'done',
+      messages: [
+        { role: 'user', type: 'text', content: '巡检 default 命名空间', timestamp: '2026-10-14T23:30:00.000Z' },
+        { role: 'assistant', type: 'reasoning', content: '先看 Pod 列表', timestamp: '2026-10-14T23:30:01.000Z' },
+        {
+          role: 'tool',
+          type: 'tool-call-response',
+          name: 'get_pods',
+          content: '3 pods',
+          ok: true,
+          arguments: { namespace: 'default' },
+          timestamp: '2026-10-14T23:30:02.000Z',
+        },
+        { role: 'assistant', type: 'reasoning', content: '汇总异常项', timestamp: '2026-10-14T23:30:03.000Z' },
+        { role: 'assistant', type: 'text', content: FULL, timestamp: '2026-10-14T23:30:04.000Z' },
+      ],
+    }
+
+    const wrapper = mount(MessageTimeline, {
+      props: { history, events: [] },
+      global: { plugins: [ElementPlus] },
+    })
+
+    // 思考与工具必须保持交错顺序，而不是被合并成一块塞在报告之前
+    const kinds = wrapper.findAll('.turn-wrap:last-child .turn-items > *').map((el) => {
+      const cls = el.classes()
+      if (cls.includes('reasoning')) return 'reasoning'
+      if (cls.includes('toolcard')) return 'tool'
+      if (cls.includes('report-block')) return 'report'
+      return cls.join('|')
+    })
+    expect(kinds).toEqual(['reasoning', 'tool', 'reasoning', 'report'])
+
+    // 每轮一条思考消息 → 两个独立面板，内容不串
+    const panels = wrapper.findAll('.turn-wrap:last-child .reasoning').map((p) => p.text())
+    expect(panels).toHaveLength(2)
+    expect(panels[0]).toContain('先看 Pod 列表')
+    expect(panels[1]).toContain('汇总异常项')
   })
 })

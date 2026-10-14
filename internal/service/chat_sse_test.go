@@ -143,24 +143,55 @@ func TestChatServiceEmitsUnifiedEvents(t *testing.T) {
 	}
 }
 
-// typedStreamLLM 是带语义流事件的脚本化 LLM：先下发 reasoning 增量，再下发正文。
-type typedStreamLLM struct {
+// typedRound 是一轮 LLM 调用的脚本：思考增量 →（可选）工具调用 →（可选）正文。
+type typedRound struct {
 	reasoning []string
 	content   string
+	toolCall  *llm.ToolCall
+}
+
+// typedStreamLLM 是带语义流事件的脚本化 LLM，按轮次回放；轮次用尽后重复最后一轮。
+type typedStreamLLM struct {
+	rounds []typedRound
+	idx    int
+}
+
+func (t *typedStreamLLM) next() typedRound {
+	if len(t.rounds) == 0 {
+		return typedRound{}
+	}
+	r := t.rounds[t.idx]
+	if t.idx < len(t.rounds)-1 {
+		t.idx++
+	}
+	return r
 }
 
 func (t *typedStreamLLM) Chat(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
-	return &llm.ChatResponse{Content: t.content, Usage: llm.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}}, nil
+	var last typedRound
+	if len(t.rounds) > 0 {
+		last = t.rounds[len(t.rounds)-1]
+	}
+	resp := &llm.ChatResponse{Content: last.content, Usage: llm.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}}
+	if last.toolCall != nil {
+		resp.ToolCalls = []llm.ToolCall{*last.toolCall}
+	}
+	return resp, nil
 }
 
 func (t *typedStreamLLM) ChatStreamEvents(_ context.Context, _ llm.ChatRequest, onEvent func(llm.StreamEvent)) (*llm.ChatResponse, error) {
-	for _, d := range t.reasoning {
+	r := t.next()
+	for _, d := range r.reasoning {
 		onEvent(llm.StreamEvent{Type: llm.StreamReasoningDelta, Text: d})
 	}
-	if t.content != "" {
-		onEvent(llm.StreamEvent{Type: llm.StreamContentDelta, Text: t.content})
+	if r.content != "" {
+		onEvent(llm.StreamEvent{Type: llm.StreamContentDelta, Text: r.content})
 	}
-	return &llm.ChatResponse{Content: t.content, Usage: llm.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}}, nil
+	resp := &llm.ChatResponse{Content: r.content, Usage: llm.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}}
+	if r.toolCall != nil {
+		resp.ToolCalls = []llm.ToolCall{*r.toolCall}
+	}
+	return resp, nil
 }
 
 // TestChatServiceEventOrdering 锁定统一事件的两条契约：
@@ -168,7 +199,9 @@ func (t *typedStreamLLM) ChatStreamEvents(_ context.Context, _ llm.ChatRequest, 
 //     否则最后一段正文落在终态之后，前端会新建分片并停在“正在生成…”。
 //  2. message.delta 的 index 按 role 各自从 0 计数（reasoning 分片不会推高报告分片序号）。
 func TestChatServiceEventOrdering(t *testing.T) {
-	fl := &typedStreamLLM{reasoning: []string{"先看", "Pod 列表"}, content: "## 巡检报告\n\n一切正常"}
+	fl := &typedStreamLLM{rounds: []typedRound{
+		{reasoning: []string{"先看", "Pod 列表"}, content: "## 巡检报告\n\n一切正常"},
+	}}
 	col := &collector{}
 	svc := testChatServiceWithSink(t, fl, col)
 	sess, err := svc.GetOrCreateSession("sse-order", "", "qwen-plus")

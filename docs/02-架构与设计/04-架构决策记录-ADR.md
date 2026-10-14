@@ -313,13 +313,21 @@
      在流式过程中与终态事件里呈现不一致。
   4. **思考面板语义**：`reason.started` 必须早于本轮 reasoning 增量（Reason Step 在 LLM 调用之前
      开始）；前端按增量懒建面板、空面板不占位；报告出现后折叠、用户可手动展开。
+  5. **历史视图与实时视图同构**：刷新后的展示项数量、顺序、分组必须与实时视图一致（允许的差异
+     只有流式动画与耗时字段）。落实方式是**落库时就写对位置**：思考按「每轮 LLM 调用一条消息」
+     就地追加，位置先于该轮的工具消息，因此回放天然是「思考 → 工具 → 思考 → 报告」；
+     禁止把整轮思考合并成一条再插到报告之前（旧 `persistReasoning` 行为，已删除）。
 - **理由**：违反其中任何一条都会产生用户可见故障，且很容易被"再刷新一次"掩盖；把契约写进 PRD 与
   ADR 后，后续任何一侧改动都有据可依，也能用测试守住。
 - **后果**：PRD §8 增补"事件顺序与展示语义"；前端设计方案 §5/§7 增补渲染红线；后端
   `internal/service/chat_sse_test.go::TestChatServiceEventOrdering` 锁定顺序与 index 语义；
   前端契约测试纳入 P2.12（MessageTimeline 事件聚合、MarkdownView 渲染）。
 - **落实状态**：后端与四期前端均已落地（2026-10-14 实测：末回合报告 1 块、markdown 结构标签 30 个、
-  无残留"正在生成…"、冷启动自动订阅）；三期 `web` / `internal/webui` 兼容入口行为未受影响。
+  无残留"正在生成…"、冷启动自动订阅）；第 5 条于 2026-10-15 补齐并用真模型实测
+  （落库顺序为 思考→工具→思考→工具…→报告，与实时视图同构）。回归保护：
+  `internal/service/chat_sse_test.go::TestChatServiceEventOrdering`、
+  `chat_test.go::TestChatServicePersistsReasoningInRoundOrder`、
+  `web/.../MessageTimeline.spec.ts`（8 条前端契约用例）。
 
 ## 待决策事项（需在编码前确认）
 
