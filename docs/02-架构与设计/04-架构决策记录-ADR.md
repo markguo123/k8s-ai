@@ -1,8 +1,8 @@
 # k8s-ai 架构决策记录（ADR）
 
 - 版本：v1.0 → v4.0.0（四期新增 ADR）
-- 日期：2026-08-12（首版） / 2026-10-10（四期平台底座 ADR）
-- 状态：已封版 一期~三期（v3.0.0 基线）；四期落地中（ADR-020~028）
+- 日期：2026-08-12（首版） / 2026-10-10（四期平台底座 ADR） / 2026-10-14（部署形态与前端交付口径）
+- 状态：已封版 一期~三期（v3.0.0 基线）；四期落地中（ADR-020~030）
 
 ## ADR-001 两阶段扫描
 
@@ -244,6 +244,83 @@
 - **后果**：审批决策链增加"风险目录 → 自动审批白名单 → scope/RBAC → 自确认判定"；
   Approval 记录模型增补 `whitelist_key` 等字段。
 
+## ADR-029 四期平台主进程为 `server`（SPA 与 Chat API 同源交付）
+
+- **状态**：已接受（2026-10-14 口径收口）
+- **决策**：四期平台主进程是 `k8s-ai server`，同一进程、同一端口内提供
+  `/api/v1`（含 Chat SSE）与 SPA 静态资源（`web/dist` 经 `go:embed` 内嵌，需 SPA history
+  fallback 与静态资源缓存策略）。`internal/webui` 与 `k8s-ai web` 冻结为三期封版兼容入口：
+  只做兼容回归，不再新增能力，四期前端不依赖其 `/api/sessions` 契约长期存在。
+- **理由**：落实决策基线 D-03「统一 `/api/v1`，Chat 走 SSE」；避免在三期封版模块上继续生长出
+  第二套 API 契约，导致四期前端同时耦合 `/api/v1` 与裸 JSON 两套入口。
+- **后果**：Chat 相关端点需以 `/api/v1` 形式重建（复用 `service.ChatService` 与
+  `internal/sse` 事件出口），迁移期 `internal/webui` 继续双发 legacy 事件，前端迁移完成后收敛；
+  开发计划 P6.1 与 PRD §26 的「单进程入口 = `k8s-ai web`」口径同步修订；前端由 Vite dev
+  proxy 过渡到与后端同源单端口部署（任务见 P6.11）。
+
+## ADR-030 平台进程默认单副本 + 横向扩展前置条件
+
+- **状态**：已接受（2026-10-14 口径收口）
+- **决策**：四期平台进程在 Kubernetes 中默认 `replicas: 1`。扩副本的前置条件必须同时满足：
+  ① 存储切到 MySQL 驱动；② 会话/Token 状态持久化（不依赖进程内存态）；③ SSE 事件与审批
+  pending 通道有跨副本方案（本期不引入 Redis）。未满足前调大副本视为超出四期范围。
+- **理由**：SSE 订阅扇出与审批等待通道当前都是进程内 map，内存态 Session Token 重启即失效，
+  SQLite 只支持单实例写；多副本会表现为随机丢事件、审批 404、登录态抖动，且难以定位。
+- **后果**：部署清单与文档写明单副本及原因；多副本能力不在四期承诺范围内，需要时单独立项。
+
+## ADR-031 平台配置面：`platform:` 段承载平台级参数，敏感值只走环境变量
+
+- **状态**：已接受（2026-10-14 方案定稿；实现未开始，见 P6.12）
+- **背景**：四期平台级参数（监听地址、平台库路径/DSN、管理员用户名、Token 有效期）当前只存在于
+  `server` 命令行开关与进程环境变量中，配置文件只覆盖 llm/agent/scan 这类引擎参数。后果是
+  Kubernetes 里一份可评审的"部署描述"被拆成 Deployment args + ConfigMap + Secret 三处，改一个
+  监听端口要动编排；`config init` 模板又漏了 `kubernetes.kubectl_path`、`llm.reasoning_fields`、
+  `agent.approval_mode`、`agent.create.*`、`agent.secret.access` 等已支持键，按模板配置的人会以为
+  这些能力不存在。
+- **决策**：
+  1. 配置文件新增 `platform:` 段承载平台级非敏感参数：`server.addr`、`server.tls.{enabled,cert_file,key_file}`、
+     `store.driver`（sqlite | mysql）、`store.sqlite_path`、`store.dsn`、`auth.admin_username`、
+     `auth.token_ttl`、`auth.session_store`（本期固定 memory）。
+  2. 敏感值只走环境变量 / Secret：`K8S_AI_ADMIN_PASSWORD`（首启引导 admin，不进配置文件）、
+     `K8S_AI_LLM_API_KEY`、需要时 `K8S_AI_PLATFORM_STORE_DSN`；YAML 只放非敏感默认值。
+  3. `k8s-ai server` 必须支持 `--config`；`--addr` / `--db` 降级为覆盖手段并保持兼容。
+     优先级沿用 **CLI > 环境变量 > YAML > 默认**。
+  4. `k8s-ai config init` 输出**全量模板**：模板键集合 = `Config` 结构体键集合（含 `platform.*`），
+     并由测试锁定，防止模板与代码再次漂移。
+  5. `k8s-ai config validate` 对未识别键给出显式告警，拼错的键不再被静默忽略。
+- **理由**：企业化部署要求"一份 ConfigMap + 一份 Secret"就能完整描述平台运行参数，且该描述可评审、
+  可 diff、可回滚；把平台参数留在命令行会同时削弱可审计性与可移植性。模板漏键属文档与代码漂移，
+  必须由测试兜住。
+- **后果**：`server` 命令需接入配置加载（当前只读 flags）；`deploy/configmap.yaml` 与部署手册 §3、
+  §4.9 同步；`platform` 段落地前，部署清单不得引用它。新增任务 P6.12。
+- **落实状态**：未实现。本节记录的是已定方向，在实现之前部署口径以部署手册 §4.9 的现状列为准。
+
+## ADR-032 SSE 展示与顺序契约（分片不是展示单元，终态必须最后）
+
+- **状态**：已接受（2026-10-14 随新前端 Chat 修复定稿；后端契约测试已落地）
+- **背景**：新前端 Chat 实测出现报告三块重复、永久"正在生成…"、报告塌成纯文本、刷新后不订阅、
+  思考正文全丢。根因不是单个组件 bug，而是 PRD §8 只列了事件清单、没有规定**顺序与展示语义**，
+  实现层各自解释：后端把 `message.delta` 当独立展示单元并让 index 参与前端 key；终态事件先于最后
+  一段正文下发；流式增量不脱敏；`reason.started` 晚于本轮的 reasoning 增量。
+- **决策**（四条强制约束）：
+  1. **分片不等于展示单元**：`message.delta` 是传输分片，展示层按 turn 聚合，一个回合只有一块最终
+     报告；`index` 语义 = 同一 role 内从 0 开始的分片序号，仅用于去重与排序，**不得参与展示 key**；
+     JSON 也不得用 `omitempty` 把 0 隐藏掉（`MessageData.Index` 已去掉 omitempty，计数按 role 分开）。
+  2. **终态必须最后**：顺序固定为 `message.delta…` → `message.completed`（携带权威全文）→
+     `session.completed` / `session.failed`。后端必须在转发协程收尾（`<-done`）之后才发终态事件；
+     `turn.completed.output` 只作兜底、不单独成块；终态之后到达的分片由前端忽略。
+  3. **事件流统一脱敏**：写入 SSE 的内容（含增量）在封装前走与终态同一套脱敏策略，避免同一段正文
+     在流式过程中与终态事件里呈现不一致。
+  4. **思考面板语义**：`reason.started` 必须早于本轮 reasoning 增量（Reason Step 在 LLM 调用之前
+     开始）；前端按增量懒建面板、空面板不占位；报告出现后折叠、用户可手动展开。
+- **理由**：违反其中任何一条都会产生用户可见故障，且很容易被"再刷新一次"掩盖；把契约写进 PRD 与
+  ADR 后，后续任何一侧改动都有据可依，也能用测试守住。
+- **后果**：PRD §8 增补"事件顺序与展示语义"；前端设计方案 §5/§7 增补渲染红线；后端
+  `internal/service/chat_sse_test.go::TestChatServiceEventOrdering` 锁定顺序与 index 语义；
+  前端契约测试纳入 P2.12（MessageTimeline 事件聚合、MarkdownView 渲染）。
+- **落实状态**：后端与四期前端均已落地（2026-10-14 实测：末回合报告 1 块、markdown 结构标签 30 个、
+  无残留"正在生成…"、冷启动自动订阅）；三期 `web` / `internal/webui` 兼容入口行为未受影响。
+
 ## 待决策事项（需在编码前确认）
 
 | # | 问题 | 建议 | 影响 |
@@ -256,3 +333,4 @@
 | T6 | 报告时间戳时区 | CronJob 显式 TZ；本地默认本地时区 | 日报可读性 |
 | T7 | 单 ns 事件截断阈值 | 5000 条 | 内存 |
 | T8 | envtest 是否纳入默认 CI | 否（ADR-018） | 测试复杂度 |
+| T9 | 镜像写执行方案 D-06 签收 | client-go 统一写执行（distroless 无 kubectl/shell） | K8s 形态下的写能力 |

@@ -3,7 +3,7 @@ import { computed, nextTick, ref, watch } from 'vue'
 
 import type { AgentEvent } from '@/api/sse'
 import type { HistorySnapshot } from '@/api/sse'
-import type { TurnUiData } from './turn'
+import type { TurnItem, TurnUiData } from './turn'
 import type { ToolUiData } from './ToolCallCard.vue'
 import type { ApprovalUiData } from './ApprovalCard.vue'
 import TurnBlock from './TurnBlock.vue'
@@ -228,6 +228,53 @@ function buildHistoryTurns(): TurnUiData[] {
   return list
 }
 
+/** 本回合最近一个仍在流式的思考面板（没有则返回 null）。 */
+function streamingReasoningOf(turn: TurnUiData): TurnItem | null {
+  for (let i = turn.items.length - 1; i >= 0; i -= 1) {
+    const entry = turn.items[i]
+    if (entry.type === 'reasoning' && entry.data.streaming) {
+      return entry
+    }
+  }
+  return null
+}
+
+/**
+ * 回合唯一的报告块。
+ *
+ * message.delta 的 index 只是同一 role 内的分片序号，不能参与 key：一旦参与，
+ * 每个分片都会新建一块，报告被渲染成事件平铺（PRD §8：展示以事件为准，
+ * 不以分片为单位铺开），也与设计方案 §4.2「回合即叙事」冲突。
+ */
+function reportOf(turn: TurnUiData, create: boolean): TurnItem | null {
+  const key = `${turn.key}:report`
+  for (let i = turn.items.length - 1; i >= 0; i -= 1) {
+    const entry = turn.items[i]
+    if (entry.type === 'report' && entry.data.key === key) {
+      return entry
+    }
+  }
+  if (!create) {
+    return null
+  }
+  const item: TurnItem = {
+    type: 'report',
+    data: { key, text: '', streaming: true, done: false },
+  }
+  turn.items.push(item)
+  return item
+}
+
+/** 思考面板：无内容不占位（设计方案 §5.2）。 */
+function dropEmptyReasoning(turn: TurnUiData): void {
+  const kept = turn.items.filter(
+    (entry) => !(entry.type === 'reasoning' && entry.data.done && entry.data.text.trim() === ''),
+  )
+  if (kept.length !== turn.items.length) {
+    turn.items = kept
+  }
+}
+
 const turns = computed<TurnUiData[]>(() => {
   const list = buildHistoryTurns()
   const byKey = new Map<string, TurnUiData>()
@@ -282,11 +329,21 @@ const turns = computed<TurnUiData[]>(() => {
     const data = (event.data ?? {}) as Record<string, unknown>
     const eventType = event.event_type
 
-    if (
-      eventType === 'session.created' ||
-      eventType === 'session.completed' ||
-      eventType === 'session.failed'
-    ) {
+    if (eventType === 'session.created') {
+      continue
+    }
+
+    if (eventType === 'session.completed' || eventType === 'session.failed') {
+      // 会话终态兜底：收口仍在流式的报告/思考，避免终态后残留“正在生成…”。
+      for (const turn of list) {
+        for (const entry of turn.items) {
+          if ((entry.type === 'report' || entry.type === 'reasoning') && entry.data.streaming) {
+            entry.data.streaming = false
+            entry.data.done = true
+          }
+        }
+        dropEmptyReasoning(turn)
+      }
       continue
     }
 
@@ -306,11 +363,17 @@ const turns = computed<TurnUiData[]>(() => {
       const turn = attachTurn(event)
       turn.status = data.error ? 'failed' : 'completed'
       turn.error = typeof data.error === 'string' ? data.error : turn.error
-      if (typeof data.output === 'string' && data.output) {
-        turn.items.push({
-          type: 'report',
-          data: { key: `${turn.key}:out`, text: data.output, streaming: false, done: true },
-        })
+      // turn.completed.output 只作兜底：本回合还没有报告正文时用它填充。
+      // 不再单独成块，否则会与 message.completed 形成两份同样的报告。
+      const output = typeof data.output === 'string' ? data.output : ''
+      const report = reportOf(turn, output !== '')
+      if (report && report.type === 'report') {
+        if (!report.data.text && output) {
+          report.data.text = output
+        }
+        // 回合终态即报告终态：迟到分片会被 done 标记忽略，message.completed 仍可覆盖全文。
+        report.data.streaming = false
+        report.data.done = true
       }
       turn.token = (data.token as TurnUiData['token']) ?? turn.token
       turn.completedAt = event.timestamp || turn.completedAt
@@ -320,18 +383,22 @@ const turns = computed<TurnUiData[]>(() => {
     if (eventType === 'reason.started' || eventType === 'reason.completed') {
       const turn = attachTurn(event)
       if (eventType === 'reason.started') {
-        turn.items.push({
-          type: 'reasoning',
-          data: { key: `${turn.key}:reason:${turn.items.length}`, text: '', streaming: true, done: false },
-        })
+        // 增量可能先于 reason.started 到达：已有流式面板就沿用，
+        // 否则同一个 Step 会出现"有正文的面板 + 空面板"两个。
+        if (!streamingReasoningOf(turn)) {
+          turn.items.push({
+            type: 'reasoning',
+            data: { key: `${turn.key}:reason:${turn.items.length}`, text: '', streaming: true, done: false },
+          })
+        }
       } else {
-        const item = [...turn.items]
-          .reverse()
-          .find((entry) => entry.type === 'reasoning' && entry.data.streaming)
+        const item = streamingReasoningOf(turn)
         if (item && item.type === 'reasoning') {
           item.data.streaming = false
           item.data.done = true
         }
+        // 本步没有产出任何思考内容时不占位（设计方案 §5.2）。
+        dropEmptyReasoning(turn)
       }
       continue
     }
@@ -412,45 +479,55 @@ const turns = computed<TurnUiData[]>(() => {
       const turn = attachTurn(event)
       const role = typeof data.role === 'string' && data.role ? data.role : 'assistant'
       const delta = typeof data.delta === 'string' ? data.delta : ''
-      const index = typeof data.index === 'number' ? data.index : 0
+      const authoritative = eventType === 'message.completed'
 
       if (role === 'reasoning') {
-        const item = [...turn.items]
-          .reverse()
-          .find((entry) => entry.type === 'reasoning' && entry.data.streaming)
+        // 思考增量与 reason.started 的到达顺序由后端决定（step 在 LLM 回合之后才创建）：
+        // 这里按增量懒建面板，已有流式面板就续写，避免 delta 早于 started 时被整体丢弃。
+        let item = streamingReasoningOf(turn)
+        if (!item && (!authoritative || delta)) {
+          const created: TurnItem = {
+            type: 'reasoning',
+            data: {
+              key: `${turn.key}:reason:${turn.items.length}`,
+              text: '',
+              streaming: true,
+              done: false,
+            },
+          }
+          turn.items.push(created)
+          item = created
+        }
         if (item && item.type === 'reasoning') {
-          if (delta) item.data.text = `${item.data.text}${delta}`
-          if (eventType === 'message.completed') {
+          if (delta) {
+            item.data.text = authoritative ? delta : `${item.data.text}${delta}`
+          }
+          if (authoritative) {
             item.data.streaming = false
             item.data.done = true
+            dropEmptyReasoning(turn)
           }
         }
         continue
       }
 
       if (role === 'assistant') {
-        const key = `${turn.key}:report:${index}`
-        const existing = turn.items.find(
-          (entry) => entry.type === 'report' && entry.data.key === key,
-        )
-        if (existing && existing.type === 'report') {
-          if (eventType === 'message.completed') {
-            if (delta) existing.data.text = delta
-            existing.data.streaming = false
-            existing.data.done = true
+        // 一个回合只有一块最终报告，分片的先后与到达时机都不改变块的数量。
+        const item = reportOf(turn, !authoritative || delta !== '')
+        if (item && item.type === 'report') {
+          if (authoritative) {
+            // message.completed 携带权威全文：整体覆盖，而不是把全文再拼一次。
+            if (delta) {
+              item.data.text = delta
+            }
+            item.data.streaming = false
+            item.data.done = true
+          } else if (item.data.done) {
+            // 终态之后的迟到分片：忽略，避免同一份报告被追加成两份。
           } else if (delta) {
-            existing.data.text = `${existing.data.text}${delta}`
+            item.data.text = `${item.data.text}${delta}`
+            item.data.streaming = true
           }
-        } else {
-          turn.items.push({
-            type: 'report',
-            data: {
-              key,
-              text: delta,
-              streaming: eventType === 'message.delta',
-              done: eventType === 'message.completed',
-            },
-          })
         }
       }
       continue

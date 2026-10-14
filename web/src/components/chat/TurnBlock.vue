@@ -27,6 +27,21 @@ const emit = defineEmits<{
 
 const open = ref(true)
 
+/**
+ * 思考面板的展开态：默认跟随流式状态（推理中展开、报告后折叠），
+ * 但用户手动点过头之后以手动选择为准，否则折叠按钮点了没反应、历史思考再也打不开。
+ */
+const reasoningOpen = ref<Record<string, boolean>>({})
+
+function isReasoningOpen(item: Extract<TurnUiData['items'][number], { type: 'reasoning' }>): boolean {
+  const manual = reasoningOpen.value[item.data.key]
+  return manual === undefined ? item.data.streaming : manual
+}
+
+function setReasoningOpen(key: string, value: boolean): void {
+  reasoningOpen.value = { ...reasoningOpen.value, [key]: value }
+}
+
 const statusType = computed<'primary' | 'success' | 'danger' | 'warning' | 'info'>(() => {
   switch (props.turn.status) {
     case 'running':
@@ -189,7 +204,8 @@ function timeLabel(value?: string): string {
             class="turn-item"
             :text="item.data.text"
             :streaming="item.data.streaming"
-            :open="item.data.streaming"
+            :open="isReasoningOpen(item)"
+            @update:open="setReasoningOpen(item.data.key, $event)"
           />
           <ToolCallCard v-else-if="item.type === 'tool'" class="turn-item" :tool="item.data" />
           <ApprovalCard

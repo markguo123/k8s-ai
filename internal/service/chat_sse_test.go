@@ -58,7 +58,7 @@ func (c *collector) event(t sse.EventType) (sse.Event, bool) {
 	return sse.Event{}, false
 }
 
-func testChatServiceWithSink(t *testing.T, fl *scriptedLLM, col *collector) ChatService {
+func testChatServiceWithSink(t *testing.T, fl llm.LLMClient, col *collector) ChatService {
 	t.Helper()
 	cfg, err := config.Load(config.LoadOptions{NoEnv: true})
 	if err != nil {
@@ -140,6 +140,100 @@ func TestChatServiceEmitsUnifiedEvents(t *testing.T) {
 	}
 	if strings.Contains(string(d.Params), "sk-super-secret") || !strings.Contains(d.Params, "[REDACTED]") {
 		t.Fatalf("tool.started params 未脱敏: %q", d.Params)
+	}
+}
+
+// typedStreamLLM 是带语义流事件的脚本化 LLM：先下发 reasoning 增量，再下发正文。
+type typedStreamLLM struct {
+	reasoning []string
+	content   string
+}
+
+func (t *typedStreamLLM) Chat(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+	return &llm.ChatResponse{Content: t.content, Usage: llm.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}}, nil
+}
+
+func (t *typedStreamLLM) ChatStreamEvents(_ context.Context, _ llm.ChatRequest, onEvent func(llm.StreamEvent)) (*llm.ChatResponse, error) {
+	for _, d := range t.reasoning {
+		onEvent(llm.StreamEvent{Type: llm.StreamReasoningDelta, Text: d})
+	}
+	if t.content != "" {
+		onEvent(llm.StreamEvent{Type: llm.StreamContentDelta, Text: t.content})
+	}
+	return &llm.ChatResponse{Content: t.content, Usage: llm.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}}, nil
+}
+
+// TestChatServiceEventOrdering 锁定统一事件的两条契约：
+//  1. 所有 message.delta 必须早于 message.completed，message.completed 早于 session.completed；
+//     否则最后一段正文落在终态之后，前端会新建分片并停在“正在生成…”。
+//  2. message.delta 的 index 按 role 各自从 0 计数（reasoning 分片不会推高报告分片序号）。
+func TestChatServiceEventOrdering(t *testing.T) {
+	fl := &typedStreamLLM{reasoning: []string{"先看", "Pod 列表"}, content: "## 巡检报告\n\n一切正常"}
+	col := &collector{}
+	svc := testChatServiceWithSink(t, fl, col)
+	sess, err := svc.GetOrCreateSession("sse-order", "", "qwen-plus")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	respond := make(chan string, 1)
+	events, err := svc.Chat(context.Background(), ChatRequest{SessionID: sess.ID, Query: "检查集群"}, respond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range events {
+	}
+
+	col.mu.Lock()
+	collected := append([]sse.Event(nil), col.events...)
+	col.mu.Unlock()
+
+	firstOf := func(typ sse.EventType) int {
+		for i, e := range collected {
+			if e.EventType == typ {
+				return i
+			}
+		}
+		return -1
+	}
+	lastOf := func(typ sse.EventType) int {
+		last := -1
+		for i, e := range collected {
+			if e.EventType == typ {
+				last = i
+			}
+		}
+		return last
+	}
+
+	lastDelta := lastOf(sse.EventMessageDelta)
+	completed := firstOf(sse.EventMessageCompleted)
+	sessionDone := firstOf(sse.EventSessionCompleted)
+	if lastDelta < 0 || completed < 0 || sessionDone < 0 {
+		t.Fatalf("事件缺失：delta=%d completed=%d session=%d（%v）", lastDelta, completed, sessionDone, col.types())
+	}
+	if !(lastDelta < completed && completed < sessionDone) {
+		t.Fatalf("终态事件顺序错误：last delta=%d message.completed=%d session.completed=%d（%v）",
+			lastDelta, completed, sessionDone, col.types())
+	}
+
+	// 分片序号按 role 各自从 0 开始：reasoning 的两片是 0/1，报告正文是 0。
+	seen := map[string][]int{}
+	for _, e := range collected {
+		if e.EventType != sse.EventMessageDelta {
+			continue
+		}
+		d, ok := e.Data.(sse.MessageData)
+		if !ok {
+			t.Fatalf("message.delta data = %#v", e.Data)
+		}
+		seen[d.Role] = append(seen[d.Role], d.Index)
+	}
+	if got := seen["reasoning"]; len(got) != 2 || got[0] != 0 || got[1] != 1 {
+		t.Fatalf("reasoning 分片序号 = %v，期望 [0 1]", got)
+	}
+	if got := seen["assistant"]; len(got) != 1 || got[0] != 0 {
+		t.Fatalf("assistant 分片序号 = %v，期望 [0]", got)
 	}
 }
 

@@ -90,6 +90,12 @@ async function loadSessions(): Promise<void> {
 
 function selectSession(id: string): void {
   if (id === activeId.value) {
+    // 同一会话重复点击按“重新订阅”处理：冷启动或断流后点一下就恢复，避免点击无反应。
+    if (stream.sessionId.value === id) {
+      void stream.reconnect()
+    } else {
+      void stream.connect(id)
+    }
     return
   }
   activeId.value = id
@@ -100,7 +106,11 @@ function handleReconnect(): void {
   if (!activeId.value) {
     return
   }
-  void stream.reconnect()
+  if (stream.sessionId.value === activeId.value) {
+    void stream.reconnect()
+  } else {
+    void stream.connect(activeId.value)
+  }
 }
 
 async function handleCreate(): Promise<void> {
@@ -198,17 +208,23 @@ onMounted(() => {
 })
 
 // 会话切换：先由 connect 内部 clear() 中止旧连接，再订阅新会话。
-watch(activeId, (id) => {
-  if (id) {
-    sending.value = false
-    lastToken.value = null
-    void stream.connect(id)
-  } else {
-    stream.stop()
-    sending.value = false
-    lastToken.value = null
-  }
-})
+// immediate 不可省：activeId 从 sessionStorage 恢复时首帧不会触发 watch，
+// 缺了它刷新后不会订阅 SSE（页面停在“未连接 / 暂无消息”）。
+watch(
+  activeId,
+  (id) => {
+    if (id) {
+      sending.value = false
+      lastToken.value = null
+      void stream.connect(id)
+    } else {
+      stream.stop()
+      sending.value = false
+      lastToken.value = null
+    }
+  },
+  { immediate: true },
+)
 
 // 回合/会话结束或失败时复位“运行中”态；并从终态事件提取 token 用量。
 watch(

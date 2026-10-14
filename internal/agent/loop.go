@@ -63,6 +63,9 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 	failedToolCalls := map[string]int{}
 
 	for iter := 0; iter < a.MaxIterations; iter++ {
+		// P1.8: 思考 Step 必须在发起本轮 LLM 调用之前开始。reason.started 若晚于
+		// reasoning 增量下发，前端只能收到一堆没有归属的思考分片（P0-3 同类顺序问题）。
+		reason := a.beginStep(ctx, session.StepReason, "", "")
 		req := llm.ChatRequest{Messages: msgs}
 		if mode == "native" {
 			req.Tools = a.Tools.Schemas()
@@ -74,21 +77,20 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 		if err != nil {
 			// auto 模式：网关不支持原生 tools 时降级 shim 重试一次。
 			if mode == "native" && a.ToolCalling == "auto" && isUnsupportedToolsError(err) {
+				a.completeStep(ctx, reason, false, "native tools unsupported; retrying in shim mode")
 				mode = "shim"
 				msgs[0] = llm.Message{Role: "system", Content: a.systemPromptFor("shim")}
 				continue
 			}
 			a.audit(ctx, audit.ActionLLMError, map[string]any{"error": err.Error()})
 			a.EmitCritical(Message{Source: SourceAgent, Type: MessageTypeError, Payload: err.Error()})
+			a.completeStep(ctx, reason, false, err.Error())
 			a.turn.Token = toSessionUsage(usage)
 			_ = a.turn.Fail(err.Error())
 			return "", usage, err
 		}
 		a.audit(ctx, audit.ActionLLMResponse, map[string]any{"usage": resp.Usage, "toolCalls": len(resp.ToolCalls), "stream": streamed})
 		usage = addUsage(usage, resp.Usage)
-
-		// P1.8: 记录本轮模型思考 Step（有工具调用时记工具名，否则记正文摘要）。
-		reason := a.beginStep(ctx, session.StepReason, "", "")
 
 		step, err := a.parseStep(mode, resp)
 		if err != nil {
