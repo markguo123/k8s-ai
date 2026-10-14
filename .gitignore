@@ -8,3 +8,4 @@ coverage.out
 *.test
 .DS_Store
 k8s-ai-test.yaml
+k8s-ai-v4.yaml
