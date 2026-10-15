@@ -70,12 +70,21 @@
 - 时间线按 turn 分组；同 turn 内：`thinking → tools → report`。
 - 回合标题含序号 + 结果摘要（成功/失败/审批中）+ 耗时 + token。
 - turn 完成后整组**可折叠**为一行摘要（保留现场，不被长消息淹没）。
+- **一个回合只有一块最终报告**：`message.delta` 是传输分片，按 turn 聚合追加到同一块，分片序号
+  （`index`）不得参与展示 key；`turn.completed.output` 只作兜底（本回合尚无报告正文时填充），
+  否则同一份报告会以"分片块 + 权威全文 + output"三份呈现（实测故障，见 ADR-032）。
+- `message.completed` 携带权威全文，**整体覆盖**该块而不是再次拼接；终态之后到达的迟到分片忽略，
+  避免同一份报告被追加成两份。
 
 ### 5.2 思考面板（Reasoning）
 
 - `reason.started`：面板展开，region 激活，"正在思考…" + 流式 `reasoning-delta`。
 - `reason.completed`：内容保留；**报告出现后**面板折叠为摘要（推理中展开、报告后折叠——对齐需求）。
 - 与最终报告分离：思考过程不进报告；无思考时不占位。
+- 增量与 `reason.started` 的实际到达顺序由后端决定：前端按增量**懒建**面板（已有流式面板就续写），
+  不能"找不到流式面板就丢弃"，否则思考正文会整段消失。
+- 折叠按钮必须真正可用：默认跟随流式状态，用户手动点过后以手动选择为准（历史思考要能重新展开）。
+- 无内容的思考面板在 `reason.completed` 后不保留占位。
 
 ### 5.3 工具卡（ToolCallCard）
 
@@ -120,6 +129,13 @@
 - 渲染管线：`raw → escapeHtml 可选 → marked.parse → DOMPurify.sanitize → 挂载 innerHTML`（仅作用在受控组件内）。
 - 覆盖语法：h1–h6、有序/无序列表、表格、引用、代码块（带复制）、链接（`target=_blank rel=noopener`）、内联粗斜体。
 - 红线：报告/摘要/工具正文里出现的 Secret 值在**上屏前**已被后端或前端脱敏，markdown 不做二次信任。
+- 白名单强约束（2026-10-14 实测补录）：`DOMPurify.sanitize` 只走**默认 HTML 白名单**，
+  不要传 `USE_PROFILES: { html: false }`——该配置会把白名单收成只剩 `#text`、属性全清，
+  `marked` 的产物被解包成纯文本（报告退化成"源码裸奔"，且 `class="language-*"` 丢失导致代码块语言标签失效）。
+  也不要放开 `svg` / `svgFilters` / `mathMl`：报告正文来自集群数据与模型输出，属不可信内容。
+- 代码块包壳（复制按钮）注意 DOM 顺序：必须先用 wrapper `replaceWith` 顶替 `pre`，再把 `pre` 收进 wrapper；
+  顺序反了会触发 `HierarchyRequestError`（"新子节点包含父节点"），并让整棵组件渲染中断——
+  这类错误在 markdown 塌成纯文本时不会暴露，修好渲染才会浮现，改动此段务必实测。
 
 ## 8. 视觉规范
 
@@ -159,6 +175,13 @@
 4. **markdown**：`marked + dompurify` 已可接受，作为最终报告唯一渲染管线。
 5. **布局**：主侧栏与会话栏均做成可收起/展开（本轮调整，原型顶栏 ☰ 与会话头 ≪ 演示）。
 6. **版本收敛**：品牌区仅 logo + `K8S-AI`；平台版本移入右上角用户菜单只读展示，并新增「退出登录」（原型 avatar 下拉演示）。
+7. **报告聚合**（2026-10-14）：一个回合一块最终报告；分片 `index` 不参与展示 key；`message.completed`
+   权威全文整体覆盖；`turn.completed.output` 仅兜底（对齐 ADR-032）。
+8. **思考面板**（2026-10-14）：增量懒建面板、空面板不占位、折叠按钮可用（默认跟随流式、手动优先）。
+9. **markdown 白名单**（2026-10-14）：仅默认 HTML 白名单（不传 `USE_PROFILES`，不开 svg/mathMl）；
+   代码块包壳的 DOM 顺序必须实测。
+10. **刷新与重连**（2026-10-14）：`activeId` 从 sessionStorage 恢复时必须 `watch(..., { immediate: true })`
+    才订阅 SSE；重复点击当前会话按"重新订阅"处理，不能静默早退。
 
 待讨论：
 - 渲染组件依赖是否锁定版本（`marked`/`dompurify` 进 `web/` 时锁主版本）。

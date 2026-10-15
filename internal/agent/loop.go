@@ -63,6 +63,9 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 	failedToolCalls := map[string]int{}
 
 	for iter := 0; iter < a.MaxIterations; iter++ {
+		// P1.8: 思考 Step 必须在发起本轮 LLM 调用之前开始。reason.started 若晚于
+		// reasoning 增量下发，前端只能收到一堆没有归属的思考分片（P0-3 同类顺序问题）。
+		reason := a.beginStep(ctx, session.StepReason, "", "")
 		req := llm.ChatRequest{Messages: msgs}
 		if mode == "native" {
 			req.Tools = a.Tools.Schemas()
@@ -74,21 +77,20 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 		if err != nil {
 			// auto 模式：网关不支持原生 tools 时降级 shim 重试一次。
 			if mode == "native" && a.ToolCalling == "auto" && isUnsupportedToolsError(err) {
+				a.completeStep(ctx, reason, false, "native tools unsupported; retrying in shim mode")
 				mode = "shim"
 				msgs[0] = llm.Message{Role: "system", Content: a.systemPromptFor("shim")}
 				continue
 			}
 			a.audit(ctx, audit.ActionLLMError, map[string]any{"error": err.Error()})
 			a.EmitCritical(Message{Source: SourceAgent, Type: MessageTypeError, Payload: err.Error()})
+			a.completeStep(ctx, reason, false, err.Error())
 			a.turn.Token = toSessionUsage(usage)
 			_ = a.turn.Fail(err.Error())
 			return "", usage, err
 		}
 		a.audit(ctx, audit.ActionLLMResponse, map[string]any{"usage": resp.Usage, "toolCalls": len(resp.ToolCalls), "stream": streamed})
 		usage = addUsage(usage, resp.Usage)
-
-		// P1.8: 记录本轮模型思考 Step（有工具调用时记工具名，否则记正文摘要）。
-		reason := a.beginStep(ctx, session.StepReason, "", "")
 
 		step, err := a.parseStep(mode, resp)
 		if err != nil {
@@ -265,12 +267,14 @@ func (a *Agent) chatOnce(ctx context.Context, mode string, req llm.ChatRequest) 
 func (a *Agent) chatOnceTyped(ctx context.Context, sc llm.TypedStreamClient, req llm.ChatRequest) (*llm.ChatResponse, bool, error) {
 	received := false
 	var pending strings.Builder
+	var think strings.Builder
 	resp, err := sc.ChatStreamEvents(ctx, req, func(ev llm.StreamEvent) {
 		switch ev.Type {
 		case llm.StreamReasoningDelta:
 			if ev.Text == "" {
 				return
 			}
+			think.WriteString(ev.Text)
 			a.Emit(Message{Source: SourceModel, Type: MessageTypeReasoningDelta, Payload: ev.Text})
 		case llm.StreamContentDelta:
 			if ev.Text == "" {
@@ -280,6 +284,10 @@ func (a *Agent) chatOnceTyped(ctx context.Context, sc llm.TypedStreamClient, req
 			pending.WriteString(ev.Text)
 		}
 	})
+	// 思考内容按“每轮 LLM 调用一条消息”就地落库：位置先于本轮的思考终态，
+	// 也先于随后追加的工具消息。这样历史视图回放时自然得到
+	// 「思考 → 工具 → 观察 → 思考 → 报告」的顺序与分组，而不是把整轮思考揉成一块。
+	a.persistRoundReasoning(think.String())
 	if err != nil && !received {
 		a.audit(ctx, "stream_fallback", map[string]any{"reason": err.Error()})
 		resp, err = a.LLM.Chat(ctx, req)
@@ -292,6 +300,17 @@ func (a *Agent) chatOnceTyped(ctx context.Context, sc llm.TypedStreamClient, req
 		a.Emit(Message{Source: SourceModel, Type: MessageTypeText, Payload: pending.String()})
 	}
 	return resp, true, err
+}
+
+// persistRoundReasoning 把一轮 LLM 调用累积的思考内容写成一条会话消息。
+// 就地追加（而不是等整轮结束再插到报告之前）是历史视图保持顺序与分组的前提：
+// 消息在 sess.Messages 中的位置，就是它在回合中的位置。
+func (a *Agent) persistRoundReasoning(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" || a.Session == nil {
+		return
+	}
+	a.Session.AddMessage(session.Message{Role: "assistant", Type: "reasoning", Content: text})
 }
 
 // llmStep 是一轮 LLM 输出的解析结果。

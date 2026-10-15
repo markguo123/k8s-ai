@@ -124,7 +124,9 @@ type ApprovalData struct {
 type MessageData struct {
 	Role  string `json:"role,omitempty"`
 	Delta string `json:"delta,omitempty"`
-	Index int    `json:"index,omitempty"`
+	// Index 是同一 role 内的分片序号（从 0 开始），用于消费方去重与排序；
+	// 不带 omitempty：0 是合法序号，缺字段与“第 0 片”必须可区分。
+	Index int `json:"index"`
 }
 
 // SessionData 是 session 级附加信息（状态/终止原因）。

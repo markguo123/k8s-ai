@@ -41,9 +41,9 @@ function ensureHook(): void {
 function render(): string {
   ensureHook()
   const raw = props.text ?? ''
-  const html = DOMPurify.sanitize(marked.parse(raw) as string, {
-    USE_PROFILES: { html: false },
-  })
+  // 走 DOMPurify 默认 HTML 白名单：该白名单含 class，代码块语言标签依赖它。
+  // 注意不要打开 svg / svgFilters —— 报告正文来自集群数据与模型输出，属不可信内容。
+  const html = DOMPurify.sanitize(marked.parse(raw) as string)
   const doc = new DOMParser().parseFromString(`<div id="__mdroot">${html}</div>`, 'text/html')
   const root = doc.getElementById('__mdroot')
   if (root) {
@@ -68,8 +68,10 @@ function render(): string {
       copy.setAttribute('data-idx', String(snippetCount))
       copy.textContent = '复制'
       head.append(label, copy)
-      wrapper.append(head, pre)
+      // 先用 wrapper 顶替 pre 在文档中的位置，再把 pre 收进 wrapper：
+      // 顺序反了会变成「把父节点塞进自己的子节点」，触发 HierarchyRequestError。
       pre.replaceWith(wrapper)
+      wrapper.append(head, pre)
       snippets.value.push(content)
       snippetCount += 1
     })

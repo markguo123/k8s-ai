@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/k8s-ai/k8s-ai/internal/agent"
 	"github.com/k8s-ai/k8s-ai/internal/approval"
@@ -478,25 +477,26 @@ func (s *chatService) runChat(ctx context.Context, ag *agent.Agent, sess *sessio
 	go func() {
 		defer close(done)
 		var pendingAnswer strings.Builder
-		var reasoning strings.Builder
 		hadToolCall := false
-		msgIndex := 0
+		// 分片序号按 role 各自计数：reasoning 与 assistant 共用一个计数器会让
+		// 报告的“第几段”被思考分片推高，消费方无法据此排序。
+		reasoningIndex := 0
+		answerIndex := 0
 		for m := range ag.Output {
 			if ev, ok := translateEvent(m); ok {
 				switch ev.Type {
 				case ChatEventReasoningDelta:
-					reasoning.WriteString(ev.Text)
 					events <- ev
-					emitMessageDelta(sink, scope, "reasoning", ev.Text, msgIndex)
-					msgIndex++
+					emitMessageDelta(sink, scope, "reasoning", ev.Text, reasoningIndex)
+					reasoningIndex++
 				case ChatEventProgress:
 					events <- ev
 				case ChatEventAnswerDelta, ChatEventDelta:
 					// 先缓存回答增量。若后续发现本轮实际包含工具调用，
 					// 这段内容只能是工具前的中间说明，不能提前展示为报告。
 					pendingAnswer.WriteString(ev.Text)
-					emitMessageDelta(sink, scope, "assistant", ev.Text, msgIndex)
-					msgIndex++
+					emitMessageDelta(sink, scope, "assistant", ev.Text, answerIndex)
+					answerIndex++
 				case ChatEventToolCall:
 					if progress := summarizeToolPrelude(pendingAnswer.String()); progress != "" {
 						events <- ChatEvent{Type: ChatEventProgress, Text: progress}
@@ -516,13 +516,20 @@ func (s *chatService) runChat(ctx context.Context, ag *agent.Agent, sess *sessio
 		if !hadToolCall && pendingAnswer.Len() > 0 {
 			events <- ChatEvent{Type: ChatEventAnswerDelta, Text: pendingAnswer.String()}
 		}
-		if reasoning.Len() > 0 {
-			persistReasoning(sess, reasoning.String())
-		}
 	}()
 	answer, usage, chatErr := ag.Chat(ctx, req.Query)
 	sess.State = string(ag.State)
+	// 先关通道并等转发协程收尾，再发终态事件。事件顺序必须是
+	// message.delta… → message.completed（权威全文）→ session.completed / failed；
+	// 否则最后一段正文会落在终态之后，被前端当成新分片并永久停在“正在生成…”。
+	close(ag.Output)
+	<-done
 	if sink != nil {
+		if answer != "" {
+			sink(sse.New(sess.ID, scope.turn(), "", sse.EventMessageCompleted, sse.MessageData{
+				Role: "assistant", Delta: store.RedactJSONPayload(answer),
+			}))
+		}
 		if chatErr != nil {
 			sink(sse.New(sess.ID, scope.turn(), "", sse.EventSessionFailed, sse.SessionData{
 				State: sess.State, Reason: chatErr.Error(),
@@ -530,15 +537,7 @@ func (s *chatService) runChat(ctx context.Context, ag *agent.Agent, sess *sessio
 		} else {
 			sink(sse.New(sess.ID, scope.turn(), "", sse.EventSessionCompleted, sse.SessionData{State: sess.State}))
 		}
-		if answer != "" {
-			sink(sse.New(sess.ID, scope.turn(), "", sse.EventMessageCompleted, sse.MessageData{
-				Role: "assistant", Delta: store.RedactJSONPayload(answer),
-			}))
-		}
 	}
-	// 关闭 Agent 输出通道，让事件转发协程结束。
-	close(ag.Output)
-	<-done
 	if err := s.sessions.Update(sess); err != nil {
 		slog.Warn("chat: 保存会话失败", "session", sess.ID, "error", err)
 	}
@@ -554,35 +553,15 @@ func (s *chatService) runChat(ctx context.Context, ag *agent.Agent, sess *sessio
 }
 
 // emitMessageDelta 通过 sink 广播统一 message.delta 事件（携带当前 turn/step 作用域）。
+// 增量与终态走同一套脱敏（sse 包约定：写入事件流的内容在封装前必须脱敏），
+// 避免同一段正文在流式过程中与 message.completed 里呈现不同内容。
 func emitMessageDelta(sink func(sse.Event), scope *runScope, role, delta string, index int) {
 	if sink == nil {
 		return
 	}
 	sink(sse.New(scope.session(), scope.turn(), scope.step(), sse.EventMessageDelta, sse.MessageData{
-		Role: role, Delta: delta, Index: index,
+		Role: role, Delta: store.RedactJSONPayload(delta), Index: index,
 	}))
-}
-
-func persistReasoning(sess *session.Session, text string) {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return
-	}
-	message := session.Message{Role: "assistant", Type: "reasoning", Content: text}
-	insertAt := -1
-	for i, existing := range sess.Messages {
-		if existing.Role == "assistant" && existing.Type == "text" {
-			insertAt = i
-		}
-	}
-	if insertAt >= 0 {
-		sess.Messages = append(sess.Messages, session.Message{})
-		copy(sess.Messages[insertAt+1:], sess.Messages[insertAt:])
-		sess.Messages[insertAt] = message
-		sess.LastModified = time.Now()
-		return
-	}
-	sess.AddMessage(message)
 }
 
 // summarizeToolPrelude 保留工具调用前的短进度说明，避免把真正的诊断文本直接丢掉。

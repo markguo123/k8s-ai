@@ -1,6 +1,6 @@
 # k8s-ai 四期需求规格（平台化）
 
-> 版本：v1.3  
+> 版本：v1.4  
 > 状态：四期最终需求方案  
 > 目标：在不推翻三期 Agent、Skill、SSA、审批、安全执行链路的前提下，将 k8s-ai 从 Agent 工具升级为可持续演进的平台化 Kubernetes 运维 Agent。
 
@@ -453,6 +453,23 @@ Web 不允许自己猜测 Agent 状态。
 **页面展示必须以 Agent Runtime/SSE 实际事件为准。**
 
 四期事件模型须与三期 WebChat 既有事件（answer-delta / reasoning-delta / tool-call / tool-result）兼容；迁移期提供事件映射层，保证 Web Shell 迁移期间三期 Chat 仍可运行，未完成映射前不得移除旧事件。
+
+## 事件顺序与展示语义（强制）
+
+事件清单之外，以下四条是协议的一部分，任一侧实现都必须遵守（见 ADR-032 / D-22）：
+
+1. **分片不是展示单元**：`message.delta` 是传输分片，展示层按 turn 聚合，一个回合只有一块最终报告；
+   `index` 表示同一 role 内从 0 开始的分片序号，仅用于去重与排序，不得参与展示 key，JSON 也不得用
+   `omitempty` 把 0 隐藏掉。
+2. **终态必须最后**：顺序固定为 `message.delta…` → `message.completed`（携带权威全文）→
+   `session.completed` / `session.failed`。`turn.completed.output` 只作兜底，不单独成块；
+   终态之后到达的分片由前端忽略。
+3. **事件流统一脱敏**：写入 SSE 的内容（含增量）在封装前走与终态同一套脱敏策略。
+4. **思考面板语义**：`reason.started` 必须早于本轮 reasoning 增量；空思考面板不占位；
+   报告出现后折叠、用户可手动展开。
+
+违反上述任一条都会产生用户可见故障（报告重复、状态永久停留在"正在生成"、思考内容丢失），
+因此后端与前端各自必须有契约测试守住。
 
 ---
 
@@ -1138,6 +1155,8 @@ MySQL
 
 SQLite 面向单进程/单实例部署；MySQL 面向多副本或已有数据库场景。两种驱动共用统一 schema 版本与迁移入口，业务层只依赖 Store 接口。四期 migration 不得导致三期已保存的 session/audit/skill/config/报告无提示丢失；无法迁移的数据必须显式说明。
 
+多副本不止取决于数据库：除 MySQL 外，还需要会话/Token 状态持久化与 SSE、审批等待通道的跨副本方案（本期不引入 Redis）。在这些条件满足之前，平台进程保持单副本（见 ADR-030）。
+
 ---
 
 # 23. API Contract
@@ -1308,9 +1327,21 @@ Agent 调了哪些 Tool？
 
 # 26. 部署
 
-支持：
+四期生产形态只有一种：**Kubernetes**。单进程二进制运行保留为三期兼容与本地开发调试口径，不再是四期的生产部署目标。
 
-## 单进程
+## 平台主进程与前端交付
+
+四期平台主进程是 `k8s-ai server`，在同一进程、同一端口内提供：
+
+```text
+/api/v1/**        平台 API（含 Chat SSE）
+/**               SPA 静态资源（web/dist 内嵌，需 history fallback 与缓存策略）
+```
+
+`k8s-ai web`（三期 webui）冻结为三期封版兼容入口：继续可用、只做兼容回归，不再承载四期新增能力，
+四期前端不长期依赖其 `/api/sessions` 裸 JSON 契约。详见 ADR-029。
+
+## 本地 / 单进程（三期兼容与开发调试）
 
 ```bash
 k8s-ai web \
@@ -1318,7 +1349,7 @@ k8s-ai web \
   --config /etc/k8s-ai/config.yaml
 ```
 
-## Kubernetes
+## Kubernetes（唯一生产形态）
 
 ```text
 Deployment
@@ -1329,6 +1360,15 @@ Service
 Ingress
 RBAC
 ```
+
+平台进程默认 `replicas: 1`；扩副本需先满足会话/Token 持久化与 SSE、审批通道跨副本方案（见 ADR-030）。
+配置经 ConfigMap 挂载并以 `--config` 传入，数据目录用 PVC 承载（或改用 MySQL），初始 admin 密码经
+Secret 注入，日志走标准输出，不再使用 `nohup` 重定向到文件。
+
+配置面（ADR-031）：平台级非敏感参数（监听地址、TLS、Store 驱动与路径、admin 用户名、Token 有效期）
+由配置文件 `platform:` 段承载，`server` 必须支持 `--config`、`--addr`/`--db` 降级为覆盖手段；
+敏感值（admin 首启口令、LLM api_key、含口令的 DSN）只从环境变量 / Secret 读取，YAML 中不得出现明文；
+`config init` 必须输出全量模板（模板键集合 = 配置结构体键集合，由测试锁定）。
 
 默认保持只读 RBAC。
 
@@ -1582,7 +1622,7 @@ frontend build
 - SSE 事件流 mock 测试：session/turn/step 状态推进与事件字段完整性。
 - 前端路由权限与后端 API 越权测试（越权返回 401/403）。
 - kubeconfig 与 Secret 不进入审计、会话、记忆的红线专项测试。
-- 部署冒烟：单进程 k8s-ai web 与 k8s Deployment 各跑通 Chat/审批/健康检查。
+- 部署冒烟：以 K8s Deployment 为主，平台主进程 `k8s-ai server`（SPA + `/api/v1` + Chat SSE 同源、单副本）跑通 Chat/审批/健康检查；本地单进程作为辅助回归口径。
 
 Web：
 
@@ -1701,3 +1741,5 @@ Security Boundary Unchanged
 | v1.1 | 2026-09-30 | 架构基线：Agent Runtime / SSE / Approval v2 平台化 / Skill 非执行器 / Storage / 部署双轨 |
 | v1.2 | 2026-09-30 | 最终需求方案：双层安全边界、写工具统一受控通道、SSE 兼容迁移、镜像写执行方案、双驱动存储迁移、权限作用域、验收测试细化 |
 | v1.3 | 2026-10-13 | 审批与授权方案修订（见 `docs/02-架构与设计/13-方案-企业级身份权限与审批中心.md`）：角色收敛为 user/operator/admin；授权以 namespace 为唯一边界、零权限起步、admin 划分 namespace；销毁类仅 admin 并支持 operator 委派、未授权直接提示联系管理员；审批主体只有本人自确认或审批子 agent 自动；自动审批显式白名单（默认关闭+会话开关）；AuthzGrant 权威 + RBAC 派生对账 + 执行前 SAR；平台演进为多 Agent 编排并引入 Approval Agent；修正 P4.8 审批人约束 |
+| v1.4 | 2026-10-14 | 部署与交付口径修订（不改需求范围）：Kubernetes 为四期唯一生产形态，单进程运行降为三期兼容与本地开发调试口径；平台主进程 = `k8s-ai server`（`/api/v1` + Chat SSE + 内嵌 SPA 同源单端口），`k8s-ai web` 冻结为三期兼容入口；新增平台进程默认单副本约束与扩副本前置条件；见 ADR-029 / ADR-030 |
+| v1.5 | 2026-10-14 | 补两条协议级需求（不改范围，只补此前隐含的约束）：① §8 增补"事件顺序与展示语义"——分片不是展示单元、终态必须最后、增量统一脱敏、思考面板语义；② §26 增补四期配置面——`platform:` 段承载平台级非敏感参数、敏感值只走环境变量/Secret、`server` 支持 `--config`、`config init` 输出全量模板。见 ADR-031 / ADR-032、D-21 / D-22 |
