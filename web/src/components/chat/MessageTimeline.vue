@@ -17,10 +17,17 @@ import { parseJsonLoose } from './render/constants'
  * - Secret 值永不进入时间线（仅展示脱敏指纹，值由后端统一脱敏）。
  */
 
-const props = defineProps<{
-  history: HistorySnapshot | null
-  events: AgentEvent[]
-}>()
+const props = withDefaults(
+  defineProps<{
+    history: HistorySnapshot | null
+    events: AgentEvent[]
+    /** P2.9 当前用户是否有权审批：false 时审批卡收起操作区（后端仍强校验）。 */
+    canDecide?: boolean
+  }>(),
+  {
+    canDecide: true,
+  },
+)
 
 const emit = defineEmits<{
   (e: 'approve', value: string): void
@@ -495,6 +502,7 @@ defineExpose({ turns })
       <div v-for="turn in turns" :key="turn.key" class="turn-wrap">
         <TurnBlock
           :turn="turn"
+          :can-decide="canDecide"
           @approve="emit('approve', $event)"
           @reject="emit('reject')"
         />

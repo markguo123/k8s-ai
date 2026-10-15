@@ -74,6 +74,8 @@ type TurnStore interface {
 	Get(ctx context.Context, id string) (*session.Turn, error)
 	Update(ctx context.Context, t *session.Turn) error
 	ListBySession(ctx context.Context, sessionID string) ([]*session.Turn, error)
+	// SumTokensBySession 返回会话内各轮 token 用量合计（P2.13 会话级 Token 统计）。
+	SumTokensBySession(ctx context.Context, sessionID string) (session.TokenUsage, error)
 	Delete(ctx context.Context, id string) error
 }
 

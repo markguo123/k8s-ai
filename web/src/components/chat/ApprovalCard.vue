@@ -23,9 +23,20 @@ export interface ApprovalUiData {
   reason?: string
 }
 
-const props = defineProps<{
-  approval: ApprovalUiData
-}>()
+const props = withDefaults(
+  defineProps<{
+    approval: ApprovalUiData
+    /**
+     * P2.9 当前用户是否有权审批（本人自确认）。
+     * false 时隐藏审批/拒绝按钮并给出提示——后端仍独立强校验，前端隐藏不是安全机制。
+     * 默认 true：未接入权限上下文的场景（如三期回放）保持原有可操作行为。
+     */
+    canDecide?: boolean
+  }>(),
+  {
+    canDecide: true,
+  },
+)
 
 const emit = defineEmits<{
   (e: 'approve', value: string): void
@@ -37,6 +48,7 @@ const secretVisible = ref(false)
 
 const pending = computed(() => props.approval.decision === 'pending')
 const auto = computed(() => props.approval.decision === 'auto')
+const showActions = computed(() => pending.value && props.canDecide)
 
 const riskTag = computed<'danger' | 'warning' | 'info' | 'primary'>(() => {
   const risk = props.approval.risk?.toUpperCase() ?? ''
@@ -60,7 +72,7 @@ const resourceText = computed(() => {
   if (typeof record === 'string') return record
   const parsed = record as Record<string, unknown>
   const parts: string[] = []
-  for (const key of ['name', 'namespace', 'kind', 'group', 'version']) {
+  for (const key of ['kind', 'name', 'namespace', 'group', 'version']) {
     if (typeof parsed[key] === 'string' && parsed[key]) {
       parts.push(String(parsed[key]))
     }
@@ -143,7 +155,7 @@ function reject(): void {
     </div>
 
     <!-- Secret 占位输入：仅本次提交，value 永不写入历史 -->
-    <div v-if="approval.secret && pending" class="approval-secret">
+    <div v-if="approval.secret && showActions" class="approval-secret">
       <div class="approval-secret-row">
         <el-input
           v-model="secretValue"
@@ -151,7 +163,7 @@ function reject(): void {
           :type="secretVisible ? 'text' : 'password'"
           :show-password="false"
           placeholder="输入 Secret 值（仅本次验证使用，不会回显或入库）"
-          @keyup.enter="pending && approval.options[0] && approve(approval.options[0])"
+          @keyup.enter="showActions && approval.options[0] && approve(approval.options[0])"
         />
         <el-button
           :icon="approval.options[0] ? Check : undefined"
@@ -167,7 +179,7 @@ function reject(): void {
     </div>
 
     <!-- 普通审批（非 secret）：展示批准/拒绝选项 -->
-    <div v-else-if="pending" class="approval-actions">
+    <div v-else-if="showActions" class="approval-actions">
       <el-button
         v-for="(option, index) in approval.options"
         :key="option.value || index"
@@ -179,26 +191,31 @@ function reject(): void {
       </el-button>
       <el-button type="danger" plain @click="reject">拒绝</el-button>
     </div>
+
+    <!-- 无权审批：按钮整体隐藏，只说明原因（后端仍会独立拒绝越权请求） -->
+    <div v-else-if="pending" class="approval-locked">
+      <el-icon><Lock /></el-icon>
+      <span>当前账号无审批权限，请联系管理员开通后重试</span>
+    </div>
   </article>
 </template>
 
 <style scoped>
 .approval-card {
-  overflow: hidden;
-  border: 1px solid var(--el-color-warning-light-5);
-  border-left: 3px solid var(--el-color-warning);
+  /* 对齐原型：审批卡与工具卡同一视觉族，左侧 accent 竖条标识"需要人工介入" */
+  max-width: 820px;
+  border: 1px solid var(--app-border);
+  border-left: 3px solid var(--app-accent);
   border-radius: var(--app-radius);
   background: var(--app-surface);
 }
 
 .approval-card.approved {
-  border-left-color: var(--app-success, #22c55e);
-  border-color: var(--app-border);
+  border-left-color: var(--app-success);
 }
 
 .approval-card.rejected {
-  border-left-color: var(--app-danger, #ef4444);
-  border-color: var(--app-border);
+  border-left-color: var(--app-danger);
 }
 
 .approval-head {
@@ -209,12 +226,12 @@ function reject(): void {
 }
 
 .approval-icon {
-  color: var(--el-color-warning);
+  color: var(--app-warning);
   flex: none;
 }
 
 .approval-icon.danger {
-  color: var(--el-color-danger);
+  color: var(--app-accent);
 }
 
 .approval-title {
@@ -254,7 +271,7 @@ function reject(): void {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: 'JetBrains Mono', Consolas, monospace;
+  font-family: var(--app-mono);
 }
 
 .approval-resource {
@@ -272,6 +289,15 @@ function reject(): void {
   align-items: center;
   gap: 8px;
   padding: 0 12px 10px;
+}
+
+.approval-locked {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 10px;
+  color: var(--app-muted);
+  font-size: 12px;
 }
 
 .approval-secret {

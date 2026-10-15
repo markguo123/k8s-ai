@@ -8,7 +8,7 @@ import LogBlock from './render/LogBlock.vue'
 import StructuredTable from './render/StructuredTable.vue'
 import StructuredKv from './render/StructuredKv.vue'
 import StructuredEvents from './render/StructuredEvents.vue'
-import { parseJsonLoose, stripUntrusted } from './render/constants'
+import { maskSensitiveValues, parseJsonLoose, stripUntrusted } from './render/constants'
 import copyText from '@/composables/useClipboard'
 
 /**
@@ -51,18 +51,19 @@ const props = withDefaults(
   { autoOpen: true },
 )
 
-const expanded = ref(false)
+// 工具卡默认展开（对齐三期与原型：执行中看进度、完成后看结果），用户可手动收起。
+const expanded = ref(props.autoOpen)
 const showRaw = ref(false)
 
-// 工具结果到达（done）后自动展开，保持展开直到手动收起。
+// 工具结果到达（done/error）后自动展开，保持展开直到手动收起。
 watch(
   () => props.tool.status,
   (status) => {
-    if (status === 'done' && props.autoOpen) {
+    if (status !== 'running' && props.autoOpen) {
       expanded.value = true
     }
   },
-  { immediate: false },
+  { immediate: true },
 )
 
 const riskTag = computed<'danger' | 'warning' | 'info' | 'primary'>(() => {
@@ -179,13 +180,16 @@ function detectView(source: unknown): ResultView {
 }
 
 const view = computed<ResultView>(() => {
-  const result = props.tool.result
+  const result = maskedResult.value
   if (result !== undefined && result !== null) {
     return detectView(result)
   }
   // 结果未到时语法层不猜完成态（对齐 §8）：由调用方仅在 completion/done 事件后传 result。
   return { type: 'empty', parse: null }
 })
+
+/** 结果先做凭据兜底遮蔽，再做结构化识别（值永不回显）。 */
+const maskedResult = computed<unknown>(() => maskSensitiveValues(props.tool.result))
 
 const rawText = computed(() => {
   const text =
@@ -197,7 +201,15 @@ const rawText = computed(() => {
             : JSON.stringify(props.tool.result, null, 2),
         )
       : '')
-  return text || '（无返回数据）'
+  if (!text) {
+    return '（无返回数据）'
+  }
+  // JSON 文本走解析→遮蔽→回显，避免原始文本里带出凭据值。
+  const parsed = parseJsonLoose(text)
+  if (parsed !== text && parsed && typeof parsed === 'object') {
+    return JSON.stringify(maskSensitiveValues(parsed), null, 2)
+  }
+  return text
 })
 
 function toggle(): void {
@@ -209,7 +221,9 @@ function toggle(): void {
   <article class="toolcard" :class="tool.status">
     <button type="button" class="toolcard-head" @click="toggle">
       <span class="toolcard-dot" :class="tool.status"></span>
-      <span class="toolcard-short">{{ tool.shortName }}</span>
+      <span v-if="tool.shortName && tool.shortName !== tool.name" class="toolcard-short">{{
+        tool.shortName
+      }}</span>
       <span class="toolcard-title">{{ tool.name }}</span>
       <span v-if="tool.command" class="toolcard-cmd" :title="tool.command">{{ tool.command }}</span>
       <el-tag v-if="riskLabel" size="small" effect="plain" :type="riskTag">{{ riskLabel }}</el-tag>
@@ -298,19 +312,22 @@ function toggle(): void {
 
 <style scoped>
 .toolcard {
-  overflow: hidden;
+  max-width: 820px;
   border: 1px solid var(--app-border);
   border-left: 3px solid var(--app-muted);
   border-radius: var(--app-radius);
-  background: var(--app-surface);
 }
 
 .toolcard.done {
-  border-left-color: var(--app-success, #22c55e);
+  border-left-color: var(--app-success);
 }
 
 .toolcard.error {
-  border-left-color: var(--app-danger, #ef4444);
+  border-left-color: var(--app-danger);
+}
+
+.toolcard.running {
+  border-left-color: var(--app-accent);
 }
 
 .toolcard-head {
@@ -329,7 +346,7 @@ function toggle(): void {
 }
 
 .toolcard-head:hover {
-  background: var(--app-bg);
+  background: var(--app-surface-2);
 }
 
 .toolcard-dot {
@@ -346,26 +363,27 @@ function toggle(): void {
 }
 
 .toolcard-dot.done {
-  background: var(--app-success, #22c55e);
+  background: var(--app-success);
 }
 
 .toolcard-dot.error {
-  background: var(--app-danger, #ef4444);
+  background: var(--app-danger);
 }
 
 .toolcard-short {
   flex: none;
-  padding: 1px 8px;
-  border-radius: 4px;
-  background: var(--app-accent-soft);
-  color: var(--app-accent);
-  font-family: 'JetBrains Mono', Consolas, monospace;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--app-surface-2);
+  color: var(--app-muted);
+  font-family: var(--app-mono);
   font-size: 11px;
   font-weight: 600;
+  line-height: 18px;
 }
 
 .toolcard-title {
-  font-weight: 600;
+  font-weight: 650;
   flex: none;
 }
 
@@ -373,16 +391,18 @@ function toggle(): void {
   overflow: hidden;
   flex: 1;
   min-width: 0;
+  max-width: 340px;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--app-muted);
-  font-family: 'JetBrains Mono', Consolas, monospace;
+  font-family: var(--app-mono);
   font-size: 11.5px;
 }
 
 .toolcard-duration {
   flex: none;
-  color: var(--app-muted);
+  margin-left: auto;
+  color: var(--app-faint);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
@@ -406,6 +426,9 @@ function toggle(): void {
 .toolcard-block,
 .toolcard-result {
   padding: 0 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .toolcard-subhead {
@@ -428,10 +451,10 @@ function toggle(): void {
   align-items: flex-start;
   gap: 8px;
   margin: 0 12px 10px;
-  padding: 8px 10px;
+  padding: 7px 10px;
   border-radius: 6px;
-  background: var(--el-color-danger-light-9);
-  color: var(--el-color-danger);
+  background: var(--app-danger-soft);
+  color: var(--app-danger);
   font-size: 12px;
 }
 
@@ -461,9 +484,9 @@ function toggle(): void {
   margin: 0;
   padding: 8px 10px;
   border-radius: 6px;
-  background: var(--app-code-bg, #0f172a);
-  color: #e2e8f0;
-  font-family: 'JetBrains Mono', Consolas, monospace;
+  background: var(--app-surface-2);
+  color: var(--app-text);
+  font-family: var(--app-mono);
   font-size: 11.5px;
   line-height: 1.5;
   white-space: pre-wrap;
@@ -504,9 +527,9 @@ function toggle(): void {
   max-height: 280px;
   overflow: auto;
   border-radius: 6px;
-  background: var(--app-code-bg, #0f172a);
-  color: #cbd5e1;
-  font-family: 'JetBrains Mono', Consolas, monospace;
+  background: var(--app-surface-2);
+  color: var(--app-text);
+  font-family: var(--app-mono);
   font-size: 11px;
   line-height: 1.5;
 }

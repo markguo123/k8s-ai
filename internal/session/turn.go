@@ -57,6 +57,20 @@ type TokenUsage struct {
 	TotalTokens      int `json:"totalTokens"`
 }
 
+// Add 累加两次 token 用量（会话级统计由各轮累加得到）。
+func (u TokenUsage) Add(o TokenUsage) TokenUsage {
+	return TokenUsage{
+		PromptTokens:     u.PromptTokens + o.PromptTokens,
+		CompletionTokens: u.CompletionTokens + o.CompletionTokens,
+		TotalTokens:      u.TotalTokens + o.TotalTokens,
+	}
+}
+
+// IsZero 判断是否没有任何用量记录（避免把空统计渲染成 0 tokens）。
+func (u TokenUsage) IsZero() bool {
+	return u.PromptTokens == 0 && u.CompletionTokens == 0 && u.TotalTokens == 0
+}
+
 // Turn 是一条用户消息触发的完整 Agent 运行轨迹（P1.7）。
 // Input/Output/Error 在落库前统一脱敏（AGENTS.md：会话文件零敏感值）。
 type Turn struct {

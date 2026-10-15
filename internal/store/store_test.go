@@ -205,6 +205,30 @@ func runTurnStepCRUD(t *testing.T, s Store) {
 		t.Fatalf("list turns: %v %+v", err, list)
 	}
 
+	// P2.13 会话级 Token 用量：多轮累加，空会话返回零值而不是错误。
+	if err := s.Turns().Update(ctx, &session.Turn{
+		ID: "turn-1", SessionID: "ts-sess", UserID: "u1", Status: session.TurnDone,
+		Input: "hello", Output: "hi", Token: session.TokenUsage{PromptTokens: 10, CompletionTokens: 4, TotalTokens: 14},
+	}); err != nil {
+		t.Fatalf("update turn-1 token: %v", err)
+	}
+	tr2.Token = session.TokenUsage{PromptTokens: 3, CompletionTokens: 2, TotalTokens: 5}
+	tr2.Status = session.TurnDone
+	if err := s.Turns().Update(ctx, tr2); err != nil {
+		t.Fatalf("update turn-2 token: %v", err)
+	}
+	sum, err := s.Turns().SumTokensBySession(ctx, "ts-sess")
+	if err != nil {
+		t.Fatalf("sum tokens: %v", err)
+	}
+	if sum != (session.TokenUsage{PromptTokens: 13, CompletionTokens: 6, TotalTokens: 19}) {
+		t.Fatalf("sum tokens = %+v", sum)
+	}
+	empty, err := s.Turns().SumTokensBySession(ctx, "no-such-session")
+	if err != nil || !empty.IsZero() {
+		t.Fatalf("empty session sum = %+v, err = %v", empty, err)
+	}
+
 	st1 := &session.Step{
 		ID: "step-1", TurnID: "turn-1", SessionID: "ts-sess", Seq: 1,
 		Type: session.StepTool, Tool: "get_pod",

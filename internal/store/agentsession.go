@@ -112,6 +112,19 @@ func (st *turnStore) Delete(ctx context.Context, id string) error {
 	return ensureAffected(res, "delete turn")
 }
 
+// SumTokensBySession 汇总一个会话内所有 Turn 的 token 用量（P2.13）。
+// 会话为空（无轮次）时返回零值，不是错误。
+func (st *turnStore) SumTokensBySession(ctx context.Context, sessionID string) (session.TokenUsage, error) {
+	var sum session.TokenUsage
+	row := st.s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(total_tokens), 0)
+		FROM turns WHERE session_id = ?`, sessionID)
+	if err := row.Scan(&sum.PromptTokens, &sum.CompletionTokens, &sum.TotalTokens); err != nil {
+		return session.TokenUsage{}, fmt.Errorf("sum turn tokens: %w", err)
+	}
+	return sum, nil
+}
+
 // ---- Steps ----
 
 type stepStore struct{ s *dbStore }

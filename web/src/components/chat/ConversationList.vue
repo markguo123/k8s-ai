@@ -151,12 +151,10 @@ const collapsed = computed(() => props.collapsed === true)
 .conversation-list {
   display: flex;
   flex-direction: column;
+  gap: 8px;
   height: 100%;
   min-width: 0;
-  background: var(--app-surface);
-  border: 1px solid var(--app-border);
-  border-radius: var(--app-radius);
-  overflow: hidden;
+  overflow: visible;
 }
 
 .list-head {
@@ -164,8 +162,7 @@ const collapsed = computed(() => props.collapsed === true)
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--app-border);
+  padding: 4px 2px;
   flex: none;
 }
 
@@ -177,7 +174,8 @@ const collapsed = computed(() => props.collapsed === true)
 
 .list-title h3 {
   margin: 0;
-  font-size: 14px;
+  font-size: 14.5px;
+  font-weight: 650;
 }
 
 .list-count {
@@ -185,8 +183,8 @@ const collapsed = computed(() => props.collapsed === true)
   height: 18px;
   padding: 0 5px;
   border-radius: 9px;
-  background: var(--app-accent-soft);
-  color: var(--app-accent);
+  background: var(--app-surface-2);
+  color: var(--app-muted);
   font-size: 11px;
   line-height: 18px;
   text-align: center;
@@ -206,33 +204,33 @@ const collapsed = computed(() => props.collapsed === true)
 .session-items {
   list-style: none;
   margin: 0;
-  padding: 8px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .session-item {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px;
-  border: 1px solid transparent;
-  border-radius: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-sm);
+  background: var(--app-surface);
   cursor: pointer;
   transition:
     background 0.15s ease,
     border-color 0.15s ease;
 }
 
-.session-item + .session-item {
-  margin-top: 2px;
-}
-
 .session-item:hover {
-  background: var(--app-bg);
+  border-color: var(--app-accent);
 }
 
 .session-item.active {
   background: var(--app-accent-soft);
-  border-color: rgba(79, 70, 229, 0.35);
+  border-color: var(--app-accent);
 }
 
 .session-main {
@@ -265,8 +263,8 @@ const collapsed = computed(() => props.collapsed === true)
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
-  font-weight: 500;
+  font-size: 12.5px;
+  font-weight: 600;
 }
 
 .session-meta {

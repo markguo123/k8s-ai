@@ -13,13 +13,15 @@ import {
   renameSession,
   sendMessage,
 } from '@/api/sessions'
-import type { AgentToken, AgentTurnData } from '@/api/sse'
+import type { AgentTurnData } from '@/api/sse'
 import ConversationList from '@/components/chat/ConversationList.vue'
 import MessageTimeline from '@/components/chat/MessageTimeline.vue'
 import ComposerBox from '@/components/chat/ComposerBox.vue'
 import TokenUsageBadge from '@/components/chat/TokenUsageBadge.vue'
 import { useChatStream, type StreamStatus } from '@/composables/useChatStream'
-import { sessionStateTagType } from '@/utils/format'
+import { useAuthStore } from '@/stores/auth'
+import { addTokenUsage, sessionStateTagType } from '@/utils/format'
+import { canDecideApproval } from '@/utils/permission'
 
 const ACTIVE_SESSION_KEY = 'k8s_ai_active_session'
 
@@ -30,8 +32,8 @@ const stream = useChatStream()
 
 const input = ref('')
 const sending = ref(false)
-const lastToken = ref<AgentToken | null>(null)
 const composerRef = ref<InstanceType<typeof ComposerBox> | null>(null)
+const auth = useAuthStore()
 
 const CONVERSATIONS_KEY = 'k8s_ai_conversations_collapsed'
 const conversationsCollapsed = ref(localStorage.getItem(CONVERSATIONS_KEY) === '1')
@@ -42,6 +44,30 @@ watch(conversationsCollapsed, (collapsed) => {
 const activeSession = computed(
   () => sessions.value.find((session) => session.id === activeId.value) ?? null,
 )
+
+/** P2.9 审批操作显隐：只读角色不展示审批按钮（后端仍独立强校验）。 */
+const canDecide = computed(() => canDecideApproval(auth.role))
+
+/** P2.13 会话级 Token：历史快照（落库汇总）+ 本次连接内各轮增量，按回合去重。 */
+const sessionToken = computed(() => {
+  let total = addTokenUsage(stream.history.value?.token ?? null, null)
+  const seen = new Set<string>()
+  for (const event of stream.events.value) {
+    if (event.event_type !== 'turn.completed') {
+      continue
+    }
+    const turnId = event.turn_id ?? `idx:${seen.size}`
+    if (seen.has(turnId)) {
+      continue
+    }
+    seen.add(turnId)
+    const data = (event.data ?? {}) as AgentTurnData
+    if (data.token) {
+      total = addTokenUsage(total, data.token)
+    }
+  }
+  return total
+})
 
 const statusText = computed(() => {
   switch (stream.status.value) {
@@ -201,16 +227,14 @@ onMounted(() => {
 watch(activeId, (id) => {
   if (id) {
     sending.value = false
-    lastToken.value = null
     void stream.connect(id)
   } else {
     stream.stop()
     sending.value = false
-    lastToken.value = null
   }
 })
 
-// 回合/会话结束或失败时复位“运行中”态；并从终态事件提取 token 用量。
+// 回合/会话结束或失败时复位“运行中”态（token 统计由 sessionToken 计算属性驱动）。
 watch(
   () => stream.events.value.length,
   () => {
@@ -226,10 +250,6 @@ watch(
         break
       }
       if (event.event_type === 'turn.completed') {
-        const data = (event.data ?? {}) as AgentTurnData
-        if (data.token) {
-          lastToken.value = data.token
-        }
         terminalSeen = true
         break
       }
@@ -258,7 +278,7 @@ watch(
       @toggle="conversationsCollapsed = !conversationsCollapsed"
     />
     <main class="chat-main">
-      <TokenUsageBadge :token="lastToken" />
+      <TokenUsageBadge :token="sessionToken" />
       <header class="chat-head">
         <div class="chat-heading">
           <h2>{{ activeSession?.name || '未选择会话' }}</h2>
@@ -305,6 +325,7 @@ watch(
             <MessageTimeline
               :history="stream.history.value"
               :events="stream.events.value"
+              :can-decide="canDecide"
               @approve="handleApprove"
               @reject="handleReject"
             />
@@ -323,6 +344,7 @@ watch(
         <ComposerBox
           ref="composerRef"
           v-model="input"
+          :model="activeSession?.model || ''"
           :disabled="!activeSession"
           :sending="sending"
           @send="handleSend"
@@ -336,8 +358,9 @@ watch(
 <style scoped>
 .chat-page {
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
-  gap: 16px;
+  /* 对齐原型 .chat-pane：会话栏 240px + 14px 间距；收起态 56px */
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 14px;
   height: 100%;
   min-height: 0;
   transition: grid-template-columns 0.2s ease;
@@ -352,10 +375,6 @@ watch(
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  background: var(--app-surface);
-  border: 1px solid var(--app-border);
-  border-radius: var(--app-radius);
-  overflow: hidden;
 }
 
 .chat-head {
@@ -363,8 +382,7 @@ watch(
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--app-border);
+  padding: 0 2px 8px;
 }
 
 .chat-heading {
@@ -434,9 +452,7 @@ watch(
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 8px 16px;
-  border-bottom: 1px solid var(--app-border);
-  background: var(--app-bg);
+  padding: 0 2px 8px;
 }
 
 .stream-state {
@@ -452,7 +468,7 @@ watch(
 
 .stream-last {
   font-size: 12px;
-  color: var(--app-muted);
+  color: var(--app-faint);
 }
 
 .stream-actions {
@@ -461,10 +477,10 @@ watch(
 
 .stream-error {
   margin: 0;
-  padding: 6px 16px;
-  border-bottom: 1px solid var(--app-border);
-  background: var(--el-color-danger-light-9);
-  color: var(--el-color-danger);
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--app-danger-soft);
+  color: var(--app-danger);
   font-size: 12px;
 }
 
@@ -472,8 +488,6 @@ watch(
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 12px 16px;
-  border-top: 1px solid var(--app-border);
-  background: var(--app-surface);
+  padding-top: 12px;
 }
 </style>

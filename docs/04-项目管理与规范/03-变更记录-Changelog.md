@@ -4,14 +4,26 @@
 
 ## [v4.0.0] - 开发中（2026-10-11）
 
-四期平台化 M1 平台底座完成、M2 Web Shell 推进中：前端工程与信息架构、统一 Store、HTTP 中间件、
+四期平台化 M1 平台底座完成、M2 Web Shell 完成（2026-10-15）：前端工程与信息架构、统一 Store、HTTP 中间件、
 认证与权限门禁、Session/Turn/Step 模型与存储、Agent Runtime 生命周期持久化、SSE 事件路由与
 旧事件映射层、配置中心、审计模型与系统事件写入、旧数据导入与测试集（P1.1-P1.13 已完成；审计
 CLUSTER_CHANGE 写入随 P3.2 集群管理 API 落地）。M2 已完成 P2.1 信息架构、P2.2 登录与路由守卫、
 P2.3 API Client、P2.4 会话列表与历史会话加载、P2.5 SSE Client 与事件归一、P2.6 MessageTimeline
-与消息流展示。2026-10-13 完成审批
+与消息流展示、P2.7 AgentStep 卡片、P2.8 ToolCallCard、P2.9 ApprovalCard、P2.10 Composer、
+P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会话 Token 用量持久化与展示，
+并按原型图完成视觉对齐（M2 出口达成）。2026-10-13 完成审批
 与授权架构修订（见
 `docs/02-架构与设计/13-方案-企业级身份权限与审批中心.md`，计划回写 v1.12/v1.13）。
+
+### Added（2026-10-15，P2.7–P2.13 Web Shell 收尾）
+
+- **AgentStep 卡片（P2.7）**：`AgentStepper` 四步过程步进器（思考→工具→观察→报告，随回合重置）、`TurnBlock` 回合容器（头部序号 T{n}/状态/耗时/token + 回合内回显用户诉求）、`ReasoningPanel` 思考面板（推理中自动展开、推理结束自动折叠为一行摘要、用户手动开合优先、附”不进入最终报告”说明）。每个 Step 与事件一一对应，不丢项不重复。
+- **ToolCallCard（P2.8）**：工具名/短名/命令摘要/风险/耗时/复制 + 结构化结果渲染（列表表格、对象键值、事件表、YAML、日志、原始 JSON 折叠），结果到达即展开并保持；新增 `maskSensitiveValues` 前端兜底遮蔽（password/token/secret/apiKey/kubeconfig 等键的值在结构化视图与原始 JSON 中都不回显，键名保留），对象字段不再渲染成 `[object Object]`。
+- **ApprovalCard（P2.9）**：风险等级标签、Tool、参数摘要、目标资源、命中策略/原因 + 批准/拒绝/本次会话都允许 + Secret 占位输入（值仅本次提交、提交后清空、不入历史流）；新增 `web/src/utils/permission.ts`（Permission 常量与段通配判定同后端 `internal/permission` 语义），只读角色隐藏审批按钮并提示联系管理员——前端隐藏不是安全机制，后端仍独立强校验。
+- **Composer 与发送流程（P2.10）**：多行输入（Enter 发送 / Shift+Enter 换行）、空白与禁用态不发送、运行中切换为「停止」并回传 cancel、模型与 Secret 策略提示、底部提示「Shell 语法命令需人工审批 · Secret 值不会进入会话与审计」；发送后由 SSE 事件驱动状态，每轮步进器与执行状态随回合重置。
+- **会话 Token 用量持久化与展示（P2.13）**：`session.TokenUsage.Add/IsZero`、`store.TurnStore.SumTokensBySession`（会话级 SQL 汇总）、`service.SessionTokenizer` 可选能力（三期服务未实现时退化为零值，不破坏既有实现与测试桩）、webui 历史快照与会话列表下发 `token`/`model`（无记录时显式为 null/缺省，不伪造 0）；`k8s-ai web --db` 装配 SQLite Store（会话与 token 落库，数据库不可用仅告警并退回三期内存态）；`TokenUsageBadge` 改为右下角会话级统计（历史快照 + 本连接内逐轮累加，快照即断点不重复计数），刷新/重开会话仍可读。
+- **前端测试与构建门禁（P2.12）**：引入 vitest + @vue/test-utils + jsdom 与 `tsconfig.vitest.json`、`src/test/setup.ts`；新增 12 个测试文件 59 个用例（SSE 帧解析与旧事件映射、useChatStream 连接/切换/退避重连/停止、MessageTimeline 回合聚合与工具卡去重、ToolCallCard 脱敏与展开、ApprovalCard 权限显隐与 Secret 输入、ComposerBox、auth store、路由守卫、ChatView 全链路冒烟）；`package.json` 增加 `test`/`test:watch`/`test:coverage`。
+- **视觉对齐与前端核验工具**：`styles/index.css` 设计令牌与 `docs/02-架构与设计/prototype/index.html` 同源（含 `html.dark` 覆盖，使 Element Plus 组件走品牌 indigo 而不是默认蓝），聊天区（会话栏/回合/思考面板/工具卡/审批卡/报告/composer/Token 浮标）与登录页逐项对齐原型；新增 `web/tools/mock-backend.mjs`（复刻 webui 会话端点与 SSE 帧的联调 mock）与 `web/tools/visual-check.mjs`（原型 vs SPA 逐项比对 18 个关键视觉量并输出截图，当前差异 0）、`web/tools/screenshot.mjs`（无头 Edge/Chrome 截图）。
 
 ### 设计修订（2026-10-13）
 

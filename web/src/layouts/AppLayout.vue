@@ -492,17 +492,18 @@ function handleUserCommand(command: string | number | object): void {
   align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid var(--app-border);
-  background: var(--app-surface);
+  /* 对齐原型 .topbar：与画布同色，仅用分隔线区分 */
+  background: var(--app-bg);
 }
 
 .app-header h1 {
   margin: 0;
-  font-size: 16px;
-  font-weight: 600;
+  font-size: 15px;
+  font-weight: 650;
 }
 
 .app-main {
-  padding: 20px;
+  padding: 16px;
   overflow: auto;
 }
 </style>

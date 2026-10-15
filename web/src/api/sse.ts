@@ -11,6 +11,7 @@
  */
 
 import type { ChatMessage } from './sessions'
+import { readToken } from './request'
 
 /** 统一事件类型，对齐 `internal/sse/event.go` 的 EventType 全量枚举。 */
 export type AgentEventType =
@@ -147,6 +148,11 @@ export interface HistorySnapshot {
   sessionId: string
   state: string
   messages: ChatMessage[]
+  /**
+   * P2.13 会话级 Token 用量累计（来自落库 Turn 汇总）。
+   * 未装配四期 Store 或尚无记录时为 null：前端退化为隐藏统计，不伪造 0。
+   */
+  token?: AgentToken | null
 }
 
 /** 归一帧：历史快照、统一事件，或无法映射的旧帧（保留原样供下游消费）。 */
@@ -220,7 +226,8 @@ export function normalizeFrame(payload: unknown): ChatStreamFrame | null {
     const messages = Array.isArray(record.messages)
       ? (record.messages as ChatMessage[])
       : []
-    return { kind: 'history', snapshot: { type: 'history', sessionId, state, messages } }
+    const token = (record.token ?? null) as AgentToken | null
+    return { kind: 'history', snapshot: { type: 'history', sessionId, state, messages, token } }
   }
   if (typeof record.event_type === 'string') {
     return { kind: 'event', event: record as unknown as AgentEvent }
@@ -292,8 +299,15 @@ export async function fetchChatStream(
   handlers: ChatStreamHandlers,
   signal: AbortSignal,
 ): Promise<void> {
+  const headers = new Headers({ Accept: 'text/event-stream' })
+  // 四期平台进程下 SSE 同样受鉴权保护；三期 webui 忽略该头。
+  const token = readToken()
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`)
+  }
   const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/stream`, {
     signal,
+    headers,
   })
   if (!response.ok) {
     throw new Error(`stream request failed with status ${response.status}`)

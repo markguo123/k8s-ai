@@ -5,13 +5,20 @@
  * 返回裸对象/数组而非 `/api/v1` 信封，因此此处单独封装 fetch。
  */
 
+import type { AgentToken } from './sse'
+import { readToken } from './request'
+
 /** 列表项，与服务端 handleListSessions 返回字段一一对应。 */
 export interface SessionSummary {
   id: string
   name: string
   state: string
+  /** 会话使用的模型名（composer 只读展示）。 */
+  model?: string
   messageCount: number
   lastModified: string
+  /** P2.13 会话级 Token 用量合计；未持久化时缺省。 */
+  token?: AgentToken | null
 }
 
 /** 会话内一条消息，对齐 `internal/session/session.go` 的 Message。 */
@@ -47,6 +54,12 @@ async function sessionFetch<T>(url: string, init: RequestInit = {}): Promise<T> 
   headers.set('Accept', 'application/json')
   if (init.body !== undefined) {
     headers.set('Content-Type', 'application/json')
+  }
+  // 会话端点在四期平台进程下同样受鉴权保护：带 Bearer 令牌，
+  // 三期 webui（无鉴权）会忽略该头，行为不变。
+  const token = readToken()
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`)
   }
   const response = await fetch(url, { ...init, headers })
   const text = await response.text()

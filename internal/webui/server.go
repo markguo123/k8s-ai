@@ -138,14 +138,43 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		ID           string    `json:"id"`
 		Name         string    `json:"name"`
 		State        string    `json:"state"`
+		Model        string    `json:"model,omitempty"`
 		MessageCount int       `json:"messageCount"`
 		LastModified time.Time `json:"lastModified"`
+		// Token 为会话级 token 用量合计（P2.13）；未装配四期 Store 时省略。
+		Token *session.TokenUsage `json:"token,omitempty"`
 	}
 	out := make([]item, 0, len(list))
 	for _, sess := range list {
-		out = append(out, item{ID: sess.ID, Name: sess.Name, State: sess.State, MessageCount: len(sess.Messages), LastModified: sess.LastModified})
+		out = append(out, item{
+			ID:           sess.ID,
+			Name:         sess.Name,
+			State:        sess.State,
+			Model:        sess.Model,
+			MessageCount: len(sess.Messages),
+			LastModified: sess.LastModified,
+			Token:        s.sessionToken(sess.ID),
+		})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// sessionToken 读取会话级 token 用量合计（P2.13）；未装配 Store 或读取失败时返回 nil，
+// 由前端退化为"不展示统计"，避免把读不到当成 0。
+func (s *Server) sessionToken(sessionID string) *session.TokenUsage {
+	provider, ok := s.chat.(service.SessionTokenizer)
+	if !ok {
+		return nil
+	}
+	usage, err := provider.SessionTokenUsage(context.Background(), sessionID)
+	if err != nil {
+		slog.Warn("webui: 读取会话 token 用量失败", "session", sessionID, "error", err)
+		return nil
+	}
+	if usage.IsZero() {
+		return nil
+	}
+	return &usage
 }
 
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
@@ -227,6 +256,8 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		"sessionId": sess.ID,
 		"state":     sess.State,
 		"messages":  sess.Messages,
+		// Token 为会话级累计用量（P2.13）：刷新/重开会话后右下角统计仍可读。
+		"token": s.sessionToken(sess.ID),
 	})
 	fmt.Fprintf(w, "data: %s\n\n", snapshot)
 	flusher.Flush()

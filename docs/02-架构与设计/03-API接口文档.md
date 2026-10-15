@@ -216,7 +216,7 @@ PATCH /api/v1/settings/{group}  // body 为扁平 {key: value}，任一非法整
 
 ```text
 GET  /                                  // 单文件 SPA（嵌入式 index.html）
-GET  /api/sessions                      // 会话列表（id/name/state/messageCount/lastModified）
+GET  /api/sessions                      // 会话列表（id/name/state/model/messageCount/lastModified[/token]）
 POST /api/sessions                      // 创建或载入会话
 POST /api/sessions/{id}/rename
 DELETE /api/sessions/{id}               // 同时取消运行并清理 broadcaster/pending
@@ -225,6 +225,11 @@ POST /api/sessions/{id}/send-message    // 发起一轮 Chat，返回 202；会�
 POST /api/sessions/{id}/approve         // 回传审批 choice；响应不携带 choice（Secret 值不留痕）
 POST /api/sessions/{id}/cancel          // 取消当前运行（context cancel）
 ```
+
+`token` 为会话级 token 用量合计（`{promptTokens, completionTokens, totalTokens}`，四期 P2.13）；
+未装配 Store（三期运行模式）或该会话尚无 Turn 记录时字段缺省，`history` 快照中显式为 `null`，
+前端据此隐藏统计而不是显示 0。`internal/webui` 经 `service.SessionTokenizer` 可选接口取用量，
+三期 ChatService 未实现时行为不变。
 
 ### 9.1 事件契约（`service.ChatEvent`）
 

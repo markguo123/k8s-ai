@@ -38,3 +38,33 @@ export function sessionStateTagType(state: string): 'primary' | 'success' | 'war
       return 'info'
   }
 }
+
+/** P2.13 Token 计数展示：千分位（对齐原型 36,420 的口径），空值显示占位符。 */
+export function formatTokenCount(value: number | null | undefined): string {
+  if (value === null || value === undefined) {
+    return '–'
+  }
+  return value.toLocaleString('en-US')
+}
+
+/**
+ * P2.13 会话级 Token 累加：历史快照（落库汇总）+ 本次连接内各轮增量。
+ * 返回 null 表示"没有任何用量"（未持久化或全部为 0），前端据此隐藏统计。
+ */
+export function addTokenUsage(
+  base: { total_tokens?: number; prompt_tokens?: number; completion_tokens?: number } | null | undefined,
+  delta: { total_tokens?: number; prompt_tokens?: number; completion_tokens?: number } | null | undefined,
+): { total_tokens: number; prompt_tokens: number; completion_tokens: number } | null {
+  if (!base && !delta) {
+    return null
+  }
+  const sum = {
+    total_tokens: (base?.total_tokens ?? 0) + (delta?.total_tokens ?? 0),
+    prompt_tokens: (base?.prompt_tokens ?? 0) + (delta?.prompt_tokens ?? 0),
+    completion_tokens: (base?.completion_tokens ?? 0) + (delta?.completion_tokens ?? 0),
+  }
+  if (sum.total_tokens === 0 && sum.prompt_tokens === 0 && sum.completion_tokens === 0) {
+    return null
+  }
+  return sum
+}

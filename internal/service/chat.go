@@ -99,6 +99,13 @@ type ChatService interface {
 	RenameSession(id, name string) error
 }
 
+// SessionTokenizer 是 ChatService 的可选能力（P2.13）：返回会话级 token 用量合计。
+// 单独成接口而不是并入 ChatService，是为了让三期实现与其测试桩无需跟着变更；
+// 调用方用类型断言探测，未实现时按"未持久化"退化为不展示统计。
+type SessionTokenizer interface {
+	SessionTokenUsage(ctx context.Context, sessionID string) (session.TokenUsage, error)
+}
+
 type chatService struct {
 	cfg            *config.Config
 	sessions       *session.Manager
@@ -189,6 +196,12 @@ func chatReader(cfg *config.Config) (scanner.Reader, error) {
 // NewChatWithConfig 用完整配置创建 Agent 服务（main/CLI 组合根入口）。
 func NewChatWithConfig(cfg *config.Config) ChatService {
 	return NewChat(cfg, func() (scanner.Reader, error) { return chatReader(cfg) }, nil, nil, nil)
+}
+
+// NewChatWithStoreAndConfig 用完整配置 + 四期 Store 创建 Agent 服务（Web/Server 组合根入口）：
+// 既保留三期事件流，又把 Session/Turn/Step 与 token 用量落库（P1.8/P2.13）。
+func NewChatWithStoreAndConfig(cfg *config.Config, st store.Store) ChatService {
+	return NewChatWithStore(cfg, func() (scanner.Reader, error) { return chatReader(cfg) }, nil, nil, nil, st)
 }
 
 // chatWriteRunner 从配置构建写执行器（kubectl argv + client-go，仅 executor 包内）。
@@ -727,6 +740,16 @@ func (s *chatService) RenameSession(id, name string) error {
 	}
 	sess.Name = name
 	return s.sessions.Update(sess)
+}
+
+// SessionTokenUsage 汇总会话内各轮 token 用量（P2.13）。
+// 未装配四期 Store（三期运行模式）时返回零值：Web 右下角统计自动隐藏，
+// 而不是把"未持久化"误报成 0 tokens。
+func (s *chatService) SessionTokenUsage(ctx context.Context, sessionID string) (session.TokenUsage, error) {
+	if s.store == nil || sessionID == "" {
+		return session.TokenUsage{}, nil
+	}
+	return s.store.Turns().SumTokensBySession(ctx, sessionID)
 }
 
 func toString(v any) string {

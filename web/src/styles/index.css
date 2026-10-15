@@ -1,34 +1,81 @@
 :root {
-  /* 平台深色底座（对齐原型 §8 默认深色） */
-  --app-bg: #0d1117;
-  --app-surface: #161b22;
-  --app-surface-2: #1c2128;
-  --app-text: #e6edf3;
+  /* 平台深色底座：取值与 docs/02-架构与设计/prototype/index.html 的 :root 一一对应，
+     保证四期 Web Shell 与原型视觉同源（前端视觉对齐原型的硬性验收项）。 */
+  --app-bg: #0f1115;
+  --app-surface: #161a22;
+  --app-surface-2: #1b212c;
+  --app-text: #e6e8ee;
   --app-strong: #ffffff;
-  --app-muted: #8b949e;
-  --app-faint: #6e7681;
-  --app-border: #30363d;
-  --app-sidebar: #0a0d12;
+  --app-muted: #8b93a3;
+  --app-faint: #5b6372;
+  --app-border: #272e3b;
+  --app-sidebar: #12151b;
   --app-sidebar-text: #c9cdd4;
-  --app-sidebar-muted: #788393;
+  --app-sidebar-muted: #5f6673;
+  --app-brand: #8b90ff;
   --app-accent: #6366f1;
-  --app-accent-soft: rgba(99, 102, 241, 0.16);
-  --app-radius: 8px;
+  --app-accent-2: #818cf8;
+  --app-accent-soft: rgba(99, 102, 241, 0.14);
+  --app-radius: 10px;
+  --app-radius-sm: 7px;
+  --app-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
 
-  /* Semantic（Element Plus dark css-vars 之上再压一层品牌强调色） */
-  --app-success: #3fb950;
-  --app-danger: #f85149;
-  --app-warning: #d29922;
-  --app-info: #58a6ff;
+  /* Semantic（与原型 --ok/--warn/--err/--info 及其 soft 变体同值） */
+  --app-success: #34d399;
+  --app-success-soft: rgba(52, 211, 153, 0.13);
+  --app-danger: #f87171;
+  --app-danger-soft: rgba(248, 113, 113, 0.13);
+  --app-warning: #fbbf24;
+  --app-warning-soft: rgba(251, 191, 36, 0.13);
+  --app-info: #60a5fa;
+  --app-info-soft: rgba(96, 165, 250, 0.13);
+
+  /* 等宽字体（原型 --mono） */
+  --app-mono: 'JetBrains Mono', Consolas, 'SF Mono', Menlo, monospace;
 
   /* Element Plus 主色跟随品牌（indigo），保持深色对比度 */
   --el-color-primary: #6366f1;
-  --el-color-primary-light-3: #7c7ff2;
+  --el-color-primary-light-3: #818cf8;
   --el-color-primary-light-5: #6366f1;
   --el-color-primary-light-7: #4f52d9;
   --el-color-primary-light-8: #3f42b8;
-  --el-color-primary-light-9: #2c2f8f;
-  --el-color-primary-dark-2: #8b8df5;
+  --el-color-primary-light-9: rgba(99, 102, 241, 0.14);
+  --el-color-primary-dark-2: #8b90ff;
+  --el-color-success: #34d399;
+  --el-color-warning: #fbbf24;
+  --el-color-danger: #f87171;
+  --el-color-error: #f87171;
+  --el-color-info: #8b93a3;
+}
+
+/*
+ * Element Plus dark 主题变量挂在 `html.dark` 上，比 `:root` 优先级更高，
+ * 因此需要在同一选择器下再覆盖一次，否则组件库会回落到默认蓝而不是原型品牌色。
+ */
+html.dark {
+  --el-color-primary: #6366f1;
+  --el-color-primary-light-3: #818cf8;
+  --el-color-primary-light-5: #6366f1;
+  --el-color-primary-light-7: #4f52d9;
+  --el-color-primary-light-8: #3f42b8;
+  --el-color-primary-light-9: rgba(99, 102, 241, 0.14);
+  --el-color-primary-dark-2: #8b90ff;
+  --el-color-success: #34d399;
+  --el-color-warning: #fbbf24;
+  --el-color-danger: #f87171;
+  --el-color-error: #f87171;
+  --el-color-info: #8b93a3;
+  --el-bg-color: #161a22;
+  --el-bg-color-overlay: #1b212c;
+  --el-border-color: #272e3b;
+  --el-border-color-light: #272e3b;
+  --el-border-color-lighter: #272e3b;
+  --el-fill-color-blank: #161a22;
+  --el-text-color-primary: #e6e8ee;
+  --el-text-color-regular: #e6e8ee;
+  --el-text-color-secondary: #8b93a3;
+  --el-text-color-placeholder: #5b6372;
+  --el-mask-color: rgba(15, 17, 21, 0.8);
 }
 
 * {

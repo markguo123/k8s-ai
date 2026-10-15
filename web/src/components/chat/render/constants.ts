@@ -110,6 +110,34 @@ export function stripUntrusted(text: unknown): string {
     .trim()
 }
 
+/**
+ * P2.8 凭据兜底遮蔽：后端已在出站前统一脱敏（store.RedactJSONPayload），
+ * 前端对结构化结果再按字段名遮蔽一层，确保 Secret 值/令牌/口令永不出现在卡片上。
+ * 键名本身（如 Secret 的键指纹）允许展示，只有「值」被替换。
+ */
+const SENSITIVE_KEY_RE =
+  /(passwd|password|passphrase|token|secret|apikey|api[-_]key|credential|kubeconfig|private[-_]?key|client[-_]?secret|authorization|cookie|bearer)/i
+
+export const MASKED_VALUE = '<已遮蔽>'
+
+export function maskSensitiveValues(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => maskSensitiveValues(item))
+  }
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      if (SENSITIVE_KEY_RE.test(key) && (item === null || typeof item !== 'object')) {
+        out[key] = item === null || item === '' ? item : MASKED_VALUE
+        continue
+      }
+      out[key] = maskSensitiveValues(item)
+    }
+    return out
+  }
+  return value
+}
+
 /** 宽松 JSON 解析：能解析则返回对象，否则原文本。 */
 export function parseJsonLoose(value: unknown): unknown {
   if (typeof value !== 'string') {

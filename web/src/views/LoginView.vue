@@ -37,9 +37,10 @@ async function handleLogin(): Promise<void> {
   <div class="login-page">
     <div class="login-card">
       <div class="login-brand">
-        <span class="login-mark">K8S</span>
-        <strong>K8S-AI Platform</strong>
+        <span class="login-logo">K</span>
+        <h1>K8S-AI</h1>
       </div>
+      <p class="login-tip">企业级 Kubernetes AI 运维工作台 · 登录进入控制台</p>
       <el-form label-position="top" size="large" @submit.prevent="handleLogin">
         <el-form-item label="用户名">
           <el-input v-model="username" autocomplete="username" />
@@ -59,6 +60,7 @@ async function handleLogin(): Promise<void> {
           登录
         </el-button>
       </el-form>
+      <footer class="login-foot">平台内权限由角色与 namespace 授权决定 · 真实权限来自集群 RBAC</footer>
     </div>
   </div>
 </template>
@@ -69,47 +71,97 @@ async function handleLogin(): Promise<void> {
   align-items: center;
   justify-content: center;
   height: 100%;
-  background:
-    linear-gradient(180deg, #151920 0%, #20263a 48%, #2b3550 100%);
+  /* 对齐原型 .login 的径向高光底色 */
+  background: radial-gradient(1200px 700px at 20% -10%, rgba(99, 102, 241, 0.25), transparent 55%),
+    var(--app-bg);
 }
 
 .login-card {
-  width: 360px;
+  width: 390px;
   max-width: calc(100vw - 32px);
-  padding: 28px 28px 24px;
+  padding: 30px 30px 22px;
   background: var(--app-surface);
-  border-radius: 10px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+  border: 1px solid var(--app-border);
+  border-radius: 14px;
+  box-shadow: var(--app-shadow);
 }
 
 .login-brand {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 24px;
+  margin-bottom: 4px;
 }
 
-.login-mark {
+.login-logo {
   display: inline-flex;
   align-items: center;
-  padding: 4px 8px;
-  border-radius: 6px;
-  background: var(--app-accent);
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border-radius: 9px;
+  background: linear-gradient(135deg, var(--app-accent), #a855f7);
   color: #fff;
   font-weight: 700;
-  font-size: 13px;
+  font-size: 15px;
 }
 
-.login-brand strong {
-  font-size: 17px;
+.login-brand h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.login-tip {
+  margin: 2px 0 20px;
+  color: var(--app-muted);
+  font-size: 12.5px;
+}
+
+.login-card :deep(.el-form-item__label) {
+  margin: 14px 0 6px;
+  padding: 0;
+  color: var(--app-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.login-card :deep(.el-form-item) {
+  margin-bottom: 0;
+}
+
+.login-card :deep(.el-input__wrapper) {
+  height: 36px;
+  padding: 0 12px;
+  border-radius: var(--app-radius-sm);
+  background: var(--app-bg);
+  box-shadow: 0 0 0 1px var(--app-border) inset;
+}
+
+.login-card :deep(.el-input__wrapper.is-focus) {
+  box-shadow: 0 0 0 1px var(--app-accent) inset;
+}
+
+.login-card :deep(.el-input__inner) {
+  font-size: 13.5px;
 }
 
 .login-submit {
   width: 100%;
-  margin-top: 4px;
+  height: 37px;
+  margin-top: 20px;
+  border-radius: var(--app-radius-sm);
 }
 
 .login-error {
   margin-bottom: 4px;
+}
+
+.login-foot {
+  margin-top: 18px;
+  color: var(--app-faint);
+  font-size: 11.5px;
+  text-align: center;
 }
 </style>

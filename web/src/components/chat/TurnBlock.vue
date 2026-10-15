@@ -16,9 +16,16 @@ import MarkdownView from './MarkdownView.vue'
  * 内含 思考面板 / 步进器 / 工具卡 / 审批卡 / 最终报告（markdown）。
  */
 
-const props = defineProps<{
-  turn: TurnUiData
-}>()
+const props = withDefaults(
+  defineProps<{
+    turn: TurnUiData
+    /** P2.9 当前用户是否有权审批（本人自确认）。 */
+    canDecide?: boolean
+  }>(),
+  {
+    canDecide: true,
+  },
+)
 
 const emit = defineEmits<{
   (e: 'approve', value: string): void
@@ -172,6 +179,12 @@ function timeLabel(value?: string): string {
     </header>
 
     <div v-if="open" class="turn-body">
+      <!-- 用户输入：与原型一致，回合内先回显用户诉求，再展示执行过程 -->
+      <article v-if="turn.input" class="turn-question">
+        <span class="question-role">你</span>
+        <p class="question-text">{{ turn.input }}</p>
+      </article>
+
       <AgentStepper :steps="steps" />
 
       <div v-if="turn.error" class="turn-error">
@@ -189,13 +202,13 @@ function timeLabel(value?: string): string {
             class="turn-item"
             :text="item.data.text"
             :streaming="item.data.streaming"
-            :open="item.data.streaming"
           />
           <ToolCallCard v-else-if="item.type === 'tool'" class="turn-item" :tool="item.data" />
           <ApprovalCard
             v-else-if="item.type === 'approval'"
             class="turn-item"
             :approval="item.data"
+            :can-decide="canDecide"
             @approve="emit('approve', $event)"
             @reject="emit('reject')"
           />
@@ -218,17 +231,17 @@ function timeLabel(value?: string): string {
 
 <style scoped>
 .turn {
-  overflow: hidden;
-  border: 1px solid var(--app-border);
-  border-radius: var(--app-radius);
-  background: var(--app-surface);
+  /* 对齐原型：回合本身是透明的时间线分组（卡片感由内部工具卡/报告块提供） */
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .turn-head {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 14px;
+  padding: 6px 2px;
 }
 
 .turn-toggle {
@@ -258,20 +271,15 @@ function timeLabel(value?: string): string {
 
 .turn-seq {
   flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: var(--app-accent);
-  color: #fff;
-  font-size: 12px;
-  font-weight: 600;
+  color: var(--app-faint);
+  font-family: var(--app-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
 }
 
-.turn.failed .turn-seq {
-  background: var(--app-danger, #ef4444);
+.turn-seq::before {
+  content: 'T';
 }
 
 .turn-input {
@@ -280,8 +288,8 @@ function timeLabel(value?: string): string {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-weight: 600;
-  font-size: 13.5px;
+  font-weight: 650;
+  font-size: 13px;
 }
 
 .turn-meta {
@@ -315,19 +323,43 @@ function timeLabel(value?: string): string {
 }
 
 .turn-body {
-  border-top: 1px solid var(--app-border);
-  padding: 4px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.turn-question {
+  /* 对齐原型 .msg.user：accent 描边 + accent-soft 底色，右对齐 */
+  align-self: flex-end;
+  max-width: 820px;
+  padding: 11px 14px;
+  border: 1px solid var(--app-accent);
+  border-radius: var(--app-radius);
+  background: var(--app-accent-soft);
+}
+
+.question-role {
+  color: var(--app-faint);
+  font-size: 11px;
+}
+
+.question-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .turn-error {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  margin-top: 8px;
-  padding: 8px 10px;
+  padding: 7px 10px;
   border-radius: 6px;
-  background: var(--el-color-danger-light-9);
-  color: var(--el-color-danger);
+  background: var(--app-danger-soft);
+  color: var(--app-danger);
   font-size: 12px;
 }
 
@@ -335,33 +367,34 @@ function timeLabel(value?: string): string {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  margin-top: 8px;
 }
 
 .report-block {
-  overflow: hidden;
   border: 1px solid var(--app-border);
-  border-left: 3px solid var(--app-accent);
   border-radius: var(--app-radius);
-  padding: 8px 12px 10px;
-  background: var(--app-bg);
+  padding: 16px 20px;
+  background: var(--app-surface);
+  font-size: 13.5px;
+  line-height: 1.65;
 }
 
 .report-block.streaming {
-  box-shadow: 0 0 0 1px var(--app-accent);
+  border-color: var(--app-accent);
 }
 
 .report-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
 .report-label {
-  font-weight: 600;
-  font-size: 12px;
+  font-weight: 650;
+  font-size: 11.5px;
   color: var(--app-muted);
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
 }
 
 .report-hint {
