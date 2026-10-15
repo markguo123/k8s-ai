@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,6 +30,7 @@ type chatService interface {
 	ListSessions() ([]session.Session, error)
 	DeleteSession(id string) error
 	RenameSession(id, name string) error
+	PinSession(id string, pinned bool) error
 }
 
 // sseEmitter 是可为 ChatService 挂载统一事件广播的可选接口（P1.9）。
@@ -115,6 +118,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sessions", s.handleListSessions)
 	mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
 	mux.HandleFunc("POST /api/sessions/{id}/rename", s.handleRenameSession)
+	mux.HandleFunc("POST /api/sessions/{id}/pin", s.handlePinSession)
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.handleDeleteSession)
 	mux.HandleFunc("GET /api/sessions/{id}/stream", s.handleStream)
 	mux.HandleFunc("POST /api/sessions/{id}/send-message", s.handleSendMessage)
@@ -141,22 +145,55 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		Model        string    `json:"model,omitempty"`
 		MessageCount int       `json:"messageCount"`
 		LastModified time.Time `json:"lastModified"`
+		// P7.5：置顶排序 + 标题自动提取（首条用户意图）。
+		Pinned bool `json:"pinned,omitempty"`
 		// Token 为会话级 token 用量合计（P2.13）；未装配四期 Store 时省略。
 		Token *session.TokenUsage `json:"token,omitempty"`
 	}
+	// 置顶会话始终排最前；置顶集合内部与非置顶集合内部均按最近活跃降序。
+	sort.SliceStable(list, func(i, j int) bool {
+		if list[i].Pinned != list[j].Pinned {
+			return list[i].Pinned
+		}
+		return list[i].LastModified.After(list[j].LastModified)
+	})
 	out := make([]item, 0, len(list))
 	for _, sess := range list {
 		out = append(out, item{
 			ID:           sess.ID,
-			Name:         sess.Name,
+			Name:         sessionTitle(sess),
 			State:        sess.State,
 			Model:        sess.Model,
 			MessageCount: len(sess.Messages),
 			LastModified: sess.LastModified,
+			Pinned:       sess.Pinned,
 			Token:        s.sessionToken(sess.ID),
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// sessionTitle 返回会话列表展示标题（P7.5）：用户显式重命名优先；
+// 仍为自动生成的 "Session <id>" 时回退到首条用户消息意图，再回退"新会话"。
+func sessionTitle(sess session.Session) string {
+	if sess.Name != "" && sess.Name != "Session "+sess.ID {
+		return sess.Name
+	}
+	for _, m := range sess.Messages {
+		if m.Role != "user" || m.Type != "text" {
+			continue
+		}
+		line := strings.TrimSpace(strings.SplitN(strings.TrimSpace(m.Content), "\n", 2)[0])
+		if line == "" {
+			continue
+		}
+		runes := []rune(line)
+		if len(runes) > 24 {
+			return string(runes[:24]) + "…"
+		}
+		return line
+	}
+	return "新会话"
 }
 
 // sessionToken 读取会话级 token 用量合计（P2.13）；未装配 Store 或读取失败时返回 nil，
@@ -216,6 +253,23 @@ func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"id": id, "name": body.Name})
+}
+
+// handlePinSession 置顶/取消置顶会话（P7.5）。
+func (s *Server) handlePinSession(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var body struct {
+		Pinned bool `json:"pinned"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.chat.PinSession(id, body.Pinned); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "pinned": body.Pinned})
 }
 
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {

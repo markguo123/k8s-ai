@@ -26,6 +26,7 @@ func (f *sseFakeChat) GetOrCreateSession(id, _, _ string) (*session.Session, err
 func (f *sseFakeChat) ListSessions() ([]session.Session, error) { return nil, nil }
 func (f *sseFakeChat) DeleteSession(string) error               { return nil }
 func (f *sseFakeChat) RenameSession(string, string) error       { return nil }
+func (f *sseFakeChat) PinSession(string, bool) error            { return nil }
 
 // TestNewAttachesSink 覆盖 P1.9 事件路由：webui.New 给服务挂 sink，
 // sink 下发的统一事件能按 session_id 扇出到该会话的 SSE 客户端。

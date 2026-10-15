@@ -70,6 +70,15 @@ func (s *stubChatService) RenameSession(id, name string) error {
 	return s.mgr.Update(sess)
 }
 
+func (s *stubChatService) PinSession(id string, pinned bool) error {
+	sess, err := s.mgr.Get(id)
+	if err != nil {
+		return err
+	}
+	sess.Pinned = pinned
+	return s.mgr.Update(sess)
+}
+
 func chatTestDeps(stub *stubChatService) Dependencies {
 	return Dependencies{
 		Version: "test",

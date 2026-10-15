@@ -18,6 +18,12 @@ type Message struct {
 	Arguments  json.RawMessage `json:"arguments,omitempty"`  // 工具调用参数（恢复会话展示命令用，仅读回放不喂 LLM）
 	Data       any             `json:"data,omitempty"`       // 工具结构化结果（恢复会话渲染表格用，仅读回放不喂 LLM）
 	Ok         *bool           `json:"ok,omitempty"`         // 工具执行是否成功（前端权威判定，回放兜底用）
+	// P7.4 工具结果同源契约（ADR-034）：摘要/渲染形态/耗时/风险在本次执行时一并落库，
+	// 刷新后与 chat 流式结果共用同一份头部信息，避免回放时丢失 "320ms" 与风险标签。
+	Summary     string `json:"summary,omitempty"`     // 头部概览摘要（后端计算）
+	DisplayType string `json:"displayType,omitempty"` // table | kv | events | yaml | logs | text
+	DurationMs  int64  `json:"durationMs,omitempty"`  // 工具执行耗时（毫秒）
+	Risk        string `json:"risk,omitempty"`        // 风险等级（SAFE/LOW/MEDIUM/HIGH/CRITICAL）
 	Content    string          `json:"content"`
 	Timestamp  time.Time       `json:"timestamp"`
 }
@@ -36,6 +42,8 @@ type Session struct {
 	DeclinedWrites map[string]int   `json:"declinedWrites,omitempty"` // 本次会话拒绝过的写操作 key→次数（用于≥2 次硬拦截）
 	CreatedAt      time.Time        `json:"createdAt"`
 	LastModified   time.Time        `json:"lastModified"`
+	// P7.5 会话置顶：置顶会话始终排最前（置顶集合内部按最近活跃排序）。
+	Pinned bool `json:"pinned,omitempty"`
 }
 
 // AddMessage 追加消息并刷新 LastModified。

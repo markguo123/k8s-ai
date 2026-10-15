@@ -64,6 +64,12 @@ export interface AgentObservationData {
   tool?: string
   result?: string
   ok?: boolean
+  /** P7.4（ADR-034）：后端声明的完整 tool_result，chat 与刷新同源渲染。 */
+  summary?: string
+  displayType?: string
+  durationMs?: number
+  risk?: string
+  data?: unknown
 }
 
 export interface AgentChoiceOption {

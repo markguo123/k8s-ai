@@ -136,6 +136,7 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 			toolExecuted := false
 			// P1.8: 工具调用 Step（参数在落库前由 Store 统一脱敏）。
 			toolStep := a.beginStep(ctx, session.StepTool, call.Name, string(call.Arguments))
+			started := time.Now()
 			if failedToolCalls[failureKey] > 0 {
 				// 同一工具、同一参数已经失败过，禁止原样重试；
 				// 让 LLM 更换参数或选择替代工具，避免耗尽工具调用预算。
@@ -153,10 +154,20 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 				}
 				tr = a.executeTool(ctx, call, batchApproved[call.ID])
 			}
+			durationMs := time.Since(started).Milliseconds()
 			ok := toolResultOK(tr)
+			// P7.4：摘要/形态/耗时/风险在本次执行时一次性计算，事件流与落库共用。
+			summary := tools.ToolSummary(tr.Text)
+			displayType := tools.DisplayType(tr.Data)
+			risk := a.toolRisk(call)
 			a.completeStep(ctx, toolStep, ok, truncateText(tr.Text, 240))
 			// P1.8: 工具结果观察 Step（成功 done / 失败 failed）。
 			observe := a.beginStep(ctx, session.StepObserve, call.Name, "")
+			observe.Data = tr.Data
+			observe.Summary = summary
+			observe.DisplayType = displayType
+			observe.DurationMs = durationMs
+			observe.Risk = risk
 			a.completeStep(ctx, observe, ok, truncateText(tr.Text, 240))
 			if toolExecuted && toolResultHasError(tr) {
 				failedToolCalls[failureKey]++
@@ -170,14 +181,14 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 			}
 			if mode == "native" {
 				msgs = append(msgs, llm.Message{Role: "tool", ToolCallID: call.ID, Content: toolContent})
-				a.Session.AddMessage(session.Message{Role: "tool", Type: "tool-call-response", Name: call.Name, ToolCallID: call.ID, Content: toolContent, Arguments: call.Arguments, Data: tr.Data, Ok: &ok})
+				a.Session.AddMessage(session.Message{Role: "tool", Type: "tool-call-response", Name: call.Name, ToolCallID: call.ID, Content: toolContent, Arguments: call.Arguments, Data: tr.Data, Ok: &ok, Summary: summary, DisplayType: displayType, DurationMs: durationMs, Risk: risk})
 			} else {
 				obs := fmt.Sprintf("工具 %s 返回：\n%s", call.Name, toolContent)
 				msgs = append(msgs, llm.Message{Role: "user", Content: obs})
-				a.Session.AddMessage(session.Message{Role: "user", Type: "tool-call-response", Name: call.Name, Content: obs, Arguments: call.Arguments, Data: tr.Data, Ok: &ok})
+				a.Session.AddMessage(session.Message{Role: "user", Type: "tool-call-response", Name: call.Name, Content: obs, Arguments: call.Arguments, Data: tr.Data, Ok: &ok, Summary: summary, DisplayType: displayType, DurationMs: durationMs, Risk: risk})
 			}
 			a.EmitCritical(Message{Source: SourceAgent, Type: MessageTypeToolCallResponse, Payload: map[string]any{
-				"name": call.Name, "text": text, "truncated": truncated, "ok": ok, "summary": tr.Text, "data": tr.Data,
+				"name": call.Name, "text": text, "truncated": truncated, "ok": ok, "summary": summary, "data": tr.Data, "durationMs": durationMs, "risk": risk, "displayType": displayType,
 			}})
 			// 写工具失败/被拒：停止执行本批剩余写调用，把决策交回模型。
 			if !toolExecuted && !ok {
@@ -197,6 +208,19 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 
 func toolCallFailureKey(call llm.ToolCall) string {
 	return call.Name + "\x00" + strings.TrimSpace(string(call.Arguments))
+}
+
+// toolRisk 返回一次工具调用的风险等级（P7.4 工具卡头部展示 / 落库）。
+// 查不到工具时返回空串：风险展示退化为不显示，安全边界仍由 Tool.Risk 在审批链路强校验。
+func (a *Agent) toolRisk(call llm.ToolCall) string {
+	if a.Tools == nil {
+		return ""
+	}
+	t, ok := a.Tools.Lookup(call.Name)
+	if !ok {
+		return ""
+	}
+	return string(t.Risk(call.Arguments))
 }
 
 func toolResultHasError(result tools.ToolResult) bool {

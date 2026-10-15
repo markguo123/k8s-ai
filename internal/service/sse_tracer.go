@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 
 	"github.com/k8s-ai/k8s-ai/internal/agent"
@@ -149,6 +150,8 @@ func (t *fanOutTracer) StepUpdated(ctx context.Context, step *session.Step) {
 	case session.StepObserve:
 		t.emit(sse.New(t.scope.session(), step.TurnID, step.ID, sse.EventObservationCreated, sse.ObservationData{
 			Tool: step.Tool, Result: store.RedactJSONPayload(step.Result),
+			Summary: step.Summary, DisplayType: step.DisplayType, DurationMs: step.DurationMs, Risk: step.Risk,
+			Data: redactAny(step.Data),
 		}))
 	case session.StepApproval:
 		if step.Status == session.StepDone {
@@ -161,6 +164,23 @@ func (t *fanOutTracer) StepUpdated(ctx context.Context, step *session.Step) {
 			Decision: "rejected",
 		}))
 	}
+}
+
+// redactAny 对任意 JSON 值做 JSON 感知脱敏（P7.4：tool_result.data 进 SSE 前
+// 与结果摘要同源脱敏，Secret/kubeconfig 明文永不进入事件流）。
+func redactAny(v any) any {
+	if v == nil {
+		return nil
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	var out any
+	if err := json.Unmarshal([]byte(store.RedactJSONPayload(string(raw))), &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 func (t *fanOutTracer) emit(e sse.Event) {

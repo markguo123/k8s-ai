@@ -17,6 +17,8 @@ export interface SessionSummary {
   model?: string
   messageCount: number
   lastModified: string
+  /** P7.5 置顶状态（置顶会话排最前）。 */
+  pinned?: boolean
   /** P2.13 会话级 Token 用量合计；未持久化时缺省。 */
   token?: AgentToken | null
 }
@@ -30,6 +32,11 @@ export interface ChatMessage {
   arguments?: unknown
   data?: unknown
   ok?: boolean
+  /** P7.4（ADR-034）：工具结果同源契约，刷新后与 chat 共用同一份头部信息。 */
+  summary?: string
+  displayType?: string
+  durationMs?: number
+  risk?: string
   content: string
   timestamp: string
 }
@@ -100,6 +107,17 @@ export async function renameSession(id: string, name: string): Promise<{ id: str
   return sessionFetch<{ id: string; name: string }>(
     `/api/sessions/${encodeURIComponent(id)}/rename`,
     { method: 'POST', body: JSON.stringify({ name }) },
+  )
+}
+
+/** 置顶/取消置顶会话（P7.5）。 */
+export async function pinSession(
+  id: string,
+  pinned: boolean,
+): Promise<{ id: string; pinned: boolean }> {
+  return sessionFetch<{ id: string; pinned: boolean }>(
+    `/api/sessions/${encodeURIComponent(id)}/pin`,
+    { method: 'POST', body: JSON.stringify({ pinned }) },
   )
 }
 

@@ -34,6 +34,8 @@ type LegacyToolView struct {
 	Ok        *bool          `json:"ok,omitempty"`
 	Truncated bool           `json:"truncated,omitempty"`
 	Data      any            `json:"data,omitempty"`
+	DurationMs  int64  `json:"durationMs,omitempty"`
+	DisplayType string `json:"displayType,omitempty"`
 }
 
 // LegacyChoiceOption 是三期审批可选项。
@@ -86,6 +88,7 @@ func MapFromLegacy(l LegacyEvent) (Event, bool) {
 		}
 		return New("", "", "", EventObservationCreated, ObservationData{
 			Tool: l.Tool.Name, Result: l.Tool.Result, Ok: l.Tool.Ok,
+			Summary: l.Tool.Summary, DisplayType: l.Tool.DisplayType, DurationMs: l.Tool.DurationMs, Risk: l.Tool.Risk,
 		}), true
 	case LegacyTypeChoice:
 		if l.Choice == nil {
@@ -125,7 +128,8 @@ func MapToLegacy(e Event) (LegacyEvent, bool) {
 		d := observationDataOf(e.Data)
 		ok := d.Ok
 		return LegacyEvent{Type: LegacyTypeToolResponse, Tool: &LegacyToolView{
-			Name: d.Tool, Result: d.Result, Summary: d.Result, Ok: ok,
+			Name: d.Tool, Result: d.Result, Summary: d.Summary, Ok: ok,
+			DurationMs: d.DurationMs, DisplayType: d.DisplayType, Risk: d.Risk,
 		}}, true
 	case EventApprovalRequired:
 		d := approvalDataOf(e.Data)

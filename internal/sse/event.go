@@ -101,6 +101,13 @@ type ObservationData struct {
 	Tool   string `json:"tool,omitempty"`
 	Result string `json:"result,omitempty"`
 	Ok     *bool  `json:"ok,omitempty"`
+	// P7.4（ADR-034）：完整 tool_result 随 observation.created 下发，前端据此
+	// 结构化渲染；Data 在封装前必须经 JSON 感知脱敏（Secret/kubeconfig 零明文）。
+	Summary     string `json:"summary,omitempty"`
+	DisplayType string `json:"displayType,omitempty"`
+	DurationMs  int64  `json:"durationMs,omitempty"`
+	Risk        string `json:"risk,omitempty"`
+	Data        any    `json:"data,omitempty"`
 }
 
 // ChoiceOption 是审批可选项。

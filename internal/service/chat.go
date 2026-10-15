@@ -52,6 +52,9 @@ type ChatToolCallView struct {
 	Ok        *bool          `json:"ok,omitempty"` // nil=旧客户端/旧会话无此字段，前端回退正则兜底
 	Truncated bool           `json:"truncated,omitempty"`
 	Data      any            `json:"data,omitempty"` // 结构化结果（仅 UI 回放展示，不参与 LLM 载荷）
+	// P7.4：工具结果同源（ADR-034），随 tool-response 一并下发（旧客户端兼容）。
+	DurationMs  int64  `json:"durationMs,omitempty"`
+	DisplayType string `json:"displayType,omitempty"`
 }
 
 // ChatChoiceOption 是审批/选择项。
@@ -96,6 +99,8 @@ type ChatService interface {
 	DeleteSession(id string) error
 	ClearSession(id string) error
 	RenameSession(id, name string) error
+	// PinSession 置顶/取消置顶会话（P7.5）。置顶状态随会话落库，列表置顶优先。
+	PinSession(id string, pinned bool) error
 }
 
 // SessionTokenizer 是 ChatService 的可选能力（P2.13）：返回会话级 token 用量合计。
@@ -608,6 +613,9 @@ func translateEvent(m agent.Message) (ChatEvent, bool) {
 					Ok:        boolPtr(mm["ok"]),
 					Truncated: toBool(mm["truncated"]),
 					Data:      mm["data"],
+					Risk:        toString(mm["risk"]),
+					DurationMs:  toInt64(mm["durationMs"]),
+					DisplayType: toString(mm["displayType"]),
 				},
 			}, true
 		}
@@ -721,6 +729,16 @@ func (s *chatService) RenameSession(id, name string) error {
 	return s.sessions.Update(sess)
 }
 
+// PinSession 置顶/取消置顶会话（P7.5）。
+func (s *chatService) PinSession(id string, pinned bool) error {
+	sess, err := s.sessions.Get(id)
+	if err != nil {
+		return err
+	}
+	sess.Pinned = pinned
+	return s.sessions.Update(sess)
+}
+
 // SessionTokenUsage 汇总会话内各轮 token 用量（P2.13）。
 // 未装配四期 Store（三期运行模式）时返回零值：Web 右下角统计自动隐藏，
 // 而不是把"未持久化"误报成 0 tokens。
@@ -744,6 +762,19 @@ func toString(v any) string {
 func toBool(v any) bool {
 	b, _ := v.(bool)
 	return b
+}
+
+func toInt64(v any) int64 {
+	switch n := v.(type) {
+	case int64:
+		return n
+	case int:
+		return int64(n)
+	case float64:
+		return int64(n)
+	default:
+		return 0
+	}
 }
 
 // boolPtr 返回 *bool：字段缺失（旧客户端/旧会话无 ok 键）时为 nil，前端据此回退正则兜底。

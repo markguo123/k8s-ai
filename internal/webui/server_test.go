@@ -64,6 +64,15 @@ func (f *fakeChat) RenameSession(id, name string) error {
 	return nil
 }
 
+func (f *fakeChat) PinSession(id string, pinned bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if s, ok := f.sessions[id]; ok {
+		s.Pinned = pinned
+	}
+	return nil
+}
+
 func (f *fakeChat) Chat(ctx context.Context, req service.ChatRequest, respond <-chan string) (<-chan service.ChatEvent, error) {
 	out := make(chan service.ChatEvent, len(f.script)+4)
 	go func() {

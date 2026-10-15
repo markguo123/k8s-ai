@@ -102,6 +102,13 @@ type Step struct {
 	Params    string     `json:"params,omitempty"` // JSON，落库前脱敏
 	Result    string     `json:"result,omitempty"` // 结果摘要，落库前脱敏
 	Error     string     `json:"error,omitempty"`
+	// P7.4 工具结果同源（ADR-034）：以下字段不落 steps 表（StepStore 仅持久化上述列），
+	// 仅用于 SSE observation.created 事件携带完整 tool_result，供前端 chat 与刷新同源渲染。
+	Data        any    `json:"data,omitempty"`
+	Summary     string `json:"summary,omitempty"`
+	DisplayType string `json:"displayType,omitempty"`
+	DurationMs  int64  `json:"durationMs,omitempty"`
+	Risk        string `json:"risk,omitempty"`
 
 	StartedAt  time.Time  `json:"startedAt,omitempty"`
 	FinishedAt *time.Time `json:"finishedAt,omitempty"`
