@@ -8,12 +8,14 @@ import 'element-plus/theme-chalk/dark/css-vars.css'
 import App from './App.vue'
 import router from './router'
 import { useAuthStore } from './stores/auth'
+import { initTheme } from './composables/useTheme'
 
 import './styles/index.css'
+// P7.6：聊天页科技感视觉体系（令牌与登录页同源，覆盖 index.css 的底色）
+import './styles/tech-theme.css'
 
-// P2.13：平台默认深色主题（对齐原型 §8）。在 html 上挂载 `.dark`
-// 以启用 Element Plus 的 dark css-vars；后续浅色切换只需维护该 class。
-document.documentElement.classList.add('dark')
+// P7.1：主题由 index.html 内联脚本提前设置（防首屏闪烁），此处绑定系统偏好监听并幂等兜底。
+initTheme()
 
 const app = createApp(App)
 const pinia = createPinia()

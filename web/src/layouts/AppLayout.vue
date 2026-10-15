@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref, watch, type Component } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ArrowDown,
@@ -8,6 +8,9 @@ import {
   Document,
   Finished,
   MagicStick,
+  Monitor,
+  Moon,
+  Sunny,
   Expand,
   Fold,
   Setting,
@@ -15,6 +18,7 @@ import {
 } from '@element-plus/icons-vue'
 
 import { useAuthStore } from '@/stores/auth'
+import { useTheme, type ThemeMode } from '@/composables/useTheme'
 
 const route = useRoute()
 const router = useRouter()
@@ -60,6 +64,18 @@ const userInitial = computed(() => displayName.value.charAt(0).toUpperCase() || 
 
 const PLATFORM_VERSION = 'v4.0.0-dev'
 const isAdmin = computed(() => auth.user?.role === 'admin')
+
+// P7.1：主题切换（light | dark | system），默认深色，选择持久化到 localStorage。
+const { mode: themeMode, setThemeMode } = useTheme()
+
+const THEME_LABELS: Record<ThemeMode, string> = {
+  dark: '深色',
+  light: '浅色',
+  system: '跟随系统',
+}
+const THEME_OPTIONS: ThemeMode[] = ['dark', 'light', 'system']
+const THEME_ICONS: Record<ThemeMode, Component> = { dark: Moon, light: Sunny, system: Monitor }
+const themeIcon = computed(() => THEME_ICONS[themeMode.value])
 
 function handleUserCommand(command: string | number | object): void {
   if (command === 'logout') {
@@ -120,6 +136,22 @@ function handleUserCommand(command: string | number | object): void {
           <h1>{{ pageTitle }}</h1>
         </div>
         <div class="header-right">
+          <!-- P7.1：主题独立入口（不放进用户菜单，避免和账号操作混在一起） -->
+          <el-tooltip content="主题" placement="bottom">
+            <el-dropdown trigger="click" @command="setThemeMode">
+              <button type="button" class="theme-trigger" :aria-label="`主题：${THEME_LABELS[themeMode]}`">
+                <el-icon><component :is="themeIcon" /></el-icon>
+              </button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item v-for="option in THEME_OPTIONS" :key="option" :command="option">
+                    <span class="theme-option">{{ THEME_LABELS[option] }}</span>
+                    <span v-if="themeMode === option" class="theme-check">当前</span>
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </el-tooltip>
           <el-dropdown trigger="click" @command="handleUserCommand">
             <div class="user-menu">
               <el-avatar :size="28" class="user-avatar">{{ userInitial }}</el-avatar>
@@ -165,7 +197,11 @@ function handleUserCommand(command: string | number | object): void {
 .app-aside {
   display: flex;
   flex-direction: column;
-  background: var(--app-sidebar);
+  /* P7.6 海拔：侧栏是玻璃层；用发丝线 + 右侧微阴影拉开层级，不用生硬描边 */
+  background: var(--app-surface);
+  backdrop-filter: blur(16px) saturate(120%);
+  border-right: 1px solid var(--app-hairline);
+  box-shadow: var(--app-panel-shadow);
   color: var(--app-sidebar-text);
   transition: width 0.2s ease;
   overflow: hidden;
@@ -178,7 +214,7 @@ function handleUserCommand(command: string | number | object): void {
   gap: 10px;
   height: 56px;
   padding: 0 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid var(--app-hairline);
   flex: none;
   transition: padding 0.2s ease;
 }
@@ -190,13 +226,18 @@ function handleUserCommand(command: string | number | object): void {
   width: 30px;
   height: 30px;
   flex: none;
-  border-radius: 8px;
-  background: linear-gradient(135deg, var(--app-accent), #a855f7);
+  border-radius: 10px;
+  /* P7.6：与登录页 .logo 同款的品牌辉光（半透明主色底 + 双色光晕） */
+  background: rgba(99, 102, 241, 0.09);
+  border: 1px solid rgba(99, 102, 241, 0.28);
+  box-shadow:
+    0 0 22px -6px rgba(99, 102, 241, 0.75),
+    inset 0 0 18px -8px rgba(34, 211, 238, 0.7);
 }
 
 .brand-mark {
   font-size: 16px;
-  color: #fff;
+  color: var(--app-accent-2);
 }
 
 .brand-text {
@@ -238,27 +279,50 @@ function handleUserCommand(command: string | number | object): void {
 }
 
 .app-menu :deep(.el-menu-item) {
+  position: relative;
   height: 36px;
   line-height: 36px;
   color: var(--app-sidebar-text);
-  border-radius: 6px;
+  border: 1px solid transparent;
+  border-radius: 8px;
   margin-bottom: 2px;
   white-space: nowrap;
+  transition:
+    transform 0.16s ease,
+    background 0.16s ease,
+    border-color 0.16s ease,
+    color 0.16s ease;
 }
 
+/* P7.6：hover 微动效（-2px，克制不喧哗） */
 .app-menu :deep(.el-menu-item:hover) {
-  background: rgba(255, 255, 255, 0.06);
-  color: #fff;
+  transform: translateY(-2px);
+  background: var(--app-surface-hover);
+  color: var(--app-strong);
 }
 
+/* P7.6 选中态：半透明主色底 + 左侧 2px 高亮条 + 微弱光晕，替掉扁平色块 */
 .app-menu :deep(.el-menu-item.is-active) {
   color: #fff;
-  background: var(--app-accent-soft);
-  border: 1px solid rgba(99, 102, 241, 0.4);
+  background: rgba(99, 102, 241, 0.15);
+  border-color: rgba(99, 102, 241, 0.35);
+  box-shadow: -8px 0 24px -12px rgba(99, 102, 241, 0.8);
+}
+
+.app-menu :deep(.el-menu-item.is-active::before) {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 20%;
+  bottom: 20%;
+  width: 2px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, var(--app-accent-2), var(--app-accent-3));
+  box-shadow: 0 0 10px rgba(99, 102, 241, 0.9);
 }
 
 .app-menu :deep(.el-menu-item.is-active .el-icon) {
-  color: var(--app-accent);
+  color: var(--app-accent-2);
 }
 
 .menu-icon {
@@ -271,7 +335,7 @@ function handleUserCommand(command: string | number | object): void {
   padding: 10px 16px;
   font-size: 11px;
   color: var(--app-sidebar-muted);
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid var(--app-hairline);
   white-space: nowrap;
   overflow: hidden;
 }
@@ -418,7 +482,7 @@ function handleUserCommand(command: string | number | object): void {
 }
 
 .user-menu:hover {
-  background: var(--app-bg);
+  background: var(--app-surface-hover);
 }
 
 .user-menu:focus-visible {
@@ -485,15 +549,31 @@ function handleUserCommand(command: string | number | object): void {
 
 .app-body {
   min-width: 0;
+  /* P7.2 经典双栏：纵向容器必须允许收缩，否则消息区会把底部输入框顶出视口 */
+  min-height: 0;
 }
 
 .app-header {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 1px solid var(--app-border);
-  /* 对齐原型 .topbar：与画布同色，仅用分隔线区分 */
-  background: var(--app-bg);
+  /* P7.6 海拔：顶栏与侧栏同属玻璃层；分割线改渐变（见 ::after），不再用实线 */
+  background: var(--app-surface);
+  backdrop-filter: blur(16px) saturate(120%);
+  border-bottom: none;
+}
+
+/* 顶栏底部渐变分割线：中段亮、两端透明，避免生硬横线把版面切断 */
+.app-header::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(99, 102, 241, 0.5), transparent);
+  pointer-events: none;
 }
 
 .app-header h1 {
@@ -503,7 +583,53 @@ function handleUserCommand(command: string | number | object): void {
 }
 
 .app-main {
-  padding: 16px;
+  /* P7.6 留白：画布四周给 20px，双栏才有"浮在背景上"的呼吸感 */
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 20px;
   overflow: auto;
+}
+
+/* P7.1：顶栏主题入口（图标按钮，与用户菜单分离） */
+.theme-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-surface);
+  color: var(--app-muted);
+  cursor: pointer;
+}
+
+.theme-trigger:hover {
+  border-color: var(--app-accent);
+  color: var(--app-accent);
+}
+
+.theme-option {
+  min-width: 72px;
+}
+
+.theme-check {
+  margin-left: 12px;
+  color: var(--app-accent);
+  font-size: 11px;
+}
+
+@media (max-width: 900px) {
+  .app-main {
+    padding: 12px;
+  }
+}
+
+/* P7.6：动效降级 */
+@media (prefers-reduced-motion: reduce) {
+  .app-menu :deep(.el-menu-item:hover) {
+    transform: none;
+  }
 }
 </style>

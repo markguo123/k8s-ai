@@ -509,6 +509,15 @@ Agent 执行多少步，UI 就展示多少步。
 
 # 10. 前端架构
 
+前端体验基线（主题与令牌、布局与滚动、会话列表、聊天交互与 Run Bar、工具卡与 `tool_result`、Markdown 报告、登录页）见
+`docs/02-架构与设计/14-方案-前端体验优化-四期.md`（2026-10-15 评审通过，落地任务 P7.1–P7.5）。前端必须遵守两条硬约束：
+
+1. **主题与令牌**：`<html data-theme="dark|light">` 与 `<html class="dark">` 同步切换，模式支持 `light|dark|system`，
+   默认深色，首屏由 `index.html` 内联脚本设置（不得闪烁）；组件禁止写死颜色（ADR-033 / D-23）。
+2. **工具结果同源**：工具结果统一为 `tool_result{tool,summary,displayType,columns,items,raw,durationMs,risk,ok}`，
+   `summary` 与 `displayType` 由后端在同一次执行时计算并同时下发与落库，前端只渲染不自算，
+   保证 chat 流式与刷新后展示一致（ADR-034 / D-24）。
+
 ```text
 ui/
 ├── app/
@@ -1743,3 +1752,4 @@ Security Boundary Unchanged
 | v1.3 | 2026-10-13 | 审批与授权方案修订（见 `docs/02-架构与设计/13-方案-企业级身份权限与审批中心.md`）：角色收敛为 user/operator/admin；授权以 namespace 为唯一边界、零权限起步、admin 划分 namespace；销毁类仅 admin 并支持 operator 委派、未授权直接提示联系管理员；审批主体只有本人自确认或审批子 agent 自动；自动审批显式白名单（默认关闭+会话开关）；AuthzGrant 权威 + RBAC 派生对账 + 执行前 SAR；平台演进为多 Agent 编排并引入 Approval Agent；修正 P4.8 审批人约束 |
 | v1.4 | 2026-10-14 | 部署与交付口径修订（不改需求范围）：Kubernetes 为四期唯一生产形态，单进程运行降为三期兼容与本地开发调试口径；平台主进程 = `k8s-ai server`（`/api/v1` + Chat SSE + 内嵌 SPA 同源单端口），`k8s-ai web` 冻结为三期兼容入口；新增平台进程默认单副本约束与扩副本前置条件；见 ADR-029 / ADR-030 |
 | v1.5 | 2026-10-14 | 补两条协议级需求（不改范围，只补此前隐含的约束）：① §8 增补"事件顺序与展示语义"——分片不是展示单元、终态必须最后、增量统一脱敏、思考面板语义；② §26 增补四期配置面——`platform:` 段承载平台级非敏感参数、敏感值只走环境变量/Secret、`server` 支持 `--config`、`config init` 输出全量模板。见 ADR-031 / ADR-032、D-21 / D-22 |
+| v1.6 | 2026-10-15 | 增补前端体验基线需求（不改范围）：§10 指向《14-方案-前端体验优化-四期.md》，并固化两条硬约束——主题与令牌（data-theme + 默认深色 + 支持跟随系统 + 首屏防闪烁）与工具结果同源（	ool_result 由后端计算并同时下发与落库）。见 ADR-033/ADR-034、D-23/D-24、任务 P7.1–P7.5 |

@@ -38,6 +38,9 @@ export interface ToolUiData {
   result: unknown
   raw: string
   duration: number | null
+  /** P7.4（ADR-034）：后端声明的头部摘要与渲染形态，chat 与刷新同源。 */
+  summary?: string
+  displayType?: string
   error?: string
   createResource?: CreateResourceState | null
 }
@@ -47,23 +50,67 @@ const props = withDefaults(
     tool: ToolUiData
     /** 完成并成功后默认展开（对齐三期行为）。 */
     autoOpen?: boolean
+    /** P7.4：回合报告完成后，未手动操作过的卡片自动折叠为摘要行。 */
+    reportDone?: boolean
+    /** P7.4：折叠/展开全部信号（数值变化触发）。 */
+    collapseAll?: number
+    expandAll?: number
   }>(),
-  { autoOpen: true },
+  { autoOpen: true, reportDone: false, collapseAll: 0, expandAll: 0 },
 )
 
-// 工具卡默认展开（对齐三期与原型：执行中看进度、完成后看结果），用户可手动收起。
-const expanded = ref(props.autoOpen)
+// P7.4：手动折叠状态持久化（key=toolCallId），刷新后保持，手动优先于自动折叠。
+const FOLD_KEY_PREFIX = 'k8s_ai_tool_fold:'
+const storedFold = (() => {
+  try {
+    return localStorage.getItem(FOLD_KEY_PREFIX + props.tool.key)
+  } catch {
+    return null
+  }
+})()
+const manual = ref(storedFold !== null)
+const expanded = ref(storedFold !== null ? storedFold !== '1' : props.autoOpen)
 const showRaw = ref(false)
 
 // 工具结果到达（done/error）后自动展开，保持展开直到手动收起。
 watch(
   () => props.tool.status,
   (status) => {
-    if (status !== 'running' && props.autoOpen) {
+    if (status !== 'running' && !manual.value) {
       expanded.value = true
     }
   },
   { immediate: true },
+)
+
+// 报告完成后自动折叠"未手动操作过"的工具卡（P7.4 默认态）。
+watch(
+  () => props.reportDone,
+  (done) => {
+    if (done && !manual.value) {
+      expanded.value = false
+    }
+  },
+)
+
+watch(
+  () => props.collapseAll,
+  (signal) => {
+    if (signal && signal > 0) {
+      manual.value = true
+      expanded.value = false
+    }
+  },
+)
+
+watch(
+  () => props.expandAll,
+  (signal) => {
+    if (signal && signal > 0) {
+      manual.value = true
+      expanded.value = true
+    }
+  },
 )
 
 const riskTag = computed<'danger' | 'warning' | 'info' | 'primary'>(() => {
@@ -181,11 +228,17 @@ function detectView(source: unknown): ResultView {
 
 const view = computed<ResultView>(() => {
   const result = maskedResult.value
-  if (result !== undefined && result !== null) {
-    return detectView(result)
+  if (result === undefined || result === null) {
+    // 结果未到时语法层不猜完成态（对齐 §8）：由调用方仅在 completion/done 事件后传 result。
+    return { type: 'empty', parse: null }
   }
-  // 结果未到时语法层不猜完成态（对齐 §8）：由调用方仅在 completion/done 事件后传 result。
-  return { type: 'empty', parse: null }
+  const guessed = detectView(result)
+  const declared = props.tool.displayType
+  // P7.4：后端声明渲染形态（ADR-034），前端优先采用，仍保留启发式兜底。
+  if (declared && ['table', 'kv', 'events', 'yaml', 'logs', 'text'].includes(declared)) {
+    return { ...guessed, type: declared as ResultView['type'] }
+  }
+  return guessed
 })
 
 /** 结果先做凭据兜底遮蔽，再做结构化识别（值永不回显）。 */
@@ -213,7 +266,13 @@ const rawText = computed(() => {
 })
 
 function toggle(): void {
+  manual.value = true
   expanded.value = !expanded.value
+  try {
+    localStorage.setItem(FOLD_KEY_PREFIX + props.tool.key, expanded.value ? '0' : '1')
+  } catch {
+    // 隐私模式/localStorage 不可用时仅影响折叠记忆，不影响交互。
+  }
 }
 </script>
 
@@ -225,7 +284,11 @@ function toggle(): void {
         tool.shortName
       }}</span>
       <span class="toolcard-title">{{ tool.name }}</span>
-      <span v-if="tool.command" class="toolcard-cmd" :title="tool.command">{{ tool.command }}</span>
+      <!-- P7.4：头部概览优先展示后端摘要（如 "成功 · 12 pods · 320ms"），命令降级为 tooltip -->
+      <span v-if="tool.summary" class="toolcard-cmd toolcard-summary" :title="tool.command || tool.summary">
+        {{ tool.summary }}
+      </span>
+      <span v-else-if="tool.command" class="toolcard-cmd" :title="tool.command">{{ tool.command }}</span>
       <el-tag v-if="riskLabel" size="small" effect="plain" :type="riskTag">{{ riskLabel }}</el-tag>
       <span v-if="durationText" class="toolcard-duration">{{ durationText }}</span>
       <span class="toolcard-tools">
@@ -397,6 +460,11 @@ function toggle(): void {
   color: var(--app-muted);
   font-family: var(--app-mono);
   font-size: 11.5px;
+}
+
+.toolcard-summary {
+  color: var(--app-text);
+  font-family: inherit;
 }
 
 .toolcard-duration {

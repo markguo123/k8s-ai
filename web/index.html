@@ -4,6 +4,27 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>K8S-AI Platform</title>
+    <script>
+      /*
+       * P7.1 主题引导：必须早于样式与 bundle 执行。
+       * 按 localStorage('k8s_ai_theme_mode') + 系统偏好同步设置 <html data-theme> 与 .dark，
+       * 否则首屏会先渲染浅色再切深色（刷新闪烁）。
+       */
+      ;(function () {
+        try {
+          var mode = localStorage.getItem('k8s_ai_theme_mode') || 'dark'
+          var dark =
+            mode === 'system'
+              ? window.matchMedia('(prefers-color-scheme: dark)').matches
+              : mode !== 'light'
+          var root = document.documentElement
+          root.setAttribute('data-theme', dark ? 'dark' : 'light')
+          root.classList.toggle('dark', dark)
+        } catch (e) {
+          document.documentElement.classList.add('dark')
+        }
+      })()
+    </script>
   </head>
   <body>
     <div id="app"></div>

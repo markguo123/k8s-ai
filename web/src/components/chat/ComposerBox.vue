@@ -66,7 +66,17 @@ defineExpose({ focus })
     <div class="composer-toolbar">
       <span class="composer-chip">🧠 {{ model || '默认模型' }}</span>
       <span class="composer-chip"><el-icon><Lock /></el-icon> Secret: {{ secretPolicy }}</span>
-      <span class="composer-hint">Shell 语法命令需人工审批 · Secret 值不会进入会话与审计</span>
+      <el-tooltip
+        content="Shell 语法命令需人工审批；Secret 值与 kubeconfig 不会进入会话与审计"
+        placement="top"
+      >
+        <!-- P7.2：长安全文案降噪为小字入口，完整说明放 Tooltip 与 aria-label（信息不丢、可访问） -->
+        <span
+          class="composer-hint"
+          aria-label="Shell 语法命令需人工审批；Secret 值与 kubeconfig 不会进入会话与审计"
+          >安全策略</span
+        >
+      </el-tooltip>
       <span class="composer-actions">
         <el-button
           v-if="!sending"
@@ -93,7 +103,20 @@ defineExpose({ focus })
   padding: 10px 12px;
   border: 1px solid var(--app-border);
   border-radius: 12px;
+  /* P7.6：输入区是玻璃层，不做纯黑方块 */
   background: var(--app-surface);
+  backdrop-filter: blur(16px) saturate(120%);
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+/* P7.2/P7.6：聚焦时边框点亮为主色 + 外发光，明确"当前在输入" */
+.composer:focus-within {
+  border-color: var(--app-accent);
+  box-shadow:
+    var(--app-glow-accent),
+    inset 0 0 0 1px var(--app-accent-soft);
 }
 
 .composer-toolbar {
@@ -103,7 +126,7 @@ defineExpose({ focus })
   gap: 8px;
   min-height: 22px;
   padding-top: 6px;
-  border-top: 1px solid var(--app-border);
+  border-top: 1px solid var(--app-hairline);
 }
 
 .composer-chip {
@@ -112,8 +135,9 @@ defineExpose({ focus })
   gap: 4px;
   padding: 0 10px;
   height: 26px;
-  border: 1px solid var(--app-border);
+  border: 1px solid var(--app-hairline);
   border-radius: 999px;
+  background: var(--app-card-bg);
   color: var(--app-muted);
   font-size: 12px;
   white-space: nowrap;
@@ -122,11 +146,12 @@ defineExpose({ focus })
 .composer-hint {
   flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--app-faint);
+  cursor: help;
+  text-align: left;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
 }
 
 .composer-input {
@@ -151,8 +176,8 @@ defineExpose({ focus })
   transition: none;
 }
 
-.composer:focus-within {
-  border-color: var(--app-accent);
+.composer-textarea::placeholder {
+  color: var(--app-faint);
 }
 
 .composer-textarea:disabled {
@@ -172,5 +197,42 @@ defineExpose({ focus })
   height: 30px;
   border-radius: 8px;
   font-size: 12.5px;
+}
+
+/* P7.6 发送按钮：登录页同款渐变（--app-brand-gradient），悬浮掠光 */
+.composer-actions :deep(.el-button--primary) {
+  position: relative;
+  overflow: hidden;
+  border: none;
+  background: var(--app-brand-gradient);
+  box-shadow: 0 8px 20px -12px var(--app-accent);
+}
+
+.composer-actions :deep(.el-button--primary:hover:not(.is-disabled))::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  transform: translateX(-100%);
+  animation: composerSheen 0.9s ease;
+}
+
+/* 禁用态回到平面中性色：渐变会让"不可发送"看起来仍可点，属于误导 */
+.composer-actions :deep(.el-button--primary.is-disabled) {
+  background: var(--app-neutral-soft);
+  color: var(--app-faint);
+  box-shadow: none;
+}
+
+@keyframes composerSheen {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-actions :deep(.el-button--primary:hover:not(.is-disabled))::after {
+    animation: none;
+  }
 }
 </style>

@@ -6,6 +6,7 @@ import type { HistorySnapshot } from '@/api/sse'
 import type { TurnItem, TurnUiData } from './turn'
 import type { ToolUiData } from './ToolCallCard.vue'
 import type { ApprovalUiData } from './ApprovalCard.vue'
+import TechEmptyState from '@/components/TechEmptyState.vue'
 import TurnBlock from './TurnBlock.vue'
 import { parseJsonLoose } from './render/constants'
 
@@ -23,9 +24,14 @@ const props = withDefaults(
     events: AgentEvent[]
     /** P2.9 当前用户是否有权审批：false 时审批卡收起操作区（后端仍强校验）。 */
     canDecide?: boolean
+    /** P7.6 空态文案：由外层按「是否已选会话」给出，避免已选会话却提示"选择会话"。 */
+    emptyTitle?: string
+    emptyHint?: string
   }>(),
   {
     canDecide: true,
+    emptyTitle: '选择或新建一个会话',
+    emptyHint: '提问后助手会先思考、再调用工具核实现场，最后给出可复核的报告',
   },
 )
 
@@ -38,7 +44,16 @@ const rollRef = ref<HTMLElement | null>(null)
 
 /** 工具调用：从历史 tool 消息构建展示对象。 */
 function toolFromHistoryMessage(
-  message: { name?: string; ok?: boolean; data?: unknown; content?: string },
+  message: {
+    name?: string
+    ok?: boolean
+    data?: unknown
+    content?: string
+    summary?: string
+    displayType?: string
+    durationMs?: number
+    risk?: string
+  },
   key: string,
 ): ToolUiData {
   const name = message.name ?? '工具调用'
@@ -50,13 +65,15 @@ function toolFromHistoryMessage(
     name,
     shortName: shortNameOf(name, command),
     command,
-    risk: '',
+    risk: message.risk ?? '',
     status: message.ok ? 'done' : 'error',
     ok: message.ok ?? false,
     params,
     result: message.data ?? message.content ?? null,
     raw,
-    duration: null,
+    duration: typeof message.durationMs === 'number' ? message.durationMs : null,
+    summary: message.summary,
+    displayType: message.displayType,
     createResource: detectCreateResource(name, message.data ?? null, message.ok ?? false),
   }
 }
@@ -89,7 +106,9 @@ function toolFromEvent(event: AgentEvent, key: string, data: Record<string, unkn
           ? data.error
           : null,
     raw: (typeof data.result === 'string' ? data.result : '') || paramsRaw,
-    duration: null,
+    duration: typeof data.durationMs === 'number' ? data.durationMs : null,
+    summary: typeof data.summary === 'string' ? data.summary : undefined,
+    displayType: typeof data.displayType === 'string' ? data.displayType : undefined,
     error: typeof data.error === 'string' ? data.error : undefined,
     createResource: detectCreateResource(name, params, ok),
   }
@@ -444,6 +463,23 @@ const turns = computed<TurnUiData[]>(() => {
             item.data.status = 'done'
           }
         }
+        // P7.4：observation.created 携带后端声明的完整 tool_result（summary/形态/耗时/风险/结构化 data），
+        // chat 与刷新共用同一份头部信息与 body 结构。
+        if (typeof data.summary === 'string' && data.summary) {
+          item.data.summary = data.summary
+        }
+        if (typeof data.displayType === 'string' && data.displayType) {
+          item.data.displayType = data.displayType
+        }
+        if (typeof data.durationMs === 'number') {
+          item.data.duration = data.durationMs
+        }
+        if (typeof data.risk === 'string' && data.risk) {
+          item.data.risk = data.risk
+        }
+        if (data.data !== undefined && data.data !== null) {
+          item.data.result = data.data
+        }
       }
       continue
     }
@@ -555,12 +591,42 @@ const turns = computed<TurnUiData[]>(() => {
   return list
 })
 
-/** 追加行后滚动到底部（保持最新消息可见）。 */
+/**
+ * P7.2 智能跟随：默认跟随最新输出；用户上滑离开底部（阈值 24px）后暂停跟随，
+ * 出现"有新内容，回到底部"按钮；点按钮或滚回底部后恢复跟随。
+ */
+const FOLLOW_THRESHOLD_PX = 24
+const following = ref(true)
+
+function distanceToBottom(el: HTMLElement): number {
+  return el.scrollHeight - el.scrollTop - el.clientHeight
+}
+
+function onScroll(): void {
+  const el = rollRef.value
+  if (!el) {
+    return
+  }
+  following.value = distanceToBottom(el) <= FOLLOW_THRESHOLD_PX
+}
+
+/** 追加行后滚动到底部（仅在跟随状态下，避免打断用户向上翻阅）。 */
 function scrollToBottom(): void {
+  if (!following.value) {
+    return
+  }
   void nextTick(() => {
     if (rollRef.value) {
       rollRef.value.scrollTop = rollRef.value.scrollHeight
     }
+  })
+}
+
+/** 点"回到底部"：恢复跟随并滚到最新。 */
+function resumeFollow(): void {
+  following.value = true
+  void nextTick(() => {
+    rollRef.value?.scrollTo({ top: rollRef.value.scrollHeight, behavior: 'smooth' })
   })
 }
 
@@ -574,9 +640,9 @@ defineExpose({ turns })
 </script>
 
 <template>
-  <div ref="rollRef" class="timeline">
+  <div ref="rollRef" class="timeline" @scroll.passive="onScroll">
     <template v-if="turns.length">
-      <div v-for="turn in turns" :key="turn.key" class="turn-wrap">
+      <div v-for="turn in turns" :key="turn.key" class="turn-wrap rise-in">
         <TurnBlock
           :turn="turn"
           :can-decide="canDecide"
@@ -585,7 +651,14 @@ defineExpose({ turns })
         />
       </div>
     </template>
-    <el-empty v-else description="暂无消息，开始对话后将在此展示" :image-size="72" />
+    <TechEmptyState
+      v-else
+      :title="props.emptyTitle"
+      :hint="props.emptyHint"
+    />
+    <button v-if="!following && turns.length" type="button" class="follow-latest" @click="resumeFollow">
+      有新内容，回到底部
+    </button>
   </div>
 </template>
 
@@ -598,6 +671,28 @@ defineExpose({ turns })
   min-height: 0;
   padding: 16px;
   overflow-y: auto;
+  position: relative;
+}
+
+/* P7.2：暂停跟随时浮出的"回到底部"，不遮挡内容（贴底居中、半透明） */
+.follow-latest {
+  position: sticky;
+  bottom: 4px;
+  align-self: center;
+  margin-top: -8px;
+  padding: 6px 14px;
+  border: 1px solid var(--app-border);
+  border-radius: 999px;
+  background: var(--app-surface-2);
+  color: var(--app-text);
+  box-shadow: var(--app-shadow);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.follow-latest:hover {
+  border-color: var(--app-accent);
+  color: var(--app-accent);
 }
 
 .turn-wrap {
@@ -605,4 +700,5 @@ defineExpose({ turns })
   width: 100%;
   align-self: center;
 }
+
 </style>

@@ -33,6 +33,9 @@ const emit = defineEmits<{
 }>()
 
 const open = ref(true)
+// P7.4：展开/折叠全部工具卡（数值信号驱动子卡片），报告完成后未手动操作过的卡片自动折叠。
+const collapseAllSignal = ref(0)
+const expandAllSignal = ref(0)
 
 const statusType = computed<'primary' | 'success' | 'danger' | 'warning' | 'info'>(() => {
   switch (props.turn.status) {
@@ -81,6 +84,12 @@ const tokenTotal = computed(() => {
   if (prompt === undefined && completion === undefined) return null
   return (prompt ?? 0) + (completion ?? 0)
 })
+
+const reportDone = computed(() =>
+  props.turn.items.some((item) => item.type === 'report' && item.data.done),
+)
+
+const hasToolCards = computed(() => props.turn.items.some((item) => item.type === 'tool'))
 
 const steps = computed<AgentStep[]>(() => {
   const turn = props.turn
@@ -156,6 +165,36 @@ function timeLabel(value?: string): string {
   const pad = (n: number): string => String(n).padStart(2, '0')
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
+
+/**
+ * P7.2 Run Bar：给回合内条目生成稳定锚点 id，并把步进器步骤映射到对应条目，
+ * 点击步骤即可滚动定位（配合 CSS 的 scroll-margin-top 避让 sticky 顶栏）。
+ */
+function itemAnchor(item: { data: { key: string } }): string {
+  return `step-${props.turn.key}-${item.data.key}`
+}
+
+const navSteps = computed<AgentStep[]>(() => {
+  const lastOf = (type: 'reasoning' | 'tool' | 'report') =>
+    [...props.turn.items].reverse().find((item) => item.type === type)
+  const anchors: Record<string, ReturnType<typeof lastOf>> = {
+    reason: lastOf('reasoning'),
+    tool: lastOf('tool'),
+    observe: lastOf('tool'),
+    report: lastOf('report'),
+  }
+  return steps.value.map((step) => {
+    const target = anchors[step.key]
+    return { ...step, anchor: target ? itemAnchor(target) : undefined }
+  })
+})
+
+function locateStep(step: AgentStep): void {
+  if (!step.anchor) {
+    return
+  }
+  document.getElementById(step.anchor)?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+}
 </script>
 
 <template>
@@ -185,7 +224,16 @@ function timeLabel(value?: string): string {
         <p class="question-text">{{ turn.input }}</p>
       </article>
 
-      <AgentStepper :steps="steps" />
+      <AgentStepper :steps="navSteps" @select="locateStep" />
+
+      <div v-if="hasToolCards" class="turn-tools">
+        <button type="button" class="turn-tools-btn" @click="expandAllSignal += 1">
+          展开全部
+        </button>
+        <button type="button" class="turn-tools-btn" @click="collapseAllSignal += 1">
+          折叠全部
+        </button>
+      </div>
 
       <div v-if="turn.error" class="turn-error">
         <el-icon><WarningFilled /></el-icon>
@@ -199,11 +247,20 @@ function timeLabel(value?: string): string {
         >
           <ReasoningPanel
             v-if="item.type === 'reasoning'"
+            :id="itemAnchor(item)"
             class="turn-item"
             :text="item.data.text"
             :streaming="item.data.streaming"
           />
-          <ToolCallCard v-else-if="item.type === 'tool'" class="turn-item" :tool="item.data" />
+          <ToolCallCard
+            v-else-if="item.type === 'tool'"
+            :id="itemAnchor(item)"
+            class="turn-item"
+            :tool="item.data"
+            :report-done="reportDone"
+            :collapse-all="collapseAllSignal"
+            :expand-all="expandAllSignal"
+          />
           <ApprovalCard
             v-else-if="item.type === 'approval'"
             class="turn-item"
@@ -214,6 +271,7 @@ function timeLabel(value?: string): string {
           />
           <article
             v-else-if="item.type === 'report'"
+            :id="itemAnchor(item)"
             class="turn-item report-block"
             :class="{ streaming: item.data.streaming }"
           >
@@ -363,6 +421,28 @@ function timeLabel(value?: string): string {
   font-size: 12px;
 }
 
+.turn-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.turn-tools-btn {
+  padding: 2px 10px;
+  border: 1px solid var(--app-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--app-muted);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.turn-tools-btn:hover {
+  border-color: var(--app-accent);
+  color: var(--app-accent);
+}
+
 .turn-items {
   display: flex;
   flex-direction: column;
@@ -411,5 +491,10 @@ function timeLabel(value?: string): string {
   50% {
     opacity: 0.4;
   }
+}
+
+/* P7.2：Run Bar 定位时避开 sticky 顶栏 */
+.turn-item {
+  scroll-margin-top: 56px;
 }
 </style>

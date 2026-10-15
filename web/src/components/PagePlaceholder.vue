@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import TechEmptyState from '@/components/TechEmptyState.vue'
+
 defineProps<{
   code: string
   title: string
@@ -16,7 +18,8 @@ defineProps<{
       </div>
     </div>
     <div class="placeholder-panel">
-      <el-empty description="功能在后续阶段落地" :image-size="88" />
+      <!-- P7.6：与聊天页共用同一块空状态视觉，别再落回 el-empty 的灰底占位 -->
+      <TechEmptyState title="功能在后续阶段落地" hint="该模块按四期计划在后续阶段交付" />
     </div>
   </section>
 </template>
@@ -33,7 +36,8 @@ defineProps<{
   align-items: flex-start;
   gap: 12px;
   background: var(--app-surface);
-  border: 1px solid var(--app-border);
+  backdrop-filter: blur(16px) saturate(120%);
+  border: 1px solid var(--app-hairline);
   border-radius: var(--app-radius);
   padding: 16px;
 }
@@ -53,8 +57,10 @@ defineProps<{
   align-items: center;
   justify-content: center;
   min-height: 360px;
-  background: var(--app-surface);
-  border: 1px solid var(--app-border);
+  /* 与聊天画布同档海拔：比侧栏亮一点 + 微弱内发光 */
+  background: var(--app-canvas);
+  box-shadow: var(--app-canvas-inset);
+  border: 1px solid var(--app-hairline);
   border-radius: var(--app-radius);
 }
 </style>

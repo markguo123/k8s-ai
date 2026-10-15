@@ -67,7 +67,19 @@ function render(): string {
       copy.setAttribute('class', 'md-code-copy')
       copy.setAttribute('data-idx', String(snippetCount))
       copy.textContent = '复制'
+      // P7.3：超过 24 行的长代码块默认折叠，避免报告被一段日志/清单撑爆
+      const tooLong = content.split('\n').length > 24
+      const toggle = doc.createElement('button')
+      if (tooLong) {
+        toggle.type = 'button'
+        toggle.setAttribute('class', 'md-code-toggle')
+        toggle.textContent = '展开'
+        wrapper.setAttribute('class', 'md-code-wrap md-code-collapsed')
+      }
       head.append(label, copy)
+      if (tooLong) {
+        head.append(toggle)
+      }
       // 先用 wrapper 顶替 pre 在文档中的位置，再把 pre 收进 wrapper：
       // 顺序反了会变成「把父节点塞进自己的子节点」，触发 HierarchyRequestError。
       pre.replaceWith(wrapper)
@@ -92,6 +104,16 @@ watch(
 
 function onContainerClick(event: MouseEvent): void {
   const target = event.target as HTMLElement
+  // P7.3：长代码块的展开/收起（渲染层用 class 控制，不重算 markdown）
+  const toggle = target.closest('button.md-code-toggle') as HTMLElement | null
+  if (toggle) {
+    const wrap = toggle.closest('.md-code-wrap')
+    if (wrap) {
+      const collapsed = wrap.classList.toggle('md-code-collapsed')
+      toggle.textContent = collapsed ? '展开' : '收起'
+    }
+    return
+  }
   const copy = target.closest('button.md-code-copy') as HTMLElement | null
   if (!copy) {
     return
@@ -136,6 +158,22 @@ function onContainerClick(event: MouseEvent): void {
 
 .md-body :deep(h1) {
   font-size: 1.35em;
+}
+
+/*
+ * P7.3 报告主题化：h2/h3 前加一段品牌渐变短标（纯 CSS，无额外依赖），
+ * 让长报告的分节层次一眼可辨；颜色走令牌，亮暗两套自适应。
+ */
+.md-body :deep(h2)::before,
+.md-body :deep(h3)::before {
+  content: '';
+  display: inline-block;
+  width: 3px;
+  height: 12px;
+  margin-right: 8px;
+  border-radius: 2px;
+  vertical-align: middle;
+  background: linear-gradient(to bottom, var(--app-accent), var(--app-accent-2));
 }
 
 .md-body :deep(h2) {
@@ -281,5 +319,29 @@ function onContainerClick(event: MouseEvent): void {
   margin: 0;
   color: var(--app-muted);
   font-size: 12px;
+}
+
+/* P7.3：长代码块折叠态（>24 行），展开/收起由 md-code-toggle 控制 */
+.md-code-wrap.md-code-collapsed :deep(pre),
+.md-code-wrap.md-code-collapsed pre {
+  max-height: 260px;
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, #000 70%, transparent);
+}
+
+.md-code-toggle {
+  margin-left: 6px;
+  padding: 2px 8px;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--app-muted);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.md-code-toggle:hover {
+  border-color: var(--app-accent);
+  color: var(--app-accent);
 }
 </style>

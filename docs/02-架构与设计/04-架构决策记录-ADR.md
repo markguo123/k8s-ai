@@ -329,6 +329,70 @@
   `chat_test.go::TestChatServicePersistsReasoningInRoundOrder`、
   `web/.../MessageTimeline.spec.ts`（8 条前端契约用例）。
 
+## ADR-033 前端主题系统：`data-theme` + 令牌层，默认深色、支持跟随系统
+
+- **状态**：已接受（2026-10-15；实现见 P7.1，方案见 `14-方案-前端体验优化-四期.md` §2）
+- **背景**：`web/src/styles/index.css` 已有 `--app-*` 令牌层并与原型 `:root` 一一对应，但没有任何主题切换能力
+  （无 `data-theme`、无 `prefers-color-scheme`、无持久化；仅引入了 Element Plus 的 dark 变量表）。四期要交付
+  企业级控制台，需要亮/暗两套可切换外观，且刷新不得闪白。
+- **决策**：
+  1. 以 `<html data-theme="dark|light">` 承载应用令牌，同时同步 `<html class="dark">`（Element Plus 深色变量），
+     两套变量必须同时切换，禁止各自为政。
+  2. 模式为 `light | dark | system`，**默认 `dark`**（产品基线是深色控制台）；`system` 模式监听
+     `matchMedia('(prefers-color-scheme: dark)')` 的 change 事件。持久化键 `k8s_ai_theme_mode`。
+  3. 首屏由 `index.html` 内联脚本（早于样式与 bundle）同步设置属性，禁止等 Vue 挂载后再切，以消除刷新闪烁。
+  4. 组件禁止写死颜色，一律走令牌；新增令牌必须同时给出亮/暗取值，并在方案文档 §2 登记。
+  5. 滚动条样式纳入令牌层（WebKit 与 Firefox 双实现），杜绝系统白色滚动条。
+- **理由**：令牌层已经存在，最小改动是"补一套亮色取值 + 一个切换开关"；若改用 UI 库的主题插件或 CSS-in-JS，
+  等于推翻现有与原型对齐的令牌体系，收益为零、返工面大。默认深色而非 system，是因为 CLI/控制台场景以深色为主，
+  且原型定稿即为深色底座。
+- **后果**：所有页面（含 P3.9 配置中心、P3.12 用户与权限、P4 审批中心）自动获得双主题；新增样式必须双主题自检；
+  组件级测试需覆盖"无存储时默认 dark""system 跟随媒体查询""切换后持久化"。
+
+## ADR-034 工具结果统一契约：`tool_result` 同源于事件流与落库
+
+- **状态**：已接受（2026-10-15；实现见 P7.4，方案见 `14-方案-前端体验优化-四期.md` §6）
+- **背景**：工具结果的展示在两条路径上不一致，且已构成用户可见缺陷：
+  事件流带的是 `truncateText(tr.Text, 240)`（`internal/agent/loop.go`），前端只能用 240 字文本做启发式判断，
+  多数情况退化成 text/logs；落库带的是完整 `Data`（同一文件 `AddMessage(..., Data: tr.Data)`），刷新后才有结构化表格。
+  耗时与风险根本没有落库，刷新后头部 `duration: null`、`risk: ''`（`web/src/components/chat/MessageTimeline.vue`）。
+- **决策**：
+  1. 工具结果统一为 `tool_result`：`{tool, summary, displayType, columns, items, raw, durationMs, risk, ok}`。
+  2. `summary` 与 `displayType` **由后端在同一次工具执行时计算**，随事件流下发并同时落库；前端只渲染，
+     禁止前端自算摘要，也禁止 chat 与刷新各算一套（这是"刷新前后一致"的根因解法）。
+  3. `durationMs` / `risk` / `ok` 必须进入会话消息字段，否则刷新后无法复原头部信息。
+  4. 前端保留"未知 displayType 回退到 text"的兜底分支，但不再对结果做启发式类型猜测。
+  5. 表格展示的虚拟滚动与分页使用成熟实现（优先 Element Plus `el-table-v2`，其次 `vue-virtual-scroller`），不手写。
+  6. 工具卡折叠态：`running` 默认展开、`error` 默认展开并显示错误详情、最终报告后未手动操作过的卡片自动折叠；
+     **手动状态优先**，持久化 key 用 `toolCallId`（禁止数组下标）。
+- **理由**：现状的不一致无法在前端侧修好——数据本身在出站时就丢了；把摘要与展示类型收敛到后端，才能保证
+  chat、刷新、以及未来第三方消费方（含 `/api/v1` 迁移后的新端点）看到同一份事实，也才能让"概览只在头部"这类
+  展示规则有单一数据源。
+- **后果**：`internal/tools` 结果封装、`internal/sse` 的 tool 事件载荷、会话消息结构（新增字段）需同步改造；
+  建议与 P2.14（Chat 端点迁 `/api/v1`）合并为一次纵向切片，避免同一契约改两遍；`Summary` 的生成规则（计数、
+  单位、成功/失败前缀）纳入 P7.4 交付物并加单测。
+
+## ADR-035 Web Shell 布局与滚动高度链契约（双栏独立滚动、输入区常驻）
+
+- **状态**：已接受（2026-10-15；实现见 P7.2/P7.5，方案见 `14-方案-前端体验优化-四期.md` §3）
+- **背景**：经典双栏要求"左栏独立滚动、右侧消息区独立滚动、底部输入区常驻"。实现过程中出现过用户可见缺陷：
+  会话或消息一多，整页被内容撑高，输入框被顶出视口，必须滚动页面才能看到。根因是 `#app` 到 `.chat-page`
+  的高度链没有闭合——`.app-main` 的高度来自 flex（其 `height` 属性仍是 `auto`），子级 `height: 100%` 于是
+  解析成 `auto`；聊天网格又依赖隐式 `auto` 行，行高按内容撑开。
+- **决策**：
+  1. 高度链固定为：`html/body/#app` `height: 100%` → `.app-shell` `height: 100%` → `.app-body` `min-height: 0`
+     → `.app-main` `min-height: 0` + `display: flex; flex-direction: column` → 路由页面 `flex: 1 1 0; min-height: 0`。
+  2. 双栏网格必须显式 `grid-template-rows: minmax(0, 1fr)`；左栏 `.conversation-list` 用
+     `height: 100%; min-height: 0` 承载内部 `overflow-y: auto` 的列表体；右侧 `.chat-main` 为纵向 flex，
+     消息区 `flex: 1; min-height: 0; overflow: hidden`，输入区 `flex: none`。
+  3. 禁止在路由页面用 `height: 100%` 依赖父级百分比；需要满高时一律 `flex: 1 1 0` + `min-height: 0`。
+  4. 需要自身滚动的页面自带 `overflow-y: auto` 的滚动容器，不依赖 `.app-main` 整体滚动。
+- **理由**：把"谁负责滚动"收敛到容器自身，页面级滚动条才能彻底消失。用 flex 而非百分比，是因为 flex 的
+  使用尺寸对子级是确定的，而百分比只在父级 `height` 为确定值时才成立——这正是缺陷来源。
+- **后果**：所有路由页面复用同一高度链；新增页面若引入自己的 flex/网格嵌套，必须补齐 `min-height: 0`；
+  改布局后按方案 §3.2 自检（40 条会话下 `document.documentElement.scrollHeight === window.innerHeight`，
+  且 `.composer` 底部不超过视口、`.list-body` 确实可滚动）。
+
 ## 待决策事项（需在编码前确认）
 
 | # | 问题 | 建议 | 影响 |

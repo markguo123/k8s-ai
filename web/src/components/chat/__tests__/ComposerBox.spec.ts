@@ -10,7 +10,11 @@ describe('ComposerBox（P2.10 输入与发送）', () => {
     })
     expect(wrapper.text()).toContain('qwen-plus')
     expect(wrapper.text()).toContain('Secret: create_only')
-    expect(wrapper.text()).toContain('Shell 语法命令需人工审批 · Secret 值不会进入会话与审计')
+    // P7.2：长安全文案降噪为小字入口，完整说明保留在 aria-label（Tooltip 同源）
+    expect(wrapper.text()).toContain('安全策略')
+    expect(wrapper.get('.composer-hint').attributes('aria-label')).toContain(
+      'Secret 值与 kubeconfig 不会进入会话与审计',
+    )
   })
 
   it('输入回写 modelValue，Enter 触发发送', async () => {

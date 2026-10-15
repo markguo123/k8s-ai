@@ -5,10 +5,12 @@ import type { AgentToken } from '@/api/sse'
 import { formatTokenCount } from '@/utils/format'
 
 /**
- * P2.13 TokenUsageBadge：会话级 Token 用量浮标（右下角，对齐原型）。
+ * P2.13 TokenUsageBadge：会话级 Token 用量胶囊。
  * - 会话级累计：打开历史会话时来自落库 Turn 汇总（刷新/重开仍可读），
  *   运行中随 `turn.completed` 的 token 事件累加；
  * 仅展示计数，不含任何敏感数据（对齐 §5.5）。
+ *
+ * P7.6：由「右下角浮标」改为聊天头部内的常规胶囊 —— 固定定位会正好压在发送按钮上。
  */
 
 const props = withDefaults(
@@ -46,13 +48,10 @@ const title = computed(
 
 <style scoped>
 .token-badge {
-  position: fixed;
-  right: 18px;
-  bottom: 18px;
-  z-index: 30;
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  flex: none;
   padding: 6px 12px;
   border: 1px solid var(--app-border);
   border-radius: 999px;
@@ -61,7 +60,6 @@ const title = computed(
   font-size: 11.5px;
   color: var(--app-muted);
   font-variant-numeric: tabular-nums;
-  pointer-events: none;
 }
 
 .token-total {

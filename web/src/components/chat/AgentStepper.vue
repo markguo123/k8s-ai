@@ -10,11 +10,15 @@ export interface AgentStep {
   key: string
   label: string
   state: StepState
+  /** P7.2：可点击定位的锚点 id（对应回合内条目的 DOM id）。 */
+  anchor?: string
 }
 
 defineProps<{
   steps: AgentStep[]
 }>()
+
+const emit = defineEmits<{ (e: 'select', step: AgentStep): void }>()
 </script>
 
 <template>
@@ -24,6 +28,10 @@ defineProps<{
       :key="step.key"
       class="step"
       :class="step.state"
+      :role="step.anchor ? 'button' : undefined"
+      :tabindex="step.anchor ? 0 : undefined"
+      @click="step.anchor && emit('select', step)"
+      @keydown.enter="step.anchor && emit('select', step)"
     >
       <span class="step-dot">
         <svg v-if="step.state === 'done'" viewBox="0 0 12 12" class="step-check" aria-hidden="true">
@@ -55,6 +63,18 @@ defineProps<{
   min-width: 0;
   color: var(--app-muted);
   font-size: 12px;
+}
+
+/* P7.2：有锚点时表现为可点击（Run Bar 跳转到对应过程卡片） */
+.step[role='button'] {
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 2px 4px;
+}
+
+.step[role='button']:hover {
+  background: var(--app-surface-2);
+  color: var(--app-text);
 }
 
 .step + .step::before {

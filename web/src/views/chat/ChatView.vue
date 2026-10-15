@@ -10,6 +10,7 @@ import {
   createSession,
   deleteSession,
   listSessions,
+  pinSession,
   renameSession,
   sendMessage,
 } from '@/api/sessions'
@@ -18,9 +19,11 @@ import ConversationList from '@/components/chat/ConversationList.vue'
 import MessageTimeline from '@/components/chat/MessageTimeline.vue'
 import ComposerBox from '@/components/chat/ComposerBox.vue'
 import TokenUsageBadge from '@/components/chat/TokenUsageBadge.vue'
+import TechEmptyState from '@/components/TechEmptyState.vue'
+import { buildSessionMarkdown, markdownFileName } from '@/utils/exportMarkdown'
 import { useChatStream, type StreamStatus } from '@/composables/useChatStream'
 import { useAuthStore } from '@/stores/auth'
-import { addTokenUsage, sessionStateTagType } from '@/utils/format'
+import { addTokenUsage, sessionStateTone } from '@/utils/format'
 import { canDecideApproval } from '@/utils/permission'
 
 const ACTIVE_SESSION_KEY = 'k8s_ai_active_session'
@@ -37,6 +40,7 @@ const auth = useAuthStore()
 
 const CONVERSATIONS_KEY = 'k8s_ai_conversations_collapsed'
 const conversationsCollapsed = ref(localStorage.getItem(CONVERSATIONS_KEY) === '1')
+const mobileDrawerOpen = ref(false)
 watch(conversationsCollapsed, (collapsed) => {
   localStorage.setItem(CONVERSATIONS_KEY, collapsed ? '1' : '0')
 })
@@ -84,18 +88,19 @@ const statusText = computed(() => {
   }
 })
 
-function statusTag(status: StreamStatus): 'primary' | 'success' | 'warning' | 'danger' | 'info' {
+/** P7.6 流状态胶囊 tone：对齐全局 .state-pill.tone-*，替代 Element Plus 的扁平 tag。 */
+function streamTone(status: StreamStatus): 'running' | 'done' | 'waiting' | 'idle' {
   switch (status) {
     case 'connecting':
-      return 'primary'
+      return 'running'
     case 'open':
-      return 'success'
+      return 'done'
     case 'reconnecting':
-      return 'warning'
+      return 'waiting'
     case 'closed':
     case 'idle':
     default:
-      return 'info'
+      return 'idle'
   }
 }
 
@@ -115,6 +120,7 @@ async function loadSessions(): Promise<void> {
 }
 
 function selectSession(id: string): void {
+  mobileDrawerOpen.value = false
   if (id === activeId.value) {
     // 同一会话重复点击按「重新订阅」处理：冷启动或断流后点一下就恢复，避免点击无反应。
     if (stream.sessionId.value === id) {
@@ -158,6 +164,39 @@ async function handleRename(payload: { id: string; name: string }): Promise<void
     await loadSessions()
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '重命名会话失败')
+  }
+}
+
+async function handlePin(payload: { id: string; pinned: boolean }): Promise<void> {
+  try {
+    await pinSession(payload.id, payload.pinned)
+    await loadSessions()
+    ElMessage.success(payload.pinned ? '已置顶' : '已取消置顶')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '置顶操作失败')
+  }
+}
+
+/** P7.5：导出当前会话为 Markdown 文件（前端 Blob 下载，不新增后端接口）。 */
+async function handleExport(target: SessionSummary): Promise<void> {
+  try {
+    const detail = await createSession({ id: target.id })
+    const markdown = buildSessionMarkdown(detail.messages ?? [], {
+      id: detail.id,
+      name: detail.name ?? target.name,
+      model: detail.model,
+    })
+    const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = markdownFileName(detail.name ?? target.name)
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '导出会话失败')
   }
 }
 
@@ -282,6 +321,7 @@ watch(
   <section class="chat-page" :class="{ 'ctx-collapsed': conversationsCollapsed }">
     <ConversationList
       class="chat-side"
+      :class="{ 'drawer-open': mobileDrawerOpen }"
       :sessions="sessions"
       :active-id="activeId"
       :loading="loading"
@@ -290,12 +330,28 @@ watch(
       @select="selectSession"
       @delete="handleDelete"
       @rename="handleRename"
+      @pin="handlePin"
+      @export="handleExport"
       @refresh="loadSessions"
       @toggle="conversationsCollapsed = !conversationsCollapsed"
     />
+    <div
+      v-if="mobileDrawerOpen"
+      class="mobile-backdrop"
+      aria-hidden="true"
+      @click="mobileDrawerOpen = false"
+    />
     <main class="chat-main">
-      <TokenUsageBadge :token="sessionToken" />
       <header class="chat-head">
+        <el-button
+          class="mobile-menu-btn"
+          circle
+          plain
+          size="small"
+          :icon="ChatDotRound"
+          aria-label="打开会话列表"
+          @click="mobileDrawerOpen = true"
+        />
         <div class="chat-heading">
           <h2>{{ activeSession?.name || '未选择会话' }}</h2>
           <span v-if="activeSession" class="chat-id" :title="activeSession.id">
@@ -303,14 +359,10 @@ watch(
           </span>
         </div>
         <div v-if="activeSession" class="chat-meta">
-          <el-tag
-            size="small"
-            effect="plain"
-            :type="sessionStateTagType(activeSession.state)"
-            class="chat-state"
-          >
+          <TokenUsageBadge :token="sessionToken" />
+          <span class="state-pill" :class="`tone-${sessionStateTone(activeSession.state)}`">
             {{ activeSession.state }}
-          </el-tag>
+          </span>
           <span class="chat-count"> {{ activeSession.messageCount }} 条消息 </span>
         </div>
       </header>
@@ -319,14 +371,9 @@ watch(
           <main class="chat-stream">
             <header class="stream-bar">
               <div class="stream-state">
-                <el-tag
-                  size="small"
-                  effect="plain"
-                  :type="statusTag(stream.status.value)"
-                  class="stream-tag"
-                >
+                <span class="state-pill" :class="`tone-${streamTone(stream.status.value)}`">
                   {{ statusText }}
-                </el-tag>
+                </span>
                 <span v-if="stream.lastFrameAt.value" class="stream-last">
                   最后事件更新于 {{ new Date(stream.lastFrameAt.value).toLocaleTimeString() }}
                 </span>
@@ -342,17 +389,22 @@ watch(
               :history="stream.history.value"
               :events="stream.events.value"
               :can-decide="canDecide"
+              empty-title="该会话暂无消息"
+              empty-hint="在下方输入框描述你的运维问题；Agent 会先思考、再调用工具核实现场"
               @approve="handleApprove"
               @reject="handleReject"
             />
           </main>
         </template>
         <template v-else>
-          <el-empty description="创建一个会话，开始与 Agent 对话" :image-size="96">
+          <TechEmptyState
+            title="未选择会话"
+            hint="新建一个会话，描述你的运维问题；Agent 会先思考、再调用工具核实现场"
+          >
             <el-button type="primary" :icon="ChatDotRound" @click="handleCreate"
               >新建会话</el-button
             >
-          </el-empty>
+          </TechEmptyState>
         </template>
       </div>
 
@@ -374,11 +426,15 @@ watch(
 <style scoped>
 .chat-page {
   display: grid;
-  /* 对齐原型 .chat-pane：会话栏 240px + 14px 间距；收起态 56px */
+  /* 对齐原型 .chat-pane：会话栏 240px + 16px 间距；收起态 56px */
   grid-template-columns: 240px minmax(0, 1fr);
-  gap: 14px;
-  height: 100%;
+  /* 行必须显式填满容器，否则隐式 auto 行按内容高度撑开，把输入框顶出视口 */
+  grid-template-rows: minmax(0, 1fr);
+  gap: 16px;
+  /* P7.2 经典双栏：由 .app-main（flex 列）约束为"占满可用高度"，消息再多也不把输入框顶下去 */
+  flex: 1 1 0;
   min-height: 0;
+  overflow: hidden;
   transition: grid-template-columns 0.2s ease;
 }
 
@@ -398,7 +454,7 @@ watch(
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 0 2px 8px;
+  padding: 0 4px 10px;
 }
 
 .chat-heading {
@@ -423,8 +479,9 @@ watch(
   text-overflow: ellipsis;
   white-space: nowrap;
   padding: 0 8px;
-  border-radius: 4px;
-  background: var(--app-bg);
+  border: 1px solid var(--app-hairline);
+  border-radius: 6px;
+  background: var(--app-neutral-soft);
   color: var(--app-muted);
   font-family: 'JetBrains Mono', Consolas, monospace;
   font-size: 11px;
@@ -438,10 +495,6 @@ watch(
   flex: none;
 }
 
-.chat-state {
-  text-transform: capitalize;
-}
-
 .chat-count {
   font-size: 12px;
   color: var(--app-muted);
@@ -453,6 +506,11 @@ watch(
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
+  /* P7.6 海拔：画布比侧栏/会话列表亮一档 + 微弱内发光，解决"中间一大块黑" */
+  background: var(--app-canvas);
+  box-shadow: var(--app-canvas-inset);
+  border: 1px solid var(--app-hairline);
+  border-radius: var(--app-radius);
 }
 
 .chat-stream {
@@ -478,7 +536,7 @@ watch(
   min-width: 0;
 }
 
-.stream-tag {
+.stream-state .state-pill {
   font-variant: tabular-nums;
 }
 
@@ -491,11 +549,17 @@ watch(
   flex: none;
 }
 
+/* P7.6 断流提示：软色玻璃条 + 左侧高亮条 + 微弱光晕，替代原来的纯色块 */
 .stream-error {
-  margin: 0;
-  padding: 6px 10px;
-  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  margin: 0 0 8px;
+  padding: 7px 12px;
+  border: 1px solid var(--app-danger-border);
+  border-left: 2px solid var(--app-danger);
+  border-radius: var(--app-radius-sm);
   background: var(--app-danger-soft);
+  box-shadow: 0 0 18px -8px var(--app-danger);
   color: var(--app-danger);
   font-size: 12px;
 }
@@ -505,5 +569,51 @@ watch(
   flex-direction: column;
   gap: 8px;
   padding-top: 12px;
+}
+
+/* P7.5：移动端（≤768px）会话列表改为抽屉，默认收起、顶栏按钮唤出。 */
+.mobile-menu-btn {
+  display: none;
+  flex: none;
+}
+
+.mobile-backdrop {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .chat-page,
+  .chat-page.ctx-collapsed {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mobile-menu-btn {
+    display: inline-flex;
+  }
+
+  .chat-side {
+    position: fixed;
+    top: 8px;
+    bottom: 8px;
+    left: 8px;
+    width: 300px;
+    max-width: 86vw;
+    z-index: 50;
+    transform: translateX(-110%);
+    transition: transform 0.22s ease;
+  }
+
+  .chat-side.drawer-open {
+    transform: translateX(0);
+  }
+
+  .mobile-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: rgba(0, 0, 0, 0.45);
+    backdrop-filter: blur(2px);
+  }
 }
 </style>

@@ -19,12 +19,15 @@
   --app-radius: 10px;
   --app-radius-sm: 7px;
   --app-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  --app-scroll-thumb: rgba(255, 255, 255, 0.14);
+  --app-scroll-thumb-hover: rgba(255, 255, 255, 0.26);
 
   /* Semantic（与原型 --ok/--warn/--err/--info 及其 soft 变体同值） */
   --app-success: #34d399;
   --app-success-soft: rgba(52, 211, 153, 0.13);
   --app-danger: #f87171;
   --app-danger-soft: rgba(248, 113, 113, 0.13);
+  --app-danger-border: rgba(248, 113, 113, 0.3);
   --app-warning: #fbbf24;
   --app-warning-soft: rgba(251, 191, 36, 0.13);
   --app-info: #60a5fa;
@@ -100,28 +103,99 @@ body {
     system-ui,
     sans-serif;
   font-size: 14px;
+  line-height: 1.6; /* P7.1：正文字号行高基线，提升可读性与留白感 */
   -webkit-font-smoothing: antialiased;
 }
 
-/* 全局滚动条走侧栏/深色风格，避免亮色硬编码残留。 */
+/*
+ * P7.1 亮色主题令牌：与深色同名同义，仅取值不同。
+ * 组件一律引用变量，禁止写死色值，否则亮色下会出现"局部永远深色"的残留。
+ */
+html[data-theme='light'] {
+  --app-bg: #f5f6f9;
+  --app-surface: #ffffff;
+  --app-surface-2: #eef0f4;
+  --app-text: #1f2430;
+  --app-strong: #0b0e14;
+  --app-muted: #5c6472;
+  --app-faint: #8b93a3;
+  --app-border: #e2e5ec;
+  --app-sidebar: #ffffff;
+  --app-sidebar-text: #3a4150;
+  --app-sidebar-muted: #8b93a3;
+  --app-brand: #4f46e5;
+  --app-accent: #4f46e5;
+  --app-accent-2: #6366f1;
+  --app-accent-soft: rgba(79, 70, 229, 0.1);
+  --app-shadow: 0 6px 20px rgba(16, 24, 40, 0.08);
+  --app-success: #0d9f6e;
+  --app-success-soft: rgba(13, 159, 110, 0.12);
+  --app-danger: #d92d20;
+  --app-danger-soft: rgba(217, 45, 32, 0.1);
+  --app-danger-border: rgba(217, 45, 32, 0.26);
+  --app-warning: #b45309;
+  --app-warning-soft: rgba(180, 83, 9, 0.12);
+  --app-info: #2563eb;
+  --app-info-soft: rgba(37, 99, 235, 0.1);
+  --app-scroll-thumb: rgba(16, 24, 40, 0.18);
+  --app-scroll-thumb-hover: rgba(16, 24, 40, 0.32);
+
+  /* Element Plus 亮色变量：品牌主色沿用 indigo（浅底上用更深的档位保证对比度） */
+  --el-color-primary: #4f46e5;
+  --el-color-primary-light-3: #6366f1;
+  --el-color-primary-light-5: #818cf8;
+  --el-color-primary-light-7: #c7c9fb;
+  --el-color-primary-light-8: #dcddfd;
+  --el-color-primary-light-9: #eeeefe;
+  --el-color-primary-dark-2: #4338ca;
+  --el-color-success: #0d9f6e;
+  --el-color-warning: #b45309;
+  --el-color-danger: #d92d20;
+  --el-color-error: #d92d20;
+  --el-color-info: #5c6472;
+  --el-bg-color: #ffffff;
+  --el-bg-color-overlay: #ffffff;
+  --el-border-color: #e2e5ec;
+  --el-border-color-light: #e9ebf1;
+  --el-border-color-lighter: #eef0f4;
+  --el-fill-color-blank: #ffffff;
+  --el-text-color-primary: #1f2430;
+  --el-text-color-regular: #1f2430;
+  --el-text-color-secondary: #5c6472;
+  --el-text-color-placeholder: #8b93a3;
+  --el-mask-color: rgba(15, 17, 21, 0.3);
+}
+
+/* P7.1：滚动条走令牌（纤细、无白底、hover 显影），杜绝系统白色滚动条 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--app-scroll-thumb) transparent;
+}
+
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #30363d;
-  border-radius: 6px;
+  background: var(--app-scroll-thumb);
+  border-radius: 8px;
   border: 2px solid transparent;
-  background-clip: padding-box;
+  background-clip: content-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #484f58;
-  background-clip: padding-box;
+  background: var(--app-scroll-thumb-hover);
+  background-clip: content-box;
 }
 
-::-webkit-scrollbar-track {
+/* P7.6：深色下悬浮给蓝色光晕，明确"这条能拖"；亮色沿用令牌不发光 */
+html[data-theme='dark'] ::-webkit-scrollbar-thumb:hover {
+  box-shadow: 0 0 8px rgba(99, 102, 241, 0.55);
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
   background: transparent;
 }
 

@@ -21,21 +21,52 @@ export function formatRelativeTime(value: string): string {
   return `${date.getMonth() + 1}月${date.getDate()}日 ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
-/** Agent 状态 → Element Plus tag 类型；状态集对齐 internal/agent/message.go。 */
-export function sessionStateTagType(state: string): 'primary' | 'success' | 'warning' | 'danger' | 'info' {
+/** 会话状态胶囊色调（P7.6）；状态集对齐 internal/agent/message.go。 */
+export type SessionStateTone = 'running' | 'done' | 'waiting' | 'error' | 'idle'
+
+/**
+ * Agent 状态 → 胶囊色调。
+ * 先归一到 5 档语义色，再由组件用"带微光的胶囊"类名渲染；不用 Element Plus 的实心 tag
+ * （深色下是生硬色块，与登录页的令牌体系不一致）。
+ */
+export function sessionStateTone(state: string): SessionStateTone {
   switch (state) {
     case 'running':
     case 'initializing':
-      return 'primary'
+      return 'running'
     case 'done':
-      return 'success'
+      return 'done'
     case 'waiting-for-input':
-      return 'warning'
+      return 'waiting'
     case 'exited':
     case 'error':
-      return 'danger'
+      return 'error'
     default:
-      return 'info'
+      return 'idle'
+  }
+}
+
+/**
+ * Agent 状态 → 胶囊短文案（中文）。
+ * 会话栏只有 ~180px 宽，`waiting-for-input` 这类原文会把标题挤成省略号，因此用短中文；
+ * 原始状态仍在胶囊的 `title` 上可查（不丢信息）。
+ */
+export function sessionStateLabel(state: string): string {
+  switch (state) {
+    case 'initializing':
+      return '初始化'
+    case 'running':
+      return '运行中'
+    case 'waiting-for-input':
+      return '待输入'
+    case 'done':
+      return '已完成'
+    case 'exited':
+      return '已退出'
+    case 'error':
+      return '失败'
+    default:
+      return state || '未知'
   }
 }
 

@@ -260,4 +260,61 @@ describe('MessageTimeline（P2.6/P2.7 回合聚合）', () => {
     expect(panels[0]).toContain('先看 Pod 列表')
     expect(panels[1]).toContain('汇总异常项')
   })
+
+  it('P7.2 上滑后暂停跟随并出现"回到底部"，点击后恢复', async () => {
+    const wrapper = mountTimeline({
+      events: [
+        event('turn.started', { status: 'running', input: '巡检 default 命名空间' }),
+        event('message.completed', { role: 'assistant', delta: FULL_REPORT }),
+      ],
+    })
+    const timeline = wrapper.get('.timeline')
+    const el = timeline.element as HTMLElement
+    Object.defineProperty(el, 'scrollHeight', { value: 1000, configurable: true })
+    Object.defineProperty(el, 'clientHeight', { value: 400, configurable: true })
+    Object.defineProperty(el, 'scrollTo', { value: () => {}, configurable: true })
+
+    // 停在距底部 600px 的位置 → 暂停跟随
+    el.scrollTop = 0
+    await timeline.trigger('scroll')
+    expect(wrapper.find('.follow-latest').exists()).toBe(true)
+
+    // 回到底部 → 恢复跟随，按钮消失
+    await wrapper.get('.follow-latest').trigger('click')
+    expect(wrapper.find('.follow-latest').exists()).toBe(false)
+  })
+
+  it('P7.4 observation.created 携带同源 tool_result：摘要/形态/耗时落到工具卡', () => {
+    const structured = { items: [{ name: 'nginx', status: 'Running' }] }
+    const wrapper = mountTimeline({
+      events: [
+        event('turn.started', { input: '看 Pod' }),
+        event('tool.started', { kind: 'tool', tool: 'get_pods', params: '{}' }),
+        event('observation.created', {
+          tool: 'get_pods',
+          result: '1 个 Pod',
+          ok: true,
+          summary: '成功 · 1 pods · 320ms',
+          displayType: 'table',
+          durationMs: 320,
+          risk: 'SAFE',
+          data: structured,
+        }),
+      ],
+    })
+    const card = wrapper.findComponent({ name: 'ToolCallCard' })
+    expect(card.exists()).toBe(true)
+    const tool = card.props('tool') as {
+      summary?: string
+      displayType?: string
+      duration?: number | null
+      risk?: string
+      result?: unknown
+    }
+    expect(tool.summary).toBe('成功 · 1 pods · 320ms')
+    expect(tool.displayType).toBe('table')
+    expect(tool.duration).toBe(320)
+    expect(tool.risk).toBe('SAFE')
+    expect(tool.result).toEqual(structured)
+  })
 })
