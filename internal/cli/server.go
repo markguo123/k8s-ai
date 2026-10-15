@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/k8s-ai/k8s-ai/internal/auth"
+	"github.com/k8s-ai/k8s-ai/internal/cluster"
 	"github.com/k8s-ai/k8s-ai/internal/server"
 	"github.com/k8s-ai/k8s-ai/internal/service"
 	"github.com/k8s-ai/k8s-ai/internal/settings"
@@ -48,9 +49,20 @@ func newServerCmd(deps Dependencies) *cobra.Command {
 			// 四期平台底座：配置中心与系统事件审计由同一 Store 装配（P1.10/P1.11）。
 			settingsSvc := settings.New(st)
 			auditSvc := service.NewAuditService(st)
+			// P3.1-P3.3：凭据加密密钥只从环境变量读取（P6.12 约定）。
+			// 未配置 K8S_AI_ENC_KEY 时集群端点返回 501，其余平台能力不受影响。
+			var clusterSvc *cluster.Service
+			if cipher, err := cluster.NewCipherFromEnv(); err == nil {
+				clusterSvc = cluster.New(st.Clusters(), st.Credentials(), cipher,
+					cluster.WithAudit(func(ctx context.Context, e store.AuditEvent) error {
+						return auditSvc.Record(ctx, e)
+					}))
+			} else {
+				logger.Warn("cluster endpoints disabled", "reason", err.Error())
+			}
 			srv := &http.Server{
 				Addr:              addr,
-				Handler:           server.NewWithPlatform(deps.NewScan(), authSvc, settingsSvc, auditSvc).Handler(),
+				Handler:           server.NewWithPlatform(deps.NewScan(), authSvc, settingsSvc, auditSvc).WithClusters(clusterSvc).Handler(),
 				ReadHeaderTimeout: 10 * time.Second,
 			}
 			logger.Info("k8s-ai server listening", "addr", addr, "db", path)

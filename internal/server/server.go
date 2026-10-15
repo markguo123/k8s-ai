@@ -49,6 +49,8 @@ type Server struct {
 	settings settingsService
 	// auditlog 写系统事件（LOGIN/LOGOUT 等，P1.11），nil 时跳过。
 	auditlog auditWriter
+	// clusterSvc 是集群管理应用服务（P3.1-P3.3），nil 时集群端点返回 501。
+	clusterSvc clusterService
 	perms   *permission.Enforcer
 	mu      sync.Mutex
 	jobs    map[string]*ScanJob
@@ -80,6 +82,12 @@ func NewWithPlatform(svc service.ScanService, auth authService, settingsSvc sett
 	return s
 }
 
+// WithClusters 装配集群管理应用服务（P3.1-P3.3）。链式可选，不破坏既有构造器签名。
+func (s *Server) WithClusters(svc clusterService) *Server {
+	s.clusterSvc = svc
+	return s
+}
+
 // Handler 返回路由。
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -91,6 +99,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/auth/me", s.handleMe)
 	mux.HandleFunc("POST /api/v1/scans", s.handleCreateScan)
 	mux.HandleFunc("GET /api/v1/scans/{id}", s.handleGetScan)
+	mux.HandleFunc("POST /api/v1/clusters", s.handleCreateCluster)
+	mux.HandleFunc("POST /api/v1/clusters/test", s.handleTestCluster)
+	mux.HandleFunc("GET /api/v1/clusters", s.handleListClusters)
+	mux.HandleFunc("GET /api/v1/clusters/current", s.handleCurrentCluster)
+	mux.HandleFunc("GET /api/v1/clusters/{id}", s.handleGetCluster)
+	mux.HandleFunc("DELETE /api/v1/clusters/{id}", s.handleDeleteCluster)
 	mux.HandleFunc("GET /api/v1/settings/{group}", s.handleGetSettings)
 	mux.HandleFunc("PATCH /api/v1/settings/{group}", s.handlePatchSettings)
 	return WithMiddleware(mux, DefaultCORS(), s.perms, s.principal)

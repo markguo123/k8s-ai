@@ -31,6 +31,23 @@ const TOOL_PODS = {
   total: 3,
 }
 
+/** 受管集群 mock（P3.4 联调：与 internal/cluster 模型一致，不含凭据）。 */
+const CLUSTER = {
+  id: 'cluster-demo-1',
+  name: 'prod-cluster-01',
+  context: 'prod-admin',
+  server: 'https://10.0.0.1:6443',
+  version: 'v1.30.2',
+  status: 'connected',
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+}
+
+const CLUSTER_VIEW = {
+  cluster: CLUSTER,
+  info: { name: 'prod-cluster-01', context: 'prod-admin', server: 'https://10.0.0.1:6443', version: 'v1.30.2', health: 'ok' },
+}
+
 const LOGS = [
   '2026-10-14T10:12:03Z INFO  server started :8080',
   '2026-10-14T10:12:05Z WARN  memory usage 92% (512Mi limit)',
@@ -167,6 +184,34 @@ function readBody(req) {
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://127.0.0.1')
   const path = url.pathname
+
+  // P3.4 集群管理端点（/api/v1/clusters*）
+  if (path === '/api/v1/clusters' && req.method === 'GET') {
+    writeJson(res, 200, { items: [CLUSTER], total: 1 })
+    return
+  }
+  if (path === '/api/v1/clusters' && req.method === 'POST') {
+    await readBody(req)
+    writeJson(res, 201, CLUSTER)
+    return
+  }
+  if (path === '/api/v1/clusters/test' && req.method === 'POST') {
+    await readBody(req)
+    writeJson(res, 200, CLUSTER_VIEW.info)
+    return
+  }
+  if (path === '/api/v1/clusters/current' && req.method === 'GET') {
+    writeJson(res, 200, CLUSTER_VIEW)
+    return
+  }
+  if (path.startsWith('/api/v1/clusters/') && req.method === 'GET') {
+    writeJson(res, 200, CLUSTER)
+    return
+  }
+  if (path.startsWith('/api/v1/clusters/') && req.method === 'DELETE') {
+    writeJson(res, 200, { deleted: 'ok' })
+    return
+  }
 
   if (path === '/api/sessions' && req.method === 'GET') {
     writeJson(res, 200, [SESSION])

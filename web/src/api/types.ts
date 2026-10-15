@@ -90,3 +90,41 @@ export interface MeResponse {
   user: AuthUser
   role: AuthRole
 }
+
+/** 受管集群元数据（后端 store.Cluster；凭据已加密分离，永不随本对象回传）。 */
+export interface Cluster {
+  id: string
+  name: string
+  context?: string
+  server?: string
+  version?: string
+  status?: string
+  createdAt: string
+  updatedAt: string
+}
+
+/** 一次 kubeconfig 解析 / 连测的结果（后端 cluster.Info）。 */
+export interface ClusterInfo {
+  name?: string
+  context?: string
+  server?: string
+  version?: string
+  health?: string
+}
+
+/** GET /api/v1/clusters/current 的 data（后端 cluster.StatusView）。 */
+export interface ClusterStatusView {
+  cluster: Cluster
+  info: ClusterInfo
+}
+
+/** POST /api/v1/clusters 请求体：kubeconfig 仅作一次性提交，不回显。 */
+export interface ClusterCreateRequest {
+  name?: string
+  kubeconfig: string
+}
+
+/** POST /api/v1/clusters/test 请求体。 */
+export interface ClusterTestRequest {
+  kubeconfig: string
+}
