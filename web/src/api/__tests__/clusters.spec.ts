@@ -54,6 +54,26 @@ describe('clusters API（P3.4）', () => {
     localStorage.removeItem(TOKEN_KEY)
   })
 
+  it('testCluster 连测走 POST /clusters/test 且不透出明文', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      envelopeResponse(200, {
+        name: 'probe',
+        context: 'prod-admin',
+        server: 'https://10.0.0.1:6443',
+        version: 'v1.30.2',
+        health: 'healthy',
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const info = await testCluster({ kubeconfig: 'clouds:\n  - server: x\n' })
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toContain('/clusters/test')
+    expect(init.method).toBe('POST')
+    const parsed = JSON.parse(init.body as string) as { kubeconfig: string }
+    expect(parsed.kubeconfig).toContain('server: x')
+    expect(info.health).toBe('healthy')
+  })
+
   it('deleteCluster 成功后返回；失败抛出错误码', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(envelopeResponse(200, { deleted: 'ok' })))
     await expect(deleteCluster('c1')).resolves.toBeUndefined()

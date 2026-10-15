@@ -6,7 +6,6 @@
  */
 import { apiDelete, apiGet, apiPost } from './request'
 import type {
-  ApiResponse,
   Cluster,
   ClusterCreateRequest,
   ClusterInfo,
