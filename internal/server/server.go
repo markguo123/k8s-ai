@@ -51,6 +51,8 @@ type Server struct {
 	auditlog auditWriter
 	// clusterSvc 是集群管理应用服务（P3.1-P3.3），nil 时集群端点返回 501。
 	clusterSvc clusterService
+	// skillsSvc 是 Skill 平台应用服务（P3.5），nil 时 Skill 端点返回 501。
+	skillsSvc skillsService
 	perms   *permission.Enforcer
 	mu      sync.Mutex
 	jobs    map[string]*ScanJob
@@ -88,6 +90,12 @@ func (s *Server) WithClusters(svc clusterService) *Server {
 	return s
 }
 
+// WithSkills 装配 Skill 平台应用服务（P3.5）。链式可选，不破坏既有构造器签名。
+func (s *Server) WithSkills(svc skillsService) *Server {
+	s.skillsSvc = svc
+	return s
+}
+
 // Handler 返回路由。
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -107,6 +115,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/clusters/{id}", s.handleDeleteCluster)
 	mux.HandleFunc("GET /api/v1/settings/{group}", s.handleGetSettings)
 	mux.HandleFunc("PATCH /api/v1/settings/{group}", s.handlePatchSettings)
+	mux.HandleFunc("GET /api/v1/skills", s.handleListSkills)
 	return WithMiddleware(mux, DefaultCORS(), s.perms, s.principal)
 }
 

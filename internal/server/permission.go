@@ -52,6 +52,7 @@ func DefaultAPIPolicy() *permission.Policy {
 		permission.Rule{Method: "DELETE", Path: "/api/v1/clusters/{id}", Access: permission.AccessPermission, Permission: permission.ClusterManage},
 		permission.Rule{Method: "GET", Path: "/api/v1/settings/{group}", Access: permission.AccessPermission, Permission: permission.SettingsRead},
 		permission.Rule{Method: "PATCH", Path: "/api/v1/settings/{group}", Access: permission.AccessPermission, Permission: permission.SettingsWrite},
+		permission.Rule{Method: "GET", Path: "/api/v1/skills", Access: permission.AccessPermission, Permission: permission.SkillRead},
 	)
 }
 

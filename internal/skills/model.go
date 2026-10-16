@@ -13,10 +13,35 @@ import (
 // model and registry.
 type Source string
 
+// Source 枚举 Skill 的平台来源（四期 P3.5，见 PRD §13.2）。
 const (
+	// SourceBuiltin 是与二进制一起嵌入的内置方法论 Skill。
 	SourceBuiltin Source = "builtin"
-	SourceUser    Source = "user"
+	// SourceCustom 是用户通过 YAML 导入的自定义 Skill。
+	SourceCustom Source = "custom"
+	// SourceThirdParty 是第三方 Skill：只实现 Loader/Validation Contract，
+	// 不做在线市场。值与来源绑定，禁止伪造（validator 强制校验）。
+	SourceThirdParty Source = "third-party"
+
+	// SourceUser 是 SourceCustom 的三期向后兼容别名，保留以兼容既有调用与迁移。
+	SourceUser = SourceCustom
 )
+
+// ValidSource 返回 s 是否为受支持的平台来源（builtin/custom/third-party）。
+func ValidSource(s Source) bool {
+	switch s {
+	case SourceBuiltin, SourceCustom, SourceThirdParty:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsRestrictedSource 返回该来源是否禁止设置风险基线（只有内置 Skill 可设 Default）。
+// custom 与 third-party 都只能通过 elevateWhen 升档到 HIGH，永不降档。
+func IsRestrictedSource(s Source) bool {
+	return s == SourceCustom || s == SourceThirdParty
+}
 
 // Severity is the user-facing weight of a skill finding. Phase 3 treats all
 // skill findings as suggestions and never as hard blocks.
@@ -79,20 +104,36 @@ type Check struct {
 	Params map[string]string `yaml:"params,omitempty" json:"params,omitempty"`
 }
 
+// Example 是一个 Skill 的可复用示例（PRD §13.1 examples）：展示输入要求与
+// 产出形态，仅作文档用途，不携带任何可执行内容。
+type Example struct {
+	Name    string `yaml:"name,omitempty" json:"name,omitempty"`
+	Purpose string `yaml:"purpose,omitempty" json:"purpose,omitempty"`
+	Content string `yaml:"content,omitempty" json:"content,omitempty"`
+}
+
 // Skill is the frozen data model shared by builtin and Phase 4 user skills.
 type Skill struct {
-	Name           string   `yaml:"name" json:"name"`
-	Domain         string   `yaml:"domain" json:"domain"`
-	Version        string   `yaml:"version" json:"version"`
-	Kinds          []string `yaml:"kinds" json:"kinds"`
+	// Author 是 Skill 的作者/维护方（PRD §13.1 author）。
+	Author string `yaml:"author,omitempty" json:"author,omitempty"`
+	// Description 是 Skill 的方法论说明（PRD §13.1 description）。
+	Description string `yaml:"description,omitempty" json:"description,omitempty"`
+	Name        string `yaml:"name" json:"name"`
+	Domain      string `yaml:"domain" json:"domain"`
+	Version     string `yaml:"version" json:"version"`
+	Kinds       []string `yaml:"kinds" json:"kinds"`
+	// RequiredInputs/OptionalInputs 是声明式输入要求（PRD §13.1）。
 	RequiredInputs []string `yaml:"requiredInputs,omitempty" json:"requiredInputs,omitempty"`
 	OptionalInputs []string `yaml:"optionalInputs,omitempty" json:"optionalInputs,omitempty"`
-	Validation     []Rule   `yaml:"validation,omitempty" json:"validation,omitempty"`
-	Risk           RiskRule `yaml:"risk" json:"risk"`
-	PreChecks      []Check  `yaml:"preChecks,omitempty" json:"preChecks,omitempty"`
-	PostChecks     []Check  `yaml:"postChecks,omitempty" json:"postChecks,omitempty"`
-	Source         Source   `yaml:"source" json:"source"`
-	Path           string   `yaml:"path,omitempty" json:"path,omitempty"`
+	// Validation 是声明式校验规则 rules；Risk 是 risk_policy。
+	Validation []Rule   `yaml:"validation,omitempty" json:"validation,omitempty"`
+	Risk       RiskRule `yaml:"risk" json:"risk"`
+	PreChecks  []Check  `yaml:"preChecks,omitempty" json:"preChecks,omitempty"`
+	PostChecks []Check  `yaml:"postChecks,omitempty" json:"postChecks,omitempty"`
+	// Examples 是文档用途的示例清单（PRD §13.1 examples）。
+	Examples []Example `yaml:"examples,omitempty" json:"examples,omitempty"`
+	Source   Source    `yaml:"source" json:"source"`
+	Path     string    `yaml:"path,omitempty" json:"path,omitempty"`
 }
 
 // Finding is a single non-blocking skill recommendation attached to an

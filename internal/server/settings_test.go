@@ -38,7 +38,15 @@ func newPlatformServer(t *testing.T) *platformServer {
 	if err := authSvc.Bootstrap(context.Background(), "admin-pw"); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
-	handler := NewWithPlatform(&fakeScan{}, authSvc, settings.New(st), service.NewAuditService(st)).Handler()
+	// P3.5：Skill 平台与 cli server 装配一致（内置种子 + 内存 registry 重建）。
+	skillPlat := service.NewSkillPlatform(st.Skills())
+	if err := skillPlat.SeedBuiltins(context.Background()); err != nil {
+		t.Fatalf("seed skills: %v", err)
+	}
+	if err := skillPlat.Reload(context.Background()); err != nil {
+		t.Fatalf("reload skills: %v", err)
+	}
+	handler := NewWithPlatform(&fakeScan{}, authSvc, settings.New(st), service.NewAuditService(st)).WithSkills(skillPlat).Handler()
 	ts := httptest.NewServer(handler)
 	t.Cleanup(ts.Close)
 	return &platformServer{ts: ts, store: st, authSvc: authSvc}

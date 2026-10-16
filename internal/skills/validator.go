@@ -34,8 +34,21 @@ func validateSkill(s Skill) error {
 	if s.Source == "" {
 		s.Source = SourceBuiltin
 	}
-	if s.Source != SourceBuiltin && s.Source != SourceUser {
+	if !ValidSource(s.Source) {
 		return fmt.Errorf("skill %q has invalid source %q", s.Name, s.Source)
+	}
+	// 第三方 Contract：只提供方法论与校验规则，必须显式声明作者、说明与版本
+	// 以便来源追溯。custom 仍是本平台管理的 Skill，不强制作者展示字段。
+	if s.Source == SourceThirdParty {
+		if strings.TrimSpace(s.Author) == "" {
+			return fmt.Errorf("third-party skill %q must declare an author", s.Name)
+		}
+		if strings.TrimSpace(s.Description) == "" {
+			return fmt.Errorf("third-party skill %q must declare a description", s.Name)
+		}
+		if strings.TrimSpace(s.Version) == "" {
+			return fmt.Errorf("third-party skill %q must declare a version", s.Name)
+		}
 	}
 	if len(s.Kinds) == 0 {
 		return fmt.Errorf("skill %q must declare at least one kind", s.Name)
@@ -45,8 +58,8 @@ func validateSkill(s Skill) error {
 			return fmt.Errorf("skill %q has an empty kind filter", s.Name)
 		}
 	}
-	if s.Source == SourceUser && s.Risk.Default != "" {
-		return fmt.Errorf("user skill %q cannot set risk.default (only builtin skills set a baseline)", s.Name)
+	if IsRestrictedSource(s.Source) && s.Risk.Default != "" {
+		return fmt.Errorf("skill %q (%s) cannot set risk.default (only builtin skills set a baseline)", s.Name, s.Source)
 	}
 	for i, rule := range s.Validation {
 		if strings.TrimSpace(rule.Name) == "" {
@@ -78,8 +91,8 @@ func validateSkill(s Skill) error {
 		// Phase 3 baseline for known benign kinds is MEDIUM. A builtin skill may
 		// keep MEDIUM in elevateWhen to document intent, but user skills must not
 		// use elevateWhen to carry a MEDIUM default that looks like lowering.
-		if s.Source == SourceUser && clause.To != RiskHigh {
-			return fmt.Errorf("user skill %q risk.elevateWhen[%d] may only raise to HIGH", s.Name, i)
+		if IsRestrictedSource(s.Source) && clause.To != RiskHigh {
+			return fmt.Errorf("skill %q (%s) risk.elevateWhen[%d] may only raise to HIGH", s.Name, s.Source, i)
 		}
 	}
 	for _, kind := range []struct {

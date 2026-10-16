@@ -60,9 +60,17 @@ func newServerCmd(deps Dependencies) *cobra.Command {
 			} else {
 				logger.Warn("cluster endpoints disabled", "reason", err.Error())
 			}
+			// P3.5：Skill 平台装配——先写内置种子，再从 Store 重建内存 registry。
+			skillPlat := service.NewSkillPlatform(st.Skills())
+			if err := skillPlat.SeedBuiltins(cmd.Context()); err != nil {
+				return fmt.Errorf("seed skills: %w", err)
+			}
+			if err := skillPlat.Reload(cmd.Context()); err != nil {
+				return fmt.Errorf("reload skills: %w", err)
+			}
 			srv := &http.Server{
 				Addr:              addr,
-				Handler:           server.NewWithPlatform(deps.NewScan(), authSvc, settingsSvc, auditSvc).WithClusters(clusterSvc).Handler(),
+				Handler:           server.NewWithPlatform(deps.NewScan(), authSvc, settingsSvc, auditSvc).WithClusters(clusterSvc).WithSkills(skillPlat).Handler(),
 				ReadHeaderTimeout: 10 * time.Second,
 			}
 			logger.Info("k8s-ai server listening", "addr", addr, "db", path)
