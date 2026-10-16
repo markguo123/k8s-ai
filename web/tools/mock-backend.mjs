@@ -48,6 +48,51 @@ const CLUSTER_VIEW = {
   info: { name: 'prod-cluster-01', context: 'prod-admin', server: 'https://10.0.0.1:6443', version: 'v1.30.2', health: 'ok' },
 }
 
+/** 示例 Skill 列表（P3.8.4 @ 引用联调，与后端 store.Skill 结构一致）。 */
+const SKILLS = [
+  {
+    name: 'k8s-mysql-troubleshoot',
+    spec: {
+      author: 'demo',
+      description: 'Kubernetes 上 MySQL 故障排查与诊断方法论',
+      name: 'k8s-mysql-troubleshoot',
+      type: 'procedural',
+      domain: 'database',
+      version: '1.0.0',
+      kinds: [],
+      risk: { default: 'medium' },
+      source: 'custom',
+    },
+    source: 'custom',
+    enabled: true,
+    validationStatus: 'valid',
+    hitCount: 3,
+    lastHit: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    name: 'create-workload',
+    spec: {
+      author: 'builtin',
+      description: '工作负载资源创建的声明式校验规则',
+      name: 'create-workload',
+      type: 'structured',
+      domain: 'workload',
+      version: '1.0.0',
+      kinds: ['apps/v1/Deployment', 'apps/v1/StatefulSet'],
+      risk: { default: 'medium' },
+      source: 'builtin',
+    },
+    source: 'builtin',
+    enabled: true,
+    validationStatus: 'valid',
+    hitCount: 7,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+]
+
 const LOGS = [
   '2026-10-14T10:12:03Z INFO  server started :8080',
   '2026-10-14T10:12:05Z WARN  memory usage 92% (512Mi limit)',
@@ -210,6 +255,11 @@ const server = createServer(async (req, res) => {
   }
   if (path.startsWith('/api/v1/clusters/') && req.method === 'DELETE') {
     writeJson(res, 200, { deleted: 'ok' })
+    return
+  }
+
+  if (path === '/api/v1/skills' && req.method === 'GET') {
+    writeJson(res, 200, { data: SKILLS })
     return
   }
 

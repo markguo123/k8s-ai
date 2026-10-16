@@ -128,3 +128,91 @@ export interface ClusterCreateRequest {
 export interface ClusterTestRequest {
   kubeconfig: string
 }
+
+/** Skill 单条声明式校验规则（后端 skills.Rule；不携带任何执行字段）。 */
+export interface SkillRule {
+  name: string
+  path?: string
+  condition: string
+  severity: string
+  message: string
+  fix?: string
+}
+
+/** Skill 风险升档条款（后端 skills.RiskClause；只升不降，P3.8）。 */
+export interface SkillRiskClause {
+  name: string
+  path?: string
+  condition: string
+  to: string
+  message: string
+}
+
+/** Skill 风险元数据（后端 skills.RiskRule）。 */
+export interface SkillRiskRule {
+  default?: string
+  elevateWhen?: SkillRiskClause[]
+}
+
+/** Skill 预/后置检查（后端 skills.Check）。 */
+export interface SkillCheck {
+  name: string
+  params?: Record<string, string>
+}
+
+/** Skill 文档用途示例（后端 skills.Example）。 */
+export interface SkillExample {
+  name?: string
+  purpose?: string
+  content?: string
+}
+
+/** procedural Skill 技能包内资产元数据（后端 skills.SkillAsset；只记录元数据，
+ * 绝不携带执行内容；scripts 一律 inert=true，永不进入工具路径）。 */
+export interface SkillAsset {
+  name: string
+  path: string
+  kind?: string
+  size?: number
+  sha256?: string
+  inert?: boolean
+}
+
+/** 声明式 Skill 规格（后端 skills.Skill；刻意与运行元数据分离）。 */
+export interface SkillSpec {
+  author?: string
+  description?: string
+  name: string
+  /** Skill 类型（P3.8）：structured=资源创建规则 / procedural=标准 SKILL.md 方法论。 */
+  type: 'structured' | 'procedural' | string
+  domain: string
+  version: string
+  kinds: string[]
+  /** procedural Skill 的 SKILL.md 正文（P3.8.2）：仅作文本参考注入，从不执行。 */
+  body?: string
+  /** procedural Skill 技能包资产元数据（P3.8.3）。 */
+  assets?: SkillAsset[]
+  requiredInputs?: string[]
+  optionalInputs?: string[]
+  validation?: SkillRule[]
+  risk: SkillRiskRule
+  preChecks?: SkillCheck[]
+  postChecks?: SkillCheck[]
+  examples?: SkillExample[]
+  source: string
+  path?: string
+}
+
+/** Skill 平台记录（后端 store.Skill）：规格 + 运行元数据（enabled/hit 统计）。 */
+export interface Skill {
+  name: string
+  spec: SkillSpec
+  source: string
+  enabled: boolean
+  validationStatus?: string
+  hitCount: number
+  lastHit?: string
+  lastValidation?: string
+  createdAt: string
+  updatedAt: string
+}

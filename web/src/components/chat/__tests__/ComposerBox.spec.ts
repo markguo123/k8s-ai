@@ -1,7 +1,26 @@
 import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import ComposerBox from '@/components/chat/ComposerBox.vue'
+
+const SKILL = {
+  name: 'k8s-mysql-troubleshoot',
+  spec: {
+    description: 'Kubernetes 上 MySQL 故障排查与诊断方法论',
+    name: 'k8s-mysql-troubleshoot',
+    type: 'procedural',
+    domain: 'database',
+    version: '1.0.0',
+    kinds: [],
+    risk: { default: 'medium' },
+    source: 'custom',
+  },
+  source: 'custom',
+  enabled: true,
+  hitCount: 0,
+  createdAt: '',
+  updatedAt: '',
+}
 
 describe('ComposerBox（P2.10 输入与发送）', () => {
   it('展示当前模型与 Secret 策略提示（对齐原型工具条）', () => {
@@ -43,5 +62,42 @@ describe('ComposerBox（P2.10 输入与发送）', () => {
     const stop = wrapper.findAll('button').find((btn) => btn.text().includes('停止'))
     await stop!.trigger('click')
     expect(wrapper.emitted('stop')).toHaveLength(1)
+  })
+
+  it('P3.8.4：输入 @ 弹出已启用 procedural Skill，选中后回填 @技能名', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify({ data: [SKILL] }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      ),
+    )
+    const wrapper = mount(ComposerBox, {
+      props: { modelValue: '', canUseSkills: true },
+      attachTo: document.body,
+    })
+    await vi.waitFor(() => expect(wrapper.vm.availableSkills.length).toBe(1))
+
+    const textarea = wrapper.find('textarea')
+    await textarea.setValue('@k8s-mysql')
+    expect(wrapper.find('.mention-popup').exists()).toBe(true)
+    expect(wrapper.find('.mention-name').text()).toContain('k8s-mysql-troubleshoot')
+
+    await wrapper.find('.mention-item').trigger('mousedown')
+    expect(wrapper.emitted('update:modelValue')?.at(-1)).toContain('@k8s-mysql-troubleshoot ')
+    expect(wrapper.find('.mention-popup').exists()).toBe(false)
+    vi.unstubAllGlobals()
+  })
+
+  it('P3.8.4：无 skill.read 时不弹 @ 引用提示', async () => {
+    const spy = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', spy)
+    const wrapper = mount(ComposerBox, {
+      props: { modelValue: '', canUseSkills: false },
+      attachTo: document.body,
+    })
+    await wrapper.find('textarea').setValue('@x')
+    expect(wrapper.find('.mention-popup').exists()).toBe(false)
+    expect(spy).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
   })
 })

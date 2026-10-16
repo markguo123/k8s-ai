@@ -1,12 +1,17 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { Lock, Promotion, VideoPause } from '@element-plus/icons-vue'
 
+import { listSkills } from '@/api/skills'
+import type { Skill } from '@/api/types'
+
 /**
- * P2.10 ComposerBox：底部消息输入区。
+ * P2.10/P3.8.4 ComposerBox：底部消息输入区。
  * - 多行输入：Enter 发送 / Shift+Enter 换行；
  * - 工具条展示当前模型与 Secret 策略（与原型一致，只读提示）；
- * - 空闲显示「发送」，运行中变为「停止」。
+ * - 空闲显示「发送」，运行中变为「停止」；
+ * - 输入 `@` 弹出已启用的 procedural Skill 列表（由父级传入 skill.read 权限），
+ *   选中后插入 `@技能名`。前端只负责提示与回填，正文可信度与服务端强校验仍在后端。
  */
 
 const props = withDefaults(
@@ -18,12 +23,15 @@ const props = withDefaults(
     secretPolicy?: string
     disabled?: boolean
     sending?: boolean
+    /** 当前角色是否可引用 Skill（skill.read）。前端只隐藏提示，后端独立强校验。 */
+    canUseSkills?: boolean
   }>(),
   {
     model: '',
     secretPolicy: 'create_only',
     disabled: false,
     sending: false,
+    canUseSkills: false,
   },
 )
 
@@ -39,20 +47,154 @@ function focus(): void {
   textareaRef.value?.focus()
 }
 
-/** Enter 发送（Shift+Enter 换行）；禁用或空白输入时不发送。 */
+/** 已启用的 procedural Skill 列表（供 @ 提示与父级提交前解析）。 */
+const availableSkills = ref<Skill[]>([])
+
+/** 当前光标处的 @ 引用是否存在、过滤词与选中项。 */
+const mentionOpen = ref(false)
+const mentionQuery = ref('')
+const mentionAnchor = ref(-1)
+const mentionIndex = ref(0)
+
+/** 可选项：仅 procedural 且已启用的 Skill，按名称排序保证列表稳定。 */
+const mentionSkills = computed(() => {
+  const q = mentionQuery.value.trim().toLowerCase()
+  return availableSkills.value
+    .filter((skill) => skill.spec.type === 'procedural' && skill.enabled)
+    .filter((skill) => {
+      if (!q) {
+        return true
+      }
+      return (
+        skill.name.toLowerCase().includes(q) ||
+        (skill.spec.description ?? '').toLowerCase().includes(q)
+      )
+    })
+    .sort((a, b) => a.name.localeCompare(b.name))
+})
+
+function closeMention(): void {
+  mentionOpen.value = false
+  mentionQuery.value = ''
+  mentionAnchor.value = -1
+  mentionIndex.value = 0
+}
+
+/** 依据光标位置判断是否正在输入 `@技能名`，是则打开引用提示。 */
+function recomputeMention(textarea: HTMLTextAreaElement): void {
+  if (!props.canUseSkills) {
+    closeMention()
+    return
+  }
+  const value = textarea.value
+  const pos = textarea.selectionStart ?? value.length
+  const before = value.slice(0, pos)
+  const at = before.lastIndexOf('@')
+  if (at >= 0 && !/\s/.test(before.slice(at))) {
+    const token = before.slice(at + 1)
+    if (token === '' || /^[a-zA-Z0-9][\w.-]*$/.test(token)) {
+      mentionAnchor.value = at
+      mentionQuery.value = token
+      mentionIndex.value = 0
+      mentionOpen.value = true
+      return
+    }
+  }
+  closeMention()
+}
+
+/** 插入选中的技能名（替换 `@过滤词`），光标落在名字后。 */
+function selectMention(skill: Skill): void {
+  const textarea = textareaRef.value
+  if (!textarea || mentionAnchor.value < 0) {
+    closeMention()
+    return
+  }
+  const anchor = mentionAnchor.value
+  const pos = textarea.selectionStart ?? props.modelValue.length
+  const next =
+    props.modelValue.slice(0, anchor) + `@${skill.name} ` + props.modelValue.slice(pos)
+  emit('update:modelValue', next)
+  closeMention()
+  void nextTick(() => {
+    textarea.focus()
+    const caret = anchor + skill.name.length + 2
+    textarea.setSelectionRange(caret, caret)
+  })
+}
+
+/** Enter 发送（Shift+Enter 换行）；引用提示打开时优先选中技能。 */
 function handleEnter(): void {
+  if (mentionOpen.value) {
+    const target = mentionSkills.value[mentionIndex.value] ?? mentionSkills.value[0]
+    if (target) {
+      selectMention(target)
+    }
+    return
+  }
   if (props.disabled || props.sending || !props.modelValue.trim()) {
     return
   }
   emit('send')
 }
 
-defineExpose({ focus })
+/** 方向键在引用提示中上下移动。 */
+function handleKeydown(event: KeyboardEvent): void {
+  if (!mentionOpen.value || mentionSkills.value.length === 0) {
+    return
+  }
+  if (event.key === 'ArrowDown') {
+    event.preventDefault()
+    mentionIndex.value = (mentionIndex.value + 1) % mentionSkills.value.length
+  } else if (event.key === 'ArrowUp') {
+    event.preventDefault()
+    mentionIndex.value =
+      (mentionIndex.value - 1 + mentionSkills.value.length) % mentionSkills.value.length
+  } else if (event.key === 'Escape') {
+    event.preventDefault()
+    closeMention()
+  }
+}
+
+onMounted(() => {
+  if (!props.canUseSkills) {
+    return
+  }
+  void listSkills()
+    .then((skills) => {
+      availableSkills.value = skills ?? []
+    })
+    .catch(() => {
+      availableSkills.value = []
+    })
+})
+
+defineExpose({ focus, availableSkills })
 </script>
 
 <template>
   <div class="composer">
-    <div class="composer-input" @keydown.enter.exact.prevent="handleEnter">
+    <div
+      class="composer-input"
+      @keydown.enter.exact.prevent="handleEnter"
+      @keydown="handleKeydown"
+    >
+      <div v-if="mentionOpen && mentionSkills.length" class="mention-popup" role="listbox">
+        <button
+          v-for="(skill, index) in mentionSkills"
+          :key="skill.name"
+          type="button"
+          class="mention-item"
+          :class="{ active: index === mentionIndex }"
+          role="option"
+          :aria-selected="index === mentionIndex"
+          @mousedown.prevent="selectMention(skill)"
+          @mouseover="mentionIndex = index"
+        >
+          <span class="mention-name">@{{ skill.name }}</span>
+          <span class="mention-desc">{{ skill.spec.description }}</span>
+        </button>
+      </div>
       <textarea
         ref="textareaRef"
         :value="modelValue"
@@ -60,7 +202,10 @@ defineExpose({ focus })
         :disabled="disabled"
         rows="3"
         placeholder="描述你的运维问题，例如：查看 default 命名空间异常工作负载…（Enter 发送，Shift+Enter 换行）"
-        @input="emit('update:modelValue', ($event.target as HTMLTextAreaElement).value)"
+        @input="
+          emit('update:modelValue', ($event.target as HTMLTextAreaElement).value);
+          recomputeMention($event.target as HTMLTextAreaElement);
+        "
       ></textarea>
     </div>
     <div class="composer-toolbar">
@@ -155,7 +300,62 @@ defineExpose({ focus })
 }
 
 .composer-input {
+  position: relative;
   display: flex;
+}
+
+/* P3.8.4 @ 技能引用提示：悬浮在输入区上方，点击/方向键选中 */
+.mention-popup {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  max-width: 420px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-sm);
+  background: var(--app-surface);
+  box-shadow: 0 12px 32px -18px rgba(0, 0, 0, 0.55);
+}
+
+.mention-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--app-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.mention-item:hover,
+.mention-item.active {
+  background: var(--app-accent-soft);
+}
+
+.mention-name {
+  flex: none;
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--app-accent);
+}
+
+.mention-desc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--app-muted);
 }
 
 .composer-textarea {

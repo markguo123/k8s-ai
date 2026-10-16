@@ -19,6 +19,8 @@ export const PERM = {
   auditRead: 'audit.read',
   settingsRead: 'settings.read',
   settingsWrite: 'settings.write',
+  skillRead: 'skill.read',
+  skillManage: 'skill.manage',
   userManage: 'user.manage',
 } as const
 
@@ -30,10 +32,11 @@ export const PERM = {
 export const ROLE_PERMISSIONS: Record<Role, string[]> = {
   admin: ['*'],
   operator: [PERM.chatWrite, PERM.clusterManage],
-  user: [PERM.chatRead, PERM.chatWrite, PERM.clusterRead, PERM.approvalRead],
+  user: [PERM.chatRead, PERM.chatWrite, PERM.clusterRead, PERM.skillRead, PERM.approvalRead],
   viewer: [
     PERM.chatRead,
     PERM.clusterRead,
+    PERM.skillRead,
     PERM.approvalRead,
     PERM.auditRead,
     PERM.settingsRead,

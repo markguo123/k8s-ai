@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { TOKEN_KEY, USER_KEY } from '@/api/request'
 import ChatView from '@/views/chat/ChatView.vue'
+import ComposerBox from '@/components/chat/ComposerBox.vue'
 
 /**
  * P2.12 E2E 冒烟（前端全链路，后端以 fetch 打桩）：
@@ -52,13 +53,16 @@ function sseStream(frames: unknown[]): Response {
   return new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
 }
 
-function installFetch(frames: unknown[]): void {
+function installFetch(frames: unknown[], skills: unknown[] = []): void {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
       const url = String(input)
       const body = init.body ? JSON.parse(String(init.body)) : null
       calls.push({ url, body })
+      if (url === '/api/v1/skills' && (init.method ?? 'GET') === 'GET') {
+        return new Response(JSON.stringify({ data: skills }), { status: 200 })
+      }
       if (url === '/api/sessions' && (init.method ?? 'GET') === 'GET') {
         return new Response(JSON.stringify([SESSION]), { status: 200 })
       }
@@ -170,5 +174,43 @@ describe('ChatView 全链路冒烟（P2.10/P2.11/P2.13）', () => {
       },
     ])
     await vi.waitFor(() => expect(wrapper.text()).toContain('28'))
+  })
+
+  it('P3.8.4：@技能名 从查询剥离并随 skills 字段提交', async () => {
+    const skill = {
+      name: 'k8s-mysql-troubleshoot',
+      spec: {
+        description: 'Kubernetes 上 MySQL 故障排查方法论',
+        name: 'k8s-mysql-troubleshoot',
+        type: 'procedural',
+        domain: 'database',
+        version: '1.0.0',
+        kinds: [],
+        risk: { default: 'medium' },
+        source: 'custom',
+      },
+      source: 'custom',
+      enabled: true,
+      hitCount: 0,
+      createdAt: '',
+      updatedAt: '',
+    }
+    installFetch([{ event_type: 'turn.started', turn_id: 't4', data: { input: '看下 default' } }], [skill])
+    const wrapper = mount(ChatView, { attachTo: document.body })
+    await vi.waitFor(() => expect(wrapper.text()).toContain(SESSION.name))
+    await wrapper.find('.session-item').trigger('click')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Token 用量'))
+    const composer = wrapper.findComponent(ComposerBox)
+    await vi.waitFor(() => expect(composer.vm.availableSkills.length).toBe(1))
+
+    await wrapper.find('textarea').setValue('@k8s-mysql-troubleshoot 看下 default 的 mysql 数据')
+    await vi.waitFor(() => expect(wrapper.find('.mention-popup').exists()).toBe(false))
+    const send = wrapper.findAll('button').find((btn) => btn.text() === '发送')!
+    await send.trigger('click')
+    await vi.waitFor(() => expect(postCallsSuffix('/send-message')).toHaveLength(1))
+    expect(postCallsSuffix('/send-message')[0].body).toEqual({
+      query: '看下 default 的 mysql 数据',
+      skills: ['k8s-mysql-troubleshoot'],
+    })
   })
 })

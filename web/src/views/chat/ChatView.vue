@@ -24,7 +24,8 @@ import { buildSessionMarkdown, markdownFileName } from '@/utils/exportMarkdown'
 import { useChatStream, type StreamStatus } from '@/composables/useChatStream'
 import { useAuthStore } from '@/stores/auth'
 import { addTokenUsage, sessionStateTone } from '@/utils/format'
-import { canDecideApproval } from '@/utils/permission'
+import { canDecideApproval, hasPermission, PERM, permissionsOf } from '@/utils/permission'
+import type { Skill } from '@/api/types'
 
 const ACTIVE_SESSION_KEY = 'k8s_ai_active_session'
 
@@ -45,12 +46,52 @@ watch(conversationsCollapsed, (collapsed) => {
   localStorage.setItem(CONVERSATIONS_KEY, collapsed ? '1' : '0')
 })
 
+const MENTION_RE = /@([a-zA-Z0-9][\w.-]*)/g
+
+/**
+ * 从输入中剥离已识别的 `@技能名` 引用：
+ * - 命中的名称进入 skills 列表（后端强校验启停）；
+ * - 未知 @ 串原样保留在查询中，避免误伤普通输入。
+ */
+function extractSkillMentions(
+  query: string,
+  skills: Skill[],
+): { cleaned: string; names: string[] } {
+  const names: string[] = []
+  const spans: Array<[number, number]> = []
+  for (const match of query.matchAll(MENTION_RE)) {
+    const alias = match[1]
+    const skill = skills.find((s) => s.name.toLowerCase() === alias.toLowerCase())
+    if (!skill) {
+      continue
+    }
+    if (!names.some((n) => n.toLowerCase() === skill.name.toLowerCase())) {
+      names.push(skill.name)
+    }
+    spans.push([match.index, match.index + match[0].length])
+  }
+  if (spans.length === 0) {
+    return { cleaned: query, names }
+  }
+  const parts: string[] = []
+  let cursor = 0
+  for (const [start, end] of spans) {
+    parts.push(query.slice(cursor, start))
+    cursor = end
+  }
+  parts.push(query.slice(cursor))
+  return { cleaned: parts.join('').replace(/\s+/g, ' ').trim(), names }
+}
+
 const activeSession = computed(
   () => sessions.value.find((session) => session.id === activeId.value) ?? null,
 )
 
 /** P2.9 审批操作显隐：只读角色不展示审批按钮（后端仍独立强校验）。 */
 const canDecide = computed(() => canDecideApproval(auth.role))
+
+/** P3.8.4 @ 技能引用权限：仅具备 skill.read 时开启提示与回填。 */
+const canUseSkills = computed(() => hasPermission(permissionsOf(auth.role), PERM.skillRead))
 
 /** P2.13 会话级 Token：历史快照（落库汇总）+ 本次连接内各轮增量，按回合去重。 */
 const sessionToken = computed(() => {
@@ -223,14 +264,16 @@ async function handleDelete(target: SessionSummary): Promise<void> {
 }
 
 async function handleSend(): Promise<void> {
-  const query = input.value.trim()
-  if (!activeId.value || !query || sending.value) {
+  const raw = input.value.trim()
+  if (!activeId.value || !raw || sending.value) {
     return
   }
+  const available = composerRef.value?.availableSkills ?? []
+  const { cleaned, names } = extractSkillMentions(raw, available)
   sending.value = true
   input.value = ''
   try {
-    await sendMessage(activeId.value, { query })
+    await sendMessage(activeId.value, { query: cleaned || raw, skills: names })
   } catch (error) {
     sending.value = false
     ElMessage.error(error instanceof Error ? error.message : '发送失败')
@@ -415,6 +458,7 @@ watch(
           :model="activeSession?.model || ''"
           :disabled="!activeSession"
           :sending="sending"
+          :can-use-skills="canUseSkills"
           @send="handleSend"
           @stop="handleStop"
         />

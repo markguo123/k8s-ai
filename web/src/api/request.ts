@@ -16,6 +16,16 @@ export const USER_KEY = 'k8s_ai_user'
 export interface RequestOptions {
   method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE'
   body?: unknown
+  /**
+   * rawBody 直接以给定字符串作为请求体发送（不 JSON 序列化、不设 JSON
+   * content-type）。用于导入端点这类「原始 YAML / 文本体」契约（P3.6）。
+   */
+  rawBody?: string
+  /**
+   * formData 直接作为 multipart/form-data 请求体发送（不 JSON 序列化、不手动设
+   * content-type，由浏览器自动生成 boundary）。用于技能包 zip 上传端点（P3.8.3）。
+   */
+  formData?: FormData
   query?: PageQuery
   headers?: HeadersInit
   /**
@@ -108,6 +118,8 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<A
   const {
     method = 'GET',
     body,
+    rawBody,
+    formData,
     query,
     headers: extraHeaders,
     redirectOnUnauthorized = true,
@@ -115,7 +127,9 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<A
 
   const headers = new Headers(extraHeaders)
   headers.set('Accept', 'application/json')
-  if (body !== undefined) {
+  if (rawBody !== undefined) {
+    headers.set('Content-Type', 'text/yaml')
+  } else if (formData === undefined && body !== undefined) {
     headers.set('Content-Type', 'application/json')
   }
   const token = readToken()
@@ -124,7 +138,11 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<A
   }
 
   const init: RequestInit = { method, headers }
-  if (body !== undefined) {
+  if (rawBody !== undefined) {
+    init.body = rawBody
+  } else if (formData !== undefined) {
+    init.body = formData
+  } else if (body !== undefined) {
     init.body = JSON.stringify(body)
   }
 
@@ -161,6 +179,16 @@ export function apiGet<T>(path: string, query?: PageQuery): Promise<ApiResponse<
 
 export function apiPost<T>(path: string, body?: unknown): Promise<ApiResponse<T>> {
   return request<T>(path, { method: 'POST', body })
+}
+
+/** 以文本/YAML 原始请求体发送 POST（导入端点专用，P3.6）。 */
+export function apiPostRaw<T>(path: string, rawBody: string): Promise<ApiResponse<T>> {
+  return request<T>(path, { method: 'POST', rawBody })
+}
+
+/** 以 multipart/form-data 发送 POST（技能包 zip 上传端点专用，P3.8.3）。 */
+export function apiPostFormData<T>(path: string, formData: FormData): Promise<ApiResponse<T>> {
+  return request<T>(path, { method: 'POST', formData })
 }
 
 export function apiPatch<T>(path: string, body?: unknown): Promise<ApiResponse<T>> {
