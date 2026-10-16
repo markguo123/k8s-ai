@@ -1,6 +1,7 @@
 # k8s-ai 四期需求规格（平台化）
 
-> 版本：v1.4  
+> 版本：v1.9  
+> 日期：2026-10-16  
 > 状态：四期最终需求方案  
 > 目标：在不推翻三期 Agent、Skill、SSA、审批、安全执行链路的前提下，将 k8s-ai 从 Agent 工具升级为可持续演进的平台化 Kubernetes 运维 Agent。
 
@@ -166,6 +167,9 @@ Web 只负责将 Agent Runtime 的真实状态可视化。
 
 - 内置 Skill
 - 自定义 Skill
+- 技能类型（structured / procedural）
+- 标准 SKILL.md 文本 / 技能包 zip 导入与静态资产（assets）存储
+- Chat 回合前意图检索注入（procedural）
 - Skill 启停
 - Skill 导入
 - Skill 校验
@@ -256,6 +260,8 @@ Web 只负责将 Agent Runtime 的真实状态可视化。
 - 复杂 IAM
 - Skill 在线市场
 - Skill 远程仓库完整实现
+- Skill 包 `scripts/` 执行引擎（平台不运行技能包内脚本，仅静态存储）
+- 沙箱执行、多技能 zip 批量导入（均延后到后续阶段）
 - 应用层手写 namespace RBAC（如手动编辑 RoleBinding / ClusterRole）
 
 namespace / resource 真实权限由平台 AuthzGrant 派生、下行到 Kubernetes RBAC，并在 API
@@ -656,6 +662,47 @@ Code Guard
 Executor
 ```
 
+### 13.0 Skill 两维正交
+
+Skill 用两个正交维度描述，避免「来源」与「形态」混用：
+
+```text
+type    = structured | procedural        # 技能形态
+source  = builtin | custom | third-party # 提供方，只表达来源、不表达类型
+```
+
+- `structured`：资源创建类**确定性规则**（rules / risk_policy / pre/post_checks）。
+  `create_resource` 在 dry-run 阶段消费匹配技能的 findings，并可提升 Approval Risk
+  （只升不降；custom / third-party 不得设 `risk.default`，只能经 `elevateWhen` 升档到 HIGH）。
+- `procedural`：**标准 Agent 技能**（SKILL.md + frontmatter 的 name/description），
+  支持两种命中场景：
+  - **自动意图检索**：聊天回合前对用户意图做三级匹配——整句精确名称 → 整句子串
+    （名称/描述/领域）→ 长句关键词打分（名称 3 分 / 领域 2 分 / 描述 1 分，每词只计
+    一次最高权重），命中后把 SKILL.md 渐进式披露内容注入系统提示词；单轮最多
+    同时注入 2 篇（`hit=auto`）。
+  - **显式指定**：用户 / 主 Agent 在会话中 `@技能名` 显式指定本轮使用的技能，
+    逐个精确解析（大小写不敏感）；任一名字不存在或未启用则整批拒绝该回合请求，
+    不做静默降级；显式列表非空时不叠加自动检索结果（`hit=explicit`）。
+
+procedural 消费路径：
+
+```text
+用户意图 → 意图检索 → 命中 SKILL.md → 注入系统提示词
+        → Agent 把方法论文本翻译为受信工具调用
+        → Tool → Approval → Code Guard → Executor → Kubernetes
+```
+
+安全边界（SKILL.md 正文与技能包内脚本都是不可信内容）：
+
+- SKILL.md 正文仅作文本上下文注入，不解析、不执行其中任何「指令式」内容。
+- 技能包内 `scripts/` 一律 inert（静态存储，平台不提供直接运行引擎）。
+  用户方法论文本里的命令，由 Agent 翻译为受信工具调用后执行，并遵守既有 shell /
+  exec 审批红线：交互式 `exec -i/-t`、`attach`、`port-forward` 等仍硬拒；
+  `logs | grep` 走结构化 logs 或经人工审批的 shell。
+- 平台能力无法覆盖的方法学步骤，明确拒绝并说明，记入 `SKILL_RUN` 审计；
+  不允许技能伪造不存在的工具或绕过既有能力。
+- Secret 内容值永不进入 LLM / 上下文 / 会话 / 审计；kubeconfig 红线不变。
+
 ---
 
 ## 13.1 Skill 数据模型
@@ -667,6 +714,7 @@ name
 version
 author
 source
+type
 description
 domain
 resource_kinds
@@ -674,6 +722,7 @@ required_inputs
 rules
 risk_policy
 examples
+assets                    # procedural 技能附带静态资产元数据（名称/类型/大小等）
 enabled
 validation_status
 created_at
@@ -690,20 +739,59 @@ last_validation
 
 ---
 
-## 13.2 Skill 来源
+## 13.2 Skill 来源与导入
+
+`source` 与 `type` 正交：来源只表达提供方，技能形态由 `type` 表达。
 
 ```text
-builtin
-custom
-third-party
+source = builtin | custom | third-party
 ```
 
 四期：
 
 - builtin 完整支持
-- custom YAML 导入
+- custom 导入，按 `type` 分两条消费路径：
+  - `structured`：沿用现有 create_resource 校验与风险升档通道（当前已落地）
+  - `procedural`：标准 SKILL.md 导入 → 静态资产存储 → Chat 回合前意图检索注入
 - third-party 只实现 Loader / Validation Contract
-- 不做在线市场
+- 不做在线市场、不做远程仓库完整实现
+
+procedural 导入载体 v1：
+
+- 载体：粘贴单/多篇 SKILL.md 文本 + 单个技能包 zip（内含 SKILL.md）
+- zip 内静态资产仅收文本白名单：`md / yaml / json / txt / csv`
+- 限制：文件总大小、包内文件数、解压深度、路径穿越、符号链接必须有界校验
+- 兼容性：zip 允许「直接压缩技能文件夹」形态——根目录无 `SKILL.md` 且整包恰好归入唯一顶层目录时，自动剥离该目录前缀后继续校验，多顶层目录整包拒绝（多技能 zip 仍延后）；`SKILL.md` 允许首行为代码围栏（如 ```markdown ```）包裹 frontmatter，解析后正文不再带围栏
+- 多技能打包 zip 批量导入、沙箱执行引擎，均延后到后续阶段
+
+### 13.3 命中与使用场景
+
+procedural 自定义 Skill 的消费支持两种入口，均可追踪、可审计：
+
+```text
+场景 1  自动意图检索  MatchIntent 三级匹配，单轮上限 2 篇（hit=auto）
+场景 2  显式指定       会话输入 @技能名，精确解析（hit=explicit）
+```
+
+使用规则：
+
+- 显式 `@技能名` 优先级高于自动检索：只要转发到后端的 `skills` 列表非空，
+  本轮只注入显式选中的 Skill，不叠加自动检索结果；任一名称不存在或未启用时，
+  整批拒绝该回合请求并提示，不做部分注入或静默降级。
+- Agent 侧新增两个只读工具（`RiskSafe`、无需审批，Schema 标注
+  `[READ ONLY][RISK: SAFE][APPROVAL REQUIRED: NO]`）：
+  - `list_skills`：列出当前已启用的 Skill（内置/自定义，含类型与领域），用于
+    “有哪些 skill / 这个 skill 干什么 / 该用哪套方法论”类咨询。
+  - `get_skill`：按名称读取单篇 SKILL.md 的元数据与正文（正文按 96 KiB 截断并置
+    `truncated`，assets 仅元数据且脚本 `inert=true`）；未知名或未启用的技能返回
+    工具级错误文本，绝不进入执行路径。
+- 每次命中同步更新运行状态并审计：
+  - `hit_count` 累加、`last_hit` 更新（供 Skill 列表页展示命中次数 / 最近命中）；
+  - 落库 `SKILL_RUN`（operation=retrieve）事件，`ResultSummary` 记录
+    `{"hit":"auto"|"explicit"}`，标明命中来源是自动意图检索还是显式 `@技能名` 指定。
+- SKILL.md 正文仍按既有不可信边界处理：只作文本上下文注入、不解析不执行，
+  方法论文本里的命令由 Agent 翻译为受信工具调用（Tool → Approval → Code Guard →
+  Executor），能力无法覆盖的步骤明确拒绝并记入审计。
 
 ---
 
@@ -1674,7 +1762,7 @@ Web：
 
 ```text
 Agent = 决策
-Skill = 方法
+Skill = 方法（structured 确定性规则入 create_resource；procedural SKILL.md 由 Agent 翻译为受信工具调用）
 Tool = 能力
 Policy = 权限/审批决策
 Executor = 执行
@@ -1752,4 +1840,8 @@ Security Boundary Unchanged
 | v1.3 | 2026-10-13 | 审批与授权方案修订（见 `docs/02-架构与设计/13-方案-企业级身份权限与审批中心.md`）：角色收敛为 user/operator/admin；授权以 namespace 为唯一边界、零权限起步、admin 划分 namespace；销毁类仅 admin 并支持 operator 委派、未授权直接提示联系管理员；审批主体只有本人自确认或审批子 agent 自动；自动审批显式白名单（默认关闭+会话开关）；AuthzGrant 权威 + RBAC 派生对账 + 执行前 SAR；平台演进为多 Agent 编排并引入 Approval Agent；修正 P4.8 审批人约束 |
 | v1.4 | 2026-10-14 | 部署与交付口径修订（不改需求范围）：Kubernetes 为四期唯一生产形态，单进程运行降为三期兼容与本地开发调试口径；平台主进程 = `k8s-ai server`（`/api/v1` + Chat SSE + 内嵌 SPA 同源单端口），`k8s-ai web` 冻结为三期兼容入口；新增平台进程默认单副本约束与扩副本前置条件；见 ADR-029 / ADR-030 |
 | v1.5 | 2026-10-14 | 补两条协议级需求（不改范围，只补此前隐含的约束）：① §8 增补"事件顺序与展示语义"——分片不是展示单元、终态必须最后、增量统一脱敏、思考面板语义；② §26 增补四期配置面——`platform:` 段承载平台级非敏感参数、敏感值只走环境变量/Secret、`server` 支持 `--config`、`config init` 输出全量模板。见 ADR-031 / ADR-032、D-21 / D-22 |
-| v1.6 | 2026-10-15 | 增补前端体验基线需求（不改范围）：§10 指向《14-方案-前端体验优化-四期.md》，并固化两条硬约束——主题与令牌（data-theme + 默认深色 + 支持跟随系统 + 首屏防闪烁）与工具结果同源（	ool_result 由后端计算并同时下发与落库）。见 ADR-033/ADR-034、D-23/D-24、任务 P7.1–P7.5 |
+| v1.6 | 2026-10-15 | 增补前端体验基线需求（不改范围）：§10 指向《14-方案-前端体验优化-四期.md》，并固化两条硬约束——主题与令牌（data-theme + 默认深色 + 支持跟随系统 + 首屏防闪烁）与工具结果同源（`tool_result` 由后端计算并同时下发与落库）。见 ADR-033/ADR-034、D-23/D-24、任务 P7.1–P7.5 |
+| v1.7 | 2026-10-16 | Skill 双轨口径统一（不改需求范围，消除术语与设计矛盾）：Skill 拆为正交两维——`type`（structured / procedural）与 `source`（builtin / custom / third-party，只表达提供方、不再混用为类型）；structured 为资源创建类确定性规则（`create_resource` 消费 findings、Approval Risk 只升不降、custom/third-party 禁设 `risk.default`），procedural 为标准 Agent 技能（SKILL.md + frontmatter，聊天回合前意图检索后注入系统提示词、支持显式调用）；统一消费与安全边界（SKILL.md 正文为不可信文本上下文、技能包 `scripts/` 一律 inert 且平台不提供脚本执行引擎、方法论文本由 Agent 翻译为受信工具调用、交互式命令与 shell 审批红线及 Secret/kubeconfig 红线不变、能力缺失明确拒绝并记 `SKILL_RUN` 审计）；procedural 导入载体 v1 = 粘贴单/多篇 SKILL.md 文本 + 单个技能包 zip（assets 白名单 md/yaml/json/txt/csv，文件总大小/文件数/解压深度/路径穿越/符号链接有界校验），多技能 zip 与沙箱执行延后。见新增 §13.0 及 §13.1/§13.2、§4 非目标、《01-系统架构与技术方案》§11、开发计划-四期 P3.8.1–P3.8.4 |
+| v1.8 | 2026-10-16 | procedural 导入载体 v1 落地状态回写（不改需求范围）：§13.2 所述粘贴单/多篇 SKILL.md 文本导入、单个技能包 zip 导入与静态资产存储均已实现——文本导入前置扫描多文档边界、frontmatter `name/description` 强制解析、KnownFields 严格解码（`POST /api/v1/skills/import-procedural`，2MiB 上限）；zip 导入仅收根目录唯一 `SKILL.md` 主文、assets 走 md/yaml/json/txt/csv 白名单落库为元数据、`scripts/` 一律 `inert=true` 不执行，并带解压总大小/条目数/路径长度/深度/路径穿越/盘符/symlink 防御（`POST /api/v1/skills/import-zip`，32MiB 上限）；Chat 回合前意图检索注入已把 SKILL.md 渐进披露内容注入 Agent`SkillContext` 并记 `SKILL_RUN(retrieve)` 审计。见开发计划-四期 v1.30，代码尚未提交、待真机验证后入库 |
+| v1.9 | 2026-10-16 | procedural 导入兼容性收尾（不改范围）：修复两类真实导入报错——① 「直接压缩技能文件夹」的 zip（根目录无 SKILL.md、整包被单层目录包裹）在确认全部条目恰好归入唯一顶层目录后自动剥离该前缀再导入，多顶层目录整包拒绝；② SKILL.md 首行是代码围栏把 frontmatter 整个包起来的写法，按「围栏开行 + 下一行 `---`」识别并跳过开闭围栏。路径穿越/绝对路径/盘符/symlink/非白名单资产/总大小/条目数/深度限制全部保留并整包拒绝。见开发计划-四期 v1.31、§13.2，代码尚未提交、待真机验证后入库 |
+| v1.10 | 2026-10-16 | procedural 命中双场景与只读工具落地状态回写（不改需求范围）：§13.3 两种入口已实现——① 自动意图检索重写为三级匹配（整句精确名称 → 整句子串 → 长句关键词打分：名称 3 / 领域 2 / 描述 1，每词只计一次最高权重），单轮最多注入 2 篇（`hit=auto`）；② 显式 `@技能名` 指定，`ChatRequest.skills` 随 send-message 转发，逐个 `FindByName` 精确解析（大小写不敏感），任一未知名/未启用整批拒绝、不做静默降级、不叠加自动检索（`hit=explicit`）。Agent 侧新增只读工具 `list_skills` / `get_skill`（`IsReadOnly`、`RiskSafe`、Schema 标注 READ ONLY / SAFE / APPROVAL NOT REQUIRED），`get_skill` 正文按 96 KiB 截断并置 `truncated`、assets 仅元数据且脚本 `inert=true`、未知名技能返回工具级错误文本；命中同步 `RecordHit`（`hit_count`/`last_hit`）并落库 `SKILL_RUN`（operation=retrieve，`ResultSummary={"hit":"auto"|"explicit"}`）审计。Web Chat 前端 `@` 输入按 `skill.read` 权限弹出已启用的 procedural Skill 并回填，提交时把已匹配的 `@名` 从 query 剥离、仅转发有效技能名。见开发计划-四期 v1.32，代码未提交、待真机验证后入库 |
