@@ -46,6 +46,16 @@ func newWebCmd(deps Dependencies) *cobra.Command {
 					slog.Warn("web: 会话持久化未启用（迁移失败）", "db", path, "error", err)
 				} else {
 					chat = service.NewChatWithStoreAndConfig(cfg, st)
+					// P3.8：Skill 平台与聊天同源装配——导入/启停后 create_resource
+					// 的 dry-run 实时消费内存 registry；任一步失败只回退内置 Skill。
+					skillPlat := service.NewSkillPlatform(st.Skills())
+					if err := skillPlat.SeedBuiltins(cmd.Context()); err != nil {
+						slog.Warn("web: Skill 平台种子写入失败，回退内置", "error", err)
+					} else if err := skillPlat.Reload(cmd.Context()); err != nil {
+						slog.Warn("web: Skill 平台重建失败，回退内置", "error", err)
+					} else if binder, ok := chat.(service.SkillPlatformBinder); ok {
+						binder.SetSkillPlatform(skillPlat)
+					}
 					slog.Info("web: 会话持久化已启用", "db", path)
 				}
 			}

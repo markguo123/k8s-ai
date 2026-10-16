@@ -93,6 +93,15 @@ func (s *SkillPlatform) List(ctx context.Context) ([]*store.Skill, error) {
 	return recs, nil
 }
 
+// Get 返回单条 Skill 记录（P3.6 管理 API 单条读取，含运行元数据）。
+func (s *SkillPlatform) Get(ctx context.Context, name string) (*store.Skill, error) {
+	rec, err := s.store.Get(ctx, name)
+	if err != nil {
+		return nil, fmt.Errorf("skills: get %s: %w", name, err)
+	}
+	return rec, nil
+}
+
 // Upsert 保存一条 Skill 记录（custom / third-party 导入路径，P3.6 复用）。
 // spec 需通过 skills 内建校验（来源合法、无执行动作字段、风险只升不降）。
 func (s *SkillPlatform) Upsert(ctx context.Context, sk *store.Skill) error {

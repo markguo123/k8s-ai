@@ -53,6 +53,11 @@ func DefaultAPIPolicy() *permission.Policy {
 		permission.Rule{Method: "GET", Path: "/api/v1/settings/{group}", Access: permission.AccessPermission, Permission: permission.SettingsRead},
 		permission.Rule{Method: "PATCH", Path: "/api/v1/settings/{group}", Access: permission.AccessPermission, Permission: permission.SettingsWrite},
 		permission.Rule{Method: "GET", Path: "/api/v1/skills", Access: permission.AccessPermission, Permission: permission.SkillRead},
+		permission.Rule{Method: "GET", Path: "/api/v1/skills/{name}", Access: permission.AccessPermission, Permission: permission.SkillRead},
+		permission.Rule{Method: "POST", Path: "/api/v1/skills/import-procedural", Access: permission.AccessPermission, Permission: permission.SkillManage},
+		permission.Rule{Method: "POST", Path: "/api/v1/skills/import-zip", Access: permission.AccessPermission, Permission: permission.SkillManage},
+		permission.Rule{Method: "POST", Path: "/api/v1/skills/import", Access: permission.AccessPermission, Permission: permission.SkillManage},
+		permission.Rule{Method: "PATCH", Path: "/api/v1/skills/{name}/enabled", Access: permission.AccessPermission, Permission: permission.SkillManage},
 	)
 }
 

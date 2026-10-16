@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -87,6 +88,9 @@ type ChatRequest struct {
 	Query     string
 	// SkipPermissions 非交互自动化显式放行写操作（等效 kubectl-ai --skip-permissions）。
 	SkipPermissions bool
+	// Skills 用户显式 @ 指定的 Skill 名称（P3.8.4）：非空时不走自动意图检索，
+	// 只注入这些已启用的 Skill；任一名字不存在/未启用则整批拒绝。
+	Skills []string
 }
 
 // ChatService 是二期 Agent 应用服务（CLI/Web 复用）。
@@ -110,6 +114,14 @@ type SessionTokenizer interface {
 	SessionTokenUsage(ctx context.Context, sessionID string) (session.TokenUsage, error)
 }
 
+// SkillPlatformBinder 是 ChatService 的可选能力（P3.8）：把四期 Skill 平台
+// （P3.5）的实时 registry 挂到 create_resource 路径。未实现时工具路径回退
+// 内置 Skill；Web/CLI 组合根在装配 Store 后调用 SetSkillPlatform 即可让导入与
+// 启停即时生效。单独成接口是为了不让既有聊天测试桩背负 Skill 平台依赖。
+type SkillPlatformBinder interface {
+	SetSkillPlatform(p *SkillPlatform)
+}
+
 type chatService struct {
 	cfg            *config.Config
 	sessions       *session.Manager
@@ -122,6 +134,9 @@ type chatService struct {
 	proposals *tools.ProposalStore
 	// store 是四期 SQLite/MySQL 统一持久化门面：非空时把 Turn/Step 生命周期记录落库（P1.8）。
 	store store.Store
+	// skillsPlat 是四期 Skill 平台应用服务（P3.5），非空时 create_resource 的
+	// dry-run / apply 消费其实时 registry（custom/third-party 与启停即时生效）。
+	skillsPlat *SkillPlatform
 	// sink 非空时把统一 SSE 事件（P1.9 事件路由）实时广播给会话客户端；
 	// 三期 ChatEvent 事件流原样保留（D-08：迁移期旧事件继续可消费）。
 	sink func(sse.Event)
@@ -179,6 +194,25 @@ func NewChatWithStoreAndSink(cfg *config.Config, newReader func() (scanner.Reade
 	svc := newChat(cfg, newReader, llmFactory, scanFactory, newWriteRunner, st).(*chatService)
 	svc.sink = sink
 	return svc
+}
+
+// SetSkillPlatform 挂载 Skill 平台底座（P3.8）：导入/启停后 create_resource 的
+// dry-run 实时消费平台 registry。组合根在装配 Store 后调用。
+func (s *chatService) SetSkillPlatform(p *SkillPlatform) {
+	s.skillsPlat = p
+}
+
+// liveSkillRegistry 返回 create_resource 消费的实时 Skill registry（P3.8）：
+// 组合根装配 Skill 平台后返回其内存 registry（导入/启停即时生效）；未装配时
+// 回退内置 registry，避免 CLI 与测试桩受影响。
+func (s *chatService) liveSkillRegistry() skills.Registry {
+	if s.skillsPlat != nil {
+		return s.skillsPlat.Registry()
+	}
+	if b, err := skills.NewBuiltin(); err == nil {
+		return b
+	}
+	return skills.New()
 }
 
 // SetSink 挂载统一 SSE 事件广播（P1.9 事件路由入口，Web 用可选接口断言注入）。
@@ -337,18 +371,24 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 	}
 	// 三期创建通道（R3）：结构化 create_resource，注册在 disabled_tools 之前，
 	// 这样 agent.disabled_tools 里写 create_resource 就能摘掉它。
+	// liveReg 复用于 create_resource 的 Skill registry 与 procedural 意图检索，
+	// 保证导入/启停即时生效两端一致。
+	liveReg := s.liveSkillRegistry()
 	if s.cfg.Agent.Create.Enabled {
 		if runner, ok := writeRunner.(tools.CreateRunner); ok {
 			opts := createToolOptions(s.cfg)
-			skillReg, err := skills.NewBuiltin()
-			if err != nil {
-				return nil, err
-			}
-			opts.Skills = skillReg
+			opts.Skills = liveReg
 			opts.OnSkillRun = s.skillRunAuditor(ctx, sess, scope)
 			if err := reg.Register(tools.NewCreateTool(opts, runner, s.proposals, sess.ID)); err != nil {
 				return nil, err
 			}
+		}
+	}
+	// P3.8.4：Skill 只读工具（list_skills/get_skill）装配，注册在 disabled_tools
+	// 之前，配置里同样可摘掉。正文永不执行，仅作文本参考。
+	for _, st := range tools.NewSkillsTools(liveReg) {
+		if err := reg.Register(st); err != nil {
+			return nil, err
 		}
 	}
 	for _, name := range s.cfg.Agent.DisabledTools {
@@ -386,6 +426,16 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 	if s.sink != nil {
 		s.sink(sse.New(sess.ID, "", "", sse.EventSessionCreated, sse.SessionData{State: sess.State}))
 	}
+	// P3.8.4：procedural 自定义 Skill 装配（显式 @ 指定或自动意图检索），命中正文
+	// 拼接为不可信方法论附录注入 Agent system prompt，并记录命中统计与 SKILL_RUN
+	// retrieve 审计。显式指定时任一名字无效整批拒绝，不做静默降级。
+	skillCtx, skillHits, err := s.buildSkillContext(ctx, sess, scope, liveReg, req.Query, req.Skills)
+	if err != nil {
+		return nil, err
+	}
+	for _, h := range skillHits {
+		events <- ChatEvent{Type: ChatEventProgress, Text: fmt.Sprintf("已注入 Skill：%s（%s）", h.name, h.mode)}
+	}
 	ag := agent.New(agent.Options{
 		LLM:            client,
 		Tools:          reg,
@@ -394,6 +444,7 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 		ApprovalPolicy: &pol,
 		Recorder:       recorder,
 		Tracer:         tracer,
+		SkillContext:   skillCtx,
 		MaxIterations:  s.cfg.Agent.MaxIterations,
 		MaxToolCalls:   s.cfg.Agent.MaxToolCalls,
 		Timeout:        s.cfg.Agent.Timeout,
@@ -607,12 +658,12 @@ func translateEvent(m agent.Message) (ChatEvent, bool) {
 			return ChatEvent{
 				Type: ChatEventToolResponse,
 				Tool: &ChatToolCallView{
-					Name:      toString(mm["name"]),
-					Result:    toString(mm["text"]),
-					Summary:   toString(mm["summary"]),
-					Ok:        boolPtr(mm["ok"]),
-					Truncated: toBool(mm["truncated"]),
-					Data:      mm["data"],
+					Name:        toString(mm["name"]),
+					Result:      toString(mm["text"]),
+					Summary:     toString(mm["summary"]),
+					Ok:          boolPtr(mm["ok"]),
+					Truncated:   toBool(mm["truncated"]),
+					Data:        mm["data"],
 					Risk:        toString(mm["risk"]),
 					DurationMs:  toInt64(mm["durationMs"]),
 					DisplayType: toString(mm["displayType"]),

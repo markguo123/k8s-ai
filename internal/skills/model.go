@@ -1,12 +1,36 @@
 // Package skills holds the declarative resource-creation skill model and
-// registry contract for Phase 3 (R5). The model intentionally contains no
-// execution capability: all writes go through create_resource ->
-// internal/executor.
+// registry contract for Phase 3 (R5), extended in Phase 4 (P3.8) with the
+// procedural (standard agent skill) track. The model intentionally contains
+// no execution capability: all writes go through create_resource ->
+// internal/executor, and procedural Skill 正文只作文本上下文注入，从不执行。
 package skills
 
 import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
+
+// SkillType 是 Skill 的两维之一（P3.8）：表达方法论形态，与 Source 正交。
+// structured = 资源创建确定性规则（既有三期模型）；procedural = 标准 Agent
+// 技能（SKILL.md，正文作为不可信方法论参考注入聊天系统提示词）。
+type SkillType string
+
+const (
+	// TypeStructured 是资源创建/校验的声明式确定性规则（缺省类型，兼容既有 YAML）。
+	TypeStructured SkillType = "structured"
+	// TypeProcedural 是标准 Agent 技能：SKILL.md 前端源数据（name/description）
+	// + 正文 Body；正文视为不可信文本，只注入不执行。
+	TypeProcedural SkillType = "procedural"
+)
+
+// ValidType 返回 t 是否为受支持的 Skill 类型（structured/procedural）。
+func ValidType(t SkillType) bool {
+	switch t {
+	case TypeStructured, TypeProcedural:
+		return true
+	default:
+		return false
+	}
+}
 
 // Source marks where a Skill came from. Builtin skills are embedded together
 // with the binary; user skills will be discovered in Phase 4 through the same
@@ -112,16 +136,35 @@ type Example struct {
 	Content string `yaml:"content,omitempty" json:"content,omitempty"`
 }
 
+// SkillAsset 是一个 procedural Skill 技能包内资产的平台元数据（P3.8.3）。
+// 只记录 name/path/kind/size/SHA-256/inert，绝不携带任何可执行内容字段；
+// 包内 scripts/ 一律 inert=true，永不进入 Agent 工具路径。
+type SkillAsset struct {
+	Name   string `yaml:"name" json:"name"`
+	Path   string `yaml:"path" json:"path"`
+	Kind   string `yaml:"kind,omitempty" json:"kind,omitempty"` // text | script
+	Size   int64  `yaml:"size,omitempty" json:"size,omitempty"`
+	SHA256 string `yaml:"sha256,omitempty" json:"sha256,omitempty"`
+	Inert  bool   `yaml:"inert,omitempty" json:"inert,omitempty"`
+}
+
 // Skill is the frozen data model shared by builtin and Phase 4 user skills.
 type Skill struct {
+	// Type 是 Skill 类型（structured/procedural，P3.8）：缺省视为 structured。
+	Type SkillType `yaml:"type,omitempty" json:"type,omitempty"`
 	// Author 是 Skill 的作者/维护方（PRD §13.1 author）。
 	Author string `yaml:"author,omitempty" json:"author,omitempty"`
 	// Description 是 Skill 的方法论说明（PRD §13.1 description）。
-	Description string `yaml:"description,omitempty" json:"description,omitempty"`
-	Name        string `yaml:"name" json:"name"`
-	Domain      string `yaml:"domain" json:"domain"`
-	Version     string `yaml:"version" json:"version"`
+	Description string   `yaml:"description,omitempty" json:"description,omitempty"`
+	Name        string   `yaml:"name" json:"name"`
+	Domain      string   `yaml:"domain" json:"domain"`
+	Version     string   `yaml:"version" json:"version"`
 	Kinds       []string `yaml:"kinds" json:"kinds"`
+	// Body 是 procedural Skill 的 SKILL.md 正文（P3.8.2），视为不可信文本，
+	// 只在意图命中后注入 system prompt 供方法论参考，任何内容都不执行。
+	Body string `yaml:"body,omitempty" json:"body,omitempty"`
+	// Assets 是 procedural Skill 技能包的资产元数据清单（P3.8.3）。
+	Assets []SkillAsset `yaml:"assets,omitempty" json:"assets,omitempty"`
 	// RequiredInputs/OptionalInputs 是声明式输入要求（PRD §13.1）。
 	RequiredInputs []string `yaml:"requiredInputs,omitempty" json:"requiredInputs,omitempty"`
 	OptionalInputs []string `yaml:"optionalInputs,omitempty" json:"optionalInputs,omitempty"`

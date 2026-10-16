@@ -221,6 +221,60 @@ func TestValidateSkillThirdPartyRejectsMediumElevate(t *testing.T) {
 	}
 }
 
+func TestValidateProceduralSkillAccepts(t *testing.T) {
+	s := Skill{
+		Type:        TypeProcedural,
+		Source:      SourceCustom,
+		Name:        "mysql-troubleshoot",
+		Description: "MySQL 数据库故障排查方法论",
+		Version:     "1.0.0",
+		// 允许无 kinds：procedural 不走资源创建 GVK 命中，而是由聊天意图检索注入。
+		Body: "1. kubectl get pods -l app=mysql\n",
+		Assets: []SkillAsset{{
+			Name: "check.sh", Path: "scripts/check.sh", Kind: "script",
+			Size: 4, SHA256: "deadbeef", Inert: true,
+		}},
+	}
+	if err := validateSkill(s); err != nil {
+		t.Fatalf("合法 procedural skill 应通过: %v", err)
+	}
+}
+
+func TestValidateProceduralSkillRejectsInvalid(t *testing.T) {
+	base := Skill{
+		Type:        TypeProcedural,
+		Source:      SourceCustom,
+		Name:        "mysql-troubleshoot",
+		Description: "MySQL 数据库故障排查方法论",
+		Body:        "1. 取证：kubectl get pods\n",
+	}
+	cases := []struct {
+		name   string
+		mutate func(*Skill)
+		want   string
+	}{
+		{"缺姓名", func(s *Skill) { s.Name = "  " }, "name"},
+		{"缺描述", func(s *Skill) { s.Description = "" }, "description"},
+		{"缺正文", func(s *Skill) { s.Body = "" }, "body"},
+		{"正文超限", func(s *Skill) { s.Body = strings.Repeat("x", proceduralMaxBodyBytes+1) }, "body"},
+		{"资产缺路径", func(s *Skill) { s.Assets = []SkillAsset{{Name: "x"}} }, "path"},
+		{"资产负大小", func(s *Skill) { s.Assets = []SkillAsset{{Name: "x", Path: "p", Size: -1}} }, "size"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := base
+			tc.mutate(&s)
+			err := validateSkill(s)
+			if err == nil {
+				t.Fatal("validateSkill 应报错")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %q, want contains %q", err, tc.want)
+			}
+		})
+	}
+}
+
 // TestSkillMetadataRoundTrip 证明 PRD §13.1 的 author/description/examples
 // 元数据字段能被 YAML 完整往返，不会被序列化链路丢弃。
 func TestSkillMetadataRoundTrip(t *testing.T) {
@@ -277,4 +331,3 @@ func TestValidSource(t *testing.T) {
 		t.Fatal("ValidSource(hacked) 应为 false")
 	}
 }
-

@@ -5,6 +5,10 @@ import (
 	"strings"
 )
 
+// proceduralMaxBodyBytes 限制单篇 procedural Skill 的 SKILL.md 正文大小
+// （P3.8.2：防注入超大正文拖垮每次聊天 prompt）。
+const proceduralMaxBodyBytes = 512 * 1024
+
 var validationConditions = map[string]bool{
 	"exists":          true,
 	"present":         true,
@@ -37,6 +41,12 @@ func validateSkill(s Skill) error {
 	if !ValidSource(s.Source) {
 		return fmt.Errorf("skill %q has invalid source %q", s.Name, s.Source)
 	}
+	if s.Type == "" {
+		s.Type = TypeStructured
+	}
+	if !ValidType(s.Type) {
+		return fmt.Errorf("skill %q has invalid type %q", s.Name, s.Type)
+	}
 	// 第三方 Contract：只提供方法论与校验规则，必须显式声明作者、说明与版本
 	// 以便来源追溯。custom 仍是本平台管理的 Skill，不强制作者展示字段。
 	if s.Source == SourceThirdParty {
@@ -49,6 +59,28 @@ func validateSkill(s Skill) error {
 		if strings.TrimSpace(s.Version) == "" {
 			return fmt.Errorf("third-party skill %q must declare a version", s.Name)
 		}
+	}
+	// procedural Skill（P3.8.2）：标准 Agent 技能，只要求 name/description/body，
+	// 允许无 kinds（不走资源创建 GVK 命中）；正文不可执行，因此也不设 validation/risk。
+	if s.Type == TypeProcedural {
+		if strings.TrimSpace(s.Description) == "" {
+			return fmt.Errorf("procedural skill %q must declare a description", s.Name)
+		}
+		if strings.TrimSpace(s.Body) == "" {
+			return fmt.Errorf("procedural skill %q must declare a body", s.Name)
+		}
+		if len(s.Body) > proceduralMaxBodyBytes {
+			return fmt.Errorf("procedural skill %q body exceeds %d bytes", s.Name, proceduralMaxBodyBytes)
+		}
+		for i, asset := range s.Assets {
+			if strings.TrimSpace(asset.Name) == "" || strings.TrimSpace(asset.Path) == "" {
+				return fmt.Errorf("procedural skill %q assets[%d] name and path are required", s.Name, i)
+			}
+			if asset.Size < 0 {
+				return fmt.Errorf("procedural skill %q assets[%d] size must be non-negative", s.Name, i)
+			}
+		}
+		return nil
 	}
 	if len(s.Kinds) == 0 {
 		return fmt.Errorf("skill %q must declare at least one kind", s.Name)

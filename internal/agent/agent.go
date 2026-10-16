@@ -35,6 +35,9 @@ type Options struct {
 	Tracer Tracer
 	// TurnUserID 记录本轮 Turn 归属的产品内用户（P1.5），可为空。
 	TurnUserID string
+	// SkillContext 是命中用户自定义 procedural Skill 的方法论附录（P3.8.4），
+	// 由 service 层意图检索后注入 system prompt，正文视为不可信文本只作文本参考。
+	SkillContext string
 	// ApprovalPolicy 是统一的写操作审批决策；nil 时采用 strict + 要求审批（等价 v1）。
 	ApprovalPolicy *approval.Policy
 
@@ -65,6 +68,7 @@ type Agent struct {
 	ApprovalPolicy *approval.Policy
 	Tracer         Tracer
 	TurnUserID     string
+	SkillContext   string
 
 	MaxIterations  int
 	MaxToolCalls   int
@@ -94,6 +98,7 @@ func New(opts Options) *Agent {
 		ApprovalPolicy: opts.ApprovalPolicy,
 		Tracer:         opts.Tracer,
 		TurnUserID:     opts.TurnUserID,
+		SkillContext:   opts.SkillContext,
 		MaxIterations:  opts.MaxIterations,
 		MaxToolCalls:   opts.MaxToolCalls,
 		Timeout:        opts.Timeout,

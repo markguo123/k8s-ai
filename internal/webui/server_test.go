@@ -17,10 +17,11 @@ import (
 
 // fakeChat 是 webui 测试用 ChatService 桩。
 type fakeChat struct {
-	mu        sync.Mutex
-	sessions  map[string]*session.Session
-	script    []service.ChatEvent
-	gotChoice string
+	mu         sync.Mutex
+	sessions   map[string]*session.Session
+	script     []service.ChatEvent
+	gotChoice  string
+	gotSkills  []string
 }
 
 func newFakeChat(script ...service.ChatEvent) *fakeChat {
@@ -74,6 +75,9 @@ func (f *fakeChat) PinSession(id string, pinned bool) error {
 }
 
 func (f *fakeChat) Chat(ctx context.Context, req service.ChatRequest, respond <-chan string) (<-chan service.ChatEvent, error) {
+	f.mu.Lock()
+	f.gotSkills = append([]string{}, req.Skills...)
+	f.mu.Unlock()
 	out := make(chan service.ChatEvent, len(f.script)+4)
 	go func() {
 		defer close(out)
@@ -327,6 +331,25 @@ func TestStreamAndSendMessage(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("未收到 answer 事件")
+	}
+}
+
+func TestSendMessageForwardsExplicitSkills(t *testing.T) {
+	fake := newFakeChat(service.ChatEvent{Type: service.ChatEventAnswer, Text: "完成"})
+	srv := httptest.NewServer(New(fake, "m").Handler())
+	defer srv.Close()
+	_, _ = fake.GetOrCreateSession("s1", "", "m")
+
+	resp := postJSON(t, srv.URL+"/api/sessions/s1/send-message", `{"query":"检查 mysql 故障","skills":["k8s-mysql-troubleshoot"]}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("send status = %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.gotSkills) != 1 || fake.gotSkills[0] != "k8s-mysql-troubleshoot" {
+		t.Fatalf("skills 未转发到 ChatRequest：%v", fake.gotSkills)
 	}
 }
 

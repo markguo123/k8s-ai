@@ -43,8 +43,8 @@ type ScanJob struct {
 
 // Server 最小化 HTTP 服务。
 type Server struct {
-	svc     service.ScanService
-	auth    authService
+	svc  service.ScanService
+	auth authService
 	// settings 是配置中心应用服务（P1.10），nil 时配置端点返回 501。
 	settings settingsService
 	// auditlog 写系统事件（LOGIN/LOGOUT 等，P1.11），nil 时跳过。
@@ -53,10 +53,10 @@ type Server struct {
 	clusterSvc clusterService
 	// skillsSvc 是 Skill 平台应用服务（P3.5），nil 时 Skill 端点返回 501。
 	skillsSvc skillsService
-	perms   *permission.Enforcer
-	mu      sync.Mutex
-	jobs    map[string]*ScanJob
-	running bool
+	perms     *permission.Enforcer
+	mu        sync.Mutex
+	jobs      map[string]*ScanJob
+	running   bool
 }
 
 // New 创建服务（注入 ScanService）。
@@ -116,6 +116,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/settings/{group}", s.handleGetSettings)
 	mux.HandleFunc("PATCH /api/v1/settings/{group}", s.handlePatchSettings)
 	mux.HandleFunc("GET /api/v1/skills", s.handleListSkills)
+	mux.HandleFunc("GET /api/v1/skills/{name}", s.handleGetSkill)
+	mux.HandleFunc("POST /api/v1/skills/import", s.handleImportSkills)
+	mux.HandleFunc("POST /api/v1/skills/import-procedural", s.handleImportProceduralDocs)
+	mux.HandleFunc("POST /api/v1/skills/import-zip", s.handleImportProceduralZip)
+	mux.HandleFunc("PATCH /api/v1/skills/{name}/enabled", s.handlePatchSkillEnabled)
 	return WithMiddleware(mux, DefaultCORS(), s.perms, s.principal)
 }
 

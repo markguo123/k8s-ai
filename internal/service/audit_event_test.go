@@ -173,11 +173,11 @@ func TestSkillRunAuditorWritesSkillRun(t *testing.T) {
 		t.Fatal("装配 Store 后应返回回调")
 	}
 	fn(tools.SkillRunReport{
-		Kind:      "Deployment",
-		Name:      "web",
-		Namespace: "default",
-		Skills:    []string{"workload"},
-		Findings:  2,
+		Kind:       "Deployment",
+		Name:       "web",
+		Namespace:  "default",
+		Skills:     []string{"workload"},
+		Findings:   2,
 		Escalation: 1,
 	})
 
@@ -216,6 +216,38 @@ func TestSkillRunAuditorSummarizesNameOnly(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].ResourceName != "editor" {
 		t.Fatalf("无 namespace 时应直接用 name: %+v", events)
+	}
+}
+
+func TestSkillRunAuditorRecordsHits(t *testing.T) {
+	st := persistTestStore(t)
+	plat := NewSkillPlatform(st.Skills())
+	if err := plat.SeedBuiltins(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	s := &chatService{store: st, skillsPlat: plat}
+	ctx := context.Background()
+	fn := s.skillRunAuditor(ctx, &session.Session{ID: "s1"}, &runScope{})
+	if fn == nil {
+		t.Fatal("装配 Store 后应返回回调")
+	}
+	fn(tools.SkillRunReport{
+		Kind: "Deployment", Name: "web", Namespace: "default",
+		Skills: []string{"create-workload"}, Findings: 2, Escalation: 1,
+	})
+	hit, err := st.Skills().Get(ctx, "create-workload")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hit.HitCount != 1 || hit.LastHit == nil {
+		t.Fatalf("命中的 Skill 应累加 hit_count 并刷新 last_hit: %+v", hit)
+	}
+	miss, err := st.Skills().Get(ctx, "create-config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if miss.HitCount != 0 {
+		t.Fatalf("未命中的 Skill 不应累加: %+v", miss)
 	}
 }
 

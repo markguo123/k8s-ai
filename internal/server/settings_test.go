@@ -18,9 +18,10 @@ import (
 )
 
 type platformServer struct {
-	ts      *httptest.Server
-	store   store.Store
-	authSvc *auth.Service
+	ts        *httptest.Server
+	store     store.Store
+	authSvc   *auth.Service
+	skillPlat *service.SkillPlatform
 }
 
 // newPlatformServer 装配带认证 + 配置中心 + 审计的服务（与 cli server 一致）。
@@ -49,7 +50,7 @@ func newPlatformServer(t *testing.T) *platformServer {
 	handler := NewWithPlatform(&fakeScan{}, authSvc, settings.New(st), service.NewAuditService(st)).WithSkills(skillPlat).Handler()
 	ts := httptest.NewServer(handler)
 	t.Cleanup(ts.Close)
-	return &platformServer{ts: ts, store: st, authSvc: authSvc}
+	return &platformServer{ts: ts, store: st, authSvc: authSvc, skillPlat: skillPlat}
 }
 
 func (p *platformServer) tokenAs(t *testing.T, username, password string) string {

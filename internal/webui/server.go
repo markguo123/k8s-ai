@@ -334,8 +334,10 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var body struct {
-		Query           string `json:"query"`
-		SkipPermissions bool   `json:"skipPermissions"`
+		Query           string   `json:"query"`
+		SkipPermissions bool     `json:"skipPermissions"`
+		// Skills 用户显式 @ 指定的 Skill 名称（P3.8.4），由 service 层强校验。
+		Skills []string `json:"skills"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -362,6 +364,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		SessionID:       id,
 		Query:           body.Query,
 		SkipPermissions: body.SkipPermissions,
+		Skills:          body.Skills,
 	}, respond)
 	if err != nil {
 		cancelChat()
