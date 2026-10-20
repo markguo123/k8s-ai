@@ -53,6 +53,8 @@ type Server struct {
 	clusterSvc clusterService
 	// skillsSvc 是 Skill 平台应用服务（P3.5），nil 时 Skill 端点返回 501。
 	skillsSvc skillsService
+	// authzSvc 是授权面应用服务（P3.11），nil 时 grants/tokens 端点返回 501。
+	authzSvc authzService
 	perms     *permission.Enforcer
 	mu        sync.Mutex
 	jobs      map[string]*ScanJob
@@ -96,6 +98,12 @@ func (s *Server) WithSkills(svc skillsService) *Server {
 	return s
 }
 
+// WithAuthz 装配授权面应用服务（P3.11）。链式可选，不破坏既有构造器签名。
+func (s *Server) WithAuthz(svc authzService) *Server {
+	s.authzSvc = svc
+	return s
+}
+
 // Handler 返回路由。
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -120,6 +128,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/v1/users/{id}", s.handleUpdateUser)
 	mux.HandleFunc("DELETE /api/v1/users/{id}", s.handleDeleteUser)
 	mux.HandleFunc("GET /api/v1/roles", s.handleListRoles)
+	mux.HandleFunc("GET /api/v1/grants", s.handleListGrants)
+	mux.HandleFunc("GET /api/v1/grants/{id}", s.handleGetGrant)
+	mux.HandleFunc("POST /api/v1/grants", s.handleCreateGrant)
+	mux.HandleFunc("PATCH /api/v1/grants/{id}", s.handleUpdateGrant)
+	mux.HandleFunc("DELETE /api/v1/grants/{id}", s.handleDeleteGrant)
+	mux.HandleFunc("GET /api/v1/users/{userID}/tokens", s.handleListTokens)
+	mux.HandleFunc("POST /api/v1/users/{userID}/tokens", s.handleCreateToken)
+	mux.HandleFunc("PATCH /api/v1/users/{userID}/tokens/{id}", s.handlePatchToken)
+	mux.HandleFunc("DELETE /api/v1/users/{userID}/tokens/{id}", s.handleDeleteToken)
 	mux.HandleFunc("GET /api/v1/skills", s.handleListSkills)
 	mux.HandleFunc("GET /api/v1/skills/{name}", s.handleGetSkill)
 	mux.HandleFunc("POST /api/v1/skills/import", s.handleImportSkills)

@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/k8s-ai/k8s-ai/internal/auth"
+	"github.com/k8s-ai/k8s-ai/internal/authz"
 	"github.com/k8s-ai/k8s-ai/internal/cluster"
 	"github.com/k8s-ai/k8s-ai/internal/server"
 	"github.com/k8s-ai/k8s-ai/internal/service"
@@ -68,9 +69,11 @@ func newServerCmd(deps Dependencies) *cobra.Command {
 			if err := skillPlat.Reload(cmd.Context()); err != nil {
 				return fmt.Errorf("reload skills: %w", err)
 			}
+			// P3.11：授权面（AuthzGrant / ApiToken）由同一 Store 装配。
+			authzSvc := authz.New(st)
 			srv := &http.Server{
 				Addr:              addr,
-				Handler:           server.NewWithPlatform(deps.NewScan(), authSvc, settingsSvc, auditSvc).WithClusters(clusterSvc).WithSkills(skillPlat).Handler(),
+				Handler:           server.NewWithPlatform(deps.NewScan(), authSvc, settingsSvc, auditSvc).WithClusters(clusterSvc).WithSkills(skillPlat).WithAuthz(authzSvc).Handler(),
 				ReadHeaderTimeout: 10 * time.Second,
 			}
 			logger.Info("k8s-ai server listening", "addr", addr, "db", path)

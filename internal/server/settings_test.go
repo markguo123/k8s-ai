@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/k8s-ai/k8s-ai/internal/auth"
+	"github.com/k8s-ai/k8s-ai/internal/authz"
 	"github.com/k8s-ai/k8s-ai/internal/permission"
 	"github.com/k8s-ai/k8s-ai/internal/service"
 	"github.com/k8s-ai/k8s-ai/internal/settings"
@@ -23,6 +24,7 @@ type platformServer struct {
 	store     store.Store
 	authSvc   *auth.Service
 	skillPlat *service.SkillPlatform
+	authzSvc  *authz.Service
 }
 
 // newPlatformServer 装配带认证 + 配置中心 + 审计的服务（与 cli server 一致）。
@@ -48,10 +50,11 @@ func newPlatformServer(t *testing.T) *platformServer {
 	if err := skillPlat.Reload(context.Background()); err != nil {
 		t.Fatalf("reload skills: %v", err)
 	}
-	handler := NewWithPlatform(&fakeScan{}, authSvc, settings.New(st), service.NewAuditService(st)).WithSkills(skillPlat).Handler()
+	authzSvc := authz.New(st)
+	handler := NewWithPlatform(&fakeScan{}, authSvc, settings.New(st), service.NewAuditService(st)).WithSkills(skillPlat).WithAuthz(authzSvc).Handler()
 	ts := httptest.NewServer(handler)
 	t.Cleanup(ts.Close)
-	return &platformServer{ts: ts, store: st, authSvc: authSvc, skillPlat: skillPlat}
+	return &platformServer{ts: ts, store: st, authSvc: authSvc, skillPlat: skillPlat, authzSvc: authzSvc}
 }
 
 func (p *platformServer) tokenAs(t *testing.T, username, password string) string {
