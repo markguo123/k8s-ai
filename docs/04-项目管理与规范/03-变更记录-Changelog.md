@@ -25,6 +25,22 @@ P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会�
 - **前端测试与构建门禁（P2.12）**：引入 vitest + @vue/test-utils + jsdom 与 `tsconfig.vitest.json`、`src/test/setup.ts`；新增 12 个测试文件 59 个用例（SSE 帧解析与旧事件映射、useChatStream 连接/切换/退避重连/停止、MessageTimeline 回合聚合与工具卡去重、ToolCallCard 脱敏与展开、ApprovalCard 权限显隐与 Secret 输入、ComposerBox、auth store、路由守卫、ChatView 全链路冒烟）；`package.json` 增加 `test`/`test:watch`/`test:coverage`。
 - **视觉对齐与前端核验工具**：`styles/index.css` 设计令牌与 `docs/02-架构与设计/prototype/index.html` 同源（含 `html.dark` 覆盖，使 Element Plus 组件走品牌 indigo 而不是默认蓝），聊天区（会话栏/回合/思考面板/工具卡/审批卡/报告/composer/Token 浮标）与登录页逐项对齐原型；新增 `web/tools/mock-backend.mjs`（复刻 webui 会话端点与 SSE 帧的联调 mock）与 `web/tools/visual-check.mjs`（原型 vs SPA 逐项比对 18 个关键视觉量并输出截图，当前差异 0）、`web/tools/screenshot.mjs`（无头 Edge/Chrome 截图）。
 
+### Added（2026-10-20，P3.11 用户/角色管理后端部分落地）
+
+- **Store 底座 schema v4（P3.11）**：`internal/store` 迁移 schemaVersion=4，新增 `authz_grants`
+  （principal_type/principal_id/cluster_id/namespaces[]/permissions[]/expires_at/created_by）与
+  `api_tokens`（user_id/name/token_hash(SHA-256)/expires_at/status/last_used_at）表及 principal /
+  user 二级索引；API token 只存 SHA-256 哈希，明文仅在创建时返回一次、永不回读。
+- **用户/角色管理 API（P3.11）**：`internal/auth` 默认播种 user/operator/admin 三角色（废弃
+  viewer 默认播种、保留兼容回退），新增 `ListUsers/CreateUser/UpdateUser/DeleteUser/ListRoles`
+  （密码最短 8 位、角色三角色白名单、内置 admin 不可删/停/降级、不支持改用户名）；
+  `internal/server` 注册 `GET|POST /api/v1/users`、`PATCH|DELETE /api/v1/users/{id}`、
+  `GET /api/v1/roles` 并登记 `user.manage` 权限，禁止当前登录用户停用/降级/删除自己；
+  口令与哈希永不进入响应、审计与日志。
+- **测试与冒烟**：3 个旧测试适配新默认角色（viewer 不再默认播种），新增服务端契约测试 5 例；
+  HTTP 冒烟覆盖 建用户/重名 409/user 角色 403/停用后登录 401/删除后列表消失；
+  `go test ./...`、`go vet ./...`、`go build ./...` 全绿。AuthzGrant/ApiToken 管理 API 待续。
+
 ### 设计修订（2026-10-13）
 
 - **角色收敛**：产品角色改为 user / operator / admin 三角色，废弃 viewer。

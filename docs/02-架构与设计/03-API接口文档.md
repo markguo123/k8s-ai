@@ -196,6 +196,11 @@ POST /api/v1/scans          // body: ScanOptions；返回 202 {scanId}；已有�
 GET  /api/v1/scans/{id}     // 状态: pending/running/succeeded/failed + result
 GET  /api/v1/settings/{group}   // 配置中心（P1.10）：目录默认值与已存值合并；需 settings.read
 PATCH /api/v1/settings/{group}  // body 为扁平 {key: value}，任一非法整批 400；需 settings.write
+GET  /api/v1/users            // 用户列表（PasswordHash/口令永不回读）；需 user.manage（P3.11）
+POST /api/v1/users            // 创建用户 {username,password(>=8),roleId,displayName?,status?}；需 user.manage
+PATCH /api/v1/users/{id}      // 部分更新 {displayName?,password?,roleId?,status?}；需 user.manage；禁止停用/降级自己
+DELETE /api/v1/users/{id}     // 删除用户；需 user.manage；内置 admin 不可删，禁止删除自己
+GET  /api/v1/roles            // 角色列表（user/operator/admin 及权限视图）；需 user.manage
 ```
 
 > 配置分组为 `model|skill|approval|memory|retention|mcp|ops`（需求 v1.3 §15）。敏感键
@@ -206,6 +211,12 @@ PATCH /api/v1/settings/{group}  // body 为扁平 {key: value}，任一非法整
 > namespace / resource 真实权限由平台 AuthzGrant 派生到 Kubernetes RBAC 并在 API Server
 > 强校验（需求 v1.3 §17）：平台 AuthzGrant 为授权权威，Role/ClusterRoleBinding 为其派生
 > 并由平台打标、定期对账；执行前做 SAR（仅验权限），操作安全由 Code Guard + 准入控制把关。
+> 
+> 用户/角色管理（P3.11）：默认播种 `user / operator / admin` 三角色，废弃 viewer 的默认播种
+> （viewer 仅保留为三期兼容读取与未知角色最小权限回落，不开放新建）；创建用户密码最短 8 位、
+> 角色必须命中三角色白名单；内置 admin 受保护（不可删除/停用/降级）；禁止把当前登录用户自己
+> 停用或降级；用户/角色接口全部需 `user.manage`，口令/哈希永不进入响应、审计与日志。
+> namespace 授权（AuthzGrant）与 API Token（ApiToken）管理端点在本批之后的 P3.11 续批落地。
 
 ## 9. HTTP + SSE API（二期/三期 Web Chat，`internal/webui`）
 
