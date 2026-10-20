@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/k8s-ai/k8s-ai/internal/auth"
+	"github.com/k8s-ai/k8s-ai/internal/permission"
 	"github.com/k8s-ai/k8s-ai/internal/service"
 	"github.com/k8s-ai/k8s-ai/internal/settings"
 	"github.com/k8s-ai/k8s-ai/internal/store"
@@ -180,19 +181,8 @@ func TestSettingsViewerCanReadButNotWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var viewerRole string
-	roles, err := p.store.Roles().List(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, role := range roles {
-		if role.Name == auth.RoleViewer {
-			viewerRole = role.ID
-		}
-	}
-	if viewerRole == "" {
-		t.Fatal("默认角色里应有 viewer")
-	}
+	// P3.11a：默认播种移除 viewer，测试按需补建只读观察者角色。
+	viewerRole := ensureRole(t, p.store, auth.RoleViewer, "只读观察者（测试补建）", permission.SettingsRead)
 	err = p.store.Users().Create(context.Background(), &store.User{
 		ID: "u-viewer", Username: "viewer1", PasswordHash: hash, RoleID: viewerRole,
 		Status: "active", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),

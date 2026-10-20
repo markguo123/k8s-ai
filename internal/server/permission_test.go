@@ -10,6 +10,7 @@ import (
 
 	"github.com/k8s-ai/k8s-ai/internal/auth"
 	"github.com/k8s-ai/k8s-ai/internal/model"
+	"github.com/k8s-ai/k8s-ai/internal/permission"
 	"github.com/k8s-ai/k8s-ai/internal/store"
 )
 
@@ -124,20 +125,7 @@ func TestPermissionGateDeniesViewer(t *testing.T) {
 // createAndLogin 在真实 Store 上创建指定角色用户并登录取得 Token。
 func createAndLogin(t *testing.T, st store.Store, authSvc *auth.Service, ts *httptest.Server, username, password, roleName string) string {
 	t.Helper()
-	roles, err := st.Roles().List(context.Background())
-	if err != nil {
-		t.Fatalf("list roles: %v", err)
-	}
-	var role *store.Role
-	for _, r := range roles {
-		if r.Name == roleName {
-			role = r
-			break
-		}
-	}
-	if role == nil {
-		t.Fatalf("role %s not found", roleName)
-	}
+	roleID := ensureRole(t, st, roleName, "fallback role", permission.ClusterRead)
 	hash, err := auth.HashPassword(password)
 	if err != nil {
 		t.Fatalf("hash password: %v", err)
@@ -147,7 +135,7 @@ func createAndLogin(t *testing.T, st store.Store, authSvc *auth.Service, ts *htt
 		Username:     username,
 		DisplayName:  username,
 		PasswordHash: hash,
-		RoleID:       role.ID,
+		RoleID:       roleID,
 		Status:       "active",
 	}
 	if err := st.Users().Create(context.Background(), u); err != nil {

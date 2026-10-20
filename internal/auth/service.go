@@ -21,10 +21,12 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/store"
 )
 
-// 默认角色名（D-09：P0 开放 viewer / admin，operator 仅保留模型）。
+// 默认角色名（D-09：P0 开放 user / operator / admin 三角色，废弃 viewer 的默认播种；
+// viewer 字符串仅作为三期兼容读取与未知角色最小权限回落保留）。
 const (
 	RoleAdmin    = "admin"
 	RoleViewer   = "viewer"
+	RoleUser     = "user"
 	RoleOperator = "operator"
 
 	// DefaultAdminUsername 首次初始化时创建的超级管理员用户名。
@@ -226,10 +228,10 @@ type roleDef struct {
 func defaultRoles() []roleDef {
 	return []roleDef{
 		{name: RoleAdmin, description: "管理员：全部平台权限", permissions: []string{"*"}},
-		{name: RoleViewer, description: "只读查看", permissions: []string{
-			"chat.read", "cluster.read", "skill.read", "approval.read", "audit.read", "settings.read",
+		{name: RoleUser, description: "普通用户：只读巡检与会话内自确认写操作", permissions: []string{
+			"chat.read", "chat.write", "cluster.read", "skill.read", "approval.read",
 		}},
-		{name: RoleOperator, description: "操作员（模型保留，暂不放量）", permissions: []string{"chat.write", "cluster.manage"}},
+		{name: RoleOperator, description: "操作员：集群管理与会话内写操作", permissions: []string{"chat.write", "cluster.manage"}},
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 
 	"github.com/k8s-ai/k8s-ai/internal/auth"
 	"github.com/k8s-ai/k8s-ai/internal/cluster"
+	"github.com/k8s-ai/k8s-ai/internal/permission"
 	"github.com/k8s-ai/k8s-ai/internal/service"
 	"github.com/k8s-ai/k8s-ai/internal/settings"
 	"github.com/k8s-ai/k8s-ai/internal/store"
@@ -339,19 +340,7 @@ func TestClusterChangeAudit(t *testing.T) {
 // createRoleUser 创建指定角色的用户并返回其登录 token（测试辅助）。
 func createRoleUser(t *testing.T, st store.Store, authSvc *auth.Service, roleName, username, password string) string {
 	t.Helper()
-	roles, err := st.Roles().List(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	var roleID string
-	for _, role := range roles {
-		if role.Name == roleName {
-			roleID = role.ID
-		}
-	}
-	if roleID == "" {
-		t.Fatalf("默认角色里应有 %s", roleName)
-	}
+	roleID := ensureRole(t, st, roleName, "fallback role", permission.ClusterRead)
 	hash, err := auth.HashPassword(password)
 	if err != nil {
 		t.Fatal(err)

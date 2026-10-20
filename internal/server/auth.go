@@ -12,11 +12,17 @@ import (
 
 const maxCredentialBody = 1 << 20
 
-// authService 是认证端点依赖的应用服务接口（auth.Service 满足）。
+// authService 是认证与用户管理端点依赖的应用服务接口（auth.Service 满足）。
 type authService interface {
 	Login(ctx context.Context, username, password string) (*auth.Session, error)
 	Logout(token string) error
 	UserByToken(ctx context.Context, token string) (*store.User, *store.Role, error)
+	// P3.11a：/users /roles 管理能力（handler 只依赖该接口，不触碰 Store）。
+	ListUsers(ctx context.Context) ([]*store.User, error)
+	CreateUser(ctx context.Context, req auth.CreateUserRequest) (*store.User, error)
+	UpdateUser(ctx context.Context, id string, req auth.UpdateUserRequest) (*store.User, error)
+	DeleteUser(ctx context.Context, id string) error
+	ListRoles(ctx context.Context) ([]*store.Role, error)
 }
 
 // handleLogin POST /api/v1/auth/login。
