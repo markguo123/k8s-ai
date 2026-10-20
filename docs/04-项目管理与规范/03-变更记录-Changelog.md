@@ -39,7 +39,12 @@ P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会�
   口令与哈希永不进入响应、审计与日志。
 - **测试与冒烟**：3 个旧测试适配新默认角色（viewer 不再默认播种），新增服务端契约测试 5 例；
   HTTP 冒烟覆盖 建用户/重名 409/user 角色 403/停用后登录 401/删除后列表消失；
-  `go test ./...`、`go vet ./...`、`go build ./...` 全绿。AuthzGrant/ApiToken 管理 API 待续。
+  `go test ./...`、`go vet ./...`、`go build ./...` 全绿。
+- **授权面管理 API（P3.11）**：新增 `internal/authz` 服务（`authz.New` + `WithAuthz` 装配），提供 AuthzGrant 全生命周期 CRUD 与 ApiToken 管理：
+  - `AuthzGrant`：principalType(user|group)/principalId/clusterId/namespaces[]/permissions[]（`*`/`destroy` 白名单）/expiresAt（过去时间拒绝）/createdBy；Update 仅 cluster/namespaces/permissions/expiresAt，主体不可变更。
+  - `ApiToken`：user_id/name/tokenHash(SHA-256)/expiresAt/status(active|revoked|disabled)/lastUsedAt；明文 64 位 token 仅创建时返回一次、永不回显，仅 token 所属用户可读/停用/删除。
+  - 路由：`GET|POST /api/v1/grants`、`GET|PATCH|DELETE /api/v1/grants/{id}`、`GET|POST /api/v1/users/{userID}/tokens`、`PATCH|DELETE /api/v1/users/{userID}/tokens/{id}`，均需 `user.manage`，1MiB 请求体上限、统一错误信封，未配置返回 501；`internal/permission` 登记 9 条 grants/tokens 权限规则。
+  - 测试：`internal/authz` 服务单测 5 例 + 服务端契约测试 5 例。
 
 ### 设计修订（2026-10-13）
 
