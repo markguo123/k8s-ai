@@ -516,6 +516,126 @@ func runClusterCredentialCRUD(t *testing.T, s Store) {
 	}
 }
 
+func runAuthzGrantCRUD(t *testing.T, s Store) {
+	ctx := context.Background()
+	exp := time.Now().Add(24 * time.Hour).UTC().Truncate(time.Millisecond)
+	g := &AuthzGrant{
+		ID:            "g1",
+		PrincipalType: "user",
+		PrincipalID:   "u1",
+		ClusterID:     "c1",
+		Namespaces:    `["default","prod"]`,
+		Permissions:   `["*"]`,
+		ExpiresAt:     &exp,
+		CreatedBy:     "admin",
+	}
+	if err := s.AuthzGrants().Create(ctx, g); err != nil {
+		t.Fatalf("create grant: %v", err)
+	}
+	got, err := s.AuthzGrants().Get(ctx, "g1")
+	if err != nil {
+		t.Fatalf("get grant: %v", err)
+	}
+	if got.Namespaces != g.Namespaces || got.Permissions != g.Permissions || got.PrincipalID != "u1" {
+		t.Fatalf("grant not round-tripped: %+v", got)
+	}
+	if got.ExpiresAt == nil || !got.ExpiresAt.Equal(exp) {
+		t.Fatalf("expires_at not round-tripped: %+v", got.ExpiresAt)
+	}
+	if got.CreatedAt.IsZero() || got.UpdatedAt.IsZero() {
+		t.Fatalf("timestamps not set: %+v", got)
+	}
+
+	// 可空时间往返：无过期时间的 grant 回读应为 nil。
+	ng := &AuthzGrant{ID: "g2", PrincipalType: "group", PrincipalID: "devs", Namespaces: "[]", Permissions: "[]"}
+	if err := s.AuthzGrants().Create(ctx, ng); err != nil {
+		t.Fatalf("create grant no expiry: %v", err)
+	}
+	if gotNG, err := s.AuthzGrants().Get(ctx, "g2"); err != nil || gotNG.ExpiresAt != nil {
+		t.Fatalf("null expires_at expected nil: %v %+v", err, gotNG)
+	}
+
+	byPrincipal, err := s.AuthzGrants().ListByPrincipal(ctx, "user", "u1")
+	if err != nil || len(byPrincipal) != 1 {
+		t.Fatalf("list by principal: %v %+v", err, byPrincipal)
+	}
+
+	g.Namespaces = `["default"]`
+	if err := s.AuthzGrants().Update(ctx, g); err != nil {
+		t.Fatalf("update grant: %v", err)
+	}
+	got, err = s.AuthzGrants().Get(ctx, "g1")
+	if err != nil || got.Namespaces != `["default"]` {
+		t.Fatalf("grant update not applied: %v %+v", err, got)
+	}
+
+	list, err := s.AuthzGrants().List(ctx)
+	if err != nil || len(list) != 2 {
+		t.Fatalf("list grants: %v %+v", err, list)
+	}
+	if err := s.AuthzGrants().Delete(ctx, "g2"); err != nil {
+		t.Fatalf("delete grant: %v", err)
+	}
+	if _, err := s.AuthzGrants().Get(ctx, "g2"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func runApiTokenCRUD(t *testing.T, s Store) {
+	ctx := context.Background()
+	exp := time.Now().Add(30 * 24 * time.Hour).UTC().Truncate(time.Millisecond)
+	last := time.Now().Add(-time.Hour).UTC().Truncate(time.Millisecond)
+	tk := &ApiToken{
+		ID: "tok1", UserID: "u1", Name: "ci", TokenHash: "sha256:def",
+		ExpiresAt: &exp, Status: "active", LastUsedAt: &last,
+	}
+	if err := s.ApiTokens().Create(ctx, tk); err != nil {
+		t.Fatalf("create token: %v", err)
+	}
+	got, err := s.ApiTokens().Get(ctx, "tok1")
+	if err != nil {
+		t.Fatalf("get token: %v", err)
+	}
+	if got.TokenHash != "sha256:def" || got.UserID != "u1" || got.Status != "active" {
+		t.Fatalf("token not round-tripped: %+v", got)
+	}
+	if got.ExpiresAt == nil || !got.ExpiresAt.Equal(exp) || got.LastUsedAt == nil || !got.LastUsedAt.Equal(last) {
+		t.Fatalf("token times not round-tripped: %+v", got)
+	}
+	if got.CreatedAt.IsZero() || got.UpdatedAt.IsZero() {
+		t.Fatalf("created/updated not set: %+v", got)
+	}
+
+	// 可空时间：永不过期、未使用的新 token 回读应为 nil。
+	nt := &ApiToken{ID: "tok2", UserID: "u2", Name: "cli", TokenHash: "sha256:abc"}
+	if err := s.ApiTokens().Create(ctx, nt); err != nil {
+		t.Fatalf("create token no times: %v", err)
+	}
+	if gotNT, err := s.ApiTokens().Get(ctx, "tok2"); err != nil || gotNT.ExpiresAt != nil || gotNT.LastUsedAt != nil {
+		t.Fatalf("null times expected nil: %v %+v", err, gotNT)
+	}
+
+	byUser, err := s.ApiTokens().ListByUser(ctx, "u1")
+	if err != nil || len(byUser) != 1 || byUser[0].ID != "tok1" {
+		t.Fatalf("list by user: %v %+v", err, byUser)
+	}
+
+	got.Status = "revoked"
+	if err := s.ApiTokens().Update(ctx, got); err != nil {
+		t.Fatalf("update token: %v", err)
+	}
+	if got, err = s.ApiTokens().Get(ctx, "tok1"); err != nil || got.Status != "revoked" {
+		t.Fatalf("token update not applied: %v %+v", err, got)
+	}
+
+	if err := s.ApiTokens().Delete(ctx, "tok2"); err != nil {
+		t.Fatalf("delete token: %v", err)
+	}
+	if _, err := s.ApiTokens().Get(ctx, "tok2"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
 // runAllStoreCRUD 在任意驱动上跑一遍全部子 Store 的等价 CRUD 用例。
 func runAllStoreCRUD(t *testing.T, s Store) {
 	t.Helper()
@@ -530,6 +650,8 @@ func runAllStoreCRUD(t *testing.T, s Store) {
 	runMemoryStore(t, s)
 	runRetentionStore(t, s)
 	runClusterCredentialCRUD(t, s)
+	runAuthzGrantCRUD(t, s)
+	runApiTokenCRUD(t, s)
 }
 
 // TestStoresSQLite 覆盖 SQLite 默认驱动的全量 CRUD。

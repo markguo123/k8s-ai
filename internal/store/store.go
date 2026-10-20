@@ -32,6 +32,8 @@ type Store interface {
 	Retention() RetentionStore
 	Clusters() ClusterStore
 	Credentials() CredentialStore
+	AuthzGrants() AuthzGrantStore
+	ApiTokens() ApiTokenStore
 
 	// Migrate 将 schema 升级到最新版本（幂等）。
 	Migrate(ctx context.Context) error
@@ -156,6 +158,26 @@ type CredentialStore interface {
 	Delete(ctx context.Context, id string) error
 }
 
+// AuthzGrantStore 管理 namespace 授权委派（P3.11）。以 namespace 为唯一
+// 授权边界；Permissions 为被委派动作集合。JSON 数组以字符串原样落库。
+type AuthzGrantStore interface {
+	Create(ctx context.Context, g *AuthzGrant) error
+	Get(ctx context.Context, id string) (*AuthzGrant, error)
+	Update(ctx context.Context, g *AuthzGrant) error
+	List(ctx context.Context) ([]*AuthzGrant, error)
+	ListByPrincipal(ctx context.Context, principalType, principalID string) ([]*AuthzGrant, error)
+	Delete(ctx context.Context, id string) error
+}
+
+// ApiTokenStore 管理产品内用户的持久化 API Token（P3.11）。
+type ApiTokenStore interface {
+	Create(ctx context.Context, t *ApiToken) error
+	Get(ctx context.Context, id string) (*ApiToken, error)
+	ListByUser(ctx context.Context, userID string) ([]*ApiToken, error)
+	Update(ctx context.Context, t *ApiToken) error
+	Delete(ctx context.Context, id string) error
+}
+
 // compile-time interface checks
 var (
 	_ UserStore       = (*userStore)(nil)
@@ -171,5 +193,7 @@ var (
 	_ RetentionStore  = (*retentionStore)(nil)
 	_ ClusterStore    = (*clusterStore)(nil)
 	_ CredentialStore = (*credentialStore)(nil)
+	_ AuthzGrantStore = (*authzGrantStore)(nil)
+	_ ApiTokenStore   = (*apiTokenStore)(nil)
 	_ Store           = (*dbStore)(nil)
 )

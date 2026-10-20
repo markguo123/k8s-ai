@@ -25,6 +25,8 @@ type dbStore struct {
 	retention   *retentionStore
 	clusters    *clusterStore
 	credentials *credentialStore
+	authzGrants *authzGrantStore
+	apiTokens   *apiTokenStore
 }
 
 // newDBStore 组装通用 Store 并装配各子 Store。
@@ -43,6 +45,8 @@ func newDBStore(db *sql.DB, d dialect) *dbStore {
 	s.retention = &retentionStore{s}
 	s.clusters = &clusterStore{s}
 	s.credentials = &credentialStore{s}
+	s.authzGrants = &authzGrantStore{s}
+	s.apiTokens = &apiTokenStore{s}
 	return s
 }
 
@@ -61,6 +65,8 @@ func (s *dbStore) Memories() MemoryStore        { return s.memories }
 func (s *dbStore) Retention() RetentionStore    { return s.retention }
 func (s *dbStore) Clusters() ClusterStore       { return s.clusters }
 func (s *dbStore) Credentials() CredentialStore { return s.credentials }
+func (s *dbStore) AuthzGrants() AuthzGrantStore { return s.authzGrants }
+func (s *dbStore) ApiTokens() ApiTokenStore     { return s.apiTokens }
 
 // ---- shared helpers（两个驱动通用） ----
 

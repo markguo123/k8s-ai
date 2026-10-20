@@ -8,7 +8,7 @@ import (
 
 // schemaVersion 是统一的逻辑 schema 版本。SQLite/MySQL 共用该版本号，
 // migrations 按版本逐个应用（P0.3/P1.12/P1.3）。只允许追加，禁止回跳。
-const schemaVersion = 3
+const schemaVersion = 4
 
 // migration 是一条单向升级步骤，通过 dialect 适配两个驱动。
 type migration struct {
@@ -33,6 +33,11 @@ var migrations = []migration{
 		version: 3,
 		name:    "audit event v4 classification fields",
 		up:      migrateV3,
+	},
+	{
+		version: 4,
+		name:    "authz grants and api tokens platform model",
+		up:      migrateV4,
 	},
 }
 
@@ -279,6 +284,48 @@ var schemaV3Indexes = []indexSpec{
 	{name: "idx_audit_user", table: "audit_events", cols: "user_id"},
 }
 
+// schemaV4 是第 4 版新增表：authz_grants / api_tokens（P3.11 身份与授权底座）。
+// 敏感字段约定：api_tokens.token_hash 只存 SHA-256 哈希，明文仅在创建时返回一次，
+// 永不回读。namespaces / permissions 为 JSON 数组字符串，长文本列（colLong）
+// 存放，业务侧显式写入；expires_at / last_used_at 可空。
+var schemaV4 = []tableSpec{
+	{
+		name: "authz_grants",
+		cols: []column{
+			{name: "id", kind: colText, primary: true},
+			{name: "principal_type", kind: colText},
+			{name: "principal_id", kind: colText},
+			{name: "cluster_id", kind: colText, def: "''"},
+			{name: "namespaces", kind: colLong, def: "'[]'"},
+			{name: "permissions", kind: colLong, def: "'[]'"},
+			{name: "expires_at", kind: colTimeOrNull},
+			{name: "created_by", kind: colText, def: "''"},
+			{name: "created_at", kind: colTime},
+			{name: "updated_at", kind: colTime},
+		},
+	},
+	{
+		name: "api_tokens",
+		cols: []column{
+			{name: "id", kind: colText, primary: true},
+			{name: "user_id", kind: colText},
+			{name: "name", kind: colText, def: "''"},
+			{name: "token_hash", kind: colText},
+			{name: "expires_at", kind: colTimeOrNull},
+			{name: "status", kind: colText, def: "'active'"},
+			{name: "last_used_at", kind: colTimeOrNull},
+			{name: "created_at", kind: colTime},
+			{name: "updated_at", kind: colTime},
+		},
+	},
+}
+
+// schemaV4Indexes 是第 4 版新增表的二级索引（按 principal / user 查询用）。
+var schemaV4Indexes = []indexSpec{
+	{name: "idx_authz_grant_principal", table: "authz_grants", cols: "principal_type, principal_id"},
+	{name: "idx_api_token_user", table: "api_tokens", cols: "user_id"},
+}
+
 // migrateV1 建全部表与索引，SQL 由 dialect 按驱动渲染。
 func migrateV1(ctx context.Context, tx *sql.Tx, d dialect) error {
 	for _, t := range schemaV1 {
@@ -339,6 +386,25 @@ func migrateV3(ctx context.Context, tx *sql.Tx, d dialect) error {
 		}
 	}
 	return backfillAuditEventType(ctx, tx)
+}
+
+// migrateV4 建 authz_grants / api_tokens 表与索引（SQL 由 dialect 按驱动渲染）。
+func migrateV4(ctx context.Context, tx *sql.Tx, d dialect) error {
+	for _, t := range schemaV4 {
+		if _, err := tx.ExecContext(ctx, d.createTable(t)); err != nil {
+			return fmt.Errorf("create table %s: %w", t.name, err)
+		}
+	}
+	for _, idx := range schemaV4Indexes {
+		q := d.createIndex(idx.name, idx.table, idx.cols)
+		if _, err := tx.ExecContext(ctx, q); err != nil {
+			if d.isDuplicateIndexErr(err) {
+				continue
+			}
+			return fmt.Errorf("create index %s: %w", idx.name, err)
+		}
+	}
+	return nil
 }
 
 // backfillAuditEventType 给历史审计行补 event_type（只处理空值，可重复执行）。

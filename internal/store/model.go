@@ -150,6 +150,36 @@ type Credential struct {
 	UpdatedAt        time.Time `json:"updatedAt"`
 }
 
+// AuthzGrant 是角色/用户在某集群 namespace 上的授权委派（P3.11）。
+// namespace 是唯一授权边界；Permissions 是被委派的动作集合（["*"] 表示该
+// namespace 全量，["destroy"] 表示销毁类写操作）。JSON 数组字段以字符串落库。
+type AuthzGrant struct {
+	ID            string     `json:"id"`
+	PrincipalType string     `json:"principalType"` // user | group
+	PrincipalID   string     `json:"principalId"`
+	ClusterID     string     `json:"clusterId,omitempty"`
+	Namespaces    string     `json:"namespaces"`              // JSON array
+	Permissions   string     `json:"permissions"`             // JSON array
+	ExpiresAt     *time.Time `json:"expiresAt,omitempty"`
+	CreatedBy     string     `json:"createdBy,omitempty"`
+	CreatedAt     time.Time  `json:"createdAt"`
+	UpdatedAt     time.Time  `json:"updatedAt"`
+}
+
+// ApiToken 是产品内用户的持久化 API Token（P3.11）。
+// TokenHash 只存哈希（SHA-256），明文仅在创建时返回一次，永不回读。
+type ApiToken struct {
+	ID         string     `json:"id"`
+	UserID     string     `json:"userId"`
+	Name       string     `json:"name,omitempty"`
+	TokenHash  string     `json:"-"`
+	ExpiresAt  *time.Time `json:"expiresAt,omitempty"`
+	Status     string     `json:"status,omitempty"`
+	LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	UpdatedAt  time.Time  `json:"updatedAt"`
+}
+
 // RetentionPolicy 是某一类数据的保留策略（P5.4）。
 type RetentionPolicy struct {
 	Name          string    `json:"name"`

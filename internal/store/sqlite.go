@@ -746,6 +746,197 @@ func (st *retentionStore) Delete(ctx context.Context, name string) error {
 	return ensureAffected(res, "delete retention policy")
 }
 
+// ---- Authz Grants ----
+
+type authzGrantStore struct{ s *dbStore }
+
+func (st *authzGrantStore) Create(ctx context.Context, g *AuthzGrant) error {
+	now := time.Now()
+	if g.CreatedAt.IsZero() {
+		g.CreatedAt = now
+	}
+	if g.UpdatedAt.IsZero() {
+		g.UpdatedAt = now
+	}
+	_, err := st.s.db.ExecContext(ctx, `
+		INSERT INTO authz_grants
+			(id, principal_type, principal_id, cluster_id, namespaces, permissions, expires_at, created_by, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		g.ID, g.PrincipalType, g.PrincipalID, g.ClusterID, g.Namespaces, g.Permissions,
+		nilTime(g.ExpiresAt), g.CreatedBy, g.CreatedAt, g.UpdatedAt)
+	return mapErr(err, "create authz grant")
+}
+
+func scanAuthzGrant(scanner interface{ Scan(...any) error }) (*AuthzGrant, error) {
+	g := &AuthzGrant{}
+	var expires sql.NullTime
+	if err := scanner.Scan(&g.ID, &g.PrincipalType, &g.PrincipalID, &g.ClusterID,
+		&g.Namespaces, &g.Permissions, &expires, &g.CreatedBy, &g.CreatedAt, &g.UpdatedAt); err != nil {
+		return nil, err
+	}
+	if expires.Valid {
+		g.ExpiresAt = &expires.Time
+	}
+	return g, nil
+}
+
+func (st *authzGrantStore) Get(ctx context.Context, id string) (*AuthzGrant, error) {
+	row := st.s.db.QueryRowContext(ctx, `
+		SELECT id, principal_type, principal_id, cluster_id, namespaces, permissions, expires_at, created_by, created_at, updated_at
+		FROM authz_grants WHERE id = ?`, id)
+	g, err := scanAuthzGrant(row)
+	if err != nil {
+		return nil, mapErr(err, "get authz grant")
+	}
+	return g, nil
+}
+
+func (st *authzGrantStore) Update(ctx context.Context, g *AuthzGrant) error {
+	g.UpdatedAt = time.Now()
+	res, err := st.s.db.ExecContext(ctx, `
+		UPDATE authz_grants SET principal_type=?, principal_id=?, cluster_id=?, namespaces=?, permissions=?, expires_at=?, created_by=?, updated_at=?
+		WHERE id=?`,
+		g.PrincipalType, g.PrincipalID, g.ClusterID, g.Namespaces, g.Permissions,
+		nilTime(g.ExpiresAt), g.CreatedBy, g.UpdatedAt, g.ID)
+	if err != nil {
+		return fmt.Errorf("update authz grant: %w", err)
+	}
+	return ensureAffected(res, "update authz grant")
+}
+
+func (st *authzGrantStore) List(ctx context.Context) ([]*AuthzGrant, error) {
+	rows, err := st.s.db.QueryContext(ctx, `
+		SELECT id, principal_type, principal_id, cluster_id, namespaces, permissions, expires_at, created_by, created_at, updated_at
+		FROM authz_grants ORDER BY created_at`)
+	if err != nil {
+		return nil, fmt.Errorf("list authz grants: %w", err)
+	}
+	defer rows.Close()
+	var out []*AuthzGrant
+	for rows.Next() {
+		if g, err := scanAuthzGrant(rows); err != nil {
+			return nil, fmt.Errorf("scan authz grant: %w", err)
+		} else {
+			out = append(out, g)
+		}
+	}
+	return out, rows.Err()
+}
+
+func (st *authzGrantStore) ListByPrincipal(ctx context.Context, principalType, principalID string) ([]*AuthzGrant, error) {
+	rows, err := st.s.db.QueryContext(ctx, `
+		SELECT id, principal_type, principal_id, cluster_id, namespaces, permissions, expires_at, created_by, created_at, updated_at
+		FROM authz_grants WHERE principal_type=? AND principal_id=? ORDER BY created_at`, principalType, principalID)
+	if err != nil {
+		return nil, fmt.Errorf("list authz grants by principal: %w", err)
+	}
+	defer rows.Close()
+	var out []*AuthzGrant
+	for rows.Next() {
+		if g, err := scanAuthzGrant(rows); err != nil {
+			return nil, fmt.Errorf("scan authz grant: %w", err)
+		} else {
+			out = append(out, g)
+		}
+	}
+	return out, rows.Err()
+}
+
+func (st *authzGrantStore) Delete(ctx context.Context, id string) error {
+	res, err := st.s.db.ExecContext(ctx, `DELETE FROM authz_grants WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete authz grant: %w", err)
+	}
+	return ensureAffected(res, "delete authz grant")
+}
+
+// ---- API Tokens ----
+
+type apiTokenStore struct{ s *dbStore }
+
+func (st *apiTokenStore) Create(ctx context.Context, t *ApiToken) error {
+	now := time.Now()
+	if t.CreatedAt.IsZero() {
+		t.CreatedAt = now
+	}
+	if t.UpdatedAt.IsZero() {
+		t.UpdatedAt = now
+	}
+	_, err := st.s.db.ExecContext(ctx, `
+		INSERT INTO api_tokens (id, user_id, name, token_hash, expires_at, status, last_used_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.UserID, t.Name, t.TokenHash, nilTime(t.ExpiresAt), t.Status,
+		nilTime(t.LastUsedAt), t.CreatedAt, t.UpdatedAt)
+	return mapErr(err, "create api token")
+}
+
+func scanApiToken(scanner interface{ Scan(...any) error }) (*ApiToken, error) {
+	t := &ApiToken{}
+	var expires, lastUsed sql.NullTime
+	if err := scanner.Scan(&t.ID, &t.UserID, &t.Name, &t.TokenHash, &expires,
+		&t.Status, &lastUsed, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		return nil, err
+	}
+	if expires.Valid {
+		t.ExpiresAt = &expires.Time
+	}
+	if lastUsed.Valid {
+		t.LastUsedAt = &lastUsed.Time
+	}
+	return t, nil
+}
+
+func (st *apiTokenStore) Get(ctx context.Context, id string) (*ApiToken, error) {
+	row := st.s.db.QueryRowContext(ctx, `
+		SELECT id, user_id, name, token_hash, expires_at, status, last_used_at, created_at, updated_at
+		FROM api_tokens WHERE id = ?`, id)
+	t, err := scanApiToken(row)
+	if err != nil {
+		return nil, mapErr(err, "get api token")
+	}
+	return t, nil
+}
+
+func (st *apiTokenStore) ListByUser(ctx context.Context, userID string) ([]*ApiToken, error) {
+	rows, err := st.s.db.QueryContext(ctx, `
+		SELECT id, user_id, name, token_hash, expires_at, status, last_used_at, created_at, updated_at
+		FROM api_tokens WHERE user_id = ? ORDER BY created_at`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list api tokens: %w", err)
+	}
+	defer rows.Close()
+	var out []*ApiToken
+	for rows.Next() {
+		if t, err := scanApiToken(rows); err != nil {
+			return nil, fmt.Errorf("scan api token: %w", err)
+		} else {
+			out = append(out, t)
+		}
+	}
+	return out, rows.Err()
+}
+
+func (st *apiTokenStore) Update(ctx context.Context, t *ApiToken) error {
+	t.UpdatedAt = time.Now()
+	res, err := st.s.db.ExecContext(ctx, `
+		UPDATE api_tokens SET user_id=?, name=?, token_hash=?, expires_at=?, status=?, last_used_at=?, updated_at=?
+		WHERE id=?`,
+		t.UserID, t.Name, t.TokenHash, nilTime(t.ExpiresAt), t.Status,
+		nilTime(t.LastUsedAt), t.UpdatedAt, t.ID)
+	if err != nil {
+		return fmt.Errorf("update api token: %w", err)
+	}
+	return ensureAffected(res, "update api token")
+}
+
+func (st *apiTokenStore) Delete(ctx context.Context, id string) error {
+	res, err := st.s.db.ExecContext(ctx, `DELETE FROM api_tokens WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete api token: %w", err)
+	}
+	return ensureAffected(res, "delete api token")
+}
+
 // ---- Clusters ----
 
 type clusterStore struct{ s *dbStore }
