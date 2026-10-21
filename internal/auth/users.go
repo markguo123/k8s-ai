@@ -194,6 +194,46 @@ func (s *Service) DeleteUser(ctx context.Context, id string) error {
 	return nil
 }
 
+// ChangePassword 修改当前用户口令（P6.12 自助改密）：必须携带旧密码，
+// 校验通过后用 argon2id 重哈希新密码并落库。新密码沿用平台最小长度
+// （8 位）。错误口令统一返回 ErrInvalidCredentials，不区分账号状态。
+// 当前登录会话保持有效；会话退出后需用新口令重新登录。
+func (s *Service) ChangePassword(ctx context.Context, userID, oldPassword, newPassword string) error {
+	if strings.TrimSpace(userID) == "" {
+		return ErrInvalidCredentials
+	}
+	if oldPassword == "" || newPassword == "" {
+		return ErrInvalidCredentials
+	}
+	u, err := s.users.Get(ctx, userID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return ErrInvalidCredentials
+		}
+		return fmt.Errorf("auth: get user: %w", err)
+	}
+	ok, err := verifyPassword(u.PasswordHash, oldPassword)
+	if err != nil || !ok {
+		return ErrInvalidCredentials
+	}
+	if newPassword == oldPassword {
+		return fmt.Errorf("%w: new password must differ from the old one", ErrInvalidUser)
+	}
+	if len(newPassword) < minPasswordLength {
+		return fmt.Errorf("%w: password must be at least %d characters", ErrInvalidUser, minPasswordLength)
+	}
+	hash, err := HashPassword(newPassword)
+	if err != nil {
+		return err
+	}
+	u.PasswordHash = hash
+	u.UpdatedAt = s.now().UTC()
+	if err := s.users.Update(ctx, u); err != nil {
+		return fmt.Errorf("auth: update password: %w", err)
+	}
+	return nil
+}
+
 // validateRole 解析并校验角色存在于角色表且名称命中三角色白名单。
 func (s *Service) validateRole(ctx context.Context, roleID string) (*store.Role, error) {
 	roleID = strings.TrimSpace(roleID)

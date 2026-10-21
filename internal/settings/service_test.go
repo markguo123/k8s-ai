@@ -2,6 +2,8 @@ package settings
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -11,6 +13,34 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/config"
 	"github.com/k8s-ai/k8s-ai/internal/store"
 )
+
+// testCipher 是 P3.9 的 fake 静态加密器：每次 Encrypt 都带随机 nonce，
+// 保证同一明文两次加密结果不同，用来验证"unchanged 比较走解密后明文"。
+type testCipher struct{}
+
+func (testCipher) Encrypt(plain []byte) (string, error) {
+	nonce := make([]byte, 4)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	buf := append(nonce, plain...)
+	return "test:" + base64.StdEncoding.EncodeToString(buf), nil
+}
+
+func (testCipher) Decrypt(encoded string) ([]byte, error) {
+	const prefix = "test:"
+	if !strings.HasPrefix(encoded, prefix) {
+		return nil, errors.New("test cipher: 未知前缀")
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(encoded, prefix))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) < 4 {
+		return nil, errors.New("test cipher: 载荷过短")
+	}
+	return raw[4:], nil
+}
 
 func newTestStore(t *testing.T) store.Store {
 	t.Helper()
@@ -167,7 +197,7 @@ func TestPatchGroupUnchangedSkipsAudit(t *testing.T) {
 // TestSensitiveKeysNeverReadBack 是红线用例：敏感键只写不读，
 // 无论 API 视图还是 JSON 序列化结果都不得出现明文。
 func TestSensitiveKeysNeverReadBack(t *testing.T) {
-	svc := New(newTestStore(t))
+	svc := New(newTestStore(t), WithCipher(testCipher{}))
 	ctx := context.Background()
 	const secret = "sk-live-abcdef123456"
 
@@ -209,7 +239,7 @@ func mustView(t *testing.T, svc *Service, group string) *GroupView {
 
 func TestImportConfigSkipsDefaults(t *testing.T) {
 	st := newTestStore(t)
-	svc := New(st)
+	svc := New(st, WithCipher(testCipher{}))
 	ctx := context.Background()
 
 	cfg := &config.Config{}
@@ -234,13 +264,100 @@ func TestImportConfigSkipsDefaults(t *testing.T) {
 	if _, err := st.Settings().Get(ctx, GroupModel, "max_tokens"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("默认值 max_tokens 不应入库, err=%v", err)
 	}
-	// 敏感键照原样入库（静态加密属 P3.9），但标记 Sensitive 且读接口不回显。
+	// 敏感键以密文入库（P3.9），但标记 Sensitive 且读接口不回显。
 	stored, err := st.Settings().Get(ctx, GroupModel, "api_key")
 	if err != nil || !stored.Sensitive {
 		t.Fatalf("api_key 应作为敏感键入库, got %+v err=%v", stored, err)
 	}
+	if stored.Value == `"sk-import-secret"` || strings.Contains(stored.Value, "sk-import-secret") {
+		t.Fatalf("api_key 不得以明文落库, got %q", stored.Value)
+	}
 	if encoded, err := json.Marshal(mustView(t, svc, GroupModel)); err == nil && strings.Contains(string(encoded), "sk-import-secret") {
 		t.Fatal("导入后的读视图不得泄漏 api_key 明文")
+	}
+}
+
+// TestPatchGroupSensitiveEncryptsAtRest 验证 P3.9：敏感键以密文落库，
+// Store 原始值不含明文，且密文可由注入的 cipher 还原。
+func TestPatchGroupSensitiveEncryptsAtRest(t *testing.T) {
+	st := newTestStore(t)
+	svc := New(st, WithCipher(testCipher{}))
+	ctx := context.Background()
+	const secret = "sk-at-rest-secret"
+
+	if _, err := svc.PatchGroup(ctx, GroupModel, patch(t, `{"api_key":"`+secret+`"}`), Actor{}); err != nil {
+		t.Fatalf("写入敏感键: %v", err)
+	}
+	stored, err := st.Settings().Get(ctx, GroupModel, "api_key")
+	if err != nil {
+		t.Fatalf("读取落库值: %v", err)
+	}
+	if stored.Value == `"`+secret+`"` || strings.Contains(stored.Value, secret) {
+		t.Fatalf("敏感键不得以明文落库, got %q", stored.Value)
+	}
+	if !stored.Sensitive {
+		t.Fatal("落库记录应标记 Sensitive")
+	}
+	// 落库保存的是归一化后的 JSON 编码（含引号），cipher 应无损还原该值。
+	encoded, err := json.Marshal(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := testCipher{}.Decrypt(stored.Value)
+	if err != nil || string(plain) != string(encoded) {
+		t.Fatalf("密文应还原为入库前的归一化取值, got %q want %s err=%v", plain, encoded, err)
+	}
+}
+
+// TestPatchGroupSensitiveUnchangedSkipsAudit 验证随机 nonce 下重复写同一
+// 敏感取值不会重复写库/重复审计（unchanged 比较按解密后的明文进行）。
+func TestPatchGroupSensitiveUnchangedSkipsAudit(t *testing.T) {
+	st := newTestStore(t)
+	svc := New(st, WithCipher(testCipher{}))
+	ctx := context.Background()
+	if _, err := svc.PatchGroup(ctx, GroupModel, patch(t, `{"api_key":"sk-repeat"}`), Actor{}); err != nil {
+		t.Fatalf("首次写入: %v", err)
+	}
+	if _, err := svc.PatchGroup(ctx, GroupModel, patch(t, `{"api_key":"sk-repeat"}`), Actor{}); err != nil {
+		t.Fatalf("重复写入: %v", err)
+	}
+	events, err := st.Audit().List(ctx)
+	if err != nil {
+		t.Fatalf("list audit: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("敏感键取值未变不应再写审计, got %d", len(events))
+	}
+}
+
+// TestPatchGroupSensitiveRequiresCipher 验证未装配加密器时，包含敏感键的
+// 整批写入按红线拒绝（ErrCipherRequired），批内非敏感键也不得残留。
+func TestPatchGroupSensitiveRequiresCipher(t *testing.T) {
+	st := newTestStore(t)
+	svc := New(st)
+	ctx := context.Background()
+	_, err := svc.PatchGroup(ctx, GroupModel, patch(t, `{"api_key":"sk-nocipher","max_tokens":1024}`), Actor{})
+	if !errors.Is(err, ErrCipherRequired) {
+		t.Fatalf("未装配 cipher 写敏感键应报 ErrCipherRequired, got %v", err)
+	}
+	if _, err := st.Settings().Get(ctx, GroupModel, "max_tokens"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("被拒绝批次不得写入任何键, err=%v", err)
+	}
+}
+
+// TestImportConfigSensitiveRequiresCipher 验证无 cipher 导入含非默认敏感键
+// 的 config 整批报错，绝不静默丢弃、也不回落明文。
+func TestImportConfigSensitiveRequiresCipher(t *testing.T) {
+	st := newTestStore(t)
+	svc := New(st)
+	ctx := context.Background()
+	cfg := &config.Config{}
+	cfg.LLM.APIKey = "sk-import-nocipher"
+	if _, err := svc.ImportConfig(ctx, cfg); !errors.Is(err, ErrCipherRequired) {
+		t.Fatalf("无 cipher 导入敏感键应报 ErrCipherRequired, got %v", err)
+	}
+	if _, err := st.Settings().Get(ctx, GroupModel, "api_key"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("报错后不得落任何敏感明文, err=%v", err)
 	}
 }
 

@@ -31,7 +31,19 @@ func newServerCmd(deps Dependencies) *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			logger := slog.Default()
-			path, err := expandHomePath(dbPath)
+			cfg, err := deps.LoadConfig(loadOptionsFromFlags(cmd))
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
+			listenAddr := cfg.Platform.Server.Addr
+			if cmd.Flags().Changed("addr") {
+				listenAddr = addr
+			}
+			path := cfg.Platform.Store.SQLitePath
+			if cmd.Flags().Changed("db") {
+				path = dbPath
+			}
+			path, err = expandHomePath(path)
 			if err != nil {
 				return err
 			}
@@ -44,23 +56,28 @@ func newServerCmd(deps Dependencies) *cobra.Command {
 				return fmt.Errorf("migrate store: %w", err)
 			}
 			authSvc := auth.New(st.Users(), st.Roles())
-			if err := authSvc.Bootstrap(cmd.Context(), os.Getenv("K8S_AI_ADMIN_PASSWORD")); err != nil {
+			if err := authSvc.BootstrapWithName(cmd.Context(), cfg.Platform.Auth.AdminUsername, os.Getenv("K8S_AI_ADMIN_PASSWORD")); err != nil {
 				return fmt.Errorf("bootstrap admin: %w (first start requires K8S_AI_ADMIN_PASSWORD)", err)
 			}
 			// 四期平台底座：配置中心与系统事件审计由同一 Store 装配（P1.10/P1.11）。
-			settingsSvc := settings.New(st)
 			auditSvc := service.NewAuditService(st)
-			// P3.1-P3.3：凭据加密密钥只从环境变量读取（P6.12 约定）。
-			// 未配置 K8S_AI_ENC_KEY 时集群端点返回 501，其余平台能力不受影响。
+			// P3.1-P3.9：凭据加密密钥只从环境变量读取（P6.12 约定），
+			// 集群与配置中心共用同一 cipher。未配置 K8S_AI_ENC_KEY 时：
+			// 集群端点返回 501；配置中心包含敏感键的写入整批拒绝（501），
+			// 非敏感配置仍可正常读写，其余平台能力不受影响。
 			var clusterSvc *cluster.Service
+			var settingsOpts []settings.Option
 			if cipher, err := cluster.NewCipherFromEnv(); err == nil {
+				settingsOpts = append(settingsOpts, settings.WithCipher(cipher))
 				clusterSvc = cluster.New(st.Clusters(), st.Credentials(), cipher,
 					cluster.WithAudit(func(ctx context.Context, e store.AuditEvent) error {
 						return auditSvc.Record(ctx, e)
 					}))
 			} else {
-				logger.Warn("cluster endpoints disabled", "reason", err.Error())
+				logger.Warn("cluster endpoints disabled; settings sensitive keys will be rejected",
+					"reason", err.Error())
 			}
+			settingsSvc := settings.New(st, settingsOpts...)
 			// P3.5：Skill 平台装配——先写内置种子，再从 Store 重建内存 registry。
 			skillPlat := service.NewSkillPlatform(st.Skills())
 			if err := skillPlat.SeedBuiltins(cmd.Context()); err != nil {
@@ -71,14 +88,21 @@ func newServerCmd(deps Dependencies) *cobra.Command {
 			}
 			// P3.11：授权面（AuthzGrant / ApiToken）由同一 Store 装配。
 			authzSvc := authz.New(st)
+			tls := cfg.Platform.Server.TLS
 			srv := &http.Server{
-				Addr:              addr,
+				Addr:              listenAddr,
 				Handler:           server.NewWithPlatform(deps.NewScan(), authSvc, settingsSvc, auditSvc).WithClusters(clusterSvc).WithSkills(skillPlat).WithAuthz(authzSvc).Handler(),
 				ReadHeaderTimeout: 10 * time.Second,
 			}
-			logger.Info("k8s-ai server listening", "addr", addr, "db", path)
+			logger.Info("k8s-ai server listening", "addr", listenAddr, "db", path, "tls", tls.Enabled)
 			errCh := make(chan error, 1)
-			go func() { errCh <- srv.ListenAndServe() }()
+			go func() {
+				if tls.Enabled {
+					errCh <- srv.ListenAndServeTLS(tls.CertFile, tls.KeyFile)
+					return
+				}
+				errCh <- srv.ListenAndServe()
+			}()
 			select {
 			case <-cmd.Context().Done():
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -93,8 +117,8 @@ func newServerCmd(deps Dependencies) *cobra.Command {
 			}
 		},
 	}
-	cmd.Flags().StringVar(&addr, "addr", ":8080", "listen address (e.g. :8080 or 0.0.0.0:8080)")
-	cmd.Flags().StringVar(&dbPath, "db", "~/.k8s-ai/k8s-ai.db", "SQLite database path (first start reads K8S_AI_ADMIN_PASSWORD)")
+	cmd.Flags().StringVar(&addr, "addr", "", "listen address override (default from config platform.server.addr, e.g. :8080)")
+	cmd.Flags().StringVar(&dbPath, "db", "", "SQLite database path override (default from config platform.store.sqlite_path; first start reads K8S_AI_ADMIN_PASSWORD)")
 	return cmd
 }
 

@@ -172,6 +172,16 @@ func (s *Service) UserByToken(ctx context.Context, token string) (*store.User, *
 // Bootstrap 首次初始化默认角色与 admin 用户；已有用户时幂等跳过。
 // admin 密码由调用方提供（环境变量/配置），不写入日志。
 func (s *Service) Bootstrap(ctx context.Context, adminPassword string) error {
+	return s.BootstrapWithName(ctx, DefaultAdminUsername, adminPassword)
+}
+
+// BootstrapWithName 与 Bootstrap 等价，但允许调用方指定首个管理员用户名
+// （P6.12：读取 platform.auth.admin_username 配置，为空回落默认 admin）。
+// 已有用户时幂等跳过，不会重命名既存管理员。
+func (s *Service) BootstrapWithName(ctx context.Context, adminUsername, adminPassword string) error {
+	if strings.TrimSpace(adminUsername) == "" {
+		adminUsername = DefaultAdminUsername
+	}
 	if strings.TrimSpace(adminPassword) == "" {
 		return errors.New("auth: bootstrap admin password must not be empty")
 	}
@@ -205,7 +215,7 @@ func (s *Service) Bootstrap(ctx context.Context, adminPassword string) error {
 	}
 	admin := &store.User{
 		ID:           newSecretToken(),
-		Username:     DefaultAdminUsername,
+		Username:     strings.TrimSpace(adminUsername),
 		DisplayName:  "Administrator",
 		PasswordHash: adminHash,
 		RoleID:       roleIDs[RoleAdmin],

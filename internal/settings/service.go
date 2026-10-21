@@ -23,7 +23,27 @@ var (
 	ErrGroupNotFound = errors.New("settings: group not found")
 	// ErrInvalid 键未登记或取值不合法。
 	ErrInvalid = errors.New("settings: invalid setting")
+	// ErrCipherRequired 写入包含敏感键但未装配静态加密器（P3.9）。
+	ErrCipherRequired = errors.New("settings: encryption cipher is required for sensitive keys")
 )
+
+// SecretCipher 是敏感配置值的静态加密接口（P3.9）：
+// Encrypt 把明文归一化取值加密为带版本前缀的密文；Decrypt 做对称还原，
+// 供"unchanged 比较"与迁移校验使用。默认实现为 cluster.Cipher（AES-256-GCM，
+// v1: 前缀，密钥读取自 K8S_AI_ENC_KEY，永不落库）。
+type SecretCipher interface {
+	Encrypt(plain []byte) (string, error)
+	Decrypt(encoded string) ([]byte, error)
+}
+
+// Option 是 Service 的装配选项。
+type Option func(*Service)
+
+// WithCipher 注入敏感配置值的静态加密器（P3.9）。未装配时：
+// 读视图对敏感键照常只回 hasValue；包含敏感键的写入整批报 ErrCipherRequired。
+func WithCipher(c SecretCipher) Option {
+	return func(s *Service) { s.cipher = c }
+}
 
 // Actor 是一次配置变更的操作者（写入 CONFIG_CHANGE 审计）。
 type Actor struct {
@@ -53,12 +73,17 @@ type GroupView struct {
 
 // Service 是配置中心应用服务：读写都经统一 Store，变更写 CONFIG_CHANGE 审计。
 type Service struct {
-	store store.Store
+	store  store.Store
+	cipher SecretCipher
 }
 
 // New 创建配置服务。
-func New(st store.Store) *Service {
-	return &Service{store: st}
+func New(st store.Store, opts ...Option) *Service {
+	s := &Service{store: st}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // GetGroup 读取分组：目录默认值与 Store 已存值合并；敏感键永不回明文。
@@ -118,18 +143,60 @@ func (s *Service) PatchGroup(ctx context.Context, group string, patch map[string
 		if err != nil && !errors.Is(err, store.ErrNotFound) {
 			return nil, fmt.Errorf("get setting %s.%s: %w", group, item.key, err)
 		}
+
+		// 敏感键写路径（P3.9）：密文带随机 nonce，unchanged 必须用解密后的
+		// 明文比较，否则同一取值会被当成新值重复写库、重复审计。
+		if item.def.Sensitive {
+			if s.cipher == nil {
+				return nil, fmt.Errorf("%w: %s.%s", ErrCipherRequired, group, item.key)
+			}
+			currentPlain := ""
+			hasCurrent := false
+			if current != nil && current.Value != "" {
+				plain, decErr := s.cipher.Decrypt(current.Value)
+				if decErr != nil {
+					return nil, fmt.Errorf("decrypt %s.%s: %w", group, item.key, decErr)
+				}
+				currentPlain = string(plain)
+				hasCurrent = true
+			}
+			if hasCurrent && currentPlain == item.value {
+				continue
+			}
+			if !hasContent(item.value) {
+				// 空值 = 清空敏感配置：删除记录，读视图回到 hasValue=false。
+				if hasCurrent {
+					if delErr := s.store.Settings().Delete(ctx, group, item.key); delErr != nil &&
+						!errors.Is(delErr, store.ErrNotFound) {
+						return nil, fmt.Errorf("delete setting %s.%s: %w", group, item.key, delErr)
+					}
+					changed++
+					sensitive++
+				}
+				continue
+			}
+			enc, encErr := s.cipher.Encrypt([]byte(item.value))
+			if encErr != nil {
+				return nil, fmt.Errorf("encrypt %s.%s: %w", group, item.key, encErr)
+			}
+			if err := s.store.Settings().Set(ctx, &store.Settings{
+				Group: group, Key: item.key, Value: enc, Sensitive: true,
+			}); err != nil {
+				return nil, fmt.Errorf("set setting %s.%s: %w", group, item.key, err)
+			}
+			changed++
+			sensitive++
+			continue
+		}
 		if current != nil && current.Value == item.value {
 			continue
 		}
 		if err := s.store.Settings().Set(ctx, &store.Settings{
-			Group: group, Key: item.key, Value: item.value, Sensitive: item.def.Sensitive,
+			Group: group, Key: item.key, Value: item.value, Sensitive: false,
 		}); err != nil {
 			return nil, fmt.Errorf("set setting %s.%s: %w", group, item.key, err)
 		}
 		changed++
-		if item.def.Sensitive {
-			sensitive++
-		}
 	}
 	if changed > 0 {
 		s.recordChange(ctx, group, keys, changed, sensitive, actor)
@@ -184,9 +251,10 @@ type ImportSummary struct {
 
 // ImportConfig 把三期 config.yaml 导入配置中心（P1.12 复用）。
 //
-// 口径：按目录逐项映射，值等同默认值时不入库（读取侧仍会得到同一值），
-// 敏感键（api_key / kubeconfig / mcp.servers）照原样入库但标记 Sensitive，
-// 读接口永不回显。
+// 口径：按目录逐项映射，值等同默认值时不入库（读取侧仍会得到同一值）；
+// 敏感键（api_key / kubeconfig / mcp.servers）非默认值必须由注入的
+// SecretCipher 加密后入库，未装配加密器时整批报错，绝不静默丢弃、也
+// 不回落明文（P3.9）；读接口对敏感键永不回显。
 func (s *Service) ImportConfig(ctx context.Context, cfg *config.Config) (ImportSummary, error) {
 	var summary ImportSummary
 	values, err := configValues(cfg)
@@ -220,8 +288,19 @@ func (s *Service) ImportConfig(ctx context.Context, cfg *config.Config) (ImportS
 				summary.Defaults++
 				continue
 			}
+			saveValue := value
+			if def.Sensitive {
+				if s.cipher == nil {
+					return summary, fmt.Errorf("%w: %s.%s", ErrCipherRequired, group, def.Key)
+				}
+				enc, encErr := s.cipher.Encrypt([]byte(value))
+				if encErr != nil {
+					return summary, fmt.Errorf("encrypt %s.%s: %w", group, def.Key, encErr)
+				}
+				saveValue = enc
+			}
 			if err := s.store.Settings().Set(ctx, &store.Settings{
-				Group: group, Key: def.Key, Value: value, Sensitive: def.Sensitive,
+				Group: group, Key: def.Key, Value: saveValue, Sensitive: def.Sensitive,
 			}); err != nil {
 				return summary, fmt.Errorf("import %s.%s: %w", group, def.Key, err)
 			}
@@ -229,6 +308,95 @@ func (s *Service) ImportConfig(ctx context.Context, cfg *config.Config) (ImportS
 		}
 	}
 	return summary, nil
+}
+
+// LoadRuntimeConfig 把配置中心的动态分组叠加到启动基线 config 上（P6.12）。
+//
+// 口径：config.yaml 只供静态/平台参数作为启动基线；运行时组件（chat/llm/
+// agent/scan）统一从这里读取动态配置。本方法以 base（已 Load 的文件 + 默认值）
+// 为底，把 7 个动态分组中“有 Source（对应 config 路径）且已配置”的键回写到
+// config.Config 上；敏感键（api_key/kubeconfig/mcp servers）在叠加前解密，
+// 若已配置敏感值但服务未装配 SecretCipher，则整批返回 ErrCipherRequired，绝不
+// 以明文或半解密状态进入运行时。
+func (s *Service) LoadRuntimeConfig(ctx context.Context, base *config.Config) (*config.Config, error) {
+	raw, err := configValues(base)
+	if err != nil {
+		return nil, err
+	}
+	for _, group := range Groups() {
+		stored, err := s.store.Settings().ListByGroup(ctx, group)
+		if err != nil {
+			return nil, fmt.Errorf("list settings %s: %w", group, err)
+		}
+		for _, item := range stored {
+			def, lerr := lookup(group, item.Key)
+			if lerr != nil {
+				continue // 未知/内部分组键不参与运行时叠加
+			}
+			if def.Source == "" {
+				continue // 纯 DB 配置（如 memory/retention），本阶段不注入 config.Config
+			}
+			if !hasContent(item.Value) {
+				continue
+			}
+			decoded, derr := decodeStored(def, item.Value, s.cipher)
+			if derr != nil {
+				return nil, fmt.Errorf("decode %s.%s: %w", group, item.Key, derr)
+			}
+			applyPath(raw, def.Source, decoded)
+		}
+	}
+	var out config.Config
+	dec, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
+		DecodeHook: mapstructure.StringToTimeDurationHookFunc(),
+		Result:     &out,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("build runtime config decoder: %w", err)
+	}
+	if err := dec.Decode(raw); err != nil {
+		return nil, fmt.Errorf("decode runtime config: %w", err)
+	}
+	if err := out.Validate(); err != nil {
+		return nil, fmt.Errorf("validate runtime config: %w", err)
+	}
+	return &out, nil
+}
+
+// decodeStored 把 Store 里的一条配置值解码成可回写 config 的 Go 值。
+// 敏感键先解密（密文是“规范化明文 JSON”的加密结果），再按 JSON 解析。
+func decodeStored(def Definition, storedValue string, cipher SecretCipher) (any, error) {
+	encoded := storedValue
+	if def.Sensitive {
+		if cipher == nil {
+			return nil, ErrCipherRequired
+		}
+		plain, err := cipher.Decrypt(storedValue)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt sensitive value: %w", err)
+		}
+		encoded = string(plain)
+	}
+	var value any
+	if err := json.Unmarshal([]byte(encoded), &value); err != nil {
+		return nil, fmt.Errorf("parse stored value: %w", err)
+	}
+	return value, nil
+}
+
+// applyPath 按 "a.b.c" 点分路径把值写入嵌套 map（用于与 viper 同源的分层叠加）。
+func applyPath(root map[string]any, path string, value any) {
+	parts := strings.Split(path, ".")
+	cur := root
+	for _, p := range parts[:len(parts)-1] {
+		child, ok := cur[p].(map[string]any)
+		if !ok {
+			child = map[string]any{}
+			cur[p] = child
+		}
+		cur = child
+	}
+	cur[parts[len(parts)-1]] = value
 }
 
 // configValues 按 mapstructure 标签把 Config 摊平成 group.key 可查的嵌套映射。

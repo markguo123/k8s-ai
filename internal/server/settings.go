@@ -75,6 +75,10 @@ func writeSettingsError(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, r, http.StatusNotFound, codeNotFound, err.Error())
 	case errors.Is(err, settings.ErrInvalid):
 		writeError(w, r, http.StatusBadRequest, codeInvalidArgument, err.Error())
+	case errors.Is(err, settings.ErrCipherRequired):
+		// P3.9：未装配凭据加密器时，包含敏感键的写入整批拒绝（与集群端点
+		// 未装配模式一致，避免任何明文落库路径）。
+		writeError(w, r, http.StatusNotImplemented, codeInternal, err.Error())
 	default:
 		writeError(w, r, http.StatusInternalServerError, codeInternal, "settings operation failed")
 	}

@@ -2,9 +2,10 @@
 // 把三期平铺的 config.yaml 收敛成"分组 + 键"的 Store 化配置，向 API 提供
 // GET/PATCH /settings/{group}。
 //
-// 安全边界（AGENTS.md）：Sensitive 键（API Key、kubeconfig 路径、MCP env）只在
-// 写接口接收，读接口一律不回明文，只回"是否已配置"；CONFIG_CHANGE 审计只记录
-// 变更了哪些键，不记录值。明文入库是本期现状，静态加密属 P3.9。
+// 安全边界（AGENTS.md + P3.9）：Sensitive 键（API Key、kubeconfig 路径、MCP env）
+// 只在写接口接收，读接口一律不回明文，只回"是否已配置"；CONFIG_CHANGE 审计只
+// 记录变更了哪些键，不记录值。P3.9 起敏感键在落库前由注入的 SecretCipher 静态
+// 加密，密钥只从环境变量读取（K8S_AI_ENC_KEY），永不落库、不再存明文。
 package settings
 
 import (

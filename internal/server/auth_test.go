@@ -138,6 +138,69 @@ func TestAuthMeWithoutToken(t *testing.T) {
 	decodeData(t, resp, nil)
 }
 
+// TestAuthChangePassword 覆盖 P6.12 自助改密 HTTP 端点：
+// 未登录 401、旧密码错误 401、新密码过短 400、成功后旧密码失效。
+func TestAuthChangePassword(t *testing.T) {
+	ts := newAuthServer(t)
+
+	// 未登录 401。
+	resp, err := http.Post(ts.URL+"/api/v1/auth/password", "application/json", bytes.NewBufferString(`{"oldPassword":"admin-pw","newPassword":"new-pass-1"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("未登录应 401, got %d", resp.StatusCode)
+	}
+
+	loginResp, _, payload := login(t, ts, `{"username":"admin","password":"admin-pw"}`)
+	if loginResp.StatusCode != http.StatusOK {
+		t.Fatalf("login 应成功, got %d", loginResp.StatusCode)
+	}
+	token, _ := payload["token"].(string)
+	if token == "" {
+		t.Fatal("login 响应缺少 token")
+	}
+
+	do := func(body string) *http.Response {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/auth/password", bytes.NewBufferString(body))
+		req.Header.Set(HeaderAuthorization, "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	// 旧密码错误 401。
+	if resp := do(`{"oldPassword":"wrong","newPassword":"new-pass-1"}`); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("旧密码错误应 401, got %d", resp.StatusCode)
+	}
+	// 新密码过短 400。
+	if resp := do(`{"oldPassword":"admin-pw","newPassword":"short"}`); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("新密码过短应 400, got %d", resp.StatusCode)
+	}
+	// 成功 200。
+	if resp := do(`{"oldPassword":"admin-pw","newPassword":"new-pass-1"}`); resp.StatusCode != http.StatusOK {
+		t.Fatalf("改密应 200, got %d", resp.StatusCode)
+	}
+
+	// 旧密码不可再登录。
+	badResp, _, _ := login(t, ts, `{"username":"admin","password":"admin-pw"}`)
+	if badResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("旧密码应失效, got %d", badResp.StatusCode)
+	}
+	// 新密码可登录。
+	okResp, _, newPayload := login(t, ts, `{"username":"admin","password":"new-pass-1"}`)
+	if okResp.StatusCode != http.StatusOK {
+		t.Fatalf("新密码应可登录, got %d", okResp.StatusCode)
+	}
+	if token2, _ := newPayload["token"].(string); token2 == "" {
+		t.Fatal("新密码登录响应缺少 token")
+	}
+}
+
 func TestAuthEndpointsNotConfigured(t *testing.T) {
 	srv := New(&fakeScan{})
 	ts := httptest.NewServer(srv.Handler())

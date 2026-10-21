@@ -13,6 +13,7 @@ import (
 
 	"github.com/k8s-ai/k8s-ai/internal/auth"
 	"github.com/k8s-ai/k8s-ai/internal/authz"
+	"github.com/k8s-ai/k8s-ai/internal/cluster"
 	"github.com/k8s-ai/k8s-ai/internal/permission"
 	"github.com/k8s-ai/k8s-ai/internal/service"
 	"github.com/k8s-ai/k8s-ai/internal/settings"
@@ -51,7 +52,13 @@ func newPlatformServer(t *testing.T) *platformServer {
 		t.Fatalf("reload skills: %v", err)
 	}
 	authzSvc := authz.New(st)
-	handler := NewWithPlatform(&fakeScan{}, authSvc, settings.New(st), service.NewAuditService(st)).WithSkills(skillPlat).WithAuthz(authzSvc).Handler()
+	// P3.9：与 cli server 装配一致，配置中心与集群共用同一凭据加密器；
+	// 未注入时对敏感键的写入会整批返回 501（ErrCipherRequired）。
+	cipher, err := cluster.NewCipher([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("cipher: %v", err)
+	}
+	handler := NewWithPlatform(&fakeScan{}, authSvc, settings.New(st, settings.WithCipher(cipher)), service.NewAuditService(st)).WithSkills(skillPlat).WithAuthz(authzSvc).Handler()
 	ts := httptest.NewServer(handler)
 	t.Cleanup(ts.Close)
 	return &platformServer{ts: ts, store: st, authSvc: authSvc, skillPlat: skillPlat, authzSvc: authzSvc}

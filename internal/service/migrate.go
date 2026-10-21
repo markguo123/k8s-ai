@@ -58,6 +58,9 @@ type MigrateOptions struct {
 	SessionDir string
 	AuditDir   string
 	ReportsDir string
+	// Cipher 用于静态加密 config 里的敏感键（P3.9）。未配置时导入含
+	// 非默认敏感键的 config 会整批报错，绝不静默丢弃、也不回落明文。
+	Cipher settings.SecretCipher
 }
 
 // Migrate 执行四期底座迁移（计划 P1.12）：
@@ -79,7 +82,7 @@ func Migrate(ctx context.Context, opts MigrateOptions) (MigrateReport, error) {
 		return rep, fmt.Errorf("migrate schema: %w", err)
 	}
 	if opts.Config != nil {
-		sum, err := migrateConfig(ctx, opts.Store, opts.Config)
+		sum, err := migrateConfig(ctx, opts.Store, opts.Config, opts.Cipher)
 		if err != nil {
 			return rep, err
 		}
@@ -103,8 +106,9 @@ func Migrate(ctx context.Context, opts MigrateOptions) (MigrateReport, error) {
 
 // migrateConfig 把旧 config.Config 导入配置中心。ImportConfig 按目录逐项
 // 非默认值入库、默认值不落库，因此天然幂等；完成后记一条迁移标记供审计/排查。
-func migrateConfig(ctx context.Context, st store.Store, cfg *config.Config) (settings.ImportSummary, error) {
-	sum, err := settings.New(st).ImportConfig(ctx, cfg)
+// 敏感键按 P3.9 由注入的 Cipher 加密落库。
+func migrateConfig(ctx context.Context, st store.Store, cfg *config.Config, cipher settings.SecretCipher) (settings.ImportSummary, error) {
+	sum, err := settings.New(st, settings.WithCipher(cipher)).ImportConfig(ctx, cfg)
 	if err != nil {
 		return sum, err
 	}

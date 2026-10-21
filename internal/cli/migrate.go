@@ -4,10 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"sort"
 
 	"github.com/spf13/cobra"
 
+	"github.com/k8s-ai/k8s-ai/internal/cluster"
 	"github.com/k8s-ai/k8s-ai/internal/service"
 	"github.com/k8s-ai/k8s-ai/internal/store"
 )
@@ -41,6 +43,14 @@ func newMigrateCmd(deps Dependencies) *cobra.Command {
 				SessionDir: firstNonEmpty(sessionsDir, cfg.Agent.SessionDir),
 				AuditDir:   firstNonEmpty(auditDir, cfg.Agent.AuditDir),
 				ReportsDir: firstNonEmpty(reportsDir, cfg.Report.Directory),
+			}
+			// P3.9：config 迁移的敏感键（api_key/kubeconfig/mcp）同样走静态加密，
+			// 与 cluster 共用 K8S_AI_ENC_KEY。未配置时 config 里若含非默认敏感键，
+			// 导入整批报错，绝不落明文。
+			if cipher, err := cluster.NewCipherFromEnv(); err == nil {
+				opts.Cipher = cipher
+			} else {
+				slog.Warn("migrate: 凭据加密器未配置，含敏感键的 config 导入将被拒绝", "reason", err.Error())
 			}
 			rep, err := service.Migrate(cmd.Context(), opts)
 			if err != nil {

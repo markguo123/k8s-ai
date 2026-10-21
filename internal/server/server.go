@@ -113,6 +113,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
 	mux.HandleFunc("POST /api/v1/auth/logout", s.handleLogout)
 	mux.HandleFunc("GET /api/v1/auth/me", s.handleMe)
+	mux.HandleFunc("POST /api/v1/auth/password", s.handleChangePassword)
 	mux.HandleFunc("POST /api/v1/scans", s.handleCreateScan)
 	mux.HandleFunc("GET /api/v1/scans/{id}", s.handleGetScan)
 	mux.HandleFunc("POST /api/v1/clusters", s.handleCreateCluster)

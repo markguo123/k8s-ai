@@ -2,7 +2,10 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +18,34 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/settings"
 	"github.com/k8s-ai/k8s-ai/internal/store"
 )
+
+// migrateTestCipher 是 P3.9 的 fake 静态加密器（带随机 nonce）。迁移装配
+// cipher 后，敏感配置键以密文落库、读视图仍不回明文。
+type migrateTestCipher struct{}
+
+func (migrateTestCipher) Encrypt(plain []byte) (string, error) {
+	nonce := make([]byte, 4)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	buf := append(nonce, plain...)
+	return "test:" + base64.StdEncoding.EncodeToString(buf), nil
+}
+
+func (migrateTestCipher) Decrypt(encoded string) ([]byte, error) {
+	const prefix = "test:"
+	if !strings.HasPrefix(encoded, prefix) {
+		return nil, errors.New("test cipher: 未知前缀")
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(encoded, prefix))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) < 4 {
+		return nil, errors.New("test cipher: 载荷过短")
+	}
+	return raw[4:], nil
+}
 
 func writeFixtureFile(t *testing.T, path, content string) {
 	t.Helper()
@@ -111,6 +142,7 @@ func TestMigrateImportsAllSourcesIdempotent(t *testing.T) {
 	opts := MigrateOptions{
 		Store: st, Config: cfg,
 		SessionDir: sessDir, AuditDir: auditDir, ReportsDir: reportDir,
+		Cipher: migrateTestCipher{},
 	}
 
 	rep1, err := Migrate(ctx, opts)
@@ -172,15 +204,18 @@ func TestMigrateImportsAllSourcesIdempotent(t *testing.T) {
 	if len(skills) != 5 {
 		t.Fatalf("stored skills = %d, want 5", len(skills))
 	}
-	// 配置中心应已登记敏感键（写路径按设计明文+标记，读视图永不回显）。
+	// 配置中心应已登记敏感键：密文落库（P3.9），读视图永不回显。
 	storedKey, err := st.Settings().Get(ctx, settings.GroupModel, "api_key")
-	if err != nil || storedKey.Value != `"sk-migrate-secret-api-key"` || !storedKey.Sensitive {
+	if err != nil || !storedKey.Sensitive {
 		t.Fatalf("api_key 应作为敏感键导入, got %+v err=%v", storedKey, err)
+	}
+	if strings.Contains(storedKey.Value, "sk-migrate-secret-api-key") {
+		t.Fatalf("api_key 不得以明文落库, got %q", storedKey.Value)
 	}
 	if got, err := st.Settings().Get(ctx, settings.GroupModel, "model"); err != nil || got.Value != `"custom-model"` {
 		t.Fatalf("model 应导入为 custom-model, got %+v err=%v", got, err)
 	}
-	view, err := settings.New(st).GetGroup(ctx, settings.GroupModel)
+	view, err := settings.New(st, settings.WithCipher(migrateTestCipher{})).GetGroup(ctx, settings.GroupModel)
 	if err != nil {
 		t.Fatalf("GetGroup(model): %v", err)
 	}
@@ -252,6 +287,7 @@ func TestMigrateReportUnmigratableCount(t *testing.T) {
 	rep, err := Migrate(context.Background(), MigrateOptions{
 		Store: st, Config: cfg,
 		SessionDir: sessDir, AuditDir: auditDir, ReportsDir: reportDir,
+		Cipher: migrateTestCipher{},
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -17,6 +17,8 @@ type authService interface {
 	Login(ctx context.Context, username, password string) (*auth.Session, error)
 	Logout(token string) error
 	UserByToken(ctx context.Context, token string) (*store.User, *store.Role, error)
+	// P6.12：登录用户自助改密（需旧密码，新密码最短 8 位，当场落库）。
+	ChangePassword(ctx context.Context, userID, oldPassword, newPassword string) error
 	// P3.11a：/users /roles 管理能力（handler 只依赖该接口，不触碰 Store）。
 	ListUsers(ctx context.Context) ([]*store.User, error)
 	CreateUser(ctx context.Context, req auth.CreateUserRequest) (*store.User, error)
@@ -87,4 +89,45 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeOK(w, r, http.StatusOK, map[string]any{"user": u, "role": role})
+}
+
+// handleChangePassword POST /api/v1/auth/password（P6.12 自助改密）。
+// 仅登录用户可调用并主动携带旧密码；口令统一不区分账号状态，
+// 旧密码错误返回 401，新密码不合规（过短/与旧密码相同）返回 400。
+func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	if s.auth == nil {
+		writeError(w, r, http.StatusNotImplemented, codeInternal, "auth is not configured")
+		return
+	}
+	u := UserFrom(r.Context())
+	if u == nil {
+		writeError(w, r, http.StatusUnauthorized, codeUnauthorized, "authentication required")
+		return
+	}
+	var body struct {
+		OldPassword string `json:"oldPassword"`
+		NewPassword string `json:"newPassword"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxCredentialBody)).Decode(&body); err != nil {
+		writeError(w, r, http.StatusBadRequest, codeInvalidArgument, "invalid body: "+err.Error())
+		return
+	}
+	if body.OldPassword == "" || body.NewPassword == "" {
+		writeError(w, r, http.StatusBadRequest, codeInvalidArgument, "oldPassword and newPassword are required")
+		return
+	}
+	if err := s.auth.ChangePassword(r.Context(), u.ID, body.OldPassword, body.NewPassword); err != nil {
+		switch {
+		case errors.Is(err, auth.ErrInvalidCredentials):
+			writeError(w, r, http.StatusUnauthorized, codeUnauthorized, "old password is incorrect")
+		case errors.Is(err, auth.ErrInvalidUser):
+			writeError(w, r, http.StatusBadRequest, codeInvalidArgument, err.Error())
+		default:
+			writeError(w, r, http.StatusInternalServerError, codeInternal, "password change failed")
+		}
+		return
+	}
+	// P6.12：改密成功写审计（不记录任何口令信息）。
+	s.recordAuthEvent(r, store.ActionAuthPassword, store.EventTypeForAction(store.ActionAuthPassword), u.ID)
+	writeOK(w, r, http.StatusOK, map[string]string{"status": "ok"})
 }

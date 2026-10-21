@@ -42,6 +42,7 @@ func DefaultAPIPolicy() *permission.Policy {
 		permission.Rule{Method: "POST", Path: "/api/v1/auth/login", Access: permission.AccessPublic},
 		permission.Rule{Method: "POST", Path: "/api/v1/auth/logout", Access: permission.AccessAuthenticated},
 		permission.Rule{Method: "GET", Path: "/api/v1/auth/me", Access: permission.AccessAuthenticated},
+		permission.Rule{Method: "POST", Path: "/api/v1/auth/password", Access: permission.AccessAuthenticated},
 		permission.Rule{Method: "POST", Path: "/api/v1/scans", Access: permission.AccessPermission, Permission: permission.ChatWrite},
 		permission.Rule{Method: "GET", Path: "/api/v1/scans/{id}", Access: permission.AccessPermission, Permission: permission.ClusterRead},
 		permission.Rule{Method: "POST", Path: "/api/v1/clusters", Access: permission.AccessPermission, Permission: permission.ClusterManage},

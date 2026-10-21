@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -147,5 +148,58 @@ func TestLogout(t *testing.T) {
 	}
 	if err := svc.Logout(""); err != ErrInvalidToken {
 		t.Fatalf("空 token 登出应失败: %v", err)
+	}
+}
+
+// TestChangePassword 覆盖P6.12自助改密：旧密码校验、新密码最短长度、
+// 新旧相同拒绝、成功后新密码可登录且旧密码失效。
+func TestChangePassword(t *testing.T) {
+	st := newStore(t)
+	svc := New(st.Users(), st.Roles())
+	ctx := context.Background()
+	if err := svc.Bootstrap(ctx, "old-pass-1"); err != nil {
+		t.Fatal(err)
+	}
+	users, err := st.Users().List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 1 {
+		t.Fatalf("应有且仅有一个 admin, got %d", len(users))
+	}
+	uid := users[0].ID
+
+	// 旧密码错误 → ErrInvalidCredentials。
+	if err := svc.ChangePassword(ctx, uid, "wrong-old", "new-pass-1"); err != ErrInvalidCredentials {
+		t.Fatalf("旧密码错误应返回 ErrInvalidCredentials: %v", err)
+	}
+	// 空参数 → ErrInvalidCredentials。
+	if err := svc.ChangePassword(ctx, "", "old-pass-1", "new-pass-1"); err != ErrInvalidCredentials {
+		t.Fatalf("空 userID 应返回 ErrInvalidCredentials: %v", err)
+	}
+	if err := svc.ChangePassword(ctx, uid, "", "new-pass-1"); err != ErrInvalidCredentials {
+		t.Fatalf("空旧密码应返回 ErrInvalidCredentials: %v", err)
+	}
+	// 新密码过短 / 与旧密码相同 → ErrInvalidUser。
+	if err := svc.ChangePassword(ctx, uid, "old-pass-1", "short"); !errors.Is(err, ErrInvalidUser) {
+		t.Fatalf("过短新密码应返回 ErrInvalidUser: %v", err)
+	}
+	if err := svc.ChangePassword(ctx, uid, "old-pass-1", "old-pass-1"); !errors.Is(err, ErrInvalidUser) {
+		t.Fatalf("新旧相同应返回 ErrInvalidUser: %v", err)
+	}
+
+	// 成功改密。
+	if err := svc.ChangePassword(ctx, uid, "old-pass-1", "new-pass-1"); err != nil {
+		t.Fatalf("改密应成功: %v", err)
+	}
+	if _, err := svc.Login(ctx, DefaultAdminUsername, "old-pass-1"); err != ErrInvalidCredentials {
+		t.Fatalf("旧密码应失效: %v", err)
+	}
+	sess, err := svc.Login(ctx, DefaultAdminUsername, "new-pass-1")
+	if err != nil {
+		t.Fatalf("新密码应可登录: %v", err)
+	}
+	if sess.User == nil || sess.User.ID != uid {
+		t.Fatalf("登录用户不符: %+v", sess.User)
 	}
 }

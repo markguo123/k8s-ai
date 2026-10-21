@@ -50,6 +50,7 @@ var eventTypeByAction = map[string]string{
 	"cluster.change":          AuditEventClusterChange,
 	"auth.login":              AuditEventLogin,
 	"auth.logout":             AuditEventLogout,
+	"auth.password":           AuditEventLogin,
 	"secret.value_requested":  AuditEventSecretRead,
 	"secret.touched":          AuditEventSecretRead,
 	"verification.started":    AuditEventResourceMutation,
@@ -66,6 +67,7 @@ const (
 	ActionClusterChange = "cluster.change"
 	ActionAuthLogin    = "auth.login"
 	ActionAuthLogout   = "auth.logout"
+	ActionAuthPassword = "auth.password"
 )
 
 // EventTypeForAction 返回三期动作对应的四期事件类型；未知动作归入 OTHER。

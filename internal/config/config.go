@@ -24,6 +24,7 @@ type Config struct {
 	Agent      AgentConfig      `mapstructure:"agent"` // 二期 Agent
 	WebUI      WebUIConfig      `mapstructure:"webui"` // 二期 Web UI
 	MCP        MCPConfig        `mapstructure:"mcp"`   // 二期 MCP 预留
+	Platform   PlatformConfig   `mapstructure:"platform"` // 四期平台静态启动基线（P6.12）
 }
 
 // KubernetesConfig controls cluster access (FR-003).
@@ -153,6 +154,44 @@ type MCPServerConfig struct {
 	URL     string            `mapstructure:"url"`
 }
 
+// PlatformConfig 是四期平台运行时的静态启动基线（P6.12）。
+// 口径：动态业务配置（model/skill/approval/memory/retention/mcp/ops）的
+// 唯一事实来源是 DB settings 表；本段只承载"这台实例想跑成什么样"的启动参数
+// （监听地址/存储/管理员账号），修改需改配置文件并重启服务生效。
+type PlatformConfig struct {
+	Server PlatformServerConfig `mapstructure:"server"`
+	Store  PlatformStoreConfig  `mapstructure:"store"`
+	Auth   PlatformAuthConfig   `mapstructure:"auth"`
+}
+
+// PlatformServerConfig 控制平台 HTTP 服务监听参数。
+type PlatformServerConfig struct {
+	Addr string            `mapstructure:"addr"`
+	TLS  PlatformTLSConfig `mapstructure:"tls"`
+}
+
+// PlatformTLSConfig 控制平台服务 HTTPS 监听。
+type PlatformTLSConfig struct {
+	Enabled  bool   `mapstructure:"enabled"`
+	CertFile string `mapstructure:"cert_file"`
+	KeyFile  string `mapstructure:"key_file"`
+}
+
+// PlatformStoreConfig 控制平台持久化存储（本期仅 sqlite）。
+type PlatformStoreConfig struct {
+	Driver     string `mapstructure:"driver"`
+	SQLitePath string `mapstructure:"sqlite_path"`
+	// DSN 预留：切换非 SQLite 驱动时的连接串，本期不消费。
+	DSN string `mapstructure:"dsn"`
+}
+
+// PlatformAuthConfig 控制平台内建账号与登录会话参数。
+type PlatformAuthConfig struct {
+	AdminUsername string        `mapstructure:"admin_username"`
+	TokenTTL      time.Duration `mapstructure:"token_ttl"`
+	SessionStore  string        `mapstructure:"session_store"` // memory（本期）
+}
+
 // LoadOptions controls a single Load call.
 type LoadOptions struct {
 	ConfigFile string         // explicit --config path
@@ -263,6 +302,18 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("webui.addr", "127.0.0.1:8081")
 
 	v.SetDefault("mcp.enabled", false)
+
+	// 四期平台静态启动基线（P6.12）。
+	v.SetDefault("platform.server.addr", ":8080")
+	v.SetDefault("platform.server.tls.enabled", false)
+	v.SetDefault("platform.server.tls.cert_file", "")
+	v.SetDefault("platform.server.tls.key_file", "")
+	v.SetDefault("platform.store.driver", "sqlite")
+	v.SetDefault("platform.store.sqlite_path", "~/.k8s-ai/k8s-ai.db")
+	v.SetDefault("platform.store.dsn", "")
+	v.SetDefault("platform.auth.admin_username", "admin")
+	v.SetDefault("platform.auth.token_ttl", 24*time.Hour)
+	v.SetDefault("platform.auth.session_store", "memory")
 }
 
 func resolveConfigPath(explicit string) (string, error) {
@@ -314,6 +365,21 @@ func expandHomePaths(cfg *Config) error {
 		return err
 	}
 	cfg.Agent.AuditDir = auditDir
+	sqlitePath, err := expandHome(cfg.Platform.Store.SQLitePath)
+	if err != nil {
+		return err
+	}
+	cfg.Platform.Store.SQLitePath = sqlitePath
+	certFile, err := expandHome(cfg.Platform.Server.TLS.CertFile)
+	if err != nil {
+		return err
+	}
+	cfg.Platform.Server.TLS.CertFile = certFile
+	keyFile, err := expandHome(cfg.Platform.Server.TLS.KeyFile)
+	if err != nil {
+		return err
+	}
+	cfg.Platform.Server.TLS.KeyFile = keyFile
 	return nil
 }
 
@@ -423,6 +489,42 @@ func (c *Config) Validate() error {
 	}
 	if c.WebUI.Addr == "" {
 		return fmt.Errorf("webui.addr must not be empty")
+	}
+	if err := c.Platform.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// Validate 校验平台静态启动基线（P6.12）：监听地址、TLS 成对、
+// 存储驱动本期仅 sqlite、管理员账号、会话 Token 时长与存储。
+func (p PlatformConfig) Validate() error {
+	if strings.TrimSpace(p.Server.Addr) == "" {
+		return fmt.Errorf("platform.server.addr must not be empty")
+	}
+	if p.Server.TLS.Enabled {
+		if strings.TrimSpace(p.Server.TLS.CertFile) == "" || strings.TrimSpace(p.Server.TLS.KeyFile) == "" {
+			return fmt.Errorf("platform.server.tls requires both cert_file and key_file")
+		}
+	}
+	switch p.Store.Driver {
+	case "", "sqlite":
+	default:
+		return fmt.Errorf("platform.store.driver must be sqlite (mysql not supported this phase)")
+	}
+	if strings.TrimSpace(p.Store.SQLitePath) == "" {
+		return fmt.Errorf("platform.store.sqlite_path must not be empty")
+	}
+	if strings.TrimSpace(p.Auth.AdminUsername) == "" {
+		return fmt.Errorf("platform.auth.admin_username must not be empty")
+	}
+	if p.Auth.TokenTTL <= 0 {
+		return fmt.Errorf("platform.auth.token_ttl must be > 0")
+	}
+	switch p.Auth.SessionStore {
+	case "", "memory":
+	default:
+		return fmt.Errorf("platform.auth.session_store must be memory (persistent store not supported this phase)")
 	}
 	return nil
 }
