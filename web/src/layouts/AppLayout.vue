@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, type Component } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import {
   ArrowDown,
   ChatDotRound,
@@ -19,6 +20,7 @@ import {
 
 import { useAuthStore } from '@/stores/auth'
 import { useTheme, type ThemeMode } from '@/composables/useTheme'
+import { changePassword } from '@/api/auth'
 
 const route = useRoute()
 const router = useRouter()
@@ -81,8 +83,56 @@ function handleUserCommand(command: string | number | object): void {
   if (command === 'logout') {
     auth.logout()
     router.push({ name: 'login' })
+  } else if (command === 'password') {
+    passwordDialogVisible.value = true
   } else if (command === 'admin') {
     router.push({ path: '/app/admin' })
+  }
+}
+
+/**
+ * P6.12 登录用户自助改密：弹窗收集旧密码 + 新密码 + 确认密码，
+ * 前端先做确认一致与最短 8 位校验，再调 POST /api/v1/auth/password。
+ */
+const passwordDialogVisible = ref(false)
+const oldPassword = ref('')
+const newPassword = ref('')
+const confirmPassword = ref('')
+const passwordSaving = ref(false)
+const passwordError = ref('')
+
+function resetPasswordForm(): void {
+  oldPassword.value = ''
+  newPassword.value = ''
+  confirmPassword.value = ''
+  passwordError.value = ''
+  passwordSaving.value = false
+}
+
+async function submitPasswordChange(): Promise<void> {
+  passwordError.value = ''
+  if (!oldPassword.value) {
+    passwordError.value = '请输入当前密码'
+    return
+  }
+  if (newPassword.value.length < 8) {
+    passwordError.value = '新密码长度不能少于 8 位'
+    return
+  }
+  if (newPassword.value !== confirmPassword.value) {
+    passwordError.value = '两次输入的新密码不一致'
+    return
+  }
+  passwordSaving.value = true
+  try {
+    await changePassword({ oldPassword: oldPassword.value, newPassword: newPassword.value })
+    passwordDialogVisible.value = false
+    resetPasswordForm()
+    ElMessage.success('密码已修改')
+  } catch (error) {
+    passwordError.value = error instanceof Error ? error.message : '密码修改失败'
+  } finally {
+    passwordSaving.value = false
   }
 }
 </script>
@@ -176,6 +226,7 @@ function handleUserCommand(command: string | number | object): void {
                 <el-dropdown-item v-if="isAdmin" divided command="admin">
                   管理控制台
                 </el-dropdown-item>
+                <el-dropdown-item divided command="password">修改密码</el-dropdown-item>
                 <el-dropdown-item command="logout">退出登录</el-dropdown-item>
               </el-dropdown-menu>
             </template>
@@ -187,6 +238,48 @@ function handleUserCommand(command: string | number | object): void {
       </el-main>
     </el-container>
   </el-container>
+
+  <el-dialog
+    v-model="passwordDialogVisible"
+    title="修改密码"
+    width="420px"
+    :close-on-click-modal="false"
+    @closed="resetPasswordForm"
+  >
+    <el-form label-position="top" @submit.prevent="submitPasswordChange">
+      <el-form-item label="当前密码">
+        <el-input
+          v-model="oldPassword"
+          type="password"
+          show-password
+          placeholder="请输入当前密码"
+        />
+      </el-form-item>
+      <el-form-item label="新密码">
+        <el-input
+          v-model="newPassword"
+          type="password"
+          show-password
+          placeholder="至少 8 位"
+        />
+      </el-form-item>
+      <el-form-item label="确认新密码">
+        <el-input
+          v-model="confirmPassword"
+          type="password"
+          show-password
+          placeholder="再次输入新密码"
+        />
+      </el-form-item>
+      <p v-if="passwordError" class="password-error">{{ passwordError }}</p>
+      <div class="dialog-actions">
+        <el-button @click="passwordDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="passwordSaving" :disabled="passwordSaving" @click="submitPasswordChange">
+          确认修改
+        </el-button>
+      </div>
+    </el-form>
+  </el-dialog>
 </template>
 
 <style scoped>
@@ -631,5 +724,22 @@ function handleUserCommand(command: string | number | object): void {
   .app-menu :deep(.el-menu-item:hover) {
     transform: none;
   }
+}
+</style>
+
+<style>
+/* P6.12：修改密码弹窗（el-dialog teleport 到 body，走全局样式）。 */
+.password-error {
+  margin: 0 0 8px;
+  color: var(--el-color-danger);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
 }
 </style>

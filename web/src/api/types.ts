@@ -86,6 +86,12 @@ export interface LoginResponse {
   user: AuthUser
 }
 
+/** POST /api/v1/auth/password 自助改密请求体（P6.12，需携带旧密码）。 */
+export interface ChangePasswordRequest {
+  oldPassword: string
+  newPassword: string
+}
+
 export interface MeResponse {
   user: AuthUser
   role: AuthRole
@@ -215,4 +221,35 @@ export interface Skill {
   lastValidation?: string
   createdAt: string
   updatedAt: string
+}
+
+/** 配置中心：键取值类型（后端 settings.Kind）。 */
+export type SettingsKind =
+  | 'string'
+  | 'bool'
+  | 'int'
+  | 'float'
+  | 'duration'
+  | 'stringList'
+  | 'json'
+
+/** 配置中心单个配置键视图。敏感键（api_key/kubeconfig/mcp）的 value 恒为 null，
+ * 只暴露 hasValue（是否已配置），后端落库存静态加密，前端永不回显明文（P3.9）。 */
+export interface SettingsItem {
+  key: string
+  kind: SettingsKind
+  value: unknown
+  hasValue: boolean
+  sensitive?: boolean
+  default?: unknown
+  enum?: string[]
+  source?: string
+  desc?: string
+  updatedAt?: string
+}
+
+/** GET /api/v1/settings/{group} 的 data（后端 settings.GroupView）。 */
+export interface SettingsGroupView {
+  group: string
+  items: SettingsItem[]
 }

@@ -4,6 +4,7 @@
  */
 import {
   ErrorCode,
+  type ChangePasswordRequest,
   type LoginRequest,
   type LoginResponse,
   type MeResponse,
@@ -39,4 +40,13 @@ export async function me(): Promise<MeResponse> {
     throw new ApiRequestError(200, ErrorCode.internal, 'auth: empty me response')
   }
   return res.data
+}
+
+/** 登录用户自助改密（P6.12）；401 代表旧密码错误，400 代表新密码不合规。 */
+export async function changePassword(payload: ChangePasswordRequest): Promise<void> {
+  await request<{ status: string }>('/auth/password', {
+    method: 'POST',
+    body: payload,
+    redirectOnUnauthorized: false,
+  })
 }
