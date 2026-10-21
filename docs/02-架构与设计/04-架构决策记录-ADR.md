@@ -268,32 +268,41 @@
   SQLite 只支持单实例写；多副本会表现为随机丢事件、审批 404、登录态抖动，且难以定位。
 - **后果**：部署清单与文档写明单副本及原因；多副本能力不在四期承诺范围内，需要时单独立项。
 
-## ADR-031 平台配置面：`platform:` 段承载平台级参数，敏感值只走环境变量
+## ADR-031 平台配置面：`platform:` 静态段 + 7 组动态键唯一落 DB `settings`
 
-- **状态**：已接受（2026-10-14 方案定稿；实现未开始，见 P6.12）
+- **状态**：已接受（2026-10-14 方案定稿；2026-10-21 v1.11 修订：明确 7 组动态键唯一权威源；实现待 P6.12）
 - **背景**：四期平台级参数（监听地址、平台库路径/DSN、管理员用户名、Token 有效期）当前只存在于
-  `server` 命令行开关与进程环境变量中，配置文件只覆盖 llm/agent/scan 这类引擎参数。后果是
-  Kubernetes 里一份可评审的"部署描述"被拆成 Deployment args + ConfigMap + Secret 三处，改一个
-  监听端口要动编排；`config init` 模板又漏了 `kubernetes.kubectl_path`、`llm.reasoning_fields`、
-  `agent.approval_mode`、`agent.create.*`、`agent.secret.access` 等已支持键，按模板配置的人会以为
-  这些能力不存在。
+  `server` 命令行开关与进程环境变量中，配置文件同时覆盖 llm/agent/scan 等引擎参数。若引擎参数同时保留在
+  YAML 与页面配置中心，会形成"文件 vs 页面"两处活配置漂移，并发修改互相覆盖；同时三期 `config init`
+  模板漏了 `kubernetes.kubectl_path`、`llm.reasoning_fields`、`agent.approval_mode`、`agent.create.*`、
+  `agent.secret.access` 等已支持键，按模板配置的人会以为这些能力不存在。
 - **决策**：
-  1. 配置文件新增 `platform:` 段承载平台级非敏感参数：`server.addr`、`server.tls.{enabled,cert_file,key_file}`、
+  1. 配置文件新增 `platform:` 段**只承载静态/启动级**参数：`server.addr`、`server.tls.{enabled,cert_file,key_file}`、
      `store.driver`（sqlite | mysql）、`store.sqlite_path`、`store.dsn`、`auth.admin_username`、
-     `auth.token_ttl`、`auth.session_store`（本期固定 memory）。
-  2. 敏感值只走环境变量 / Secret：`K8S_AI_ADMIN_PASSWORD`（首启引导 admin，不进配置文件）、
-     `K8S_AI_LLM_API_KEY`、需要时 `K8S_AI_PLATFORM_STORE_DSN`；YAML 只放非敏感默认值。
-  3. `k8s-ai server` 必须支持 `--config`；`--addr` / `--db` 降级为覆盖手段并保持兼容。
-     优先级沿用 **CLI > 环境变量 > YAML > 默认**。
-  4. `k8s-ai config init` 输出**全量模板**：模板键集合 = `Config` 结构体键集合（含 `platform.*`），
-     并由测试锁定，防止模板与代码再次漂移。
-  5. `k8s-ai config validate` 对未识别键给出显式告警，拼错的键不再被静默忽略。
-- **理由**：企业化部署要求"一份 ConfigMap + 一份 Secret"就能完整描述平台运行参数，且该描述可评审、
-  可 diff、可回滚；把平台参数留在命令行会同时削弱可审计性与可移植性。模板漏键属文档与代码漂移，
-  必须由测试兜住。
-- **后果**：`server` 命令需接入配置加载（当前只读 flags）；`deploy/configmap.yaml` 与部署手册 §3、
-  §4.9 同步；`platform` 段落地前，部署清单不得引用它。新增任务 P6.12。
-- **落实状态**：未实现。本节记录的是已定方向，在实现之前部署口径以部署手册 §4.9 的现状列为准。
+     `auth.token_ttl`、`auth.session_store`（本期固定 memory）；它是可评审、可 diff、可回滚的部署描述。
+  2. **7 组动态键（model/skill/approval/memory/retention/mcp/ops）彻底移出 `config.yaml`，唯一权威源是
+     DB `settings` 表**：平台部署后由管理员在配置中心页面维护，server 启动只读 `platform:` 静态段，
+     Chat/Agent/LLM 等运行时组件统一从 Store 读 DB；页面改动只写 DB、不回写 `config.yaml`，改配置文件
+     也不覆盖 DB 动态键，不存在双权威。
+  3. 敏感值只走环境变量 / Secret：`K8S_AI_ADMIN_PASSWORD`（首启引导 admin，不进配置文件）、
+     `K8S_AI_LLM_API_KEY`、需要时 `K8S_AI_PLATFORM_STORE_DSN`；YAML 只放非敏感默认值。模型 api_key、
+     MCP env、kubeconfig 等动态敏感值加密落 DB（`SecretCipher`，`K8S_AI_ENC_KEY`），明文永不回读。
+  4. `k8s-ai server` 必须支持 `--config`；`--addr` / `--db` 降级为覆盖手段并保持兼容。静态段优先级沿用
+     **CLI > 环境变量 > YAML > 默认**。
+  5. `k8s-ai config init` 只输出**静态/`platform:` 启动键与 CLI 直用缺省**，不再输出全量引擎键；模板键集合
+     由测试锁定，防止模板与代码再次漂移。`config validate` 对未识别键给出显式告警，拼错的键不再被静默忽略。
+  6. `migrate` 只作**显式一次性迁移**：三期旧 `config.yaml` 的动态键仅在管理员显式执行迁移时导入 settings
+     表，导入后以 DB 为权威；不承担"启动时自动全量导入"的职责。
+- **理由**：企业化部署要求"一份 ConfigMap（静态）+ 一份 Secret（敏感）+ DB settings（动态）"即可完整描述
+  平台运行参数，且该描述可评审、可 diff、可回滚；动态运营配置需要在线页面维护，唯一权威源只能落在 DB。
+  终端二进制直用（`k8s-ai chat / k8s-ai scan`）不依赖平台 DB，仍以本地 `config.yaml` + env + flags 静态
+  输入运行，与平台配置中心执行面隔离，互不覆盖。
+- **后果**：`server` 命令需接入配置加载（当前只读 flags）；`deploy/configmap.yaml` 与部署手册 §3、§4.9
+  同步；`config init` 模板从全量改为静态/启动级 + CLI 直用缺省；7 组动态键唯一落 DB（settings API/脱敏/
+  加密与前端 SettingsView 已随 P3.9/P3.10 落地）。落地任务 P6.12。
+- **落实状态**：配置中心后端（settings CRUD/脱敏/加密）与前端 SettingsView 已随 P3.9/P3.10 落地；
+  `platform:` 段接入、`config init` 模板收敛、运行时动态消费与左 rail UI 改造待 P6.12 实现。
+
 
 ## ADR-032 SSE 展示与顺序契约（分片不是展示单元，终态必须最后）
 

@@ -15,6 +15,29 @@ P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会�
 与授权架构修订（见
 `docs/02-架构与设计/13-方案-企业级身份权限与审批中心.md`，计划回写 v1.12/v1.13）。
 
+### Changed（2026-10-21，配置面静态/动态权威源拆离，仅文档）
+
+- **`config.yaml` 只承载静态/`platform:` 启动参数**：7 组动态键（model/skill/approval/memory/retention/mcp/ops）
+  彻底移出 config.yaml，唯一权威源是 DB `settings` 表，由配置中心页面维护；页面改动只写 DB 不回写文件，
+  改配置文件也不覆盖 DB 动态键，不存在双权威。
+- **`config init` 模板收敛**：只输出静态/`platform:` 键与 CLI 直用缺省，不再输出全量引擎键（P6.12）。
+- **`migrate` 只显式一次性迁移**：三期旧 config.yaml 动态键仅经显式迁移导入 settings，导入后以 DB 为权威，
+  不随启动自动导入。
+- **终端二进制不受影响**：`k8s-ai chat / k8s-ai scan` 仍以本地 config.yaml + env + flags 静态输入运行，
+  不依赖平台 DB，与平台配置中心执行面隔离。
+- 口径同步：PRD v1.11（§15/§26）、ADR-031 v1.11、开发计划 v1.37、部署手册 §3/§4.9/§8、项目状态。
+
+### Added（2026-10-20，P3.9/P3.10 配置中心完成）
+
+- **敏感字段静态加密（P3.9）**：`internal/settings` 新增 `SecretCipher`/`ErrCipherRequired`/`WithCipher`，
+  `model.api_key`/`mcp.servers`/`ops.kubeconfig` 等敏感键加密落库、读接口不回明文（`value:null`/`hasValue`），
+  未配置 `K8S_AI_ENC_KEY` 时 PATCH 写敏感键返回 501；`k8s-ai migrate` 与 web 装配注入同一 cipher。
+- **配置中心前端（P3.10）**：新增 `SettingsView.vue` 真实页面（7 分组 Tab：model/skill/approval/memory/
+  retention/mcp/ops，敏感键不回显、PATCH 局部保存、清理/JSON/list 控件、`settings.read`/`settings.write`
+  权限门禁），`web/src/api/settings.ts` 契约类型与方法、`settings.spec.ts` 契约测试同步落地。
+- **测试门禁**：`go test ./...`、`go vet ./...`、`go build ./...` 全绿；前端 `npm run test`（20 files /
+  107 passed）、`typecheck`、`lint`、`build` 通过；代码未提交，待真机验证无问题后再入库。
+
 ### Added（2026-10-15，P2.7–P2.13 Web Shell 收尾）
 
 - **AgentStep 卡片（P2.7）**：`AgentStepper` 四步过程步进器（思考→工具→观察→报告，随回合重置）、`TurnBlock` 回合容器（头部序号 T{n}/状态/耗时/token + 回合内回显用户诉求）、`ReasoningPanel` 思考面板（推理中自动展开、推理结束自动折叠为一行摘要、用户手动开合优先、附”不进入最终报告”说明）。每个 Step 与事件一一对应，不丢项不重复。

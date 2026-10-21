@@ -1,7 +1,7 @@
 # k8s-ai 四期需求规格（平台化）
 
-> 版本：v1.9  
-> 日期：2026-10-16  
+> 版本：v1.11  
+> 日期：2026-10-21  
 > 状态：四期最终需求方案  
 > 目标：在不推翻三期 Agent、Skill、SSA、审批、安全执行链路的前提下，将 k8s-ai 从 Agent 工具升级为可持续演进的平台化 Kubernetes 运维 Agent。
 
@@ -844,7 +844,9 @@ Kubernetes
 
 # 15. 配置中心
 
-配置中心分组：
+配置中心管理**平台运行时动态配置**，唯一权威源是 DB `settings` 表；`config.yaml` 不承载这 7 组动态键（`config init` 模板只输出静态/`platform:` 启动参数与 CLI 直用缺省）。页面保存只写 DB（敏感值加密落库、读面脱敏），server 与 Chat/Agent 运行时统一从 Store 读取；三期旧 config.yaml 的引擎键仅在 `migrate` 显式一次性导入时进入 settings 表，不随每次启动自动导入。
+
+配置中心分组（固定为这 7 组，平台部署后由管理员在页面维护）：
 
 ```text
 模型
@@ -872,6 +874,10 @@ timeout
 - 加密存储
 - API 不返回明文
 - 前端不回显
+
+### CLI 直用边界
+
+`k8s-ai chat / k8s-ai scan [resource]` 属于**终端二进制直用**入口：仍以 `--config` 指定的本地配置（默认 `~/.k8s-ai/config.yaml`）+ 环境变量 + 命令行 flag 作为静态输入，**不依赖平台 DB**。平台页面修改 7 组动态键时只写 `settings` 表，不回写、不覆盖该本地文件；二者按执行面隔离，不存在同一份活配置的双权威。
 
 ---
 
@@ -1462,10 +1468,16 @@ RBAC
 配置经 ConfigMap 挂载并以 `--config` 传入，数据目录用 PVC 承载（或改用 MySQL），初始 admin 密码经
 Secret 注入，日志走标准输出，不再使用 `nohup` 重定向到文件。
 
-配置面（ADR-031）：平台级非敏感参数（监听地址、TLS、Store 驱动与路径、admin 用户名、Token 有效期）
-由配置文件 `platform:` 段承载，`server` 必须支持 `--config`、`--addr`/`--db` 降级为覆盖手段；
-敏感值（admin 首启口令、LLM api_key、含口令的 DSN）只从环境变量 / Secret 读取，YAML 中不得出现明文；
-`config init` 必须输出全量模板（模板键集合 = 配置结构体键集合，由测试锁定）。
+配置面（ADR-031，v1.11 修订）：`config.yaml` 只承载**静态/启动级**参数（`platform:` 段：
+`server.addr`、`server.tls.*`、`store.driver`、`store.sqlite_path`、`store.dsn`、
+`auth.admin_username`、`auth.token_ttl`、`auth.session_store`），是一份可评审、可 diff、可回滚的部署描述；
+敏感值（admin 首启口令、LLM api_key、含口令的 DSN）只从环境变量 / Secret 注入，YAML 中不得出现明文。
+
+**7 组动态配置（model/skill/approval/memory/retention/mcp/ops）从 `config.yaml` 移出，唯一落在
+DB `settings` 表**：平台部署后由管理员在配置中心页面维护，server 启动只读 `platform:` 静态段，
+Chat/Agent/LLM 等运行时组件统一从 Store 读 DB；页面改动不会回写 `config.yaml`，改文件也不会覆盖
+DB 动态键。`migrate` 不再承担"启动时自动把 config.yaml 全量导入 settings 表"的职责，三期旧配置的
+迁移是显式、一次性入口，导入后以 DB 为权威。
 
 默认保持只读 RBAC。
 
@@ -1845,3 +1857,4 @@ Security Boundary Unchanged
 | v1.8 | 2026-10-16 | procedural 导入载体 v1 落地状态回写（不改需求范围）：§13.2 所述粘贴单/多篇 SKILL.md 文本导入、单个技能包 zip 导入与静态资产存储均已实现——文本导入前置扫描多文档边界、frontmatter `name/description` 强制解析、KnownFields 严格解码（`POST /api/v1/skills/import-procedural`，2MiB 上限）；zip 导入仅收根目录唯一 `SKILL.md` 主文、assets 走 md/yaml/json/txt/csv 白名单落库为元数据、`scripts/` 一律 `inert=true` 不执行，并带解压总大小/条目数/路径长度/深度/路径穿越/盘符/symlink 防御（`POST /api/v1/skills/import-zip`，32MiB 上限）；Chat 回合前意图检索注入已把 SKILL.md 渐进披露内容注入 Agent`SkillContext` 并记 `SKILL_RUN(retrieve)` 审计。见开发计划-四期 v1.30，代码尚未提交、待真机验证后入库 |
 | v1.9 | 2026-10-16 | procedural 导入兼容性收尾（不改范围）：修复两类真实导入报错——① 「直接压缩技能文件夹」的 zip（根目录无 SKILL.md、整包被单层目录包裹）在确认全部条目恰好归入唯一顶层目录后自动剥离该前缀再导入，多顶层目录整包拒绝；② SKILL.md 首行是代码围栏把 frontmatter 整个包起来的写法，按「围栏开行 + 下一行 `---`」识别并跳过开闭围栏。路径穿越/绝对路径/盘符/symlink/非白名单资产/总大小/条目数/深度限制全部保留并整包拒绝。见开发计划-四期 v1.31、§13.2，代码尚未提交、待真机验证后入库 |
 | v1.10 | 2026-10-16 | procedural 命中双场景与只读工具落地状态回写（不改需求范围）：§13.3 两种入口已实现——① 自动意图检索重写为三级匹配（整句精确名称 → 整句子串 → 长句关键词打分：名称 3 / 领域 2 / 描述 1，每词只计一次最高权重），单轮最多注入 2 篇（`hit=auto`）；② 显式 `@技能名` 指定，`ChatRequest.skills` 随 send-message 转发，逐个 `FindByName` 精确解析（大小写不敏感），任一未知名/未启用整批拒绝、不做静默降级、不叠加自动检索（`hit=explicit`）。Agent 侧新增只读工具 `list_skills` / `get_skill`（`IsReadOnly`、`RiskSafe`、Schema 标注 READ ONLY / SAFE / APPROVAL NOT REQUIRED），`get_skill` 正文按 96 KiB 截断并置 `truncated`、assets 仅元数据且脚本 `inert=true`、未知名技能返回工具级错误文本；命中同步 `RecordHit`（`hit_count`/`last_hit`）并落库 `SKILL_RUN`（operation=retrieve，`ResultSummary={"hit":"auto"|"explicit"}`）审计。Web Chat 前端 `@` 输入按 `skill.read` 权限弹出已启用的 procedural Skill 并回填，提交时把已匹配的 `@名` 从 query 剥离、仅转发有效技能名。见开发计划-四期 v1.32，代码未提交、待真机验证后入库 |
+| v1.11 | 2026-10-21 | 配置面口径修订（不改范围，拆离动态键权威源）：`config.yaml` 只承载静态/`platform:` 启动参数；7 组动态键（model/skill/approval/memory/retention/mcp/ops）唯一落 DB `settings` 表，由配置中心页面维护、server 与 Chat/Agent/LLM 运行时从 Store 读，不再每次启动自动导入；`config init` 模板只输出静态/platform 键与 CLI 直用缺省；`k8s-ai chat/scan` 终端直用仍读本地文件+env+flag、不依赖平台 DB。见 ADR-031 v1.11、§15/§26、P6.12 |
