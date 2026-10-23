@@ -261,3 +261,89 @@ export interface SettingsGroupView {
   encryptionAvailable?: boolean
   items: SettingsItem[]
 }
+
+/** 用户账号状态（后端 auth 仅开放 active | disabled；内置 admin 受保护）。 */
+export type UserStatus = 'active' | 'disabled' | string
+
+/** 授权委派主体类型（P3.11 后端放行 user | group）。 */
+export type GrantPrincipalType = 'user' | 'group' | string
+
+/** 授权委派权限白名单（P3.11 后端仅放行 * 全量 与 destroy 销毁委派）。 */
+export type GrantPermission = '*' | 'destroy' | string
+
+/** API Token 生命周期状态（active | revoked | disabled）。 */
+export type TokenStatus = 'active' | 'revoked' | 'disabled' | string
+
+/** POST /api/v1/users 请求体（auth.CreateUserRequest；PasswordHash 由 json:"-" 挡掉）。 */
+export interface CreateUserRequest {
+  username: string
+  displayName?: string
+  password: string
+  roleId: string
+  status?: string
+}
+
+/** PATCH /api/v1/users/{id} 部分更新请求体（auth.UpdateUserRequest）。 */
+export interface UpdateUserRequest {
+  displayName?: string
+  password?: string
+  roleId?: string
+  status?: string
+}
+
+/** namespace 授权/销毁委派（后端 authz.Grant；不含任何敏感实体）。 */
+export interface AuthzGrant {
+  id: string
+  principalType: GrantPrincipalType
+  principalId: string
+  clusterId?: string
+  namespaces: string[]
+  permissions: string[]
+  expiresAt?: string
+  createdBy?: string
+  createdAt: string
+  updatedAt: string
+}
+
+/** POST /api/v1/grants 请求体（authz.CreateGrantRequest）。 */
+export interface CreateGrantRequest {
+  principalType: GrantPrincipalType
+  principalId: string
+  clusterId?: string
+  namespaces: string[]
+  permissions: string[]
+  expiresAt?: string
+}
+
+/** PATCH /api/v1/grants/{id} 部分更新请求体（authz.UpdateGrantRequest；
+ * expiresAt 省略表示保持原值）。 */
+export interface UpdateGrantRequest {
+  clusterId?: string
+  namespaces?: string[]
+  permissions?: string[]
+  expiresAt?: string
+}
+
+/** 用户 API Token 元数据（authz.Token；TokenHash 永不回传）。 */
+export interface ApiToken {
+  id: string
+  userId: string
+  name?: string
+  expiresAt?: string
+  status?: TokenStatus
+  lastUsedAt?: string
+  createdAt: string
+  updatedAt: string
+}
+
+/** POST /api/v1/users/{userId}/tokens 请求体（authz.CreateTokenRequest）。 */
+export interface CreateTokenRequest {
+  name: string
+  expiresAt?: string
+}
+
+/** 签发 API Token 的响应：明文 token 仅此一次返回，服务端只存 SHA-256（authz.CreateTokenResult）。 */
+export interface CreateTokenResult {
+  apiToken: ApiToken
+  token: string
+}
