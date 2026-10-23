@@ -15,6 +15,20 @@ P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会�
 与授权架构修订（见
 `docs/02-架构与设计/13-方案-企业级身份权限与审批中心.md`，计划回写 v1.12/v1.13）。
 
+### Added（2026-10-23，P3.12 用户/权限管理前端完成）
+
+- **用户与权限管理页（P3.12）**：新增 `web/src/api/users.ts` 客户端（users/roles/grants/tokens 端点，对齐后端
+  `internal/auth` / `internal/authz` 契约）与 `web/src/api/types.ts` 权限/用户/授权/Token 类型、`web/src/api/index.ts`
+  导出 users；`UsersView.vue` 由占位页重写为真实管理页——左 rail 四分区（用户管理 / 角色与权限 / 授权委派 /
+  API Token）+ 统计卡 + 用户 CRUD（新建/改角色/停用/恢复/删除）+ 角色权限只读矩阵 + 按 主体类型/主体/集群/
+  namespaces/权限（`*` / `destroy`）/有效期 的授权委派 + 按用户签发 API Token（明文仅创建时展示一次）+ 内置
+  admin 不可删/停/降级、不能自行停用/降级/删除；`user.manage` 权限门禁、无权限渲染 TechEmptyState（前端隐藏
+  非安全机制，后端仍独立强校验）。
+- **测试**：新增 `web/src/api/__tests__/users.spec.ts`（契约：列表/单条 URL 编码/请求体/权限路由/错误归一/
+  明文不回显）与 `web/src/views/users/__tests__/usersView.spec.ts`（组件：四分区渲染/权限门禁/空态）；前端
+  `npm run test` 24 文件 126 用例、`typecheck`/`lint`/`build` 与后端 `go test ./...` / `go vet ./...` 全绿；代码
+  未提交，待真机验证无问题后再入库。
+
 ### Changed（2026-10-21，配置面静态/动态权威源拆离，仅文档）
 
 - **`config.yaml` 只承载静态/`platform:` 启动参数**：7 组动态键（model/skill/approval/memory/retention/mcp/ops）

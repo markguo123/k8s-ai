@@ -1,7 +1,7 @@
 # k8s-ai 四期需求规格（平台化）
 
-> 版本：v1.11  
-> 日期：2026-10-21  
+> 版本：v1.12  
+> 日期：2026-10-22  
 > 状态：四期最终需求方案  
 > 目标：在不推翻三期 Agent、Skill、SSA、审批、安全执行链路的前提下，将 k8s-ai 从 Agent 工具升级为可持续演进的平台化 Kubernetes 运维 Agent。
 
@@ -1430,41 +1430,67 @@ Agent 调了哪些 Tool？
 
 # 26. 部署
 
-四期生产形态只有一种：**Kubernetes**。单进程二进制运行保留为三期兼容与本地开发调试口径，不再是四期的生产部署目标。
+平台采用「前后端工程分离 + 单二进制一体化交付」架构，支持两种部署形态：**默认一体化（形态 A）**
+与**可选前后端分离（形态 B）**，两者共享同一套业务代码与 `/api/v1` API 契约。Kubernetes 是四期
+生产主场景，默认单副本稳定运行。
 
-## 平台主进程与前端交付
+## 形态 A：一体化部署（默认）
 
-四期平台主进程是 `k8s-ai server`，在同一进程、同一端口内提供：
+Go 单二进制内嵌前端构建产物，由 `k8s-ai server` 在同一进程、同一端口提供：
 
 ```text
 /api/v1/**        平台 API（含 Chat SSE）
-/**               SPA 静态资源（web/dist 内嵌，需 history fallback 与缓存策略）
+/**               SPA 静态资源（web/dist 经 go:embed 内嵌，需 history fallback 与缓存策略）
 ```
 
-`k8s-ai web`（三期 webui）冻结为三期封版兼容入口：继续可用、只做兼容回归，不再承载四期新增能力，
-四期前端不长期依赖其 `/api/sessions` 裸 JSON 契约。详见 ADR-029。
+适用：单机部署、POC、测试环境、企业常规部署、离线交付、快速安装与升级。该形态是当前优先维护和
+验证的标准部署形态，不因引入可选部署模式而改变既有架构。
 
-## 本地 / 单进程（三期兼容与开发调试）
+## 形态 B：前后端分离部署（可选、按需启用）
+
+前端独立构建为静态资源（`web/dist`），由独立 Nginx（或企业既有静态资源托管、网关、CDN）托管；
+后端服务关闭静态资源路由，只提供 `/api/v1`（含 Chat SSE）与 `/healthz`、`/readyz`、`/version`。
+默认**同域名、按路径分流**：`/assets/*` 与 `/`（SPA fallback）→ 前端服务，`/api/v1/*` → 后端服务。
+前端访问 API 使用相对路径 `/api/v1`（构建期可用 `VITE_API_BASE` 覆盖）；跨域与独立子域不作为当前
+强制需求。允许前后端独立发布、滚动与回滚，通过 `/api/v1` API 契约测试守住兼容面。
+
+该形态属于可选部署能力。不得为支持该形态而大规模重构后端、拆分微服务、重写前端 API 层或改变已有
+业务逻辑；实现以最小开关改动为原则（如后端关闭静态路由）。若成本明显增加，需重新评审。
+
+适用：客户明确要求前端独立发布/回滚、企业已有统一静态资源托管/网关/CDN 规范、后续确需前后端独立
+维护和交付。
+
+## 三期兼容入口
+
+`k8s-ai web`（三期 webui）冻结为三期封版兼容入口：继续可用、只做兼容回归，不再承载四期新增能力，
+四期前端不长期依赖其 `/api/sessions` 裸 JSON 契约。详见 ADR-029 / ADR-036。
+
+## 本地 / 单进程（开发调试与一体化回退）
+
+一体化形态本地直接启动：
 
 ```bash
-k8s-ai web \
+k8s-ai server \
   --addr 0.0.0.0:8888 \
   --config /etc/k8s-ai/config.yaml
 ```
 
-## Kubernetes（唯一生产形态）
+开发阶段若后端尚未内嵌 SPA，可临时使用三期 `k8s-ai web` 验证 Chat（见构建与测试手册）；该入口只作
+兼容与本地调试，不作为生产交付目标。
+
+## Kubernetes（生产主场景，两种形态均可）
 
 ```text
-Deployment
-ConfigMap
-Secret
-PVC
-Service
-Ingress
-RBAC
+形态 A：Deployment（单容器，内嵌 SPA）+ Service + Ingress + ConfigMap + Secret + PVC + RBAC
+形态 B：Deployment k8s-ai-web（Nginx + dist）
+       + Deployment k8s-ai-server（纯 API）
+       + 两个 Service + 一个 Ingress + ConfigMap + Secret + PVC + RBAC
 ```
 
-平台进程默认 `replicas: 1`；扩副本需先满足会话/Token 持久化与 SSE、审批通道跨副本方案（见 ADR-030）。
+形态 B 的 Ingress 按路径分流；SSE 反代必须关闭代理缓冲并放大读超时。两种形态的平台进程均默认
+`replicas: 1`；扩副本需先满足会话/Token 持久化与 SSE、审批通道跨副本方案（见 ADR-030）。多副本/
+高可用/分布式协调不属于四期目标。
+
 配置经 ConfigMap 挂载并以 `--config` 传入，数据目录用 PVC 承载（或改用 MySQL），初始 admin 密码经
 Secret 注入，日志走标准输出，不再使用 `nohup` 重定向到文件。
 
@@ -1485,7 +1511,6 @@ DB 动态键。`migrate` 不再承担"启动时自动把 config.yaml 全量导�
 
 写执行依赖（关键约束）：当前镜像为 distroless static，不含 kubectl 与 shell，而三期写路径依赖 kubectl 工具。四期必须二选一：镜像内安装与集群版本兼容的固定版本 kubectl，或把写执行统一走 client-go；增强的执行器仍必须保持 Code Guard + internal/executor 双层边界，且为唯一写执行通道。
 
----
 
 # 27. 一键安装
 
@@ -1731,7 +1756,7 @@ frontend build
 - SSE 事件流 mock 测试：session/turn/step 状态推进与事件字段完整性。
 - 前端路由权限与后端 API 越权测试（越权返回 401/403）。
 - kubeconfig 与 Secret 不进入审计、会话、记忆的红线专项测试。
-- 部署冒烟：以 K8s Deployment 为主，平台主进程 `k8s-ai server`（SPA + `/api/v1` + Chat SSE 同源、单副本）跑通 Chat/审批/健康检查；本地单进程作为辅助回归口径。
+- 部署冒烟：K8s 两种形态各跑通登录→Chat→审批→创建→审计/E2E，默认单副本；形态 A 为 `k8s-ai server`（SPA + `/api/v1` + Chat SSE 同源）单 Deployment，形态 B 为「Nginx+dist 前端 + 纯 API 后端」双 Deployment；本地单进程作为辅助回归口径。
 
 Web：
 
@@ -1850,7 +1875,7 @@ Security Boundary Unchanged
 | v1.1 | 2026-09-30 | 架构基线：Agent Runtime / SSE / Approval v2 平台化 / Skill 非执行器 / Storage / 部署双轨 |
 | v1.2 | 2026-09-30 | 最终需求方案：双层安全边界、写工具统一受控通道、SSE 兼容迁移、镜像写执行方案、双驱动存储迁移、权限作用域、验收测试细化 |
 | v1.3 | 2026-10-13 | 审批与授权方案修订（见 `docs/02-架构与设计/13-方案-企业级身份权限与审批中心.md`）：角色收敛为 user/operator/admin；授权以 namespace 为唯一边界、零权限起步、admin 划分 namespace；销毁类仅 admin 并支持 operator 委派、未授权直接提示联系管理员；审批主体只有本人自确认或审批子 agent 自动；自动审批显式白名单（默认关闭+会话开关）；AuthzGrant 权威 + RBAC 派生对账 + 执行前 SAR；平台演进为多 Agent 编排并引入 Approval Agent；修正 P4.8 审批人约束 |
-| v1.4 | 2026-10-14 | 部署与交付口径修订（不改需求范围）：Kubernetes 为四期唯一生产形态，单进程运行降为三期兼容与本地开发调试口径；平台主进程 = `k8s-ai server`（`/api/v1` + Chat SSE + 内嵌 SPA 同源单端口），`k8s-ai web` 冻结为三期兼容入口；新增平台进程默认单副本约束与扩副本前置条件；见 ADR-029 / ADR-030 |
+| v1.4 | 2026-10-14 | 部署与交付口径修订（不改需求范围）：Kubernetes 为四期唯一生产形态，单进程运行降为三期兼容与本地开发调试口径；平台主进程 = `k8s-ai server`（`/api/v1` + Chat SSE + 内嵌 SPA 同源单端口），`k8s-ai web` 冻结为三期兼容入口；新增平台进程默认单副本约束与扩副本前置条件；见 ADR-029 / ADR-030。（**已被 v1.12 取代**：「唯一生产形态」改为「默认一体化 + 可选前后端分离」，见 ADR-036） |
 | v1.5 | 2026-10-14 | 补两条协议级需求（不改范围，只补此前隐含的约束）：① §8 增补"事件顺序与展示语义"——分片不是展示单元、终态必须最后、增量统一脱敏、思考面板语义；② §26 增补四期配置面——`platform:` 段承载平台级非敏感参数、敏感值只走环境变量/Secret、`server` 支持 `--config`、`config init` 输出全量模板。见 ADR-031 / ADR-032、D-21 / D-22 |
 | v1.6 | 2026-10-15 | 增补前端体验基线需求（不改范围）：§10 指向《14-方案-前端体验优化-四期.md》，并固化两条硬约束——主题与令牌（data-theme + 默认深色 + 支持跟随系统 + 首屏防闪烁）与工具结果同源（`tool_result` 由后端计算并同时下发与落库）。见 ADR-033/ADR-034、D-23/D-24、任务 P7.1–P7.5 |
 | v1.7 | 2026-10-16 | Skill 双轨口径统一（不改需求范围，消除术语与设计矛盾）：Skill 拆为正交两维——`type`（structured / procedural）与 `source`（builtin / custom / third-party，只表达提供方、不再混用为类型）；structured 为资源创建类确定性规则（`create_resource` 消费 findings、Approval Risk 只升不降、custom/third-party 禁设 `risk.default`），procedural 为标准 Agent 技能（SKILL.md + frontmatter，聊天回合前意图检索后注入系统提示词、支持显式调用）；统一消费与安全边界（SKILL.md 正文为不可信文本上下文、技能包 `scripts/` 一律 inert 且平台不提供脚本执行引擎、方法论文本由 Agent 翻译为受信工具调用、交互式命令与 shell 审批红线及 Secret/kubeconfig 红线不变、能力缺失明确拒绝并记 `SKILL_RUN` 审计）；procedural 导入载体 v1 = 粘贴单/多篇 SKILL.md 文本 + 单个技能包 zip（assets 白名单 md/yaml/json/txt/csv，文件总大小/文件数/解压深度/路径穿越/符号链接有界校验），多技能 zip 与沙箱执行延后。见新增 §13.0 及 §13.1/§13.2、§4 非目标、《01-系统架构与技术方案》§11、开发计划-四期 P3.8.1–P3.8.4 |
@@ -1858,3 +1883,4 @@ Security Boundary Unchanged
 | v1.9 | 2026-10-16 | procedural 导入兼容性收尾（不改范围）：修复两类真实导入报错——① 「直接压缩技能文件夹」的 zip（根目录无 SKILL.md、整包被单层目录包裹）在确认全部条目恰好归入唯一顶层目录后自动剥离该前缀再导入，多顶层目录整包拒绝；② SKILL.md 首行是代码围栏把 frontmatter 整个包起来的写法，按「围栏开行 + 下一行 `---`」识别并跳过开闭围栏。路径穿越/绝对路径/盘符/symlink/非白名单资产/总大小/条目数/深度限制全部保留并整包拒绝。见开发计划-四期 v1.31、§13.2，代码尚未提交、待真机验证后入库 |
 | v1.10 | 2026-10-16 | procedural 命中双场景与只读工具落地状态回写（不改需求范围）：§13.3 两种入口已实现——① 自动意图检索重写为三级匹配（整句精确名称 → 整句子串 → 长句关键词打分：名称 3 / 领域 2 / 描述 1，每词只计一次最高权重），单轮最多注入 2 篇（`hit=auto`）；② 显式 `@技能名` 指定，`ChatRequest.skills` 随 send-message 转发，逐个 `FindByName` 精确解析（大小写不敏感），任一未知名/未启用整批拒绝、不做静默降级、不叠加自动检索（`hit=explicit`）。Agent 侧新增只读工具 `list_skills` / `get_skill`（`IsReadOnly`、`RiskSafe`、Schema 标注 READ ONLY / SAFE / APPROVAL NOT REQUIRED），`get_skill` 正文按 96 KiB 截断并置 `truncated`、assets 仅元数据且脚本 `inert=true`、未知名技能返回工具级错误文本；命中同步 `RecordHit`（`hit_count`/`last_hit`）并落库 `SKILL_RUN`（operation=retrieve，`ResultSummary={"hit":"auto"|"explicit"}`）审计。Web Chat 前端 `@` 输入按 `skill.read` 权限弹出已启用的 procedural Skill 并回填，提交时把已匹配的 `@名` 从 query 剥离、仅转发有效技能名。见开发计划-四期 v1.32，代码未提交、待真机验证后入库 |
 | v1.11 | 2026-10-21 | 配置面口径修订（不改范围，拆离动态键权威源）：`config.yaml` 只承载静态/`platform:` 启动参数；7 组动态键（model/skill/approval/memory/retention/mcp/ops）唯一落 DB `settings` 表，由配置中心页面维护、server 与 Chat/Agent/LLM 运行时从 Store 读，不再每次启动自动导入；`config init` 模板只输出静态/platform 键与 CLI 直用缺省；`k8s-ai chat/scan` 终端直用仍读本地文件+env+flag、不依赖平台 DB。见 ADR-031 v1.11、§15/§26、P6.12 |
+| v1.12 | 2026-10-22 | 部署架构口径统一（仅文档）：明确「前后端工程分离 + 单二进制一体化交付」，支持两种部署形态——形态 A 默认一体化（`go:embed web/dist` + SPA 同源单端口），形态 B 可选前后端分离（前端独立 Nginx 托管 `web/dist`、后端关闭静态路由只提供 API），两者共享同一 `/api/v1` 契约；分离模式默认同域路径分流、相对路径 `/api/v1`，不强制跨域/独立子域；允许独立发布/回滚并由 API 契约测试守住兼容面；维持单副本。见 ADR-029 / ADR-036、开发计划-四期 v1.38、部署手册 §4.9 |
