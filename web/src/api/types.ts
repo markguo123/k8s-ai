@@ -243,6 +243,12 @@ export interface SettingsItem {
   sensitive?: boolean
   default?: unknown
   enum?: string[]
+  /** 配置取值示例，用于配置中心提示格式而不要求用户猜。 */
+  example?: string
+  /** 数值配置的下限；后端按条目类型返回。 */
+  min?: number
+  /** 数值配置的上限；未设置时省略。 */
+  max?: number
   source?: string
   desc?: string
   updatedAt?: string
@@ -251,5 +257,7 @@ export interface SettingsItem {
 /** GET /api/v1/settings/{group} 的 data（后端 settings.GroupView）。 */
 export interface SettingsGroupView {
   group: string
+  /** 服务端是否已配置 K8S_AI_ENC_KEY；false 时敏感配置只能读状态不能保存。 */
+  encryptionAvailable?: boolean
   items: SettingsItem[]
 }

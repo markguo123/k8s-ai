@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Check, Key, Lock, Refresh, Setting } from '@element-plus/icons-vue'
+import { Check, InfoFilled, Key, Lock, Refresh, Setting } from '@element-plus/icons-vue'
 
 import TechEmptyState from '@/components/TechEmptyState.vue'
 import {
@@ -50,6 +50,28 @@ const dirtyCount = computed(
   () => Object.values(dirty.value).filter(Boolean).length,
 )
 
+const hasSensitiveItems = computed(
+  () => view.value?.items.some((item) => item.sensitive) ?? false,
+)
+
+const encryptionUnavailable = computed(
+  () => hasSensitiveItems.value && view.value?.encryptionAvailable === false,
+)
+
+/** thinking/scan_thinking 是固定形状的思考开关，不从任意 JSON 文本推导。 */
+function isThinkingSwitch(item: SettingsItem): boolean {
+  return item.key === 'thinking' || item.key === 'scan_thinking'
+}
+
+function thinkingEnabled(value: unknown): boolean {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && (value as Record<string, unknown>).type === 'enabled',
+  )
+}
+
 /** 把服务端视图映射成可编辑草稿；敏感键一律以空串起步（不回显）。 */
 function initDrafts(next: SettingsGroupView): void {
   const nextDrafts: Record<string, unknown> = {}
@@ -66,6 +88,10 @@ function initDrafts(next: SettingsGroupView): void {
       nextDrafts[item.key] = (item.value as string[] | undefined ?? []).join(', ')
       continue
     }
+    if (isThinkingSwitch(item)) {
+      nextDrafts[item.key] = thinkingEnabled(item.value)
+      continue
+    }
     if (item.kind === 'json') {
       nextDrafts[item.key] =
         item.value === null || item.value === undefined
@@ -79,6 +105,68 @@ function initDrafts(next: SettingsGroupView): void {
   dirty.value = nextDirty
   clearRequested.value = nextClear
   savingError.value = ''
+}
+
+function exampleOf(item: SettingsItem): string {
+  return item.example ?? ''
+}
+
+function placeholderOf(item: SettingsItem): string {
+  if (item.sensitive) {
+    return '输入新值后保存以覆盖（不回显当前内容）'
+  }
+  if (item.kind === 'stringList') {
+    return '逗号、分号或空格分隔'
+  }
+  if (item.kind === 'duration') {
+    return exampleOf(item) || '例如 30s、5m'
+  }
+  return exampleOf(item)
+}
+
+function rangeHint(item: SettingsItem): string {
+  if (item.kind !== 'int' && item.kind !== 'float') {
+    return ''
+  }
+  if (item.min !== undefined && item.max !== undefined) {
+    return `取值范围：${item.min} - ${item.max}`
+  }
+  if (item.min !== undefined) {
+    return `取值范围：${item.min} 以上`
+  }
+  if (item.max !== undefined) {
+    return `取值范围：${item.max} 以下`
+  }
+  return ''
+}
+
+function formatHint(item: SettingsItem): string {
+  if (isThinkingSwitch(item)) {
+    return ''
+  }
+  if (item.kind === 'duration') {
+    return `时长格式：${exampleOf(item) || '30s、5m'}`
+  }
+  if (item.kind === 'stringList') {
+    return `多值格式：${exampleOf(item) || '用逗号、分号或空格分隔'}`
+  }
+  if (item.kind === 'json' && item.example) {
+    return `JSON 示例：${item.example}`
+  }
+  return ''
+}
+
+function shouldShowFormatHint(item: SettingsItem): boolean {
+  return !isThinkingSwitch(item) && Boolean(formatHint(item))
+}
+
+function jsonPlaceholder(item: SettingsItem): string {
+  if (item.sensitive) {
+    return item.example
+      ? `输入新 JSON 后保存以覆盖；示例：${item.example}`
+      : '输入新 JSON 后保存以覆盖（不回显当前内容）'
+  }
+  return item.example || '请输入合法 JSON'
 }
 
 function setDraft(key: string, value: unknown): void {
@@ -155,7 +243,19 @@ function buildPatch(): Record<string, unknown> {
       if (text === '') {
         continue // 未改动的敏感键不回写
       }
-      patch[item.key] = item.kind === 'json' ? JSON.parse(text) : text
+      if (item.kind === 'json') {
+        try {
+          patch[item.key] = JSON.parse(text)
+        } catch {
+          throw new Error(`配置项 ${item.key} 不是合法 JSON`)
+        }
+      } else {
+        patch[item.key] = text
+      }
+      continue
+    }
+    if (isThinkingSwitch(item)) {
+      patch[item.key] = { type: draftAsBool(item.key) ? 'enabled' : 'disabled' }
       continue
     }
     if (item.kind === 'json') {
@@ -280,6 +380,15 @@ onMounted(loadGroup)
 
             <div v-if="loading" class="muted center-hint">加载中…</div>
             <div v-else class="field-grid">
+              <el-alert
+                v-if="encryptionUnavailable"
+                class="encryption-alert"
+                type="warning"
+                :closable="false"
+                show-icon
+                title="敏感配置暂不可保存"
+                description="服务端尚未配置 K8S_AI_ENC_KEY。请联系平台管理员完成加密密钥配置后再保存 API Key、kubeconfig 或 MCP 配置。"
+              />
               <div v-for="item in view?.items ?? []" :key="item.key" class="field">
                 <div class="field-meta">
                   <div class="row field-label">
@@ -291,6 +400,13 @@ onMounted(loadGroup)
                     <span v-if="item.source" class="faint mono small">← {{ item.source }}</span>
                   </div>
                   <div v-if="item.desc" class="muted small desc-line">{{ item.desc }}</div>
+                  <div v-if="shouldShowFormatHint(item)" class="faint small example-line">
+                    <el-icon class="tiny"><InfoFilled /></el-icon>
+                    {{ formatHint(item) }}
+                  </div>
+                  <div v-else-if="rangeHint(item)" class="faint small example-line">
+                    {{ rangeHint(item) }}
+                  </div>
                 </div>
 
                 <div class="field-control">
@@ -301,7 +417,8 @@ onMounted(loadGroup)
                         type="textarea"
                         :rows="4"
                         spellcheck="false"
-                        placeholder="输入新 JSON 后保存以覆盖（不回显当前内容）"
+                        :disabled="!view?.encryptionAvailable"
+                        :placeholder="jsonPlaceholder(item)"
                         @update:model-value="(value: string) => setDraft(item.key, value)"
                       />
                     </div>
@@ -311,14 +428,31 @@ onMounted(loadGroup)
                         type="password"
                         show-password
                         spellcheck="false"
-                        placeholder="输入新值后保存以覆盖（不回显当前内容）"
+                        :disabled="!view?.encryptionAvailable"
+                        :placeholder="placeholderOf(item)"
                         @update:model-value="(value: string) => setDraft(item.key, value)"
                       />
-                      <el-button v-if="item.hasValue" text type="danger" :icon="Lock" @click="requestClear(item)">
+                      <el-button
+                        v-if="item.hasValue"
+                        text
+                        type="danger"
+                        :icon="Lock"
+                        :disabled="!view?.encryptionAvailable"
+                        @click="requestClear(item)"
+                      >
                         清除
                       </el-button>
                     </div>
                   </template>
+
+                  <el-switch
+                    v-else-if="isThinkingSwitch(item)"
+                    :model-value="draftAsBool(item.key)"
+                    active-text="启用"
+                    inactive-text="停用"
+                    :aria-label="`切换 ${item.key}`"
+                    @change="(value: string | number | boolean) => setDraft(item.key, Boolean(value))"
+                  />
 
                   <el-switch
                     v-else-if="item.kind === 'bool'"
@@ -340,6 +474,8 @@ onMounted(loadGroup)
                   <el-input-number
                     v-else-if="item.kind === 'int' || item.kind === 'float'"
                     :model-value="draftAsNumber(item.key)"
+                    :min="item.min"
+                    :max="item.max"
                     :step="item.kind === 'int' ? 1 : 0.1"
                     :precision="item.kind === 'int' ? 0 : 2"
                     :aria-label="`设置 ${item.key}`"
@@ -350,7 +486,17 @@ onMounted(loadGroup)
                     v-else-if="item.kind === 'stringList'"
                     :model-value="draftAsString(item.key)"
                     spellcheck="false"
-                    placeholder="逗号或空格分隔的多值"
+                    :placeholder="placeholderOf(item)"
+                    @update:model-value="(value: string) => setDraft(item.key, value)"
+                  />
+
+                  <el-input
+                    v-else-if="item.kind === 'json'"
+                    :model-value="draftAsString(item.key)"
+                    type="textarea"
+                    :rows="4"
+                    spellcheck="false"
+                    :placeholder="jsonPlaceholder(item)"
                     @update:model-value="(value: string) => setDraft(item.key, value)"
                   />
 
@@ -358,6 +504,7 @@ onMounted(loadGroup)
                     v-else
                     :model-value="draftAsString(item.key)"
                     spellcheck="false"
+                    :placeholder="placeholderOf(item)"
                     @update:model-value="(value: string) => setDraft(item.key, value)"
                   />
                 </div>
@@ -376,6 +523,8 @@ onMounted(loadGroup)
   flex-direction: column;
   gap: 14px;
   flex: 1;
+  width: 100%;
+  min-width: 0;
   min-height: 0;
 }
 
@@ -417,8 +566,10 @@ onMounted(loadGroup)
 .settings-layout {
   display: flex;
   gap: 14px;
-  min-height: 0;
   flex: 1;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
   align-items: stretch;
 }
 
@@ -484,6 +635,7 @@ onMounted(loadGroup)
 
 .settings-content {
   flex: 1;
+  width: 100%;
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
@@ -501,6 +653,7 @@ onMounted(loadGroup)
 
 .form-card {
   flex: none;
+  width: 100%;
   padding: 16px;
   min-width: 0;
 }
@@ -571,14 +724,17 @@ onMounted(loadGroup)
 .field-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
+  width: 100%;
+  min-width: 0;
   gap: 10px;
 }
 
 .field {
   display: grid;
-  grid-template-columns: minmax(240px, 0.8fr) minmax(360px, 1.2fr);
+  grid-template-columns: minmax(220px, 0.7fr) minmax(0, 1.3fr);
   align-items: center;
   gap: 10px 24px;
+  width: 100%;
   min-width: 0;
   padding: 14px 16px;
   border: 1px solid var(--app-hairline);
@@ -596,6 +752,7 @@ onMounted(loadGroup)
 .field-control {
   display: flex;
   align-items: center;
+  width: 100%;
   min-width: 0;
 }
 
@@ -613,11 +770,13 @@ onMounted(loadGroup)
 }
 
 .field-control > .el-input-number {
-  max-width: 240px;
+  width: 100%;
+  max-width: 100%;
 }
 
 .field-control > .el-select {
-  max-width: 360px;
+  width: 100%;
+  max-width: 100%;
 }
 
 .field-label {
@@ -627,6 +786,18 @@ onMounted(loadGroup)
 
 .desc-line {
   line-height: 1.5;
+}
+
+.example-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.encryption-alert {
+  width: 100%;
 }
 
 .select {

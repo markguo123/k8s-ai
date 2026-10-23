@@ -60,6 +60,9 @@ type Item struct {
 	Sensitive bool            `json:"sensitive,omitempty"`
 	Default   json.RawMessage `json:"default"`
 	Enum      []string        `json:"enum,omitempty"`
+	Example   string          `json:"example,omitempty"`
+	Min       *float64        `json:"min,omitempty"`
+	Max       *float64        `json:"max,omitempty"`
 	Source    string          `json:"source,omitempty"`
 	Desc      string          `json:"desc,omitempty"`
 	UpdatedAt *time.Time      `json:"updatedAt,omitempty"`
@@ -67,8 +70,9 @@ type Item struct {
 
 // GroupView 是一个配置分组的读取结果。
 type GroupView struct {
-	Group string `json:"group"`
-	Items []Item `json:"items"`
+	Group               string `json:"group"`
+	EncryptionAvailable bool   `json:"encryptionAvailable"`
+	Items               []Item `json:"items"`
 }
 
 // Service 是配置中心应用服务：读写都经统一 Store，变更写 CONFIG_CHANGE 审计。
@@ -99,7 +103,7 @@ func (s *Service) GetGroup(ctx context.Context, group string) (*GroupView, error
 	for _, item := range stored {
 		byKey[item.Key] = item
 	}
-	view := &GroupView{Group: group}
+	view := &GroupView{Group: group, EncryptionAvailable: s.cipher != nil}
 	for _, def := range catalog[group] {
 		view.Items = append(view.Items, renderItem(def, byKey[def.Key]))
 	}
@@ -228,9 +232,9 @@ func (s *Service) recordChange(ctx context.Context, group string, keys []string,
 		UserID:           actor.UserID,
 		Action:           store.ActionConfigChange,
 		EventType:        store.AuditEventConfigChange,
-		ResourceKind:   "settings",
-		ResourceName:   group,
-		Operation:      "PATCH",
+		ResourceKind:     "settings",
+		ResourceName:     group,
+		Operation:        "PATCH",
 		ParameterSummary: string(payload),
 		Status:           "success",
 	})
@@ -431,6 +435,9 @@ func renderItem(def Definition, stored *store.Settings) Item {
 		Kind:      def.Kind,
 		Sensitive: def.Sensitive,
 		Enum:      def.Enum,
+		Example:   def.Example,
+		Min:       numericBound(def, def.Min),
+		Max:       numericBound(def, def.Max),
 		Source:    def.Source,
 		Desc:      def.Desc,
 		Default:   mustJSON(def.Default),
@@ -453,6 +460,19 @@ func renderItem(def Definition, stored *store.Settings) Item {
 	item.HasValue = has
 	item.Value = json.RawMessage(stored.Value)
 	return item
+}
+
+// numericBound 只向数值控件暴露真实边界；duration 的 Min/Max 以纳秒表示，
+// 与前端秒/分钟输入不是同一单位，不能混用。Max==0 表示无上限。
+func numericBound(def Definition, value float64) *float64 {
+	if def.Kind != KindInt && def.Kind != KindFloat {
+		return nil
+	}
+	if value == 0 && def.Kind == KindInt {
+		return nil
+	}
+	bound := value
+	return &bound
 }
 
 // defaultJSON 返回默认值的 JSON 编码（编码失败退化为 null）。
@@ -552,13 +572,91 @@ func normalize(def Definition, raw json.RawMessage) (string, error) {
 		}
 		return string(mustJSON(cleaned)), nil
 	case KindJSON:
-		if !json.Valid(raw) {
+		trimmed := strings.TrimSpace(string(raw))
+		if !json.Valid([]byte(trimmed)) {
 			return "", fmt.Errorf("需要合法 JSON")
 		}
-		return string(raw), nil
+		switch def.Key {
+		case "thinking", "scan_thinking":
+			return normalizeThinking(trimmed)
+		case "servers":
+			if def.Source == "mcp.servers" {
+				if err := validateMCPServers(trimmed); err != nil {
+					return "", err
+				}
+			}
+		}
+		return trimmed, nil
 	default:
 		return "", fmt.Errorf("未知类型 %s", def.Kind)
 	}
+}
+
+// normalizeThinking 把思考开关收敛为标准 OpenAI thinking 对象。配置中心只
+// 暴露 enabled/disabled 两个状态，避免管理员手填任意 JSON；空值/null 仍可
+// 用于清除旧配置。
+func normalizeThinking(raw string) (string, error) {
+	if raw == "null" {
+		return raw, nil
+	}
+	var value map[string]string
+	if err := json.Unmarshal([]byte(raw), &value); err != nil {
+		return "", fmt.Errorf("思考配置必须是 JSON 对象，例如 {\"type\":\"enabled\"}")
+	}
+	if len(value) != 1 {
+		return "", fmt.Errorf("思考配置只支持 type 字段")
+	}
+	mode, ok := value["type"]
+	if !ok || (mode != "enabled" && mode != "disabled") {
+		return "", fmt.Errorf("思考配置 type 必须是 enabled 或 disabled")
+	}
+	return string(mustJSON(map[string]string{"type": mode})), nil
+}
+
+// validateMCPServers 校验 MCP 服务器列表的基本形状。完整连接参数仍由
+// config.Validate 在装配阶段校验，这里先拦住明显的非数组/非对象输入。
+func validateMCPServers(raw string) error {
+	if raw == "null" {
+		return nil
+	}
+	var servers []map[string]any
+	if err := json.Unmarshal([]byte(raw), &servers); err != nil {
+		return fmt.Errorf("MCP 服务器必须是 JSON 数组")
+	}
+	for i, server := range servers {
+		name, _ := server["name"].(string)
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("MCP 服务器第 %d 项缺少 name", i+1)
+		}
+		command, _ := server["command"].(string)
+		endpoint, _ := server["url"].(string)
+		if strings.TrimSpace(command) == "" && strings.TrimSpace(endpoint) == "" {
+			return fmt.Errorf("MCP 服务器 %s 必须配置 command 或 url", name)
+		}
+		if value, exists := server["args"]; exists {
+			args, ok := value.([]any)
+			if !ok {
+				return fmt.Errorf("MCP 服务器 %s 的 args 必须是字符串数组", name)
+			}
+			for _, arg := range args {
+				if _, ok := arg.(string); !ok {
+					return fmt.Errorf("MCP 服务器 %s 的 args 必须是字符串数组", name)
+				}
+			}
+		}
+		if value, exists := server["env"]; exists {
+			env, ok := value.(map[string]any)
+			if !ok {
+				return fmt.Errorf("MCP 服务器 %s 的 env 必须是字符串键值对象", name)
+			}
+			for key, item := range env {
+				if _, ok := item.(string); !ok {
+					return fmt.Errorf("MCP 服务器 %s 的 env.%s 必须是字符串", name, key)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func jsonNumber(raw json.RawMessage) (float64, error) {

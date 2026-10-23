@@ -107,12 +107,14 @@ func (p *platformServer) do(t *testing.T, method, path, token, body string) (*ht
 
 // settingsView 与 settings.GroupView 对齐（服务端只暴露脱敏后的视图）。
 type settingsView struct {
-	Group string `json:"group"`
-	Items []struct {
+	Group               string `json:"group"`
+	EncryptionAvailable bool   `json:"encryptionAvailable"`
+	Items               []struct {
 		Key       string          `json:"key"`
 		Value     json.RawMessage `json:"value"`
 		HasValue  bool            `json:"hasValue"`
 		Sensitive bool            `json:"sensitive"`
+		Example   string          `json:"example"`
 	} `json:"items"`
 }
 
@@ -146,6 +148,18 @@ func TestSettingsGetAndPatch(t *testing.T) {
 	if before.Group != "model" || len(before.Items) == 0 {
 		t.Fatalf("分组视图不符: %+v", before)
 	}
+	if !before.EncryptionAvailable {
+		t.Fatal("测试服务器已装配 cipher, encryptionAvailable 应为 true")
+	}
+	var sawExample bool
+	for _, item := range before.Items {
+		if (item.Key == "base_url" || item.Key == "timeout") && item.Example != "" {
+			sawExample = true
+		}
+	}
+	if !sawExample {
+		t.Fatal("模型分组应返回前端展示示例")
+	}
 
 	resp, raw = p.do(t, http.MethodPatch, "/api/v1/settings/model", token, `{"max_tokens":2048}`)
 	if resp.StatusCode != http.StatusOK {
@@ -155,6 +169,58 @@ func TestSettingsGetAndPatch(t *testing.T) {
 	decodeData(t, mustReplay(t, raw), &after)
 	if value, _, _ := after.item("max_tokens"); string(value) != "2048" {
 		t.Fatalf("PATCH 后应读到 2048, got %s", value)
+	}
+}
+
+// TestSettingsCipherErrorIsActionable 验证未配置加密密钥时不把内部
+// ErrCipherRequired 文案暴露给管理员，而是返回可执行的固定提示。
+func TestSettingsCipherErrorIsActionable(t *testing.T) {
+	st, err := store.OpenSQLite("file:server-settings-nocipher-" + time.Now().Format("150405.000000000") + "?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	authSvc := auth.New(st.Users(), st.Roles())
+	if err := authSvc.Bootstrap(context.Background(), "admin-pw"); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	handler := NewWithPlatform(&fakeScan{}, authSvc, settings.New(st), service.NewAuditService(st)).Handler()
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+
+	resp, _, payload := login(t, ts, `{"username":"admin","password":"admin-pw"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("登录失败: %d", resp.StatusCode)
+	}
+	token, _ := payload["token"].(string)
+	req, err := http.NewRequest(http.MethodPatch, ts.URL+"/api/v1/settings/model",
+		bytes.NewBufferString(`{"api_key":"sk-nocipher"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("未配置加密密钥应 501, got %d: %s", resp.StatusCode, raw)
+	}
+	text := string(raw)
+	if !strings.Contains(text, "K8S_AI_ENC_KEY") {
+		t.Fatalf("错误提示应说明需要 K8S_AI_ENC_KEY: %s", text)
+	}
+	if strings.Contains(text, "encryption cipher is required") {
+		t.Fatalf("错误提示不得暴露内部实现: %s", text)
 	}
 }
 

@@ -91,6 +91,34 @@ func TestGetGroupMergesDefaults(t *testing.T) {
 	if mode.HasValue {
 		t.Fatal("未写入的键 hasValue 应为 false")
 	}
+	if view.EncryptionAvailable {
+		t.Fatal("未装配 cipher 时 encryptionAvailable 应为 false")
+	}
+}
+
+func TestGetGroupReportsEncryptionAndExamples(t *testing.T) {
+	svc := New(newTestStore(t), WithCipher(testCipher{}))
+	view := mustView(t, svc, GroupModel)
+	if !view.EncryptionAvailable {
+		t.Fatal("装配 cipher 后 encryptionAvailable 应为 true")
+	}
+	timeout := itemOf(t, view, "timeout")
+	if timeout.Example != "120s" {
+		t.Fatalf("duration 应返回示例 120s, got %q", timeout.Example)
+	}
+	if itemOf(t, view, "base_url").Example == "" {
+		t.Fatal("字符串配置应返回示例")
+	}
+	temperature := itemOf(t, view, "temperature")
+	if temperature.Min == nil || *temperature.Min != 0 {
+		t.Fatal("数值配置应返回真实下限，包括 0")
+	}
+	if temperature.Max == nil || *temperature.Max != 2 {
+		t.Fatal("数值配置应返回真实上限")
+	}
+	if itemOf(t, view, "max_tokens").Max != nil {
+		t.Fatal("无上限的数值配置不应返回 max")
+	}
 }
 
 func TestGetGroupUnknownAndInternal(t *testing.T) {
@@ -386,5 +414,39 @@ func TestNormalizeCoversKinds(t *testing.T) {
 	}
 	if _, err := normalize(intDef, json.RawMessage(`1.5`)); err == nil {
 		t.Fatal("非整数应报错")
+	}
+}
+
+func TestNormalizeThinkingSwitchAndMCPServers(t *testing.T) {
+	thinking := Definition{Key: "thinking", Kind: KindJSON, Source: "llm.thinking"}
+	value, err := normalize(thinking, json.RawMessage(`{"type":"enabled"}`))
+	if err != nil || value != `{"type":"enabled"}` {
+		t.Fatalf("合法思考配置应归一化, got %s err=%v", value, err)
+	}
+	for _, raw := range []string{
+		`{"type":"on"}`,
+		`{"type":"enabled","extra":1}`,
+		`"enabled"`,
+	} {
+		if _, err := normalize(thinking, json.RawMessage(raw)); err == nil {
+			t.Fatalf("非法思考配置应报错: %s", raw)
+		}
+	}
+
+	servers := Definition{Key: "servers", Kind: KindJSON, Source: "mcp.servers"}
+	valid := `[{"name":"demo","command":"npx","args":["-y","pkg"],"env":{"TOKEN":"x"}}]`
+	if value, err := normalize(servers, json.RawMessage(valid)); err != nil || value != valid {
+		t.Fatalf("合法 MCP 列表应保留, got %s err=%v", value, err)
+	}
+	for _, raw := range []string{
+		`{"name":"demo"}`,
+		`[{"command":"npx"}]`,
+		`[{"name":"demo"}]`,
+		`[{"name":"demo","command":"npx","args":"-y"}]`,
+		`[{"name":"demo","command":"npx","env":{"TOKEN":1}}]`,
+	} {
+		if _, err := normalize(servers, json.RawMessage(raw)); err == nil {
+			t.Fatalf("非法 MCP 列表应报错: %s", raw)
+		}
 	}
 }

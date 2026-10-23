@@ -22,14 +22,14 @@ const ITEMS = Array.from({ length: 26 }, (_, i) => ({
   desc: `演示配置项 ${i}`,
 }))
 
-function installFetch(): void {
+function installFetch(data: Record<string, unknown> = {}): void {
   vi.stubGlobal(
     'fetch',
     vi.fn(async () => new Response(
       JSON.stringify({
         request_id: 'req-test',
         timestamp: new Date().toISOString(),
-        data: { group: 'model', items: ITEMS },
+        data: { group: 'model', encryptionAvailable: true, items: ITEMS, ...data },
       }),
       { status: 200, headers: { 'Content-Type': 'application/json' } },
     )),
@@ -92,5 +92,110 @@ describe('SettingsView 布局（P6.13 左 rail + 全宽内容）', () => {
 
     expect(wrapper.findAll('.settings-content')).toHaveLength(1)
     expect(wrapper.findAll('.field')).toHaveLength(ITEMS.length)
+  })
+})
+
+describe('SettingsView 配置控件可读性', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    localStorage.setItem(TOKEN_KEY, 'tok-test')
+    localStorage.setItem(
+      USER_KEY,
+      JSON.stringify({ userId: 'u1', username: 'admin', displayName: '管理员', role: 'admin' }),
+    )
+    setActivePinia(createPinia())
+  })
+
+  it('thinking 使用开关而不是 JSON 文本框', async () => {
+    installFetch({
+      items: [
+        {
+          key: 'thinking',
+          kind: 'json',
+          value: { type: 'enabled' },
+          hasValue: true,
+          desc: '思考参数',
+        },
+      ],
+    })
+    const wrapper = mount(SettingsView)
+    await flushPromises()
+    await vi.waitFor(() => expect(wrapper.findAll('.field')).toHaveLength(1))
+
+    const field = wrapper.find('.field')
+    expect(field.find('.el-switch').exists()).toBe(true)
+    expect(field.find('textarea').exists()).toBe(false)
+    expect(field.text()).toContain('启用')
+  })
+
+  it('敏感配置在缺少加密能力时提前提示并禁用输入', async () => {
+    installFetch({
+      encryptionAvailable: false,
+      items: [
+        {
+          key: 'api_key',
+          kind: 'string',
+          value: null,
+          hasValue: false,
+          sensitive: true,
+          desc: '接口密钥（不回显）',
+        },
+      ],
+    })
+    const wrapper = mount(SettingsView)
+    await flushPromises()
+    await vi.waitFor(() => expect(wrapper.findAll('.field')).toHaveLength(1))
+
+    expect(wrapper.find('.encryption-alert').exists()).toBe(true)
+    expect(wrapper.find('.encryption-alert').text()).toContain('K8S_AI_ENC_KEY')
+    expect(wrapper.find('.field input').attributes('disabled')).toBeDefined()
+  })
+
+  it('duration、stringList 和 JSON 都展示格式示例', async () => {
+    installFetch({
+      items: [
+        {
+          key: 'timeout',
+          kind: 'duration',
+          value: '120s',
+          hasValue: true,
+          example: '120s',
+          desc: '模型请求超时',
+        },
+        {
+          key: 'reasoning_fields',
+          kind: 'stringList',
+          value: [],
+          hasValue: false,
+          example: 'reasoning_content, reasoning',
+          desc: '思考字段名白名单',
+        },
+        {
+          key: 'servers',
+          kind: 'json',
+          value: [],
+          hasValue: false,
+          example: '[{"name":"demo","command":"npx"}]',
+          desc: 'MCP 服务器列表',
+        },
+        {
+          key: 'max_tokens',
+          kind: 'int',
+          value: 4096,
+          hasValue: true,
+          min: 1,
+          desc: '单次回复上限',
+        },
+      ],
+    })
+    const wrapper = mount(SettingsView)
+    await flushPromises()
+    await vi.waitFor(() => expect(wrapper.findAll('.field')).toHaveLength(4))
+
+    const text = wrapper.text()
+    expect(text).toContain('时长格式：120s')
+    expect(text).toContain('多值格式：reasoning_content, reasoning')
+    expect(text).toContain('JSON 示例：')
+    expect(text).toContain('取值范围：1 以上')
   })
 })
