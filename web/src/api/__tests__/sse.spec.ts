@@ -106,7 +106,7 @@ describe('fetchChatStream（SSE 传输）', () => {
 
     expect(frames.map((frame) => frame.kind)).toEqual(['history', 'event'])
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
-    expect(url).toBe('/api/sessions/s1/stream')
+    expect(url).toBe('/api/v1/sessions/s1/stream')
     expect(new Headers(init.headers).get('Authorization')).toBe('Bearer tok-1')
   })
 

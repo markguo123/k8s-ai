@@ -32,6 +32,16 @@ describe('路由守卫（P2.2 未登录不可访问业务页）', () => {
     expect(await goto('/app/settings')).toBe('/app/settings')
   })
 
+  it.each(['user', 'operator'])('%s 不能进入配置中心与用户权限页', async (role) => {
+    localStorage.setItem(TOKEN_KEY, 'tok-1')
+    localStorage.setItem(USER_KEY, JSON.stringify({ userId: 'u1', username: role, role }))
+    setActivePinia(createPinia())
+
+    await goto('/app/chat')
+    expect(await goto('/app/settings')).toBe('/app/chat')
+    expect(await goto('/app/users')).toBe('/app/chat')
+  })
+
   it('未登录访问登录页与根路径不循环跳转', async () => {
     expect(await goto('/login')).toContain('/login')
     expect(await goto('/')).toContain('/login')

@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { createCluster, deleteCluster, listClusters, testCluster } from '@/api/clusters'
-import { TOKEN_KEY } from '@/api/request'
+import {
+  createCluster,
+  deleteCluster,
+  describeClusterError,
+  listClusters,
+  testCluster,
+} from '@/api/clusters'
+import { ApiRequestError, TOKEN_KEY } from '@/api/request'
 
 function envelopeResponse<T>(status: number, data?: T): Response {
   return new Response(
@@ -88,5 +94,16 @@ describe('clusters API（P3.4）', () => {
       headers: { 'Content-Type': 'application/json' },
     })))
     await expect(deleteCluster('c1')).rejects.toMatchObject({ status: 403, code: 'forbidden' })
+  })
+
+  it('未配置加密密钥的 501 转为可执行的平台提示', () => {
+    const error = new ApiRequestError(
+      501,
+      'internal_error',
+      'cluster service is not configured: set K8S_AI_ENC_KEY',
+    )
+    expect(describeClusterError('加载集群', error)).toBe(
+      '集群管理能力未启用，请联系平台管理员配置凭据加密密钥后重试',
+    )
   })
 })

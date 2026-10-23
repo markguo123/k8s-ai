@@ -21,6 +21,7 @@ import {
 import { useAuthStore } from '@/stores/auth'
 import { useTheme, type ThemeMode } from '@/composables/useTheme'
 import { changePassword } from '@/api/auth'
+import { hasPermission, PERM, permissionsOf } from '@/utils/permission'
 
 const route = useRoute()
 const router = useRouter()
@@ -33,7 +34,7 @@ watch(sidebarCollapsed, (collapsed) => {
   localStorage.setItem(SIDEBAR_KEY, collapsed ? '1' : '0')
 })
 
-const menuGroups = [
+const allMenuGroups = [
   {
     title: '工作区',
     items: [
@@ -44,24 +45,37 @@ const menuGroups = [
   {
     title: '治理',
     items: [
-      { index: '/app/approval', title: '审批中心', icon: Finished },
-      { index: '/app/audit', title: '审计', icon: Document },
+      { index: '/app/approval', title: '审批中心', icon: Finished, permission: PERM.approvalRead },
+      { index: '/app/audit', title: '审计', icon: Document, permission: PERM.auditRead },
     ],
   },
   {
     title: '平台管理',
     items: [
-      { index: '/app/skill', title: 'Skill', icon: MagicStick },
-      { index: '/app/settings', title: '配置中心', icon: Setting },
-      { index: '/app/users', title: '用户与权限', icon: User },
+      { index: '/app/skill', title: 'Skill', icon: MagicStick, permission: PERM.skillRead },
+      { index: '/app/settings', title: '配置中心', icon: Setting, permission: PERM.settingsRead },
+      { index: '/app/users', title: '用户与权限', icon: User, permission: PERM.userManage },
     ],
   },
 ]
 
+const menuGroups = computed(() =>
+  allMenuGroups
+    .map((group) => ({
+      ...group,
+      items: group.items.filter(
+        (item) =>
+          !('permission' in item) ||
+          hasPermission(permissionsOf(auth.role), String(item.permission)),
+      ),
+    }))
+    .filter((group) => group.items.length > 0),
+)
+
 const activeMenu = computed(() => route.path)
 const pageTitle = computed<string>(() => (route.meta.title as string | undefined) ?? '控制台')
 const displayName = computed(() => auth.user?.username ?? '未登录')
-const displayRole = computed(() => auth.user?.role ?? 'viewer')
+const displayRole = computed(() => auth.user?.role ?? 'user')
 const userInitial = computed(() => displayName.value.charAt(0).toUpperCase() || 'K')
 
 const PLATFORM_VERSION = 'v4.0.0-dev'

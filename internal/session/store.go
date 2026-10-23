@@ -13,8 +13,11 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/security"
 )
 
-// ErrNotFound 表示会话不存在。
-var ErrNotFound = errors.New("session not found")
+// ErrNotFound 表示会话不存在；ErrForbidden 表示会话属于其他用户。
+var (
+	ErrNotFound  = errors.New("session not found")
+	ErrForbidden = errors.New("session access forbidden")
+)
 
 // Store 是可插拔会话存储（memory/file，未来可扩展 SQLite/PostgreSQL/Redis）。
 type Store interface {

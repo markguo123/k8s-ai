@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/k8s-ai/k8s-ai/internal/store"
@@ -24,8 +25,7 @@ var (
 // minPasswordLength 是新设/重置密码的最短长度。
 const minPasswordLength = 8
 
-// allowedRoleNames 是平台开放的角色白名单：user / operator / admin 三角色；
-// viewer 仅作三期兼容读取与未知角色最小权限回落，不开放新建。
+// allowedRoleNames 是平台开放的角色白名单：user / operator / admin 三角色。
 var allowedRoleNames = map[string]bool{
 	RoleUser:     true,
 	RoleOperator: true,
@@ -62,11 +62,38 @@ func (s *Service) ListUsers(ctx context.Context) ([]*store.User, error) {
 
 // ListRoles 返回全部角色及其权限（管理端只读视图）。
 func (s *Service) ListRoles(ctx context.Context) ([]*store.Role, error) {
+	// 角色目录是平台固定契约。即使数据库由旧版本初始化或启动修复未执行，
+	// 管理端读取时也先幂等补齐三角色，避免创建用户下拉缺项。
+	if err := s.reconcileRoles(ctx); err != nil {
+		return nil, err
+	}
 	list, err := s.roles.List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("auth: list roles: %w", err)
 	}
-	return list, nil
+	out := make([]*store.Role, 0, len(allowedRoleNames))
+	for _, role := range list {
+		if allowedRoleNames[role.Name] {
+			out = append(out, role)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return roleOrder(out[i].Name) < roleOrder(out[j].Name)
+	})
+	return out, nil
+}
+
+func roleOrder(name string) int {
+	switch name {
+	case RoleUser:
+		return 0
+	case RoleOperator:
+		return 1
+	case RoleAdmin:
+		return 2
+	default:
+		return 3
+	}
 }
 
 // CreateUser 校验并创建用户：用户名非空且唯一、密码最短 8 位、

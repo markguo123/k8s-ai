@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -112,6 +113,36 @@ func TestManagerNewSessionAutoID(t *testing.T) {
 	}
 	if s.ID == "" || s.Cluster != "prod" || s.Model != "qwen-plus" {
 		t.Fatalf("session = %+v", s)
+	}
+}
+
+func TestManagerSessionOwnership(t *testing.T) {
+	m := NewManager(NewMemoryStore())
+	alice, err := m.GetOrCreateSessionForUser("s1", "u-alice", "", "qwen-plus")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alice.UserID != "u-alice" {
+		t.Fatalf("owner = %q", alice.UserID)
+	}
+	if _, err := m.GetOrCreateSessionForUser("s1", "u-bob", "", "qwen-plus"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("other user should be forbidden, got %v", err)
+	}
+	bob, err := m.GetOrCreateSessionForUser("s2", "u-bob", "", "qwen-plus")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob.LastModified = bob.LastModified.Add(time.Second)
+	if err := m.Update(bob); err != nil {
+		t.Fatal(err)
+	}
+
+	list, err := m.ListForUser("u-alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].ID != "s1" || list[0].UserID != "u-alice" {
+		t.Fatalf("alice sessions = %+v", list)
 	}
 }
 

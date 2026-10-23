@@ -35,10 +35,11 @@ func TestSessionTokenInHistoryAndList(t *testing.T) {
 		fakeChat: newFakeChat(),
 		usage:    session.TokenUsage{PromptTokens: 11, CompletionTokens: 7, TotalTokens: 18},
 	}
-	srv := httptest.NewServer(New(chat, "qwen-plus").Handler())
+	srv := httptest.NewServer(testHandler(New(chat, "qwen-plus")))
 	defer srv.Close()
+	_, _ = chat.GetOrCreateSession("tok-s1", "", "qwen-plus")
 
-	history, err := readHistory(srv.URL + "/api/sessions/tok-s1/stream")
+	history, err := readHistory(srv.URL + "/api/v1/sessions/tok-s1/stream")
 	if err != nil {
 		t.Fatalf("read history: %v", err)
 	}
@@ -49,7 +50,7 @@ func TestSessionTokenInHistoryAndList(t *testing.T) {
 		t.Fatalf("历史快照 token 字段应为 session.TokenUsage 契约(camelCase): %s", history)
 	}
 
-	resp := getBody(t, srv.URL+"/api/sessions")
+	resp := getBody(t, srv.URL+"/api/v1/sessions")
 	var list []map[string]any
 	if err := json.Unmarshal(resp, &list); err != nil {
 		t.Fatalf("decode list: %v (%s)", err, resp)
@@ -80,17 +81,18 @@ func TestSessionTokenOmitsZeroAndErrors(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			chat := &tokenChat{fakeChat: newFakeChat(), usage: tc.usage, err: tc.err}
-			srv := httptest.NewServer(New(chat, "qwen-plus").Handler())
+			srv := httptest.NewServer(testHandler(New(chat, "qwen-plus")))
 			defer srv.Close()
+			_, _ = chat.GetOrCreateSession("tok-s2", "", "qwen-plus")
 
-			history, err := readHistory(srv.URL + "/api/sessions/tok-s2/stream")
+			history, err := readHistory(srv.URL + "/api/v1/sessions/tok-s2/stream")
 			if err != nil {
 				t.Fatalf("read history: %v", err)
 			}
 			if !strings.Contains(history, `"token":null`) {
 				t.Fatalf("无用量时应显式 null 让前端隐藏统计: %s", history)
 			}
-			resp := getBody(t, srv.URL+"/api/sessions")
+			resp := getBody(t, srv.URL+"/api/v1/sessions")
 			if strings.Contains(string(resp), `"token"`) {
 				t.Fatalf("无用量时列表项不应带 token 字段: %s", resp)
 			}
@@ -100,10 +102,12 @@ func TestSessionTokenOmitsZeroAndErrors(t *testing.T) {
 
 // TestSessionTokenAbsentForLegacyService 覆盖三期服务：未实现可选接口时字段缺省，行为不变。
 func TestSessionTokenAbsentForLegacyService(t *testing.T) {
-	srv := httptest.NewServer(New(newFakeChat(), "qwen-plus").Handler())
+	chat := newFakeChat()
+	srv := httptest.NewServer(testHandler(New(chat, "qwen-plus")))
 	defer srv.Close()
+	_, _ = chat.GetOrCreateSession("legacy-s1", "", "qwen-plus")
 
-	history, err := readHistory(srv.URL + "/api/sessions/legacy-s1/stream")
+	history, err := readHistory(srv.URL + "/api/v1/sessions/legacy-s1/stream")
 	if err != nil {
 		t.Fatalf("read history: %v", err)
 	}

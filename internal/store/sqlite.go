@@ -148,6 +148,9 @@ func (st *roleStore) Get(ctx context.Context, id string) (*Role, error) {
 	if err := json.Unmarshal([]byte(perms), &r.Permissions); err != nil {
 		return nil, fmt.Errorf("parse role permissions: %w", err)
 	}
+	if r.Permissions == nil {
+		r.Permissions = []string{}
+	}
 	return r, nil
 }
 
@@ -182,6 +185,9 @@ func (st *roleStore) List(ctx context.Context) ([]*Role, error) {
 		}
 		if err := json.Unmarshal([]byte(perms), &r.Permissions); err != nil {
 			return nil, fmt.Errorf("parse role permissions: %w", err)
+		}
+		if r.Permissions == nil {
+			r.Permissions = []string{}
 		}
 		out = append(out, r)
 	}
@@ -223,7 +229,7 @@ func (st *sessionStore) Create(ctx context.Context, sess *session.Session) error
 	_, err = st.s.db.ExecContext(ctx, `
 		INSERT INTO sessions (id, user_id, name, cluster_id, namespace, model, state, data, created_at, last_modified)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sess.ID, sess.Cluster, sess.Name, sess.Cluster, sess.Namespace, sess.Model, sess.State,
+		sess.ID, sess.UserID, sess.Name, sess.Cluster, sess.Namespace, sess.Model, sess.State,
 		data, sess.CreatedAt, sess.LastModified)
 	return mapErr(err, "create session")
 }
@@ -250,7 +256,7 @@ func (st *sessionStore) Update(ctx context.Context, sess *session.Session) error
 	res, err := st.s.db.ExecContext(ctx, `
 		UPDATE sessions SET user_id=?, name=?, cluster_id=?, namespace=?, model=?, state=?, data=?, last_modified=?
 		WHERE id=?`,
-		sess.Cluster, sess.Name, sess.Cluster, sess.Namespace, sess.Model, sess.State, data, sess.LastModified, sess.ID)
+		sess.UserID, sess.Name, sess.Cluster, sess.Namespace, sess.Model, sess.State, data, sess.LastModified, sess.ID)
 	if err != nil {
 		return fmt.Errorf("update session: %w", err)
 	}

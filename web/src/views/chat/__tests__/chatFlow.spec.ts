@@ -53,7 +53,18 @@ function sseStream(frames: unknown[]): Response {
   return new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
 }
 
-function installFetch(frames: unknown[], skills: unknown[] = []): void {
+function installFetch(
+  frames: unknown[],
+  skills: unknown[] = [],
+  sessions: unknown[] = [SESSION],
+  scope: unknown = {
+    namespaces: ['mysql-dev'],
+    clusterScoped: false,
+    isAdmin: false,
+    canWrite: true,
+    canDestroy: false,
+  },
+): void {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
@@ -63,8 +74,14 @@ function installFetch(frames: unknown[], skills: unknown[] = []): void {
       if (url === '/api/v1/skills' && (init.method ?? 'GET') === 'GET') {
         return new Response(JSON.stringify({ data: skills }), { status: 200 })
       }
-      if (url === '/api/sessions' && (init.method ?? 'GET') === 'GET') {
-        return new Response(JSON.stringify([SESSION]), { status: 200 })
+      if (url === '/api/v1/auth/scope') {
+        return new Response(
+          JSON.stringify({ request_id: 'r', timestamp: new Date().toISOString(), data: scope }),
+          { status: 200 },
+        )
+      }
+      if (url === '/api/v1/sessions' && (init.method ?? 'GET') === 'GET') {
+        return new Response(JSON.stringify(sessions), { status: 200 })
       }
       if (url.endsWith('/stream')) {
         return sseStream(frames)
@@ -110,6 +127,17 @@ describe('ChatView 全链路冒烟（P2.10/P2.11/P2.13）', () => {
     expect(wrapper.text()).toContain('2 条')
     expect(wrapper.text()).toContain('18')
     expect(wrapper.text()).toContain('Token 用量')
+  })
+
+  it('新会话展示服务端授权范围，明确 namespace 与集群级资源边界', async () => {
+    const emptySession = { ...SESSION, id: 'empty', name: '新会话', messageCount: 0, token: null }
+    installFetch([], [], [emptySession])
+    const wrapper = mount(ChatView, { attachTo: document.body })
+    await vi.waitFor(() => expect(wrapper.text()).toContain('新会话'))
+    await wrapper.find('.session-item').trigger('click')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('当前授权范围：1 个命名空间'))
+    expect(wrapper.text()).toContain('mysql-dev')
+    expect(wrapper.text()).toContain('Node、PV、StorageClass')
   })
 
   it('选择会话后订阅 SSE：发送进入 Turn，审批卡回传选择值', async () => {

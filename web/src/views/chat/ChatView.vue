@@ -20,6 +20,8 @@ import MessageTimeline from '@/components/chat/MessageTimeline.vue'
 import ComposerBox from '@/components/chat/ComposerBox.vue'
 import TokenUsageBadge from '@/components/chat/TokenUsageBadge.vue'
 import TechEmptyState from '@/components/TechEmptyState.vue'
+import { myScope } from '@/api/auth'
+import type { EffectiveScope } from '@/api/types'
 import { buildSessionMarkdown, markdownFileName } from '@/utils/exportMarkdown'
 import { useChatStream, type StreamStatus } from '@/composables/useChatStream'
 import { useAuthStore } from '@/stores/auth'
@@ -38,6 +40,7 @@ const input = ref('')
 const sending = ref(false)
 const composerRef = ref<InstanceType<typeof ComposerBox> | null>(null)
 const auth = useAuthStore()
+const accessScope = ref<EffectiveScope | null>(null)
 
 const CONVERSATIONS_KEY = 'k8s_ai_conversations_collapsed'
 const conversationsCollapsed = ref(localStorage.getItem(CONVERSATIONS_KEY) === '1')
@@ -86,6 +89,42 @@ function extractSkillMentions(
 const activeSession = computed(
   () => sessions.value.find((session) => session.id === activeId.value) ?? null,
 )
+
+const showScopeWelcome = computed(() => {
+  if (!activeSession.value || activeSession.value.messageCount > 0) {
+    return false
+  }
+  const historyCount = stream.history.value?.messages?.length ?? 0
+  return historyCount === 0 && stream.events.value.length === 0
+})
+
+const scopeWelcome = computed(() => {
+  const scope = accessScope.value
+  if (!scope) {
+    return null
+  }
+  if (scope.isAdmin || scope.clusterScoped) {
+    return {
+      title: '当前授权范围：全集群',
+      hint: '你可以查询全部命名空间，以及 Node、PV、StorageClass 等集群级资源。',
+      tags: ['全部命名空间', '集群级资源'],
+    }
+  }
+  if (scope.namespaces.length === 0) {
+    return {
+      title: '当前尚未获得命名空间授权',
+      hint: '请联系管理员完成 namespace 授权后重新打开会话。授权生效前无法查询集群资源。',
+      tags: [],
+    }
+  }
+  return {
+    title: `当前授权范围：${scope.namespaces.length} 个命名空间`,
+    hint:
+      '你可以查询以下命名空间内的工作负载、Pod、事件、日志并执行故障诊断。' +
+      '其他命名空间及 Node、PV、StorageClass 等集群级资源需要管理员单独授权。',
+    tags: scope.namespaces,
+  }
+})
 
 /** P2.9 审批操作显隐：只读角色不展示审批按钮（后端仍独立强校验）。 */
 const canDecide = computed(() => canDecideApproval(auth.role))
@@ -160,6 +199,14 @@ async function loadSessions(): Promise<void> {
   }
 }
 
+async function loadScope(): Promise<void> {
+  try {
+    accessScope.value = await myScope()
+  } catch {
+    accessScope.value = null
+  }
+}
+
 function selectSession(id: string): void {
   mobileDrawerOpen.value = false
   if (id === activeId.value) {
@@ -188,6 +235,7 @@ function handleReconnect(): void {
 
 async function handleCreate(): Promise<void> {
   try {
+    await loadScope()
     const session = await createSession()
     activeId.value = session.id
     sessionStorage.setItem(ACTIVE_SESSION_KEY, session.id)
@@ -313,6 +361,7 @@ function handleReject(): void {
 
 onMounted(() => {
   void loadSessions()
+  void loadScope()
 })
 
 // 会话切换：先由 connect 内部 clear() 中止旧连接，再订阅新会话。
@@ -428,6 +477,16 @@ watch(
               </div>
             </header>
             <p v-if="stream.error.value" class="stream-error">{{ stream.error.value }}</p>
+            <section v-if="showScopeWelcome && scopeWelcome" class="scope-welcome" aria-label="当前授权范围">
+              <div class="scope-welcome-icon">AUTH</div>
+              <div class="scope-welcome-copy">
+                <strong>{{ scopeWelcome.title }}</strong>
+                <p>{{ scopeWelcome.hint }}</p>
+                <div v-if="scopeWelcome.tags.length" class="scope-tags">
+                  <span v-for="tag in scopeWelcome.tags" :key="tag" class="scope-tag">{{ tag }}</span>
+                </div>
+              </div>
+            </section>
             <MessageTimeline
               :history="stream.history.value"
               :events="stream.events.value"
@@ -606,6 +665,68 @@ watch(
   box-shadow: 0 0 18px -8px var(--app-danger);
   color: var(--app-danger);
   font-size: 12px;
+}
+
+.scope-welcome {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  flex: none;
+  margin: 4px 0 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--app-accent-border);
+  border-radius: var(--app-radius);
+  background:
+    linear-gradient(135deg, rgba(99, 102, 241, 0.1), transparent 62%),
+    var(--app-surface-2);
+  box-shadow: 0 0 28px -18px var(--app-accent);
+}
+
+.scope-welcome-icon {
+  flex: none;
+  padding: 4px 7px;
+  border: 1px solid var(--app-accent-border);
+  border-radius: 6px;
+  color: var(--app-accent-2);
+  font-family: var(--app-font-mono, monospace);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.scope-welcome-copy {
+  min-width: 0;
+}
+
+.scope-welcome-copy strong {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--app-strong);
+  font-size: 13px;
+}
+
+.scope-welcome-copy p {
+  margin: 0;
+  color: var(--app-muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.scope-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.scope-tag {
+  padding: 2px 8px;
+  border: 1px solid rgba(34, 211, 238, 0.26);
+  border-radius: 999px;
+  background: rgba(34, 211, 238, 0.08);
+  color: var(--app-accent-2);
+  font-family: var(--app-font-mono, monospace);
+  font-size: 11px;
 }
 
 .chat-composer {

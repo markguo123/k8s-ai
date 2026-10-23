@@ -13,15 +13,16 @@ import (
 
 	"github.com/k8s-ai/k8s-ai/internal/service"
 	"github.com/k8s-ai/k8s-ai/internal/session"
+	"github.com/k8s-ai/k8s-ai/internal/store"
 )
 
 // fakeChat 是 webui 测试用 ChatService 桩。
 type fakeChat struct {
-	mu         sync.Mutex
-	sessions   map[string]*session.Session
-	script     []service.ChatEvent
-	gotChoice  string
-	gotSkills  []string
+	mu        sync.Mutex
+	sessions  map[string]*session.Session
+	script    []service.ChatEvent
+	gotChoice string
+	gotSkills []string
 }
 
 func newFakeChat(script ...service.ChatEvent) *fakeChat {
@@ -34,7 +35,41 @@ func (f *fakeChat) GetOrCreateSession(id, _, _ string) (*session.Session, error)
 	if s, ok := f.sessions[id]; ok {
 		return s, nil
 	}
-	s := &session.Session{ID: id, Name: "Session " + id}
+	s := &session.Session{ID: id, Name: "Session " + id, UserID: "test-user"}
+	f.sessions[id] = s
+	return s, nil
+}
+
+func testPrincipal(_ context.Context, _ string) (*store.User, *store.Role, error) {
+	return &store.User{ID: "test-user", Username: "tester"}, &store.Role{
+		ID: "role-admin", Name: "admin", Permissions: []string{"*"},
+	}, nil
+}
+
+func testHandler(s *Server) http.Handler {
+	return s.AuthenticatedHandler(testPrincipal)
+}
+
+func (f *fakeChat) GetSession(id string) (*session.Session, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s, ok := f.sessions[id]
+	if !ok {
+		return nil, session.ErrNotFound
+	}
+	return s, nil
+}
+
+func (f *fakeChat) GetOrCreateSessionForUser(id, userID, _, _ string) (*session.Session, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if s, ok := f.sessions[id]; ok {
+		if s.UserID != userID {
+			return nil, session.ErrForbidden
+		}
+		return s, nil
+	}
+	s := &session.Session{ID: id, Name: "Session " + id, UserID: userID}
 	f.sessions[id] = s
 	return s, nil
 }
@@ -45,6 +80,20 @@ func (f *fakeChat) ListSessions() ([]session.Session, error) {
 	out := make([]session.Session, 0, len(f.sessions))
 	for _, s := range f.sessions {
 		out = append(out, *s)
+	}
+	return out, nil
+}
+
+func (f *fakeChat) ListSessionsForUser(userID string) ([]session.Session, error) {
+	all, err := f.ListSessions()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]session.Session, 0, len(all))
+	for _, sess := range all {
+		if sess.UserID == userID {
+			out = append(out, sess)
+		}
 	}
 	return out, nil
 }
@@ -150,28 +199,17 @@ func (c *cancelChat) Chat(ctx context.Context, _ service.ChatRequest, _ <-chan s
 	return out, nil
 }
 
-func TestIndexAndSessionCRUD(t *testing.T) {
-	srv := httptest.NewServer(New(newFakeChat(), "qwen-plus").Handler())
+func TestSessionCRUD(t *testing.T) {
+	srv := httptest.NewServer(testHandler(New(newFakeChat(), "qwen-plus")))
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/")
-	if err != nil {
-		t.Fatal(err)
-	}
-	body := make([]byte, 4096)
-	n, _ := resp.Body.Read(body)
-	resp.Body.Close()
-	if !strings.Contains(string(body[:n]), "k8s-ai") {
-		t.Fatal("首页缺少 k8s-ai 品牌")
-	}
-
-	resp = postJSON(t, srv.URL+"/api/sessions", `{"id":"s1","name":"incident-001"}`)
+	resp := postJSON(t, srv.URL+"/api/v1/sessions", `{"id":"s1","name":"incident-001"}`)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("create status = %d", resp.StatusCode)
 	}
 	resp.Body.Close()
 
-	resp, _ = http.Get(srv.URL + "/api/sessions")
+	resp, _ = http.Get(srv.URL + "/api/v1/sessions")
 	var list []map[string]any
 	_ = json.NewDecoder(resp.Body).Decode(&list)
 	resp.Body.Close()
@@ -179,14 +217,14 @@ func TestIndexAndSessionCRUD(t *testing.T) {
 		t.Fatalf("sessions = %v", list)
 	}
 
-	resp = postJSON(t, srv.URL+"/api/sessions/s1/rename", `{"name":"renamed"}`)
+	resp = postJSON(t, srv.URL+"/api/v1/sessions/s1/rename", `{"name":"renamed"}`)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("rename status = %d", resp.StatusCode)
 	}
 	resp.Body.Close()
 
-	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/sessions/s1", nil)
-	resp, err = http.DefaultClient.Do(req)
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/v1/sessions/s1", nil)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil || resp.StatusCode != http.StatusOK {
 		t.Fatalf("delete status = %v err=%v", resp.StatusCode, err)
 	}
@@ -200,10 +238,10 @@ func TestCancelActiveRun(t *testing.T) {
 		canceled: make(chan struct{}),
 	}
 	_, _ = fake.GetOrCreateSession("s1", "", "m")
-	srv := httptest.NewServer(New(fake, "m").Handler())
+	srv := httptest.NewServer(testHandler(New(fake, "m")))
 	defer srv.Close()
 
-	resp := postJSON(t, srv.URL+"/api/sessions/s1/send-message", `{"query":"检查"}`)
+	resp := postJSON(t, srv.URL+"/api/v1/sessions/s1/send-message", `{"query":"检查"}`)
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("send status = %d", resp.StatusCode)
 	}
@@ -215,7 +253,7 @@ func TestCancelActiveRun(t *testing.T) {
 		t.Fatal("run did not start")
 	}
 
-	resp = postJSON(t, srv.URL+"/api/sessions/s1/cancel", `{}`)
+	resp = postJSON(t, srv.URL+"/api/v1/sessions/s1/cancel", `{}`)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("cancel status = %d", resp.StatusCode)
 	}
@@ -229,7 +267,7 @@ func TestCancelActiveRun(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		resp = postJSON(t, srv.URL+"/api/sessions/s1/cancel", `{}`)
+		resp = postJSON(t, srv.URL+"/api/v1/sessions/s1/cancel", `{}`)
 		if resp.StatusCode == http.StatusConflict {
 			resp.Body.Close()
 			break
@@ -303,19 +341,19 @@ func TestStreamAndSendMessage(t *testing.T) {
 		service.ChatEvent{Type: service.ChatEventToolCall, Tool: &service.ChatToolCallView{Name: "get_resources"}},
 		service.ChatEvent{Type: service.ChatEventAnswer, Text: "完成"},
 	)
-	srv := httptest.NewServer(New(fake, "m").Handler())
+	srv := httptest.NewServer(testHandler(New(fake, "m")))
 	defer srv.Close()
 	_, _ = fake.GetOrCreateSession("s1", "", "m")
 
 	connected := make(chan struct{})
 	res := make(chan sseResult, 1)
 	go func() {
-		data, err := startSSE(srv.URL+"/api/sessions/s1/stream", connected, "完成")
+		data, err := startSSE(srv.URL+"/api/v1/sessions/s1/stream", connected, "完成")
 		res <- sseResult{data: data, err: err}
 	}()
 	<-connected
 
-	resp := postJSON(t, srv.URL+"/api/sessions/s1/send-message", `{"query":"检查"}`)
+	resp := postJSON(t, srv.URL+"/api/v1/sessions/s1/send-message", `{"query":"检查"}`)
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("send status = %d", resp.StatusCode)
 	}
@@ -336,11 +374,11 @@ func TestStreamAndSendMessage(t *testing.T) {
 
 func TestSendMessageForwardsExplicitSkills(t *testing.T) {
 	fake := newFakeChat(service.ChatEvent{Type: service.ChatEventAnswer, Text: "完成"})
-	srv := httptest.NewServer(New(fake, "m").Handler())
+	srv := httptest.NewServer(testHandler(New(fake, "m")))
 	defer srv.Close()
 	_, _ = fake.GetOrCreateSession("s1", "", "m")
 
-	resp := postJSON(t, srv.URL+"/api/sessions/s1/send-message", `{"query":"检查 mysql 故障","skills":["k8s-mysql-troubleshoot"]}`)
+	resp := postJSON(t, srv.URL+"/api/v1/sessions/s1/send-message", `{"query":"检查 mysql 故障","skills":["k8s-mysql-troubleshoot"]}`)
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("send status = %d", resp.StatusCode)
 	}
@@ -387,18 +425,18 @@ func TestCreateResourceHistoryRecovery(t *testing.T) {
 		{Type: service.ChatEventAnswer, Text: "完成"},
 	}
 	fake := newFakeChat(script...)
-	srv := httptest.NewServer(New(fake, "m").Handler())
+	srv := httptest.NewServer(testHandler(New(fake, "m")))
 	defer srv.Close()
 	_, _ = fake.GetOrCreateSession("s1", "", "m")
 
 	connected := make(chan struct{})
 	res := make(chan sseResult, 1)
 	go func() {
-		data, err := startSSE(srv.URL+"/api/sessions/s1/stream", connected, "完成")
+		data, err := startSSE(srv.URL+"/api/v1/sessions/s1/stream", connected, "完成")
 		res <- sseResult{data: data, err: err}
 	}()
 	<-connected
-	resp := postJSON(t, srv.URL+"/api/sessions/s1/send-message", `{"query":"创建"}`)
+	resp := postJSON(t, srv.URL+"/api/v1/sessions/s1/send-message", `{"query":"创建"}`)
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("send status = %d", resp.StatusCode)
 	}
@@ -412,7 +450,7 @@ func TestCreateResourceHistoryRecovery(t *testing.T) {
 		t.Fatal("未收到完成事件")
 	}
 
-	history, err := readHistory(srv.URL + "/api/sessions/s1/stream")
+	history, err := readHistory(srv.URL + "/api/v1/sessions/s1/stream")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,25 +470,25 @@ func TestCreateResourceHistoryRecovery(t *testing.T) {
 
 func TestApproveFlow(t *testing.T) {
 	fake := newFakeChat(service.ChatEvent{Type: service.ChatEventChoice, Choice: &service.ChatChoice{Prompt: "是否执行？"}})
-	srv := httptest.NewServer(New(fake, "m").Handler())
+	srv := httptest.NewServer(testHandler(New(fake, "m")))
 	defer srv.Close()
 	_, _ = fake.GetOrCreateSession("s1", "", "m")
 
 	connected := make(chan struct{})
 	res := make(chan sseResult, 1)
 	go func() {
-		data, err := startSSE(srv.URL+"/api/sessions/s1/stream", connected, "approved:")
+		data, err := startSSE(srv.URL+"/api/v1/sessions/s1/stream", connected, "approved:")
 		res <- sseResult{data: data, err: err}
 	}()
 	<-connected
 
-	resp := postJSON(t, srv.URL+"/api/sessions/s1/send-message", `{"query":"扩容"}`)
+	resp := postJSON(t, srv.URL+"/api/v1/sessions/s1/send-message", `{"query":"扩容"}`)
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("send status = %d", resp.StatusCode)
 	}
 	resp.Body.Close()
 
-	resp = postJSON(t, srv.URL+"/api/sessions/s1/approve", `{"choice":"yes"}`)
+	resp = postJSON(t, srv.URL+"/api/v1/sessions/s1/approve", `{"choice":"yes"}`)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("approve status = %d", resp.StatusCode)
 	}

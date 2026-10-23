@@ -177,8 +177,8 @@ func TestClusterAdminCreateNoEcho(t *testing.T) {
 	}
 }
 
-// TestClusterViewerReadOnly 验证权限判定：viewer 可读但不可写。
-func TestClusterViewerReadOnly(t *testing.T) {
+// TestClusterReadPermission 验证权限判定：具备 cluster.read 的 user 可读但不可写。
+func TestClusterReadPermission(t *testing.T) {
 	c := newClusterServer(t, &fakeClusterConnector{
 		info: &cluster.Info{Name: "prod", Context: "prod", Server: "https://10.0.0.1:6443"},
 	})
@@ -187,13 +187,22 @@ func TestClusterViewerReadOnly(t *testing.T) {
 		t.Fatalf("admin 创建失败: %d %s", resp.StatusCode, raw)
 	}
 
-	viewerToken := createRoleUser(t, c.store, c.authSvc, auth.RoleViewer, "viewer-cluster", "viewer-pw")
-	if resp, raw := c.do(t, http.MethodGet, "/api/v1/clusters", viewerToken, ""); resp.StatusCode != http.StatusOK {
-		t.Fatalf("viewer 读集群应 200, got %d: %s", resp.StatusCode, raw)
+	userRole := roleIDByName(t, c.store, auth.RoleUser)
+	role, err := c.store.Roles().Get(context.Background(), userRole)
+	if err != nil {
+		t.Fatal(err)
 	}
-	resp, raw := c.do(t, http.MethodPost, "/api/v1/clusters", viewerToken, kubeconfigBody("evil"))
+	role.Permissions = []string{permission.ClusterRead}
+	if err := c.store.Roles().Update(context.Background(), role); err != nil {
+		t.Fatal(err)
+	}
+	userToken := createRoleUser(t, c.store, c.authSvc, auth.RoleUser, "cluster-user", "cluster-pw")
+	if resp, raw := c.do(t, http.MethodGet, "/api/v1/clusters", userToken, ""); resp.StatusCode != http.StatusOK {
+		t.Fatalf("user 读集群应 200, got %d: %s", resp.StatusCode, raw)
+	}
+	resp, raw := c.do(t, http.MethodPost, "/api/v1/clusters", userToken, kubeconfigBody("evil"))
 	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("viewer 创建集群应 403, got %d: %s", resp.StatusCode, raw)
+		t.Fatalf("user 创建集群应 403, got %d: %s", resp.StatusCode, raw)
 	}
 	// 被拒请求不得产生任何副作用：仍只有 admin 创建的那一个集群。
 	clusters, err := c.store.Clusters().List(context.Background())
@@ -289,7 +298,10 @@ func TestClusterErrorPaths(t *testing.T) {
 	if err := authSvc.Bootstrap(context.Background(), "admin-pw"); err != nil {
 		t.Fatal(err)
 	}
-	plain := httptest.NewServer(NewWithAuth(&fakeScan{}, authSvc).Handler())
+	// 模拟 cli/server 在 K8S_AI_ENC_KEY 缺失时的装配结果：具体类型为
+	// *cluster.Service(nil)。不能因 typed nil 包装进接口而 panic。
+	var unavailable *cluster.Service
+	plain := httptest.NewServer(NewWithAuth(&fakeScan{}, authSvc).WithClusters(unavailable).Handler())
 	t.Cleanup(plain.Close)
 	loginResp, _, payload := login(t, plain, `{"username":"admin","password":"admin-pw"}`)
 	if loginResp.StatusCode != http.StatusOK {
@@ -299,6 +311,25 @@ func TestClusterErrorPaths(t *testing.T) {
 	resp, raw := postRaw(t, plain, plainToken, `/api/v1/clusters`, kubeconfigBody("prod"))
 	if resp.StatusCode != http.StatusNotImplemented {
 		t.Fatalf("未装配集群应 501, got %d: %s", resp.StatusCode, raw)
+	}
+	for _, path := range []string{"/api/v1/clusters", "/api/v1/clusters/current"} {
+		req, err := http.NewRequest(http.MethodGet, plain.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+plainToken)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET %s 不应发生连接重置: %v", path, err)
+		}
+		raw, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusNotImplemented {
+			t.Fatalf("未装配集群 GET %s 应 501, got %d: %s", path, resp.StatusCode, raw)
+		}
 	}
 }
 
@@ -340,7 +371,7 @@ func TestClusterChangeAudit(t *testing.T) {
 // createRoleUser 创建指定角色的用户并返回其登录 token（测试辅助）。
 func createRoleUser(t *testing.T, st store.Store, authSvc *auth.Service, roleName, username, password string) string {
 	t.Helper()
-	roleID := ensureRole(t, st, roleName, "fallback role", permission.ClusterRead)
+	roleID := roleIDByName(t, st, roleName)
 	hash, err := auth.HashPassword(password)
 	if err != nil {
 		t.Fatal(err)

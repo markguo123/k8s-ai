@@ -20,6 +20,7 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/service"
 	"github.com/k8s-ai/k8s-ai/internal/settings"
 	"github.com/k8s-ai/k8s-ai/internal/store"
+	"github.com/k8s-ai/k8s-ai/internal/webui"
 )
 
 // newServerCmd 启动最小化 HTTP 服务（一期 1.2）。
@@ -88,10 +89,32 @@ func newServerCmd(deps Dependencies) *cobra.Command {
 			}
 			// P3.11：授权面（AuthzGrant / ApiToken）由同一 Store 装配。
 			authzSvc := authz.New(st)
+			// Chat 会话与平台 API 使用同一认证服务和 Store；会话归属由
+			// webui.AuthenticatedHandler 统一校验。
+			chat := service.NewChatWithStoreAndConfig(cfg, st)
+			if binder, ok := chat.(service.SkillPlatformBinder); ok {
+				binder.SetSkillPlatform(skillPlat)
+			}
+			platformHandler := server.NewWithPlatform(deps.NewScan(), authSvc, settingsSvc, auditSvc).
+				WithClusters(clusterSvc).
+				WithSkills(skillPlat).
+				WithAuthz(authzSvc).
+				Handler()
+			chatAPI := webui.New(chat, cfg.LLM.Model).WithScopeResolver(webui.AuthzScopeResolver(authzSvc))
+			sessionHandler := server.CORS(server.DefaultCORS())(
+				server.RequestID(chatAPI.AuthenticatedHandler(authSvc.UserByToken)),
+			)
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/sessions" || strings.HasPrefix(r.URL.Path, "/api/v1/sessions/") {
+					sessionHandler.ServeHTTP(w, r)
+					return
+				}
+				platformHandler.ServeHTTP(w, r)
+			})
 			tls := cfg.Platform.Server.TLS
 			srv := &http.Server{
 				Addr:              listenAddr,
-				Handler:           server.NewWithPlatform(deps.NewScan(), authSvc, settingsSvc, auditSvc).WithClusters(clusterSvc).WithSkills(skillPlat).WithAuthz(authzSvc).Handler(),
+				Handler:           handler,
 				ReadHeaderTimeout: 10 * time.Second,
 			}
 			logger.Info("k8s-ai server listening", "addr", listenAddr, "db", path, "tls", tls.Enabled)

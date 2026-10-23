@@ -21,11 +21,9 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/store"
 )
 
-// 默认角色名（D-09：P0 开放 user / operator / admin 三角色，废弃 viewer 的默认播种；
-// viewer 字符串仅作为三期兼容读取与未知角色最小权限回落保留）。
+// 默认角色名：平台只开放 user / operator / admin 三角色。
 const (
 	RoleAdmin    = "admin"
-	RoleViewer   = "viewer"
 	RoleUser     = "user"
 	RoleOperator = "operator"
 
@@ -169,7 +167,7 @@ func (s *Service) UserByToken(ctx context.Context, token string) (*store.User, *
 	return u, role, nil
 }
 
-// Bootstrap 首次初始化默认角色与 admin 用户；已有用户时幂等跳过。
+// Bootstrap 初始化默认角色与 admin 用户，并对已有库执行幂等角色修复。
 // admin 密码由调用方提供（环境变量/配置），不写入日志。
 func (s *Service) Bootstrap(ctx context.Context, adminPassword string) error {
 	return s.BootstrapWithName(ctx, DefaultAdminUsername, adminPassword)
@@ -177,7 +175,7 @@ func (s *Service) Bootstrap(ctx context.Context, adminPassword string) error {
 
 // BootstrapWithName 与 Bootstrap 等价，但允许调用方指定首个管理员用户名
 // （P6.12：读取 platform.auth.admin_username 配置，为空回落默认 admin）。
-// 已有用户时幂等跳过，不会重命名既存管理员。
+// 已有用户时不会重建或重命名管理员，但会修复三角色定义。
 func (s *Service) BootstrapWithName(ctx context.Context, adminUsername, adminPassword string) error {
 	if strings.TrimSpace(adminUsername) == "" {
 		adminUsername = DefaultAdminUsername
@@ -190,7 +188,7 @@ func (s *Service) BootstrapWithName(ctx context.Context, adminUsername, adminPas
 		return fmt.Errorf("auth: list users: %w", err)
 	}
 	if len(existing) > 0 {
-		return nil
+		return s.reconcileRoles(ctx)
 	}
 	now := s.now().UTC()
 	roleIDs := map[string]string{}
@@ -229,6 +227,48 @@ func (s *Service) BootstrapWithName(ctx context.Context, adminUsername, adminPas
 	return nil
 }
 
+// reconcileRoles 保证三角色存在且权限口径与当前设计一致。方法可重复执行。
+func (s *Service) reconcileRoles(ctx context.Context) error {
+	roles, err := s.roles.List(ctx)
+	if err != nil {
+		return fmt.Errorf("auth: list roles: %w", err)
+	}
+	byName := make(map[string]*store.Role, len(roles))
+	for _, role := range roles {
+		byName[role.Name] = role
+	}
+
+	now := s.now().UTC()
+	for _, def := range defaultRoles() {
+		role := byName[def.name]
+		if role == nil {
+			role = &store.Role{
+				ID:          newSecretToken(),
+				Name:        def.name,
+				Description: def.description,
+				Permissions: append([]string(nil), def.permissions...),
+				CreatedAt:   now,
+				UpdatedAt:   now,
+			}
+			if err := s.roles.Create(ctx, role); err != nil {
+				return fmt.Errorf("auth: create missing role %s: %w", def.name, err)
+			}
+			byName[def.name] = role
+			continue
+		}
+		if !sameStrings(role.Permissions, def.permissions) {
+			role.Permissions = append([]string(nil), def.permissions...)
+			role.Description = def.description
+			role.UpdatedAt = now
+			if err := s.roles.Update(ctx, role); err != nil {
+				return fmt.Errorf("auth: normalize role %s: %w", def.name, err)
+			}
+		}
+	}
+
+	return nil
+}
+
 type roleDef struct {
 	name        string
 	description string
@@ -238,11 +278,23 @@ type roleDef struct {
 func defaultRoles() []roleDef {
 	return []roleDef{
 		{name: RoleAdmin, description: "管理员：全部平台权限", permissions: []string{"*"}},
-		{name: RoleUser, description: "普通用户：只读巡检与会话内自确认写操作", permissions: []string{
-			"chat.read", "chat.write", "cluster.read", "skill.read", "approval.read",
-		}},
-		{name: RoleOperator, description: "操作员：集群管理与会话内写操作", permissions: []string{"chat.write", "cluster.manage"}},
+		// user/operator 的平台权限默认为空。实际集群能力由 admin 授予的
+		// namespace AuthzGrant 决定，不能靠角色默认值预先放行。
+		{name: RoleUser, description: "普通用户：零平台权限，按 namespace 授权使用集群能力", permissions: []string{}},
+		{name: RoleOperator, description: "操作员：零平台权限，按 namespace 授权使用集群能力", permissions: []string{}},
 	}
+}
+
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // HashPassword 用 argon2id 生成带参数与盐的密码哈希（P1.5 验收）。

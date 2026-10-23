@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"sync"
 	"time"
 
@@ -55,10 +56,10 @@ type Server struct {
 	skillsSvc skillsService
 	// authzSvc 是授权面应用服务（P3.11），nil 时 grants/tokens 端点返回 501。
 	authzSvc authzService
-	perms     *permission.Enforcer
-	mu        sync.Mutex
-	jobs      map[string]*ScanJob
-	running   bool
+	perms    *permission.Enforcer
+	mu       sync.Mutex
+	jobs     map[string]*ScanJob
+	running  bool
 }
 
 // New 创建服务（注入 ScanService）。
@@ -88,8 +89,28 @@ func NewWithPlatform(svc service.ScanService, auth authService, settingsSvc sett
 
 // WithClusters 装配集群管理应用服务（P3.1-P3.3）。链式可选，不破坏既有构造器签名。
 func (s *Server) WithClusters(svc clusterService) *Server {
+	// 可选依赖常以具体指针（例如未配置加密密钥时的 *cluster.Service(nil)）
+	// 传入；若直接存入接口，接口值本身非 nil，handler 会误判为已装配并
+	// 调用 nil receiver。这里统一把 typed nil 视为未装配。
+	if isNilService(svc) {
+		s.clusterSvc = nil
+		return s
+	}
 	s.clusterSvc = svc
 	return s
+}
+
+func isNilService(svc any) bool {
+	if svc == nil {
+		return true
+	}
+	v := reflect.ValueOf(svc)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return v.IsNil()
+	default:
+		return false
+	}
 }
 
 // WithSkills 装配 Skill 平台应用服务（P3.5）。链式可选，不破坏既有构造器签名。
@@ -113,6 +134,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
 	mux.HandleFunc("POST /api/v1/auth/logout", s.handleLogout)
 	mux.HandleFunc("GET /api/v1/auth/me", s.handleMe)
+	mux.HandleFunc("GET /api/v1/auth/scope", s.handleMyScope)
 	mux.HandleFunc("POST /api/v1/auth/password", s.handleChangePassword)
 	mux.HandleFunc("POST /api/v1/scans", s.handleCreateScan)
 	mux.HandleFunc("GET /api/v1/scans/{id}", s.handleGetScan)

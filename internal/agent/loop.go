@@ -632,6 +632,9 @@ func (a *Agent) batchApprove(ctx context.Context, calls []llm.ToolCall) (approve
 		if !ok || a.approvalDecision(t, call.Arguments) != approval.DecisionRequireApproval {
 			continue
 		}
+		if err := a.scopeCheck(call); err != nil {
+			continue
+		}
 		key := declineKey(call.Name, call.Arguments)
 		if a.Session.Approved(key) {
 			continue
@@ -722,6 +725,12 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolCall, batchApprove
 		Name: call.Name, Arguments: argsView, Risk: string(t.Risk(call.Arguments)),
 	}})
 	a.audit(ctx, audit.ActionToolCallRequest, map[string]any{"name": call.Name, "arguments": argsView})
+	if err := a.scopeCheck(call); err != nil {
+		a.audit(ctx, audit.ActionApprovalDenied, map[string]any{
+			"name": call.Name, "reason": "scope_denied", "detail": err.Error(),
+		})
+		return tools.ResultError(err.Error())
+	}
 
 	detail := a.approvalDecisionDetail(t, call.Arguments)
 	decision := detail.decision
@@ -852,6 +861,13 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolCall, batchApprove
 		})
 	}
 	return tr
+}
+
+func (a *Agent) scopeCheck(call llm.ToolCall) error {
+	if a.AccessScope == nil {
+		return nil
+	}
+	return a.AccessScope.Check(call.Name, call.Arguments)
 }
 
 // collectSecretValues 在审批通过后、工具执行前逐个索取 $ASK 的 Secret 明文值（三期 R4.5）。

@@ -118,6 +118,21 @@ type settingsView struct {
 	} `json:"items"`
 }
 
+// TestSettingsAdminOnly 锁定默认角色口径：user/operator 平台权限为零，
+// 配置中心读与写均不得越过 API 权限门禁。
+func TestSettingsAdminOnly(t *testing.T) {
+	p := newPlatformServer(t)
+	for _, role := range []string{auth.RoleUser, auth.RoleOperator} {
+		token := createUserWithRole(t, p, "settings-"+role, role)
+		if resp, raw := p.do(t, http.MethodGet, "/api/v1/settings/model", token, ""); resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("%s 读取配置应 403, got %d: %s", role, resp.StatusCode, raw)
+		}
+		if resp, raw := p.do(t, http.MethodPatch, "/api/v1/settings/model", token, `{"max_tokens":2048}`); resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("%s 修改配置应 403, got %d: %s", role, resp.StatusCode, raw)
+		}
+	}
+}
+
 func (v settingsView) item(key string) (json.RawMessage, bool, bool) {
 	for _, item := range v.Items {
 		if item.Key == key {
@@ -249,31 +264,38 @@ func TestSettingsErrors(t *testing.T) {
 	}
 }
 
-// TestSettingsViewerCanReadButNotWrite 验证权限判定落在 Permission 层：
-// viewer 持 settings.read（读非敏感配置），不持 settings.write。
-func TestSettingsViewerCanReadButNotWrite(t *testing.T) {
+// TestSettingsReadPermission 验证权限判定落在 Permission 层：
+// 临时授予 user settings.read 后可读非敏感配置，但不持 settings.write。
+func TestSettingsReadPermission(t *testing.T) {
 	p := newPlatformServer(t)
-	hash, err := auth.HashPassword("viewer-pw")
+	hash, err := auth.HashPassword("reader-pw")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// P3.11a：默认播种移除 viewer，测试按需补建只读观察者角色。
-	viewerRole := ensureRole(t, p.store, auth.RoleViewer, "只读观察者（测试补建）", permission.SettingsRead)
+	userRole := roleIDByName(t, p.store, auth.RoleUser)
+	userRoleModel, err := p.store.Roles().Get(context.Background(), userRole)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userRoleModel.Permissions = []string{permission.SettingsRead}
+	if err := p.store.Roles().Update(context.Background(), userRoleModel); err != nil {
+		t.Fatal(err)
+	}
 	err = p.store.Users().Create(context.Background(), &store.User{
-		ID: "u-viewer", Username: "viewer1", PasswordHash: hash, RoleID: viewerRole,
+		ID: "u-reader", Username: "reader1", PasswordHash: hash, RoleID: userRole,
 		Status: "active", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	})
 	if err != nil {
-		t.Fatalf("create viewer: %v", err)
+		t.Fatalf("create reader: %v", err)
 	}
-	token := p.tokenAs(t, "viewer1", "viewer-pw")
+	token := p.tokenAs(t, "reader1", "reader-pw")
 
 	if resp, raw := p.do(t, http.MethodGet, "/api/v1/settings/model", token, ""); resp.StatusCode != http.StatusOK {
-		t.Fatalf("viewer 读取配置应 200, got %d: %s", resp.StatusCode, raw)
+		t.Fatalf("reader 读取配置应 200, got %d: %s", resp.StatusCode, raw)
 	}
 	resp, raw := p.do(t, http.MethodPatch, "/api/v1/settings/model", token, `{"max_tokens":1}`)
 	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("viewer 改配置应 403, got %d: %s", resp.StatusCode, raw)
+		t.Fatalf("reader 改配置应 403, got %d: %s", resp.StatusCode, raw)
 	}
 	// 越权尝试不得产生任何副作用。
 	if _, err := p.store.Settings().Get(context.Background(), "model", "max_tokens"); err == nil {

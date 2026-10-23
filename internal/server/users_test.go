@@ -6,35 +6,10 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/k8s-ai/k8s-ai/internal/auth"
 	"github.com/k8s-ai/k8s-ai/internal/store"
 )
-
-// ensureRole 确保给定名称的角色存在（默认播种缺少 viewer，测试可显式补建），
-// 返回角色 ID。属于 package server 的共享测试辅助。
-func ensureRole(t *testing.T, st store.Store, name, description string, perms ...string) string {
-	t.Helper()
-	roles, err := st.Roles().List(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, r := range roles {
-		if r.Name == name {
-			return r.ID
-		}
-	}
-	now := time.Now().UTC()
-	role := &store.Role{
-		ID: "r-" + name, Name: name, Description: description,
-		Permissions: perms, CreatedAt: now, UpdatedAt: now,
-	}
-	if err := st.Roles().Create(context.Background(), role); err != nil {
-		t.Fatalf("create role %s: %v", name, err)
-	}
-	return role.ID
-}
 
 func roleIDByName(t *testing.T, st store.Store, name string) string {
 	t.Helper()

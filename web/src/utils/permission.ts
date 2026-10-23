@@ -25,22 +25,13 @@ export const PERM = {
 } as const
 
 /**
- * 角色默认权限，对齐后端 `auth.defaultRoles()`：
- * admin 为全量通配，viewer 只读，operator 可写集群。
- * 四期新角色 user 按需求 v1.3 收敛为「可会话内自确认的普通用户」。
+ * 角色默认平台权限，对齐后端 `auth.defaultRoles()`。user/operator 的平台
+ * 权限为零，集群能力由 admin 授予的 namespace AuthzGrant 决定；admin 为全量。
  */
 export const ROLE_PERMISSIONS: Record<Role, string[]> = {
   admin: ['*'],
-  operator: [PERM.chatWrite, PERM.clusterManage],
-  user: [PERM.chatRead, PERM.chatWrite, PERM.clusterRead, PERM.skillRead, PERM.approvalRead],
-  viewer: [
-    PERM.chatRead,
-    PERM.clusterRead,
-    PERM.skillRead,
-    PERM.approvalRead,
-    PERM.auditRead,
-    PERM.settingsRead,
-  ],
+  operator: [],
+  user: [],
 }
 
 /**
@@ -71,16 +62,17 @@ export function permissionsOf(role: Role | null | undefined): string[] {
   if (!role) {
     return []
   }
-  return ROLE_PERMISSIONS[role] ?? ROLE_PERMISSIONS.viewer
+  return ROLE_PERMISSIONS[role] ?? []
 }
 
 /**
  * 是否可审批当前会话的写操作（本人自确认）。
- * 口径：需要会话内写能力（chat.write）；只读角色看不到审批按钮。
+ * 审批与平台角色权限解耦：三类登录角色都可确认自己的会话内操作；
+ * 资源范围、销毁能力与审批策略仍由后端独立校验。
  * 后端仍会独立校验审批策略与权限，前端隐藏不是安全机制。
  */
 export function canDecideApproval(role: Role | null | undefined): boolean {
-  return hasPermission(permissionsOf(role), PERM.chatWrite)
+  return role === 'admin' || role === 'operator' || role === 'user'
 }
 
 /** 是否可查看审批与审计（用于治理菜单的入口显隐）。 */

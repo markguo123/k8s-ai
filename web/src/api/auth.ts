@@ -8,6 +8,7 @@ import {
   type LoginRequest,
   type LoginResponse,
   type MeResponse,
+  type EffectiveScope,
 } from './types'
 import request, { ApiRequestError } from './request'
 
@@ -38,6 +39,15 @@ export async function me(): Promise<MeResponse> {
   const res = await request<MeResponse>('/auth/me')
   if (!res.data) {
     throw new ApiRequestError(200, ErrorCode.internal, 'auth: empty me response')
+  }
+  return res.data
+}
+
+/** 当前登录用户的 Kubernetes 有效授权范围。 */
+export async function myScope(): Promise<EffectiveScope> {
+  const res = await request<EffectiveScope>('/auth/scope')
+  if (!res.data) {
+    throw new ApiRequestError(200, ErrorCode.internal, 'auth: empty scope response')
   }
   return res.data
 }

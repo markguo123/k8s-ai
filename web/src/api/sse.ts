@@ -306,12 +306,12 @@ export async function fetchChatStream(
   signal: AbortSignal,
 ): Promise<void> {
   const headers = new Headers({ Accept: 'text/event-stream' })
-  // 四期平台进程下 SSE 同样受鉴权保护；三期 webui 忽略该头。
+  // SSE 与普通 API 使用同一登录 Token，并在服务端执行 owner 校验。
   const token = readToken()
   if (token) {
     headers.set('Authorization', `Bearer ${token}`)
   }
-  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/stream`, {
+  const response = await fetch(`/api/v1/sessions/${encodeURIComponent(sessionId)}/stream`, {
     signal,
     headers,
   })

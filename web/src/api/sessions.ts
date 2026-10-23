@@ -1,8 +1,8 @@
 /**
- * P2.4 会话端点客户端。
- * 这些端点由 webui 服务直接提供（`GET|POST /api/sessions`、
- * `POST /api/sessions/{id}/rename`、`DELETE /api/sessions/{id}`），
- * 返回裸对象/数组而非 `/api/v1` 信封，因此此处单独封装 fetch。
+ * 平台会话端点客户端。
+ * 这些端点由平台 server 直接提供（`GET|POST /api/v1/sessions`、
+ * `POST /api/v1/sessions/{id}/rename`、`DELETE /api/v1/sessions/{id}`），
+ * 所有请求携带当前登录 Token，并由服务端执行 owner 校验。
  */
 
 import type { AgentToken } from './sse'
@@ -92,12 +92,12 @@ async function sessionFetch<T>(url: string, init: RequestInit = {}): Promise<T> 
 }
 
 export async function listSessions(): Promise<SessionSummary[]> {
-  return sessionFetch<SessionSummary[]>('/api/sessions')
+  return sessionFetch<SessionSummary[]>('/api/v1/sessions')
 }
 
 /** 创建新会话；若传 id 则等同“恢复/获取”该会话。 */
 export async function createSession(payload: { id?: string; name?: string } = {}): Promise<SessionDetail> {
-  return sessionFetch<SessionDetail>('/api/sessions', {
+  return sessionFetch<SessionDetail>('/api/v1/sessions', {
     method: 'POST',
     body: JSON.stringify(payload),
   })
@@ -105,7 +105,7 @@ export async function createSession(payload: { id?: string; name?: string } = {}
 
 export async function renameSession(id: string, name: string): Promise<{ id: string; name: string }> {
   return sessionFetch<{ id: string; name: string }>(
-    `/api/sessions/${encodeURIComponent(id)}/rename`,
+    `/api/v1/sessions/${encodeURIComponent(id)}/rename`,
     { method: 'POST', body: JSON.stringify({ name }) },
   )
 }
@@ -116,12 +116,12 @@ export async function pinSession(
   pinned: boolean,
 ): Promise<{ id: string; pinned: boolean }> {
   return sessionFetch<{ id: string; pinned: boolean }>(
-    `/api/sessions/${encodeURIComponent(id)}/pin`,
+    `/api/v1/sessions/${encodeURIComponent(id)}/pin`,
     { method: 'POST', body: JSON.stringify({ pinned }) },
   )
 }
 
-/** 发起一轮 Chat（webui `POST /api/sessions/{id}/send-message`），SSE 流随后推送事件。 */
+/** 发起一轮 Chat（webui `POST /api/v1/sessions/{id}/send-message`），SSE 流随后推送事件。 */
 export async function sendMessage(
   id: string,
   payload: { query: string; skipPermissions?: boolean; skills?: string[] },
@@ -135,28 +135,28 @@ export async function sendMessage(
     body.skills = payload.skills
   }
   return sessionFetch<{ sessionId: string }>(
-    `/api/sessions/${encodeURIComponent(id)}/send-message`,
+    `/api/v1/sessions/${encodeURIComponent(id)}/send-message`,
     { method: 'POST', body: JSON.stringify(body) },
   )
 }
 
 /** 取消当前会话正在执行的 Chat 运行。 */
 export async function cancelRun(id: string): Promise<{ sessionId: string }> {
-  return sessionFetch<{ sessionId: string }>(`/api/sessions/${encodeURIComponent(id)}/cancel`, {
+  return sessionFetch<{ sessionId: string }>(`/api/v1/sessions/${encodeURIComponent(id)}/cancel`, {
     method: 'POST',
   })
 }
 
-/** 回传审批选择（webui `POST /api/sessions/{id}/approve`）。choice 不写回响应体。 */
+/** 回传审批选择（webui `POST /api/v1/sessions/{id}/approve`）。choice 不写回响应体。 */
 export async function approveRun(id: string, choice: string): Promise<{ sessionId: string }> {
   return sessionFetch<{ sessionId: string }>(
-    `/api/sessions/${encodeURIComponent(id)}/approve`,
+    `/api/v1/sessions/${encodeURIComponent(id)}/approve`,
     { method: 'POST', body: JSON.stringify({ choice }) },
   )
 }
 
 export async function deleteSession(id: string): Promise<{ deleted: string }> {
-  return sessionFetch<{ deleted: string }>(`/api/sessions/${encodeURIComponent(id)}`, {
+  return sessionFetch<{ deleted: string }>(`/api/v1/sessions/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   })
 }

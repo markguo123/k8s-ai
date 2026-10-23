@@ -12,9 +12,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/k8s-ai/k8s-ai/internal/permission"
 	"github.com/k8s-ai/k8s-ai/internal/store"
 )
 
@@ -83,10 +85,10 @@ type CreateGrantRequest struct {
 
 // UpdateGrantRequest PATCH /api/v1/grants/{id} 请求体（部分更新；ExpiresAt 为空表示保持原值）。
 type UpdateGrantRequest struct {
-	ClusterID   *string     `json:"clusterId"`
-	Namespaces  *[]string   `json:"namespaces"`
-	Permissions *[]string   `json:"permissions"`
-	ExpiresAt   *time.Time  `json:"expiresAt"`
+	ClusterID   *string    `json:"clusterId"`
+	Namespaces  *[]string  `json:"namespaces"`
+	Permissions *[]string  `json:"permissions"`
+	ExpiresAt   *time.Time `json:"expiresAt"`
 }
 
 // CreateTokenRequest POST /api/v1/users/{userId}/tokens 请求体。
@@ -101,6 +103,16 @@ type CreateTokenResult struct {
 	Token    string `json:"token"` // 明文 token，创建后服务端不再持有
 }
 
+// EffectiveScope 是登录用户经平台授权后的有效 Kubernetes 资源范围。
+type EffectiveScope struct {
+	ClusterID     string   `json:"clusterId,omitempty"`
+	Namespaces    []string `json:"namespaces"`
+	ClusterScoped bool     `json:"clusterScoped"`
+	IsAdmin       bool     `json:"isAdmin"`
+	CanWrite      bool     `json:"canWrite"`
+	CanDestroy    bool     `json:"canDestroy"`
+}
+
 // Service 是授权面的应用服务。
 type Service struct {
 	st store.Store
@@ -109,6 +121,79 @@ type Service struct {
 // New 创建授权应用服务（依赖四期 Store）。
 func New(st store.Store) *Service {
 	return &Service{st: st}
+}
+
+// EffectiveScope 合并用户当前有效的 namespace grants。空 clusterId 的授权按
+// 单集群语义匹配当前集群；user ID 与 username 都可作为 principalId 匹配。
+func (s *Service) EffectiveScope(ctx context.Context, user *store.User, role *store.Role, clusterID string) (*EffectiveScope, error) {
+	if user == nil || role == nil {
+		return nil, fmt.Errorf("%w: user and role are required", ErrInvalid)
+	}
+	if permission.HasPermission(role.Permissions, "*") {
+		return &EffectiveScope{
+			ClusterID: clusterID, Namespaces: []string{}, ClusterScoped: true, IsAdmin: true, CanWrite: true, CanDestroy: true,
+		}, nil
+	}
+	principals := []string{strings.TrimSpace(user.ID)}
+	if username := strings.TrimSpace(user.Username); username != "" && username != user.ID {
+		principals = append(principals, username)
+	}
+	now := time.Now().UTC()
+	seenNS := map[string]bool{}
+	namespaces := []string{}
+	canWrite, canDestroy := false, false
+	for _, principal := range principals {
+		grants, err := s.st.AuthzGrants().ListByPrincipal(ctx, "user", principal)
+		if err != nil {
+			return nil, fmt.Errorf("authz: list grants for %s: %w", user.Username, err)
+		}
+		for _, raw := range grants {
+			if raw.ExpiresAt != nil && !raw.ExpiresAt.After(now) {
+				continue
+			}
+			if raw.ClusterID != "" && clusterID != "" && raw.ClusterID != clusterID {
+				continue
+			}
+			permissions, err := unmarshalStringSlice(raw.Permissions)
+			if err != nil {
+				return nil, fmt.Errorf("authz: decode grant %s: %w", raw.ID, err)
+			}
+			if !containsString(permissions, "*") {
+				if containsString(permissions, "destroy") {
+					canDestroy = true
+				}
+				continue
+			}
+			namespacesRaw, err := unmarshalStringSlice(raw.Namespaces)
+			if err != nil {
+				return nil, fmt.Errorf("authz: decode grant %s namespaces: %w", raw.ID, err)
+			}
+			canWrite = true
+			if containsString(permissions, "destroy") {
+				canDestroy = true
+			}
+			for _, ns := range namespacesRaw {
+				ns = strings.TrimSpace(ns)
+				if ns != "" && !seenNS[ns] {
+					seenNS[ns] = true
+					namespaces = append(namespaces, ns)
+				}
+			}
+		}
+	}
+	sort.Strings(namespaces)
+	return &EffectiveScope{
+		ClusterID: clusterID, Namespaces: namespaces, CanWrite: canWrite, CanDestroy: canDestroy,
+	}, nil
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 // ---- AuthzGrant ----
@@ -262,14 +347,14 @@ func (s *Service) CreateToken(ctx context.Context, userID string, req CreateToke
 	sum := sha256.Sum256([]byte(plain))
 	now := time.Now().UTC()
 	t := &store.ApiToken{
-		ID:         newID(),
-		UserID:     userID,
-		Name:       name,
-		TokenHash:  hex.EncodeToString(sum[:]),
-		ExpiresAt:  cloneTime(req.ExpiresAt),
-		Status:     StatusActive,
-		CreatedAt:  now,
-		UpdatedAt:  now,
+		ID:        newID(),
+		UserID:    userID,
+		Name:      name,
+		TokenHash: hex.EncodeToString(sum[:]),
+		ExpiresAt: cloneTime(req.ExpiresAt),
+		Status:    StatusActive,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 	if err := s.st.ApiTokens().Create(ctx, t); err != nil {
 		return nil, "", fmt.Errorf("authz: create api token: %w", err)

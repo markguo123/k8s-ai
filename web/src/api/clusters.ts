@@ -4,7 +4,7 @@
  * 安全约定：kubeconfig 只在 create/test 请求体的内存中出现一次，
  * 客户端本地不缓存明文；列表 / 状态响应用受管元数据（store.Cluster）建模。
  */
-import { apiDelete, apiGet, apiPost } from './request'
+import { ApiRequestError, apiDelete, apiGet, apiPost } from './request'
 import type {
   Cluster,
   ClusterCreateRequest,
@@ -56,6 +56,9 @@ export async function deleteCluster(id: string): Promise<void> {
 
 /** 统一错误文案，供页面直接展示（不透出请求体内容）。 */
 export function describeClusterError(method: string, error: unknown): string {
+  if (error instanceof ApiRequestError && error.status === 501) {
+    return '集群管理能力未启用，请联系平台管理员配置凭据加密密钥后重试'
+  }
   if (error instanceof Error && error.message) {
     return error.message
   }

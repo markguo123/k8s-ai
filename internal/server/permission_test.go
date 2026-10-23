@@ -100,32 +100,41 @@ func TestPermissionGateAllowsAdmin(t *testing.T) {
 	decodeData(t, getResp, nil)
 }
 
-func TestPermissionGateDeniesViewer(t *testing.T) {
+func TestPermissionGateEnforcesRolePermissions(t *testing.T) {
 	ts, _, st, authSvc := newAuthedScanServer(t, &fakeScan{result: &model.ScanResult{}})
-	token := createAndLogin(t, st, authSvc, ts, "viewer", "viewer-pw", auth.RoleViewer)
+	userRole := roleIDByName(t, st, auth.RoleUser)
+	role, err := st.Roles().Get(context.Background(), userRole)
+	if err != nil {
+		t.Fatal(err)
+	}
+	role.Permissions = []string{permission.ClusterRead}
+	if err := st.Roles().Update(context.Background(), role); err != nil {
+		t.Fatal(err)
+	}
+	token := createAndLogin(t, st, authSvc, ts, "scanner", "scanner-pw", auth.RoleUser)
 
-	// viewer 有 cluster.read，允许 GET scan。
+	// 测试仅临时赋予 user cluster.read，允许 GET scan。
 	getResp := authedGet(t, ts, "/api/v1/scans/some-id", token)
 	if getResp.StatusCode != http.StatusNotFound {
-		t.Fatalf("viewer GET scan 应放行并落到 404, got %d", getResp.StatusCode)
+		t.Fatalf("user GET scan 应放行并落到 404, got %d", getResp.StatusCode)
 	}
 	decodeData(t, getResp, nil)
 
-	// viewer 无 chat.write，创建 scan 应 403。
+	// 未授予 chat.write，创建 scan 应 403。
 	resp, err := authedPost(ts, "/api/v1/scans", `{"namespace":"default"}`, token)
 	if err != nil {
 		t.Fatal(err)
 	}
 	env := decodeData(t, resp, nil)
 	if resp.StatusCode != http.StatusForbidden || env.Error == nil || env.Error.Code != codeForbidden {
-		t.Fatalf("viewer 创建 scan 应 403 forbidden, got %d: %+v", resp.StatusCode, env.Error)
+		t.Fatalf("user 创建 scan 应 403 forbidden, got %d: %+v", resp.StatusCode, env.Error)
 	}
 }
 
 // createAndLogin 在真实 Store 上创建指定角色用户并登录取得 Token。
 func createAndLogin(t *testing.T, st store.Store, authSvc *auth.Service, ts *httptest.Server, username, password, roleName string) string {
 	t.Helper()
-	roleID := ensureRole(t, st, roleName, "fallback role", permission.ClusterRead)
+	roleID := roleIDByName(t, st, roleName)
 	hash, err := auth.HashPassword(password)
 	if err != nil {
 		t.Fatalf("hash password: %v", err)

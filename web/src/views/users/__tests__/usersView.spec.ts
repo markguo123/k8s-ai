@@ -76,10 +76,12 @@ function makeToken(id: string, name: string): Record<string, unknown> {
 function installFetch(): void {
   const tokens = [makeToken('t-1', 'cli')]
   const users = [makeUser('u-admin', 'admin', 'admin'), makeUser('u-alice', 'alice', 'user')]
+  const operatorRole = makeRole('operator', 'operator', [])
+  operatorRole.permissions = null
   const roles = [
-    makeRole('admin', '管理员', ['*']),
-    makeRole('operator', '运维', ['chat.write', 'cluster.manage']),
-    makeRole('user', '普通用户', ['chat.read', 'chat.write', 'cluster.read', 'skill.read', 'approval.read']),
+    makeRole('admin', 'admin', ['*']),
+    operatorRole,
+    makeRole('user', 'user', []),
   ]
   const grants = [makeGrant('g-1', 'alice')]
   vi.stubGlobal(
@@ -148,12 +150,35 @@ describe('UsersView 用户与权限（P3.12）', () => {
 
       const roleButton = wrapper.findAll('.rail-item')[1]!
       await roleButton.trigger('click')
-      await flushPromises()
+      await vi.waitFor(() => expect(wrapper.findAll('.role-card')).toHaveLength(3))
 
       expect(wrapper.text()).toContain('角色与权限矩阵')
-      expect(wrapper.findAll('.role-card')).toHaveLength(3)
       expect(wrapper.text()).toContain('全量权限 *')
-      expect(wrapper.text()).toContain('cluster.manage')
+      expect(wrapper.text()).toContain('无显式权限')
+    })
+
+    it('创建用户下拉固定包含 user/operator/admin，默认 user', async () => {
+      const wrapper = mount(UsersView)
+      await flushPromises()
+      await vi.waitFor(() => expect(wrapper.findAll('.rail-item')).toHaveLength(4))
+
+      const createButton = wrapper.findAll('button').find((button) => button.text().includes('创建用户'))
+      expect(createButton).toBeDefined()
+      await createButton!.trigger('click')
+      await flushPromises()
+
+      const roleSelect = wrapper
+        .findAllComponents({ name: 'ElSelect' })
+        .find((select) => select.props('placeholder') === '选择角色')
+      expect(roleSelect).toBeDefined()
+      expect(roleSelect!.props('modelValue')).toBe('user')
+
+      await roleSelect!.find('.el-select__wrapper').trigger('click')
+      await flushPromises()
+      const labels = Array.from(document.querySelectorAll('.el-select-dropdown__item'))
+        .map((item) => item.textContent?.trim() ?? '')
+        .filter(Boolean)
+      expect(labels).toEqual(expect.arrayContaining(['user', 'operator', 'admin']))
     })
 
     it('切换到授权委派分区展示委派列表与有效期', async () => {
@@ -198,7 +223,7 @@ describe('UsersView 用户与权限（P3.12）', () => {
       localStorage.setItem(TOKEN_KEY, 'tok-test')
       localStorage.setItem(
         USER_KEY,
-        JSON.stringify({ userId: 'u-viewer', username: 'viewer', displayName: '只读', role: 'viewer' }),
+        JSON.stringify({ userId: 'u-user', username: 'user', displayName: '普通用户', role: 'user' }),
       )
       setActivePinia(createPinia())
       vi.stubGlobal(

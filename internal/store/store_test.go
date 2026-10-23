@@ -112,11 +112,26 @@ func runRoleCRUD(t *testing.T, s Store) {
 	if _, err := s.Roles().Get(ctx, "r1"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
+
+	empty := &Role{ID: "r-empty", Name: "empty", Permissions: nil}
+	if err := s.Roles().Create(ctx, empty); err != nil {
+		t.Fatalf("create empty role: %v", err)
+	}
+	got, err = s.Roles().Get(ctx, "r-empty")
+	if err != nil {
+		t.Fatalf("get empty role: %v", err)
+	}
+	if got.Permissions == nil || len(got.Permissions) != 0 {
+		t.Fatalf("empty permissions must round-trip as []: %#v", got.Permissions)
+	}
+	if err := s.Roles().Delete(ctx, "r-empty"); err != nil {
+		t.Fatalf("delete empty role: %v", err)
+	}
 }
 
 func runSessionCRUD(t *testing.T, s Store) {
 	ctx := context.Background()
-	sess := &session.Session{ID: "s1", Name: "troubleshoot", Namespace: "default", State: "idle"}
+	sess := &session.Session{ID: "s1", UserID: "u1", Name: "troubleshoot", Namespace: "default", State: "idle"}
 	sess.AddMessage(session.Message{Role: "user", Content: "hello"})
 	if err := s.Sessions().Create(ctx, sess); err != nil {
 		t.Fatalf("create: %v", err)
@@ -125,7 +140,7 @@ func runSessionCRUD(t *testing.T, s Store) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Name != "troubleshoot" || len(got.Messages) != 1 || got.Messages[0].Content != "hello" {
+	if got.Name != "troubleshoot" || got.UserID != "u1" || len(got.Messages) != 1 || got.Messages[0].Content != "hello" {
 		t.Fatalf("session not round-tripped: %+v", got)
 	}
 	got.State = "running"

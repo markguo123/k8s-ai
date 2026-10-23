@@ -14,6 +14,8 @@ import (
 // maxKubeconfigBody 限制 kubeconfig 提交体（1MB，防滥用且足够承载完整配置）。
 const maxKubeconfigBody = 1 << 20
 
+const clusterUnavailableMessage = "cluster service is not configured: set K8S_AI_ENC_KEY to a valid 32-byte hex or base64 key"
+
 // clusterService 是集群管理端点依赖的应用服务接口（cluster.Service 满足）。
 // Handler 只依赖该接口，不直接触碰 Store 或 Cipher（需求 v1.2 §24）。
 type clusterService interface {
@@ -28,7 +30,7 @@ type clusterService interface {
 // handleCreateCluster POST /api/v1/clusters：解析 + 连测 + 加密落库。
 func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 	if s.clusterSvc == nil {
-		writeError(w, r, http.StatusNotImplemented, codeInternal, "clusters is not configured (set K8S_AI_ENC_KEY)")
+		writeError(w, r, http.StatusNotImplemented, codeInternal, clusterUnavailableMessage)
 		return
 	}
 	var req cluster.CreateRequest
@@ -47,7 +49,7 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 // handleTestCluster POST /api/v1/clusters/test：只解析 + 连测，不落库、不保留明文。
 func (s *Server) handleTestCluster(w http.ResponseWriter, r *http.Request) {
 	if s.clusterSvc == nil {
-		writeError(w, r, http.StatusNotImplemented, codeInternal, "clusters is not configured")
+		writeError(w, r, http.StatusNotImplemented, codeInternal, clusterUnavailableMessage)
 		return
 	}
 	var req cluster.TestRequest
@@ -66,7 +68,7 @@ func (s *Server) handleTestCluster(w http.ResponseWriter, r *http.Request) {
 // handleListClusters GET /api/v1/clusters：受管集群元数据（不含凭据）。
 func (s *Server) handleListClusters(w http.ResponseWriter, r *http.Request) {
 	if s.clusterSvc == nil {
-		writeError(w, r, http.StatusNotImplemented, codeInternal, "clusters is not configured")
+		writeError(w, r, http.StatusNotImplemented, codeInternal, clusterUnavailableMessage)
 		return
 	}
 	list, err := s.clusterSvc.List(r.Context())
@@ -81,7 +83,7 @@ func (s *Server) handleListClusters(w http.ResponseWriter, r *http.Request) {
 // handleGetCluster GET /api/v1/clusters/{id}：单个受管集群元数据。
 func (s *Server) handleGetCluster(w http.ResponseWriter, r *http.Request) {
 	if s.clusterSvc == nil {
-		writeError(w, r, http.StatusNotImplemented, codeInternal, "clusters is not configured")
+		writeError(w, r, http.StatusNotImplemented, codeInternal, clusterUnavailableMessage)
 		return
 	}
 	c, err := s.clusterSvc.Get(r.Context(), r.PathValue("id"))
@@ -95,7 +97,7 @@ func (s *Server) handleGetCluster(w http.ResponseWriter, r *http.Request) {
 // handleCurrentCluster GET /api/v1/clusters/current：刷新并返回"当前集群"实时状态。
 func (s *Server) handleCurrentCluster(w http.ResponseWriter, r *http.Request) {
 	if s.clusterSvc == nil {
-		writeError(w, r, http.StatusNotImplemented, codeInternal, "clusters is not configured")
+		writeError(w, r, http.StatusNotImplemented, codeInternal, clusterUnavailableMessage)
 		return
 	}
 	view, err := s.clusterSvc.Current(r.Context())
@@ -109,7 +111,7 @@ func (s *Server) handleCurrentCluster(w http.ResponseWriter, r *http.Request) {
 // handleDeleteCluster DELETE /api/v1/clusters/{id}。
 func (s *Server) handleDeleteCluster(w http.ResponseWriter, r *http.Request) {
 	if s.clusterSvc == nil {
-		writeError(w, r, http.StatusNotImplemented, codeInternal, "clusters is not configured")
+		writeError(w, r, http.StatusNotImplemented, codeInternal, clusterUnavailableMessage)
 		return
 	}
 	if err := s.clusterSvc.Delete(r.Context(), r.PathValue("id")); err != nil {

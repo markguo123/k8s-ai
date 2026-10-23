@@ -125,6 +125,56 @@ func TestGrantCRUD(t *testing.T) {
 	}
 }
 
+func TestEffectiveScope(t *testing.T) {
+	svc, st, userID := newTestService(t)
+	ctx := context.Background()
+	user, err := st.Users().Get(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	role, err := st.Roles().Get(ctx, user.RoleID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateGrant(ctx, CreateGrantRequest{
+		PrincipalType: "user", PrincipalID: user.Username,
+		Namespaces: []string{"mysql-dev"}, Permissions: []string{"*"},
+	}, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().UTC().Add(-time.Hour)
+	if _, err := svc.CreateGrant(ctx, CreateGrantRequest{
+		PrincipalType: "user", PrincipalID: user.Username,
+		Namespaces: []string{"expired"}, Permissions: []string{"*"}, ExpiresAt: &past,
+	}, "admin"); err == nil {
+		t.Fatal("expired grant should be rejected at creation")
+	}
+
+	scope, err := svc.EffectiveScope(ctx, user, role, "cluster-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scope.IsAdmin || scope.ClusterScoped || !scope.CanWrite || len(scope.Namespaces) != 1 || scope.Namespaces[0] != "mysql-dev" {
+		t.Fatalf("scope = %+v", scope)
+	}
+
+	admin, err := st.Users().GetByUsername(ctx, auth.DefaultAdminUsername)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminRole, err := st.Roles().Get(ctx, admin.RoleID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminScope, err := svc.EffectiveScope(ctx, admin, adminRole, "cluster-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !adminScope.IsAdmin || !adminScope.ClusterScoped || !adminScope.CanDestroy {
+		t.Fatalf("admin scope = %+v", adminScope)
+	}
+}
+
 func TestGrantValidation(t *testing.T) {
 	svc, _, userID := newTestService(t)
 	ctx := context.Background()

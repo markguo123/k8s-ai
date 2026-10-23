@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { changePassword } from '@/api/auth'
+import { changePassword, myScope } from '@/api/auth'
 import { TOKEN_KEY } from '@/api/request'
 
 function envelopeResponse(status: number, data?: unknown): Response {
@@ -56,5 +56,23 @@ describe('auth API（P6.12 自助改密契约）', () => {
     await expect(changePassword({ oldPassword: 'bad', newPassword: 'new-pass-123' }))
       .rejects.toMatchObject({ status: 401, code: 'unauthorized' })
     expect(localStorage.getItem(TOKEN_KEY)).toBe('tok-demo')
+  })
+
+  it('myScope 读取 /auth/scope 有效授权范围', async () => {
+    const scope = {
+      namespaces: ['mysql-dev'],
+      clusterScoped: false,
+      isAdmin: false,
+      canWrite: true,
+      canDestroy: false,
+    }
+    const fetchMock = vi.fn().mockResolvedValue(envelopeResponse(200, scope))
+    vi.stubGlobal('fetch', fetchMock)
+    localStorage.setItem(TOKEN_KEY, 'tok-demo')
+
+    await expect(myScope()).resolves.toEqual(scope)
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/v1/auth/scope')
+    expect((init.headers as Headers).get('Authorization')).toBe('Bearer tok-demo')
   })
 })

@@ -142,7 +142,7 @@ const createProtocol = `
 const efficiencyProtocol = `
 调查效率：
 - 同一资源同一维度不要重复调用工具：get_logs 与 kubectl logs 二选一（优先结构化工具 get_logs/get_previous_logs）；同一 Pod 的 Events 不要反复拉取。
-- 查找资源时优先省略 namespace 让工具自动全集群搜索（如 get_pod 只给 name），不要猜测命名空间；找不到时先用 get_resources kind=pods 确认名称拼写。
+- 全集群管理场景可省略 namespace 让工具自动搜索；若系统提供“当前授权范围”，必须显式使用其中的 namespace，禁止省略 namespace 或猜测其他范围。
 - Pod 启动失败/崩溃时，先 kubectl get pod -o yaml，再 kubectl logs --previous，然后 get_events + get_configmap 检查挂载配置；修复配置用 kubectl patch configmap，应用配置用 kubectl rollout restart 或 kubectl delete pod。
 - 已有足够证据就停止调查，直接回答；单次问题的工具调用尽量控制在 6 次以内。
 诊断类问题（为什么 Pod 起不来/一直重启/异常）最终回答保持简洁，按以下结构：
@@ -218,6 +218,9 @@ func (a *Agent) systemPromptFor(mode string) string {
 		}
 	} else {
 		base = basePrompt()
+	}
+	if a.AccessScope != nil {
+		base += "\n\n" + a.AccessScope.Prompt()
 	}
 	// P3.8.4：命中用户自定义 procedural Skill 时，把其正文作为不可信方法论
 	// 附录追加到提示词末尾（service 层负责拼接并注入 SkillContext）。

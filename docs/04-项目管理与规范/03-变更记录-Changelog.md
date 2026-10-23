@@ -15,6 +15,37 @@ P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会�
 与授权架构修订（见
 `docs/02-架构与设计/13-方案-企业级身份权限与审批中心.md`，计划回写 v1.12/v1.13）。
 
+### Changed（2026-10-23，企业平台权限分层与会话隔离口径冻结）
+
+- 平台权限拆分为三层：平台 Permission、Session owner、namespace AuthzGrant。`user/operator`
+  平台 Permission 默认零；登录、创建会话与访问自己的会话属于认证基础能力。
+- 会话创建时由后端写入不可变 `ownerUserId`；普通角色只能列出、读取和操作自己的会话。
+  admin 对全部会话拥有完整读写、运行控制与审批能力。所有 Session HTTP/SSE 要求认证，
+  普通角色按 ID 访问非本人会话统一返回 `404`。
+- operator 不再拥有隐式跨 namespace 能力；namespace 必须逐项授权。Node/PV/StorageClass
+  等集群范围读取不作为普通角色默认能力。
+- 同步 PRD v1.13、权限方案、API、数据模型、安全设计、架构总纲、ADR-037、开发计划 v1.41
+  与项目状态。此条为设计口径变更，代码实施与验收随后按该口径收敛。
+- **代码落地**：后端角色/权限、前端菜单与路由、Session owner 隔离已完成；Session API
+  统一到 `/api/v1/sessions*`，admin 对全部会话拥有完整操作权限；独立无鉴权 `web`
+  命令和旧单文件页面已移除。全量 Go 与前端门禁通过，见开发计划 v1.42。
+- **Scope-aware Agent（v1.43）**：新增 `/api/v1/auth/scope` 与新会话授权范围卡片；
+  Agent 工具执行前按 namespace / 集群级 scope 强制校验，越界不执行、不弹审批，
+  返回 `SCOPE_DENIED` 并写审计。修复角色 `permissions:null` 导致的角色页渲染崩溃，
+  Store 空权限统一返回 `[]`，前端追加防御。
+- **集群端点断连修复（2026-10-23）**：修复 `K8S_AI_ENC_KEY` 缺失时
+  `*cluster.Service(nil)` 装入接口形成 typed nil、导致 `/api/v1/clusters` 与
+  `/api/v1/clusters/current` 请求被 panic 断开的问题。可选集群服务现在按“未装配”
+  处理并返回 501 JSON，消息明确提示配置有效 `K8S_AI_ENC_KEY`；新增 GET 两类端点
+  不重置连接的回归测试，前端将 501 归一为可执行的中文平台提示。
+- **用户/权限复盘与本地分支文档收口（2026-10-23，仅文档）**：确认三角色、零权限基线、
+  管理页隐藏与后端 403、Session owner 隔离、admin 全会话操作、Scope-aware Agent、独立
+  前后端及集群端点修复已对齐当前分支实现。将停用账号 Token 生命周期、API Token 认证闭环、
+  Grant 集群隔离与主体生命周期、组授权、admin 跨用户会话审计、销毁授权执行、集群菜单显隐、
+  首启口令和授权编辑清空等事项登记到开发计划 `U-01`–`U-10`，本轮保持现有代码与行为不变。
+  同步修正 PRD/admin 审批口径冲突，并更新项目状态。当前全量门禁为 Go 全绿、前端 25 个测试
+  文件 / 135 个用例、typecheck/lint/build 全绿。
+
 ### Added（2026-10-23，P3.12 用户/权限管理前端完成）
 
 - **用户与权限管理页（P3.12）**：新增 `web/src/api/users.ts` 客户端（users/roles/grants/tokens 端点，对齐后端
@@ -26,7 +57,7 @@ P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会�
   非安全机制，后端仍独立强校验）。
 - **测试**：新增 `web/src/api/__tests__/users.spec.ts`（契约：列表/单条 URL 编码/请求体/权限路由/错误归一/
   明文不回显）与 `web/src/views/users/__tests__/usersView.spec.ts`（组件：四分区渲染/权限门禁/空态）；前端
-  `npm run test` 24 文件 126 用例、`typecheck`/`lint`/`build` 与后端 `go test ./...` / `go vet ./...` 全绿；代码
+  `npm run test` 25 文件 135 用例、`typecheck`/`lint`/`build` 与后端 `go test ./...` / `go vet ./...` 全绿；代码
   未提交，待真机验证无问题后再入库。
 
 ### Changed（2026-10-21，配置面静态/动态权威源拆离，仅文档）
@@ -68,13 +99,13 @@ P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会�
   （principal_type/principal_id/cluster_id/namespaces[]/permissions[]/expires_at/created_by）与
   `api_tokens`（user_id/name/token_hash(SHA-256)/expires_at/status/last_used_at）表及 principal /
   user 二级索引；API token 只存 SHA-256 哈希，明文仅在创建时返回一次、永不回读。
-- **用户/角色管理 API（P3.11）**：`internal/auth` 默认播种 user/operator/admin 三角色（废弃
-  viewer 默认播种、保留兼容回退），新增 `ListUsers/CreateUser/UpdateUser/DeleteUser/ListRoles`
+- **用户/角色管理 API（P3.11）**：`internal/auth` 固定 user/operator/admin 三角色，新增
+  `ListUsers/CreateUser/UpdateUser/DeleteUser/ListRoles`
   （密码最短 8 位、角色三角色白名单、内置 admin 不可删/停/降级、不支持改用户名）；
   `internal/server` 注册 `GET|POST /api/v1/users`、`PATCH|DELETE /api/v1/users/{id}`、
   `GET /api/v1/roles` 并登记 `user.manage` 权限，禁止当前登录用户停用/降级/删除自己；
   口令与哈希永不进入响应、审计与日志。
-- **测试与冒烟**：3 个旧测试适配新默认角色（viewer 不再默认播种），新增服务端契约测试 5 例；
+- **测试与冒烟**：3 个旧测试适配新默认角色，新增服务端契约测试 5 例；
   HTTP 冒烟覆盖 建用户/重名 409/user 角色 403/停用后登录 401/删除后列表消失；
   `go test ./...`、`go vet ./...`、`go build ./...` 全绿。
 - **授权面管理 API（P3.11）**：新增 `internal/authz` 服务（`authz.New` + `WithAuthz` 装配），提供 AuthzGrant 全生命周期 CRUD 与 ApiToken 管理：
@@ -85,7 +116,7 @@ P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会�
 
 ### 设计修订（2026-10-13）
 
-- **角色收敛**：产品角色改为 user / operator / admin 三角色，废弃 viewer。
+- **角色固定**：产品角色为 user / operator / admin 三角色。
 - **namespace 即边界**：用户零权限起步，admin 按 namespace 授权；获得授权的 namespace 内
   拥有除销毁类外全部能力，未授权范围零操作；诊断读取与角色解耦但不放开写入。
 - **销毁类收敛**：delete namespace / delete pvc / delete pv 默认仅 admin；operator 需 admin

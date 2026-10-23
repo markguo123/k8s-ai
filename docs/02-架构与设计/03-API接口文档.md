@@ -1,12 +1,11 @@
 # k8s-ai API 接口契约设计
 
-- 版本：v3.0.0 → v4.0.0（四期落地跟踪）
-- 日期：2026-08-12（首版） / 2026-10-08（补齐二期、三期） / 2026-10-10（四期中间件/认证/权限落地）
-- 状态：一期~三期已封版（2026-10-08，v3.0.0 基线）；四期落地中
-- 范围：本文档统一描述 k8s-ai 的 Go 层接口契约与 HTTP API。一期只读巡检提供 `/api/v1/*`
-  最小服务；二期加入 Web Chat 会话与 SSE 流（`/api/sessions/*`）；三期在会话通道上叠加
-  结构化资源创建（`create_resource`，dry run → apply 两阶段）；四期新增统一响应信封、
-  认证与后端权限门禁，并为 Session/Turn/Step 提供持久化底座。
+- 版本：v4.0.0（企业平台）
+- 日期：2026-10-23
+- 状态：四期企业平台落地中
+- 范围：本文档统一描述四期企业平台的 Go 应用服务契约与 HTTP API，包括认证、会话与 SSE、
+  扫描、集群、Skill、配置、用户/角色、授权、审批、审计与 Memory。所有产品 API 统一归属
+  `/api/v1`，权限由后端强制校验。
 
 ## 1. 接口设计原则
 
@@ -16,7 +15,7 @@
    abstractions）。
 3. 所有接口方法首参为 `context.Context`，错误返回 `error`，可被 `errors.Is` 判等。
 4. Domain 端口与 Infrastructure 实现的归属明确（见 §10）。
-5. 二期起工具统一走 `internal/tools` 的 `Tool` 契约，由 Agent Loop 编排；HTTP 会话层
+5. 工具统一走 `internal/tools` 的 `Tool` 契约，由 Agent Loop 编排；HTTP 会话层
    只负责转发事件与审批，不直接持有业务逻辑。
 
 ## 2. Kubernetes Reader（Infrastructure 实现）
@@ -47,7 +46,7 @@ type Reader interface {
     ListNetworkPolicies(ctx context.Context, namespace string) ([]networkingv1.NetworkPolicy, error)
     ListEvents(ctx context.Context, namespace string) ([]corev1.Event, error)
 
-    // 定向读取：二期 Tool 直接复用，一期 scanner 不调用
+    // 定向读取：Tool 直接复用，scanner 不调用
     GetPod(ctx context.Context, namespace, name string) (*corev1.Pod, error)
     GetNode(ctx context.Context, name string) (*corev1.Node, error)
     GetDeployment(ctx context.Context, namespace, name string) (*appsv1.Deployment, error)
@@ -74,7 +73,7 @@ type Collector interface {
 
 - Phase1 只做 list，产出快照 + EventsIndex + CollectionErrors。
 - Phase2 只对异常 Pod 取 current/previous logs（含脱敏与上限）。
-- Collector 不知道规则、不知道 LLM。三期 `create_resource` 走独立执行通道，不复用 Collector。
+- Collector 不知道规则、不知道 LLM。`create_resource` 走独立执行通道，不复用 Collector。
 
 ## 4. Rule 与 RuleRegistry（Domain）
 
@@ -108,7 +107,7 @@ type ChatRequest struct {
     Messages    []Message
     Temperature float64
     MaxTokens   int
-    Tools       []ToolSpec // 二期 Tool Calling；一期恒为 nil
+    Tools       []ToolSpec // Tool Calling
 }
 type ChatResponse struct {
     Content string
@@ -116,11 +115,11 @@ type ChatResponse struct {
 }
 ```
 
-二期起 `ChatRequest.Tools` 描述器携带稳定安全元数据前缀（`[READ ONLY]` / `[RISK: ...]` /
+`ChatRequest.Tools` 描述器携带稳定安全元数据前缀（`[READ ONLY]` / `[RISK: ...]` /
 `[APPROVAL REQUIRED: ...]`），仅帮助模型选工具，不作为安全边界（见 tools 包
 `MetadataDescriber`）。
 
-## 6. 工具契约（二期 `internal/tools`）
+## 6. 工具契约（`internal/tools`）
 
 ```go
 type Tool interface {
@@ -142,9 +141,9 @@ type ToolResult struct {
 可选接口：
 - `MetadataDescriber`：为模型可见的 Schema 附加安全元数据前缀。
 - `GrantTargeter`：写工具提供"本次不再询问"的精确授权目标（kind/name/namespace）。
-- `GuardPlanner`：把工具自带门禁要素交给 `approval.CodeGuard` 裁决（三期 R4.2）。
+- `GuardPlanner`：把工具自带门禁要素交给 `approval.CodeGuard` 裁决。
 
-注册集合（`k8stools.RegisterAll` + 诊断 + 写工具 + 三期创建通道，`agent.disabled_tools`
+注册集合（`k8stools.RegisterAll` + 诊断 + 写工具 + 创建通道，`agent.disabled_tools`
 可摘除）：
 
 | 类别 | 工具名 |
@@ -152,9 +151,9 @@ type ToolResult struct {
 | 只读资源 | get_pod / get_pods / get_node / get_nodes / get_node_usage / get_deployment / get_statefulset / get_daemonset / get_replicaset / get_service / get_endpoints / get_endpointslices / get_pvc / get_pv / get_storageclass / get_configmap / get_configmaps / get_namespace / get_resources / get_events / get_logs（含 previous） |
 | 诊断 | scan_cluster / scan_pod / diagnose_pod / diagnose_node / diagnose_workload |
 | 写操作 | kubectl（通用，审批门禁） |
-| 三期创建 | create_resource（结构化 manifest，dry_run → apply） |
+| 资源创建 | create_resource（结构化 manifest，dry_run → apply） |
 
-## 7. 审批契约（二期/三期 `internal/approval`）
+## 7. 审批契约（`internal/approval`）
 
 ```go
 type Policy struct { RequireApproval, SkipPermissions bool; DenyOps []string; Mode Mode }
@@ -165,7 +164,7 @@ type Decision string // auto | require_approval | deny
 判定链（`Policy.Evaluate`）：`Denied→DENY` → `Shell→REQUIRE_APPROVAL` → `ReadOnly→AUTO` →
 `SkipPermissions→AUTO` → `!RequireApproval→AUTO` → 否则 `REQUIRE_APPROVAL`。
 
-三期创建风险分级 `CreateRiskFor(CreateSubject)`（只升不降）：dry run → `SAFE`；含值 Secret →
+资源创建风险分级 `CreateRiskFor(CreateSubject)`（只升不降）：dry run → `SAFE`；含值 Secret →
 `MEDIUM`；cluster-scoped / 未知 Kind / 危险字段 / Skill 风险规则 / 非良性 Kind → `HIGH`；
 其余已映射 + namespaced + 良性 Kind → `MEDIUM`。
 
@@ -180,8 +179,8 @@ type Decision string // auto | require_approval | deny
   非 `2xx` 走 `error.code + error.message`，分页解析兼容 `page/page_size` 与 `pageSize`。
 - **request_id 链路**：请求入口生成并透传 `X-Request-ID`，供审计与全链路关联（P4.9 复用）。
 - **CORS**：默认放行 `localhost:5173`（Vite 前端），可在服务端配置调整。
-- **认证**：`login` 公开、`logout/me` 要求已登录；当前为内存 Session Token（24h），
-  认证中间件只注入用户上下文，不阻断未登录请求（占位阶段）。
+- **认证**：`healthz/readyz/version/login` 公开；其余业务 API 与 Chat Session API
+  均要求有效登录态，认证中间件负责注入用户与角色上下文。
 - **权限门禁（P1.6）**：`/api/v1` 路由由 `permission.DefaultAPIPolicy` 判定，业务代码只声明
   Permission；未登录 401、越权 403、未登记路由默认 403。
 
@@ -192,6 +191,7 @@ GET  /version
 POST /api/v1/auth/login
 POST /api/v1/auth/logout
 GET  /api/v1/auth/me
+GET  /api/v1/auth/scope      // 当前用户有效 namespace / 集群级资源范围
 POST /api/v1/scans          // body: ScanOptions；返回 202 {scanId}；已有任务时 409
 GET  /api/v1/scans/{id}     // 状态: pending/running/succeeded/failed + result
 GET  /api/v1/settings/{group}   // 配置中心（P1.10）：目录默认值与已存值合并；需 settings.read
@@ -203,6 +203,18 @@ DELETE /api/v1/users/{id}     // 删除用户；需 user.manage；内置 admin �
 GET  /api/v1/roles            // 角色列表（user/operator/admin 及权限视图）；需 user.manage
 ```
 
+`roleId` 必须指向 `user / operator / admin` 之一；创建表单默认选择 `user`。
+
+`GET /api/v1/auth/scope` 返回：
+
+```text
+namespaces      已授权 namespace 列表（始终为数组，无授权时为 []）
+clusterScoped   是否可访问集群级资源
+isAdmin         是否管理员
+canWrite        是否可执行 namespace 内写操作
+canDestroy      是否具备销毁类委派
+```
+
 > 配置分组为 `model|skill|approval|memory|retention|mcp|ops`（需求 v1.3 §15）。敏感键
 > （`model.api_key`、`ops.kubeconfig`、`mcp.servers`）只在 PATCH 接收，GET 恒回
 > `value: null` + `hasValue`；成功变更写 `CONFIG_CHANGE` 审计，载荷只含分组与键名。
@@ -212,35 +224,43 @@ GET  /api/v1/roles            // 角色列表（user/operator/admin 及权限视
 > 强校验（需求 v1.3 §17）：平台 AuthzGrant 为授权权威，Role/ClusterRoleBinding 为其派生
 > 并由平台打标、定期对账；执行前做 SAR（仅验权限），操作安全由 Code Guard + 准入控制把关。
 > 
-> 用户/角色管理（P3.11）：默认播种 `user / operator / admin` 三角色，废弃 viewer 的默认播种
-> （viewer 仅保留为三期兼容读取与未知角色最小权限回落，不开放新建）；创建用户密码最短 8 位、
+> 用户/角色管理（P3.11）：系统固定 `user / operator / admin` 三角色；创建用户密码最短 8 位、
 > 角色必须命中三角色白名单；内置 admin 受保护（不可删除/停用/降级）；禁止把当前登录用户自己
 > 停用或降级；用户/角色接口全部需 `user.manage`，口令/哈希永不进入响应、审计与日志。
 > namespace 授权（AuthzGrant）与 API Token（ApiToken）管理端点在本批之后的 P3.11 续批落地。
 
-## 9. HTTP + SSE API（二期/三期 Web Chat，`internal/webui`）
+## 9. Chat Session HTTP + SSE API
 
-浏览器通过 SSE 消费会话事件流（先 `history` 快照，后实时增量），写操作通过
-`send-message` / `approve` / `cancel` 三组端点编排，实现运行中可停止。
-四期起（P1.9）同一 SSE 通道双轨承载：三期旧事件线格式原样保留供迁移期继续消费，
-统一新事件（`internal/sse`）按 `session_id` 扇出到会话缓冲，供 Web Shell 新前端驱动展示。
+平台 Chat API 正式归入 `/api/v1`。浏览器通过 SSE 消费会话事件流（先 `history` 快照，
+后实时增量），运行控制通过 `send-message` / `approve` / `cancel` 编排。
+所有 Session HTTP 与 SSE 请求必须携带有效 Bearer Token；未登录统一 `401`。
+
+会话 owner 由认证主体在创建时写入，客户端不得提交或修改。`user / operator` 只能列出、
+读取和操作自己的会话；`admin` 对全部会话拥有完整读写、运行控制与审批能力。
+普通角色对非本人会话按 ID 操作统一返回 `404`。
 
 ```text
-GET  /                                  // 单文件 SPA（嵌入式 index.html）
-GET  /api/sessions                      // 会话列表（id/name/state/model/messageCount/lastModified[/token]）
-POST /api/sessions                      // 创建或载入会话
-POST /api/sessions/{id}/rename
-DELETE /api/sessions/{id}               // 同时取消运行并清理 broadcaster/pending
-GET  /api/sessions/{id}/stream          // SSE: 先 history 快照，再实时事件
-POST /api/sessions/{id}/send-message    // 发起一轮 Chat，返回 202；会话运行中返回 409
-POST /api/sessions/{id}/approve         // 回传审批 choice；响应不携带 choice（Secret 值不留痕）
-POST /api/sessions/{id}/cancel          // 取消当前运行（context cancel）
+GET    /api/v1/sessions                    // own=本人；admin=全部
+POST   /api/v1/sessions                    // 创建会话，owner 来自当前登录主体
+POST   /api/v1/sessions/{id}/rename        // own 或 admin
+POST   /api/v1/sessions/{id}/pin           // own 或 admin
+DELETE /api/v1/sessions/{id}               // own 或 admin；同时取消运行并清理 broadcaster/pending
+GET    /api/v1/sessions/{id}/stream        // own 或 admin；SSE history + 实时事件
+POST   /api/v1/sessions/{id}/send-message  // own 或 admin；返回 202；运行中返回 409
+POST   /api/v1/sessions/{id}/approve       // own 或 admin；响应不携带 choice
+POST   /api/v1/sessions/{id}/cancel        // own 或 admin
 ```
 
-`token` 为会话级 token 用量合计（`{promptTokens, completionTokens, totalTokens}`，四期 P2.13）；
-未装配 Store（三期运行模式）或该会话尚无 Turn 记录时字段缺省，`history` 快照中显式为 `null`，
-前端据此隐藏统计而不是显示 0。`internal/webui` 经 `service.SessionTokenizer` 可选接口取用量，
-三期 ChatService 未实现时行为不变。
+错误语义：
+
+| 场景 | HTTP | 说明 |
+| --- | --- | --- |
+| 未携带/无效 Token | `401` | 不进入 Session 处理 |
+| 非本人会话或会话不存在 | `404` | 普通角色不泄露会话是否存在 |
+| 同一会话已有运行 | `409` | 不允许并发 Chat |
+
+`token` 为会话级 token 用量合计（`{promptTokens, completionTokens, totalTokens}`）；
+无记录时字段缺省，`history` 快照中显式为 `null`，前端隐藏统计而不是显示 0。
 
 ### 9.1 事件契约（`service.ChatEvent`）
 
@@ -292,13 +312,11 @@ session.completed
 session.failed
 ```
 
-数据面：`internal/sse` 提供 Marshal / Frame（多行 data 兼容）/ MarshalLegacy 与
-`MapFromLegacy` / `MapToLegacy` 双向映射层。三期旧事件（answer-delta /
-reasoning-delta / tool-call / tool-response / choice-request 等）在映射期内继续可消费，
-未完成映射前不得移除。所有出站 `params` / `result` / 回答负载在封装前统一经
+数据面：`internal/sse` 提供 Marshal 与 Frame。平台只维护这一套原生事件契约，
+不定义第二套旧事件通道。所有出站 `params` / `result` / 回答负载在封装前统一经
 `store.RedactJSONPayload` 脱敏，Secret / kubeconfig / API Key 明文永不进入 SSE。
 
-## 10. 一期~三期依赖矩阵
+## 10. 平台依赖矩阵
 
 | 接口 | 定义方 | 实现方 | 属于 | 谁依赖 |
 |---|---|---|---|---|
@@ -318,4 +336,4 @@ reasoning-delta / tool-call / tool-response / choice-request 等）在映射期�
 - Domain 不能 import Infrastructure；Application 不得 import Presentation。
 - 实现方不得 import 定义方（kubernetes 不得 import scanner）。
 - `model` 不 import 任何内部包；`session` 不得反向依赖 `llm`（`TokenUsage` 同构复制）。
-- 二期起 Web UI 与 CLI、Server 复用同一 `service.ChatService`，不依赖长驻 Agent。
+- Web UI 与 CLI、Server 复用同一 `service.ChatService`，不依赖长驻 Agent。

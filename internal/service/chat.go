@@ -86,11 +86,17 @@ type ChatEvent struct {
 type ChatRequest struct {
 	SessionID string
 	Query     string
+	// UserID 是发起本轮的产品内用户，用于 Turn/审计归属。
+	UserID string
+	// AllowAnySession 仅由具备 chat.manage.all 的管理员请求设置。
+	AllowAnySession bool
 	// SkipPermissions 非交互自动化显式放行写操作（等效 kubectl-ai --skip-permissions）。
 	SkipPermissions bool
 	// Skills 用户显式 @ 指定的 Skill 名称（P3.8.4）：非空时不走自动意图检索，
 	// 只注入这些已启用的 Skill；任一名字不存在/未启用则整批拒绝。
 	Skills []string
+	// AccessScope 是当前用户本轮可访问的 Kubernetes 资源范围；nil 仅用于 CLI/测试。
+	AccessScope *tools.AccessScope
 }
 
 // ChatService 是二期 Agent 应用服务（CLI/Web 复用）。
@@ -99,7 +105,13 @@ type ChatService interface {
 	Chat(ctx context.Context, req ChatRequest, respond <-chan string) (<-chan ChatEvent, error)
 	// GetOrCreateSession 获取或创建会话。
 	GetOrCreateSession(id, namespace, model string) (*session.Session, error)
+	// GetSession 只读取已有会话，不自动创建。
+	GetSession(id string) (*session.Session, error)
+	// GetOrCreateSessionForUser 按登录用户建立会话所有权。
+	GetOrCreateSessionForUser(id, userID, namespace, model string) (*session.Session, error)
 	ListSessions() ([]session.Session, error)
+	// ListSessionsForUser 只返回指定用户的会话。
+	ListSessionsForUser(userID string) ([]session.Session, error)
 	DeleteSession(id string) error
 	ClearSession(id string) error
 	RenameSession(id, name string) error
@@ -343,6 +355,9 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 	if err != nil {
 		return nil, err
 	}
+	if req.UserID != "" && !req.AllowAnySession && sess.UserID != req.UserID {
+		return nil, fmt.Errorf("%w: session %s", session.ErrForbidden, req.SessionID)
+	}
 	reader, err := s.newReader()
 	if err != nil {
 		return nil, err
@@ -452,6 +467,8 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 		ResultMaxBytes: s.cfg.Agent.ResultMaxBytes,
 		TurnMaxBytes:   s.cfg.Agent.TurnMaxBytes,
 		HistoryTurns:   s.cfg.Agent.HistoryTurns,
+		TurnUserID:     req.UserID,
+		AccessScope:    req.AccessScope,
 	})
 	go s.runChat(ctx, ag, sess, req, events, recorder, s.sink, scope)
 	return events, nil
@@ -522,6 +539,7 @@ func (s *chatService) newAuditRecorder(sess *session.Session, scope *runScope) a
 	}
 	return newStoreAuditRecorder(inner, s.store, scope, AuditScope{
 		SessionID: sess.ID,
+		UserID:    sess.UserID,
 		ClusterID: sess.Cluster,
 	})
 }
@@ -746,8 +764,30 @@ func (s *chatService) GetOrCreateSession(id, namespace, model string) (*session.
 	return s.sessions.NewSession(id, s.cfg.Kubernetes.Context, namespace, model)
 }
 
+// GetSession 只读取已有会话，不存在时返回 session.ErrNotFound。
+func (s *chatService) GetSession(id string) (*session.Session, error) {
+	return s.sessions.Get(id)
+}
+
+// GetOrCreateSessionForUser 将 Web 会话绑定到当前登录用户。
+func (s *chatService) GetOrCreateSessionForUser(id, userID, namespace, model string) (*session.Session, error) {
+	return s.sessions.GetOrCreateSessionForUser(id, userID, namespace, model)
+}
+
 func (s *chatService) ListSessions() ([]session.Session, error) {
 	list, err := s.sessions.List()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]session.Session, 0, len(list))
+	for _, sess := range list {
+		out = append(out, *sess)
+	}
+	return out, nil
+}
+
+func (s *chatService) ListSessionsForUser(userID string) ([]session.Session, error) {
+	list, err := s.sessions.ListForUser(userID)
 	if err != nil {
 		return nil, err
 	}

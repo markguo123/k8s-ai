@@ -1,9 +1,9 @@
 # k8s-ai
 
-> 当前版本：**v3.0.0-beta**（三期资源创建；版本约定见 [docs/VERSIONING.md](docs/VERSIONING.md)，变更见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）
+> 当前版本：**v4.0.0-dev**（四期企业平台；版本约定见 [docs/VERSIONING.md](docs/VERSIONING.md)，变更见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）
 
-Kubernetes AI 智能巡检、故障诊断与自然语言运维 Agent
-（一期：只读巡检 + 规则引擎 + 私有大模型诊断 + 报告；二期：`chat` 对话 Agent + `web` 浏览器界面 + 读写操作 + 人工确认；三期：自然语言资源创建）。
+企业级 Kubernetes AI 巡检、诊断、对话与受控运维平台。平台统一提供用户身份、会话隔离、
+namespace 授权、Agent Runtime、Skill、审批、审计、配置与 Web 工作台。
 
 ## 项目介绍
 
@@ -17,18 +17,21 @@ k8s-ai 让运维人员执行一次 `k8s-ai scan`，就能快速知道集群哪�
 
 **安全边界**：只读操作自动执行；写操作（patch/scale/restart/delete/apply 等）必须人工确认；LLM 不是权限主体，真实边界来自 Kubernetes RBAC；shell 构造（pipe/heredoc/redirect）允许在 chat 模式使用，但含写操作的 shell 命令必须走人工审批，shell 命令永不自动执行。
 
-## 二期：chat / web（自然语言 Agent）
+## chat / web（自然语言 Agent）
 
 ```bash
 # 终端对话（交互 / 单发 / stdin / JSON）
 k8s-ai chat "为什么 payment-api 一直重启？"
 k8s-ai chat --format json "检查下集群健康状态"
 
-# 浏览器对话（多会话 + SSE 流式 + 工具执行过程 + 审批卡片）
-k8s-ai web --addr 127.0.0.1:8081
+# 企业平台（认证 + 会话 + SSE + 审批 + 配置 + 用户权限）
+K8S_AI_ADMIN_PASSWORD='你的强密码' k8s-ai server --addr 127.0.0.1:8080
+
+# 前端开发
+cd web && npm run dev
 ```
 
-二期能力：
+平台能力：
 
 - **流式输出**：`llm.stream: true` 开启 SSE 流式处理；工具前保留简短进度说明，工具调用与结果分阶段展示，最终报告在工具完成后输出；流式失败自动降级为非流式（兼容不支持 stream 的网关）
 - **Web 流程时间线**：同一轮对话中的思考、工具执行、最终结论按竖向时间线展示，过程状态更清晰；分析期间可点击发送区右侧停止按钮中断 Agent 本轮运行
@@ -40,17 +43,17 @@ k8s-ai web --addr 127.0.0.1:8081
 - **拒绝闸门**：同一写操作被用户拒绝 2 次后自动硬拦截，要求 LLM 给出替代方案；kubectl 命令归一化（忽略 --force/--grace-period 等修饰性 flag），防止绕过
 - **会话持久化**：`--session` / `--new-session` / `--list-sessions` / `--delete-session`，落盘 `~/.k8s-ai/sessions`
 - **审计**：用户输入 / LLM / 工具调用 / 审批 / 执行全部留痕 `~/.k8s-ai/audit/<session>.jsonl`（脱敏）
-- **MCP 预留**：Client 接口 + 注册表适配器（二期 v1 不连接外部服务器）
+- **MCP 预留**：Client 接口 + 注册表适配器（当前版本不连接外部服务器）
 
 > 写权限示例见 [deploy/rbac-write.example.yaml](deploy/rbac-write.example.yaml)（默认 clusterrole 保持只读）；安装部署见 [docs/INSTALLATION.md](docs/INSTALLATION.md)。
 
-## 三期：资源创建（v3.0.0-beta）
+## 资源创建与受控执行
 
 - **统一创建 Tool**：`create_resource(manifest, mode, verify, timeout_seconds)`，不按资源类型堆工具；写入路径仍是 `internal/executor`（dynamic + Server-Side Apply）
 - **两阶段协议**：强制先 `dry_run` 产出创建提案（manifest、风险、Skill findings）→ 人工确认 → `apply` → `verify`
 - **安全门禁**：黑名单/白名单/cluster 授权闸门、命名空间存在性、未 dry-run 拒绝、未知 Kind/危险字段升档；详情见 [docs/RESOURCE_CREATE_DESIGN.md](docs/RESOURCE_CREATE_DESIGN.md)
 - **Secret 创建通道**：`agent.secret.access=create_only`，只允许 `$GENERATE`（执行器生成）或 `$ASK`（审批时用户输入）；明文值不进 LLM/会话/审计
-- **内置 Skill 元数据**：`internal/skills/` 冻结数据模型与 Registry 读接口，go:embed 五域 YAML；四期用户自定义 Skill/通用引擎在四期规划
+- **Skill 平台**：`internal/skills/` 提供内置与自定义 Skill、启停、命中统计；Skill 只提供方法与校验，不形成执行通道
 
 ## 安装
 
@@ -75,7 +78,7 @@ make build
 ### Docker 镜像
 
 ```bash
-make docker VERSION=v2.6.0
+make docker VERSION=v4.0.0-dev
 ```
 
 镜像基于 distroless static（非 root、小体积），prompts 已内嵌，无需挂载额外文件。
@@ -110,7 +113,7 @@ k8s-ai scan --fail-on HIGH              # 达到 HIGH 返回退出码 2（CI 用
 | `llm.thinking`                                 | `{type: enabled}`                 | chat 标准思考参数（OpenAI 兼容网关）                    |
 | `scan.thinking`                                | `{type: enabled}`                 | 一期 Scan 诊断思考参数                                  |
 | `report.directory` / `format`                  | ./reports / markdown              | 报告输出                                                |
-| `agent.create.enabled` / `deny_kinds` / `allow_kinds` | true / [] / []             | 三期创建开关与 kind 门禁                              |
+| `agent.create.enabled` / `deny_kinds` / `allow_kinds` | true / [] / []             | 资源创建开关与 kind 门禁                              |
 | `agent.create.cluster_kinds`                   | []                               | cluster-scoped 资源授权白名单（默认空即禁止集群级创建） |
 | `agent.create.max_objects_per_call` / `max_manifest_bytes` | 3 / 8192                | 单次创建规模上限                                        |
 | `agent.secret.access`                          | `create_only`                    | `off` / `create_only`；`read_write` 未开放                |
@@ -124,15 +127,17 @@ k8s-ai scan --fail-on HIGH              # 达到 HIGH 返回退出码 2（CI 用
 - 思考控制已迁移为标准 OpenAI 参数：`llm.thinking.type: enabled|disabled`；一期扫描诊断使用 `scan.thinking.type` 独立控制；
 - LLM 不可用/超时自动降级为"规则初步判断 + 日志关键行"，scan 不失败。
 
-## HTTP API（1.2）
+## HTTP API
 
-`k8s-ai server --addr :8080`：`GET /healthz`、`/readyz`、`/version`；`POST /api/v1/scans`（异步扫描，单任务并发限制，409 冲突）；`GET /api/v1/scans/{id}`。详见 INSTALLATION.md §4.7。
+`k8s-ai server --addr :8080` 提供企业平台 API：登录与权限、`/api/v1/sessions*` 会话与 SSE、
+集群、Skill、配置、用户/角色、授权、审批与审计。所有 Session HTTP/SSE 请求都要求登录，
+并按 owner 隔离访问。详见平台 API 文档。
 
 ## 报告
 
 - **终端摘要**：一屏显示健康条、严重级计数、Top 10 重点问题（现象 / 日志关键行 / 根因 / 建议）、系统组件状态；`--verbose` 输出完整报告
 - **Markdown**：概览 / 健康评分（含扣分明细）/ 异常摘要 / 分级问题（证据链、Root Cause、排查/修复/验证命令）/ 历史对比（新增/持续/恢复）/ 资源汇总 / 系统组件 / 采集错误
-- **JSON**：`latest.json` 机器可读，同时是二期 Agent 的历史记忆契约（findings 指纹 + diagnoses + history 新增/持续/恢复对比）
+- **JSON**：`latest.json` 机器可读，同时作为平台 Agent 的历史记忆契约（findings 指纹 + diagnoses + history 新增/持续/恢复对比）
 
 ## Kubernetes 部署（CronJob 每日巡检）
 

@@ -27,11 +27,12 @@ describe('hasPermission', () => {
 })
 
 describe('角色权限口径', () => {
-  it('admin 通配、viewer 只读、operator 可写集群', () => {
+  it('admin 全量，user/operator 平台权限为零', () => {
     expect(hasPermission(permissionsOf('admin'), PERM.userManage)).toBe(true)
-    expect(hasPermission(permissionsOf('operator'), PERM.chatWrite)).toBe(true)
-    expect(hasPermission(permissionsOf('viewer'), PERM.chatWrite)).toBe(false)
-    expect(hasPermission(permissionsOf('viewer'), PERM.auditRead)).toBe(true)
+    expect(permissionsOf('operator')).toEqual([])
+    expect(permissionsOf('user')).toEqual([])
+    expect(hasPermission(permissionsOf('operator'), PERM.chatWrite)).toBe(false)
+    expect(hasPermission(permissionsOf('user'), PERM.settingsRead)).toBe(false)
   })
 
   it('未登录（空角色）按最小权限处理', () => {
@@ -40,14 +41,14 @@ describe('角色权限口径', () => {
     expect(canReadGovernance(null)).toBe(false)
   })
 
-  it('P2.9 审批按钮显隐：只读角色不展示，可写角色可见', () => {
+  it('会话内审批与平台权限解耦：三类登录角色均可自确认', () => {
     expect(canDecideApproval('admin')).toBe(true)
     expect(canDecideApproval('operator')).toBe(true)
     expect(canDecideApproval('user')).toBe(true)
-    expect(canDecideApproval('viewer')).toBe(false)
+    expect(canDecideApproval(null)).toBe(false)
   })
 
   it('角色权限表覆盖全部产品角色（避免新增角色漏配导致越权展示）', () => {
-    expect(Object.keys(ROLE_PERMISSIONS).sort()).toEqual(['admin', 'operator', 'user', 'viewer'])
+    expect(Object.keys(ROLE_PERMISSIONS).sort()).toEqual(['admin', 'operator', 'user'])
   })
 })

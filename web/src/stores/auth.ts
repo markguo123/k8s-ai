@@ -4,8 +4,8 @@ import { defineStore } from 'pinia'
 import { authApi, type AuthUser as ApiAuthUser } from '@/api'
 import { clearSession, readStoredUser, readToken, saveSession } from '@/api/request'
 
-/** 产品角色：新设计为 user/operator/admin，viewer 仅保留三期兼容读取。 */
-export type Role = 'admin' | 'operator' | 'viewer' | 'user'
+/** 平台固定三角色；未知角色名按最小权限 user 处理。 */
+export type Role = 'admin' | 'operator' | 'user'
 
 /** 前端会话视图：仅暴露展示所需字段，不含任何敏感信息。 */
 export interface AuthUser {
@@ -20,7 +20,7 @@ function normalizeRole(name?: string | null): Role {
   if (key === 'admin' || key === 'operator' || key === 'user') {
     return key
   }
-  return 'viewer'
+  return 'user'
 }
 
 function toAuthUser(apiUser: ApiAuthUser, roleName?: string): AuthUser {
@@ -37,7 +37,7 @@ export const useAuthStore = defineStore('auth', () => {
   const user = ref<AuthUser | null>(readStoredUser<AuthUser>())
 
   const isAuthenticated = computed(() => token.value !== null)
-  const role = computed<Role>(() => user.value?.role ?? 'viewer')
+  const role = computed<Role>(() => user.value?.role ?? 'user')
 
   async function login(username: string, password: string): Promise<void> {
     const session = await authApi.login({ username, password })

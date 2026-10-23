@@ -41,7 +41,7 @@ describe('auth store（P2.2/P2.3 真实认证接入）', () => {
     expect(localStorage.getItem(TOKEN_KEY)).toBe('tok-1')
   })
 
-  it('未知角色名落到最小权限角色 viewer，避免越权展示', async () => {
+  it('未知角色名落到零权限 user，避免越权展示', async () => {
     authApi.login.mockResolvedValue({
       token: 'tok-2',
       user: { id: 'u2', username: 'ghost', displayName: '', roleId: 'mystery' },
@@ -50,12 +50,12 @@ describe('auth store（P2.2/P2.3 真实认证接入）', () => {
 
     const auth = useAuthStore()
     await auth.login('ghost', 'pw')
-    expect(auth.role).toBe('viewer')
+    expect(auth.role).toBe('user')
   })
 
   it('restore 用本地会话 + /me 校正角色；无本地会话时清空', async () => {
     localStorage.setItem(TOKEN_KEY, 'tok-3')
-    localStorage.setItem(USER_KEY, JSON.stringify({ userId: 'u3', username: 'op', role: 'viewer' }))
+    localStorage.setItem(USER_KEY, JSON.stringify({ userId: 'u3', username: 'op', role: 'user' }))
     authApi.me.mockResolvedValue({ user: { id: 'u3' }, role: { name: 'operator' } })
 
     const auth = useAuthStore()

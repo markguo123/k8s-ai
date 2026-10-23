@@ -1,12 +1,11 @@
-// Package webui 实现二期 Web chat UI（k8s-ai web）。
-// 交互设计借鉴 kubectl-ai 的 HTML UI（会话侧栏 + SSE 消息流 + 审批卡片），
-// 底层复用 service.ChatService（ADR-007），不再维护长驻 Agent。
+// Package webui 实现企业平台 Chat Session HTTP/SSE API。
+// 底层复用 service.ChatService；所有会话访问由认证主体与 owner 约束。
 package webui
 
 import (
 	"context"
-	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -15,27 +14,57 @@ import (
 	"sync"
 	"time"
 
+	"github.com/k8s-ai/k8s-ai/internal/permission"
 	"github.com/k8s-ai/k8s-ai/internal/service"
 	"github.com/k8s-ai/k8s-ai/internal/session"
 	"github.com/k8s-ai/k8s-ai/internal/sse"
+	"github.com/k8s-ai/k8s-ai/internal/store"
+	"github.com/k8s-ai/k8s-ai/internal/tools"
 )
-
-//go:embed index.html
-var indexHTML []byte
 
 // chatService 是 Web UI 依赖的最小应用服务接口（service.ChatService 满足）。
 type chatService interface {
 	Chat(ctx context.Context, req service.ChatRequest, respond <-chan string) (<-chan service.ChatEvent, error)
-	GetOrCreateSession(id, namespace, model string) (*session.Session, error)
+	GetSession(id string) (*session.Session, error)
+	GetOrCreateSessionForUser(id, userID, namespace, model string) (*session.Session, error)
 	ListSessions() ([]session.Session, error)
+	ListSessionsForUser(userID string) ([]session.Session, error)
 	DeleteSession(id string) error
 	RenameSession(id, name string) error
 	PinSession(id string, pinned bool) error
 }
 
-// sseEmitter 是可为 ChatService 挂载统一事件广播的可选接口（P1.9）。
-// 三期实现不需要支持；四期服务通过 NewChatWithSink/NewChatWithStoreAndSink 构造后实现，
-// 使 SSE 同时承载统一新事件与三期旧事件（D-08：迁移期旧事件继续可消费）。
+// PrincipalResolver 从 Bearer Token 解析当前用户与角色。
+type PrincipalResolver func(ctx context.Context, token string) (*store.User, *store.Role, error)
+
+// ScopeResolver 解析当前用户可访问的 Kubernetes 资源范围。
+type ScopeResolver func(ctx context.Context, user *store.User, role *store.Role) (*tools.AccessScope, error)
+
+type requestPrincipal struct {
+	User *store.User
+	Role *store.Role
+}
+
+type principalContextKey struct{}
+
+func withPrincipal(ctx context.Context, principal requestPrincipal) context.Context {
+	return context.WithValue(ctx, principalContextKey{}, principal)
+}
+
+func principalFrom(r *http.Request) (requestPrincipal, bool) {
+	principal, ok := r.Context().Value(principalContextKey{}).(requestPrincipal)
+	return principal, ok && principal.User != nil
+}
+
+func (p requestPrincipal) canReadAllSessions() bool {
+	return p.Role != nil && permission.HasPermission(p.Role.Permissions, permission.ChatReadAll)
+}
+
+func (p requestPrincipal) canManageAllSessions() bool {
+	return p.Role != nil && permission.HasPermission(p.Role.Permissions, permission.ChatManageAll)
+}
+
+// sseEmitter 是可为 ChatService 挂载统一事件广播的可选接口。
 type sseEmitter interface {
 	SetSink(sink func(sse.Event))
 }
@@ -80,6 +109,7 @@ func (b *Broadcaster) broadcast(msg []byte) {
 type Server struct {
 	chat  chatService
 	model string
+	scope ScopeResolver
 
 	mu           sync.Mutex
 	broadcasters map[string]*Broadcaster
@@ -111,29 +141,72 @@ func New(chat chatService, model string) *Server {
 	return s
 }
 
+// WithScopeResolver 为平台 Chat 注入执行前资源范围判定。
+func (s *Server) WithScopeResolver(resolve ScopeResolver) *Server {
+	s.scope = resolve
+	return s
+}
+
 // Handler 返回路由。
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /", s.serveIndex)
-	mux.HandleFunc("GET /api/sessions", s.handleListSessions)
-	mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
-	mux.HandleFunc("POST /api/sessions/{id}/rename", s.handleRenameSession)
-	mux.HandleFunc("POST /api/sessions/{id}/pin", s.handlePinSession)
-	mux.HandleFunc("DELETE /api/sessions/{id}", s.handleDeleteSession)
-	mux.HandleFunc("GET /api/sessions/{id}/stream", s.handleStream)
-	mux.HandleFunc("POST /api/sessions/{id}/send-message", s.handleSendMessage)
-	mux.HandleFunc("POST /api/sessions/{id}/approve", s.handleApprove)
-	mux.HandleFunc("POST /api/sessions/{id}/cancel", s.handleCancel)
+	mux.HandleFunc("GET /api/v1/sessions", s.handleListSessions)
+	mux.HandleFunc("POST /api/v1/sessions", s.handleCreateSession)
+	mux.HandleFunc("POST /api/v1/sessions/{id}/rename", s.handleRenameSession)
+	mux.HandleFunc("POST /api/v1/sessions/{id}/pin", s.handlePinSession)
+	mux.HandleFunc("DELETE /api/v1/sessions/{id}", s.handleDeleteSession)
+	mux.HandleFunc("GET /api/v1/sessions/{id}/stream", s.handleStream)
+	mux.HandleFunc("POST /api/v1/sessions/{id}/send-message", s.handleSendMessage)
+	mux.HandleFunc("POST /api/v1/sessions/{id}/approve", s.handleApprove)
+	mux.HandleFunc("POST /api/v1/sessions/{id}/cancel", s.handleCancel)
 	return mux
 }
 
-func (s *Server) serveIndex(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write(indexHTML)
+// AuthenticatedHandler 为四期平台入口：先校验 Bearer Token，再把用户身份
+// 注入请求上下文。会话归属判定与 Chat 本体都在该身份下执行。
+func (s *Server) AuthenticatedHandler(resolve PrincipalResolver) http.Handler {
+	next := s.Handler()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodOptions {
+			next.ServeHTTP(w, r)
+			return
+		}
+		user, role, err := resolve(r.Context(), bearerToken(r))
+		if err != nil || user == nil || role == nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(withPrincipal(r.Context(), requestPrincipal{
+			User: user,
+			Role: role,
+		})))
+	})
+}
+
+func bearerToken(r *http.Request) string {
+	const prefix = "Bearer "
+	value := r.Header.Get("Authorization")
+	if len(value) <= len(prefix) || !strings.EqualFold(value[:len(prefix)], prefix) {
+		return ""
+	}
+	return strings.TrimSpace(value[len(prefix):])
 }
 
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
-	list, err := s.chat.ListSessions()
+	principal, ok := principalFrom(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
+		return
+	}
+	var (
+		list []session.Session
+		err  error
+	)
+	if principal.canReadAllSessions() {
+		list, err = s.chat.ListSessions()
+	} else {
+		list, err = s.chat.ListSessionsForUser(principal.User.ID)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -171,6 +244,71 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// ownedSession 允许会话 owner 或持有 chat.manage.all 的 admin 操作会话。
+func (s *Server) ownedSession(r *http.Request, id string) (*session.Session, error) {
+	principal, ok := principalFrom(r)
+	if !ok {
+		return nil, session.ErrForbidden
+	}
+	sess, err := s.chat.GetSession(id)
+	if err != nil {
+		return nil, err
+	}
+	if !principal.canManageAllSessions() && sess.UserID != principal.User.ID {
+		return nil, session.ErrNotFound
+	}
+	return sess, nil
+}
+
+// createOwnedSession 创建或获取会话。admin 可通过已存在的 session ID
+// 获取任意会话并继续操作。
+func (s *Server) createOwnedSession(r *http.Request, id string) (*session.Session, error) {
+	principal, ok := principalFrom(r)
+	if !ok {
+		return nil, session.ErrForbidden
+	}
+	sess, err := s.chat.GetSession(id)
+	if err == nil {
+		if !principal.canManageAllSessions() && sess.UserID != principal.User.ID {
+			return nil, session.ErrNotFound
+		}
+		return sess, nil
+	}
+	if !errors.Is(err, session.ErrNotFound) {
+		return nil, err
+	}
+	sess, err = s.chat.GetOrCreateSessionForUser(id, principal.User.ID, "", s.model)
+	if errors.Is(err, session.ErrForbidden) {
+		return nil, session.ErrNotFound
+	}
+	return sess, err
+}
+
+// readableSession 允许 owner 读取；持有会话读取或管理权限的 admin
+// 可读取任意历史与事件流。
+func (s *Server) readableSession(r *http.Request, id string) (*session.Session, error) {
+	principal, ok := principalFrom(r)
+	if !ok {
+		return nil, session.ErrForbidden
+	}
+	sess, err := s.chat.GetSession(id)
+	if err != nil {
+		return nil, err
+	}
+	if principal.canReadAllSessions() || principal.canManageAllSessions() || sess.UserID == principal.User.ID {
+		return sess, nil
+	}
+	return nil, session.ErrNotFound
+}
+
+func writeSessionAccessError(w http.ResponseWriter, err error) {
+	if errors.Is(err, session.ErrNotFound) || errors.Is(err, session.ErrForbidden) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+	writeError(w, http.StatusInternalServerError, err)
 }
 
 // sessionTitle 返回会话列表展示标题（P7.5）：用户显式重命名优先；
@@ -220,9 +358,9 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		Name string `json:"name"`
 	}
 	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body)
-	sess, err := s.chat.GetOrCreateSession(body.ID, "", s.model)
+	sess, err := s.createOwnedSession(r, body.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
+		writeSessionAccessError(w, err)
 		return
 	}
 	if body.Name != "" && body.Name != sess.Name {
@@ -248,6 +386,10 @@ func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("name must not be empty"))
 		return
 	}
+	if _, err := s.ownedSession(r, id); err != nil {
+		writeSessionAccessError(w, err)
+		return
+	}
 	if err := s.chat.RenameSession(id, body.Name); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -265,6 +407,10 @@ func (s *Server) handlePinSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if _, err := s.ownedSession(r, id); err != nil {
+		writeSessionAccessError(w, err)
+		return
+	}
 	if err := s.chat.PinSession(id, body.Pinned); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -274,6 +420,10 @@ func (s *Server) handlePinSession(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if _, err := s.ownedSession(r, id); err != nil {
+		writeSessionAccessError(w, err)
+		return
+	}
 	if err := s.chat.DeleteSession(id); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -297,14 +447,14 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("streaming unsupported"))
 		return
 	}
+	sess, err := s.readableSession(r, id)
+	if err != nil {
+		writeSessionAccessError(w, err)
+		return
+	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-
-	sess, err := s.chat.GetOrCreateSession(id, "", s.model)
-	if err != nil {
-		return
-	}
 	snapshot, _ := json.Marshal(map[string]any{
 		"type":      "history",
 		"sessionId": sess.ID,
@@ -334,8 +484,8 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var body struct {
-		Query           string   `json:"query"`
-		SkipPermissions bool     `json:"skipPermissions"`
+		Query           string `json:"query"`
+		SkipPermissions bool   `json:"skipPermissions"`
 		// Skills 用户显式 @ 指定的 Skill 名称（P3.8.4），由 service 层强校验。
 		Skills []string `json:"skills"`
 	}
@@ -345,6 +495,10 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Query == "" {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("query must not be empty"))
+		return
+	}
+	if _, err := s.ownedSession(r, id); err != nil {
+		writeSessionAccessError(w, err)
 		return
 	}
 	s.mu.Lock()
@@ -360,9 +514,36 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	// Chat 生命周期独立于 HTTP 请求：请求返回后 SSE 仍需持续推送。
+	principal, ok := principalFrom(r)
+	if !ok {
+		cancelChat()
+		s.mu.Lock()
+		delete(s.pending, id)
+		delete(s.runs, id)
+		s.mu.Unlock()
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
+		return
+	}
+	var accessScope *tools.AccessScope
+	if s.scope != nil {
+		resolved, err := s.scope(r.Context(), principal.User, principal.Role)
+		if err != nil {
+			cancelChat()
+			s.mu.Lock()
+			delete(s.pending, id)
+			delete(s.runs, id)
+			s.mu.Unlock()
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		accessScope = resolved
+	}
 	events, err := s.chat.Chat(chatCtx, service.ChatRequest{
 		SessionID:       id,
 		Query:           body.Query,
+		UserID:          principal.User.ID,
+		AllowAnySession: principal.canManageAllSessions(),
+		AccessScope:     accessScope,
 		SkipPermissions: body.SkipPermissions,
 		Skills:          body.Skills,
 	}, respond)
@@ -399,6 +580,10 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 // handleCancel 取消当前会话正在执行的 Chat 运行。
 func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if _, err := s.ownedSession(r, id); err != nil {
+		writeSessionAccessError(w, err)
+		return
+	}
 	s.mu.Lock()
 	cancel, ok := s.runs[id]
 	s.mu.Unlock()
@@ -418,6 +603,10 @@ func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if _, err := s.ownedSession(r, id); err != nil {
+		writeSessionAccessError(w, err)
 		return
 	}
 	s.mu.Lock()

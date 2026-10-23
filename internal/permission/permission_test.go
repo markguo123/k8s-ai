@@ -74,7 +74,7 @@ func TestAuthorize(t *testing.T) {
 	))
 
 	if _, allowed, registered := e.Authorize([]string{"cluster.read"}, "GET", "/api/v1/scans/1"); !allowed || !registered {
-		t.Fatal("viewer with cluster.read 应允许读取 scan")
+		t.Fatal("持有 cluster.read 应允许读取 scan")
 	}
 	if _, allowed, _ := e.Authorize([]string{"*"}, "GET", "/api/v1/scans/1"); !allowed {
 		t.Fatal("admin 通配应允许")

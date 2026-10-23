@@ -64,6 +64,21 @@ const users = ref<AuthUser[]>([])
 const roles = ref<AuthRole[]>([])
 const grants = ref<AuthzGrant[]>([])
 const loading = ref(false)
+const ROLE_ORDER: Record<string, number> = { user: 0, operator: 1, admin: 2 }
+
+function normalizedRoles(list: AuthRole[]): AuthRole[] {
+  return list
+    .filter((role) => ROLE_ORDER[role.name] !== undefined)
+    .map((role) => ({
+      ...role,
+      permissions: Array.isArray(role.permissions) ? role.permissions : [],
+    }))
+    .sort((a, b) => ROLE_ORDER[a.name]! - ROLE_ORDER[b.name]!)
+}
+
+function defaultUserRoleID(): string {
+  return roles.value.find((role) => role.name === 'user')?.id ?? roles.value[0]?.id ?? ''
+}
 
 const tokensUser = ref('')
 const tokens = ref<ApiToken[]>([])
@@ -151,7 +166,10 @@ async function loadAll(): Promise<void> {
   try {
     const [userList, roleList, grantList] = await Promise.all([listUsers(), listRoles(), listGrants()])
     users.value = userList
-    roles.value = roleList
+    roles.value = normalizedRoles(roleList)
+    if (!roles.value.some((role) => role.id === userForm.roleId)) {
+      userForm.roleId = defaultUserRoleID()
+    }
     grants.value = grantList
     if (!tokensUser.value && userList.length > 0) {
       tokensUser.value = userList[0]!.id
@@ -189,7 +207,7 @@ function resetUserForm(): void {
   userForm.username = ''
   userForm.displayName = ''
   userForm.password = ''
-  userForm.roleId = 'user'
+  userForm.roleId = defaultUserRoleID()
   userForm.status = 'active'
 }
 
@@ -199,7 +217,7 @@ function openCreateUser(): void {
   userForm.username = ''
   userForm.displayName = ''
   userForm.password = ''
-  userForm.roleId = 'user'
+  userForm.roleId = defaultUserRoleID()
   userForm.status = 'active'
   userForm.visible = true
 }
@@ -210,7 +228,9 @@ function openEditUser(target: AuthUser): void {
   userForm.username = target.username
   userForm.displayName = target.displayName ?? ''
   userForm.password = ''
-  userForm.roleId = target.roleId ?? 'user'
+  userForm.roleId = roles.value.some((role) => role.id === target.roleId)
+    ? (target.roleId ?? defaultUserRoleID())
+    : defaultUserRoleID()
   userForm.status = target.status === 'disabled' ? 'disabled' : 'active'
   userForm.visible = true
 }

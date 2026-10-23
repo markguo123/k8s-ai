@@ -90,6 +90,35 @@ func TestAuthzGrantAdminCRUD(t *testing.T) {
 	}
 }
 
+func TestMyScopeReflectsGrant(t *testing.T) {
+	p := newPlatformServer(t)
+	adminToken := p.tokenAs(t, "admin", "admin-pw")
+	userToken := createUserWithRole(t, p, "scope-user", auth.RoleUser)
+	body := `{"principalType":"user","principalId":"scope-user","namespaces":["mysql-dev"],"permissions":["*"]}`
+	if resp, raw := p.do(t, http.MethodPost, "/api/v1/grants", adminToken, body); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create grant = %d: %s", resp.StatusCode, raw)
+	}
+	resp, raw := p.do(t, http.MethodGet, "/api/v1/auth/scope", userToken, "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("scope = %d: %s", resp.StatusCode, raw)
+	}
+	var scope authz.EffectiveScope
+	decodeData(t, mustReplay(t, raw), &scope)
+	if scope.IsAdmin || scope.ClusterScoped || len(scope.Namespaces) != 1 || scope.Namespaces[0] != "mysql-dev" {
+		t.Fatalf("scope = %+v", scope)
+	}
+
+	resp, raw = p.do(t, http.MethodGet, "/api/v1/auth/scope", adminToken, "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin scope = %d: %s", resp.StatusCode, raw)
+	}
+	scope = authz.EffectiveScope{}
+	decodeData(t, mustReplay(t, raw), &scope)
+	if !scope.IsAdmin || !scope.ClusterScoped {
+		t.Fatalf("admin scope = %+v", scope)
+	}
+}
+
 // TestAuthzTokenCRUDHashNeverEchoed token 生命周期与“明文仅创建返回一次”。
 func TestAuthzTokenCRUDHashNeverEchoed(t *testing.T) {
 	p := newPlatformServer(t)
@@ -193,4 +222,3 @@ func TestAuthzWriteInvalidBody(t *testing.T) {
 		t.Fatalf("不存在的用户应 404, got %d: %s", resp.StatusCode, raw)
 	}
 }
-

@@ -86,6 +86,89 @@ func TestBootstrapAndLogin(t *testing.T) {
 	}
 }
 
+// TestBootstrapCanonicalizesRoles 覆盖已有库重启：三角色固定，
+// user/operator 的平台权限每次收敛为零。
+func TestBootstrapCanonicalizesRoles(t *testing.T) {
+	st := newStore(t)
+	svc := New(st.Users(), st.Roles())
+	ctx := context.Background()
+	if err := svc.Bootstrap(ctx, "admin-pw"); err != nil {
+		t.Fatal(err)
+	}
+
+	roles, err := st.Roles().List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]*store.Role{}
+	for _, role := range roles {
+		byName[role.Name] = role
+	}
+	byName[RoleUser].Permissions = []string{"chat.read", "cluster.read"}
+	byName[RoleOperator].Permissions = []string{"chat.write", "cluster.manage"}
+	if err := st.Roles().Update(ctx, byName[RoleUser]); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Roles().Update(ctx, byName[RoleOperator]); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Roles().Create(ctx, &store.Role{
+		ID: "r-auditor", Name: "auditor", Permissions: []string{"audit.read"},
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.Bootstrap(ctx, "admin-pw"); err != nil {
+		t.Fatalf("reconcile bootstrap: %v", err)
+	}
+	roles, err = st.Roles().List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, role := range roles {
+		switch role.Name {
+		case RoleUser, RoleOperator:
+			if len(role.Permissions) != 0 {
+				t.Fatalf("%s permissions = %v, want zero", role.Name, role.Permissions)
+			}
+		}
+	}
+	visible, err := svc.ListRoles(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(visible) != 3 {
+		t.Fatalf("ListRoles len = %d, want 3", len(visible))
+	}
+}
+
+// TestListRolesSelfHealsCanonicalRoles 验证管理端查询角色时始终返回三角色，
+// 即使数据库中因历史初始化原因只存在部分角色。
+func TestListRolesSelfHealsCanonicalRoles(t *testing.T) {
+	st := newStore(t)
+	svc := New(st.Users(), st.Roles())
+	ctx := context.Background()
+	if err := st.Roles().Create(ctx, &store.Role{
+		ID: "r-admin", Name: RoleAdmin, Permissions: []string{"*"},
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	roles, err := svc.ListRoles(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(roles) != 3 {
+		t.Fatalf("ListRoles len = %d, want 3: %+v", len(roles), roles)
+	}
+	for i, want := range []string{RoleUser, RoleOperator, RoleAdmin} {
+		if roles[i].Name != want {
+			t.Fatalf("ListRoles[%d] = %s, want %s", i, roles[i].Name, want)
+		}
+	}
+}
+
 func TestLoginInvalidCredentials(t *testing.T) {
 	st := newStore(t)
 	svc := New(st.Users(), st.Roles())

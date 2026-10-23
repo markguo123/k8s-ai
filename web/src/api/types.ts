@@ -75,6 +75,16 @@ export interface AuthRole {
   updatedAt: string
 }
 
+/** 当前登录用户的 Kubernetes 有效资源范围。 */
+export interface EffectiveScope {
+  clusterId?: string
+  namespaces: string[]
+  clusterScoped: boolean
+  isAdmin: boolean
+  canWrite: boolean
+  canDestroy: boolean
+}
+
 export interface LoginRequest {
   username: string
   password: string

@@ -263,11 +263,11 @@ const server = createServer(async (req, res) => {
     return
   }
 
-  if (path === '/api/sessions' && req.method === 'GET') {
+  if (path === '/api/v1/sessions' && req.method === 'GET') {
     writeJson(res, 200, [SESSION])
     return
   }
-  if (path === '/api/sessions' && req.method === 'POST') {
+  if (path === '/api/v1/sessions' && req.method === 'POST') {
     writeJson(res, 200, SESSION)
     return
   }

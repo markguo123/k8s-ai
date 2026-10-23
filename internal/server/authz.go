@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/k8s-ai/k8s-ai/internal/authz"
+	"github.com/k8s-ai/k8s-ai/internal/store"
 )
 
 // maxAuthzBody 限制授权面请求体大小。
@@ -24,6 +25,7 @@ type authzService interface {
 	CreateToken(ctx context.Context, userID string, req authz.CreateTokenRequest) (*authz.Token, string, error)
 	UpdateTokenStatus(ctx context.Context, userID, id, status string) (*authz.Token, error)
 	DeleteToken(ctx context.Context, userID, id string) error
+	EffectiveScope(ctx context.Context, user *store.User, role *store.Role, clusterID string) (*authz.EffectiveScope, error)
 }
 
 // handleListGrants GET /api/v1/grants：全部授权委派（管理员视图）。
@@ -175,6 +177,25 @@ func (s *Server) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeOK(w, r, http.StatusOK, map[string]string{"deleted": "ok"})
+}
+
+// handleMyScope GET /api/v1/auth/scope：返回当前登录用户的 Kubernetes 有效授权范围。
+func (s *Server) handleMyScope(w http.ResponseWriter, r *http.Request) {
+	if s.authzSvc == nil {
+		writeError(w, r, http.StatusNotImplemented, codeInternal, "authz is not configured")
+		return
+	}
+	u, role := UserFrom(r.Context()), RoleFrom(r.Context())
+	if u == nil || role == nil {
+		writeError(w, r, http.StatusUnauthorized, codeUnauthorized, "authentication required")
+		return
+	}
+	scope, err := s.authzSvc.EffectiveScope(r.Context(), u, role, "")
+	if err != nil {
+		writeAuthzError(w, r, err)
+		return
+	}
+	writeOK(w, r, http.StatusOK, scope)
 }
 
 // writeAuthzError 把授权面服务错误映射为统一错误信封。

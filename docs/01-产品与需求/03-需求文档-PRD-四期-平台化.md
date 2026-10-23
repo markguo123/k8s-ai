@@ -1,34 +1,18 @@
 # k8s-ai 四期需求规格（平台化）
 
-> 版本：v1.12  
-> 日期：2026-10-22  
+> 版本：v1.14
+> 日期：2026-10-23
 > 状态：四期最终需求方案  
-> 目标：在不推翻三期 Agent、Skill、SSA、审批、安全执行链路的前提下，将 k8s-ai 从 Agent 工具升级为可持续演进的平台化 Kubernetes 运维 Agent。
+> 目标：交付面向企业的多用户 Kubernetes AI 运维平台，在同一权限、会话、审计与安全执行体系下提供 Chat、诊断、集群管理、Skill、审批和治理能力。
 
 ---
 
 # 1. 四期定位
 
-四期不是对三期业务能力的重写，而是一次**平台化架构升级**。
-
-三期已经完成：
-
-- Agent 基础运行能力
-- 多轮 `Reason → Tool → Observe → Reason`
-- Kubernetes 诊断与运维工具
-- 内置 Skill
-- Kubernetes 资源创建能力
-- SSA 创建链路
-- Approval / Risk / Authorization
-- Code Guard / Executor 安全执行链路
-- Web 单文件 HTML Agent UI
-- CLI 基础能力
-
-四期在此基础上完成：
+四期是企业平台本体。平台统一承载多用户身份、会话、Agent Runtime、集群访问、Skill、
+审批、审计、Memory 与配置管理；既有能力作为平台内部组件复用，不以历史版本兼容为设计目标。
 
 ```text
-单文件 Web Agent
-        ↓
 平台化 Web Application
         ↓
 Agent Runtime + Platform Services
@@ -38,14 +22,12 @@ Agent Runtime + Platform Services
 
 **核心原则：**
 
-1. 三期核心 Agent Runtime 不推翻。
-2. 三期 Tool / Skill / Executor 不推翻。
-3. 三期 SSA 创建链路不推翻。
-4. 三期 Approval v2 不重新设计，只做平台化接入。
-5. Code Guard 与 Executor 为双层强制边界：Code Guard 是审批与门禁的强制边界，internal/executor 是写操作的唯一执行边界。
-6. Skill 不允许形成新的写执行通道。
-7. Web 是平台入口，CLI 继续保持快速运维工具定位。
-8. 四期优先建立稳定的平台骨架，再扩展业务能力。
+1. Agent Runtime 是平台核心应用服务，CLI、Server、Web UI 与自动化任务复用同一套能力。
+2. Code Guard 与 Executor 是双层强制边界：Code Guard 负责审批与门禁，Executor 是写操作唯一执行边界。
+3. Skill 不允许形成新的写执行通道。
+4. Web 是企业平台入口；CLI 是独立的快速运维界面，不进入平台用户与授权体系。
+5. 平台身份、会话所有权、平台 Permission 与 namespace 资源授权必须分层建模，不能互相替代。
+6. 所有权限结论以后端强制校验为准，前端菜单、路由和按钮显隐只负责 UX。
 
 ---
 
@@ -83,7 +65,7 @@ Session
 
 Agent 不采用固定步骤流。
 
-必须保持三期已经实现的动态循环：
+平台 Agent 必须采用统一的动态循环：
 
 ```text
 Reason
@@ -458,7 +440,8 @@ Web 不允许自己猜测 Agent 状态。
 
 **页面展示必须以 Agent Runtime/SSE 实际事件为准。**
 
-四期事件模型须与三期 WebChat 既有事件（answer-delta / reasoning-delta / tool-call / tool-result）兼容；迁移期提供事件映射层，保证 Web Shell 迁移期间三期 Chat 仍可运行，未完成映射前不得移除旧事件。
+平台只维护一套原生事件契约；服务端事件顺序、终态、字段语义和脱敏规则统一由本 PRD、
+SSE_EVENT 契约与 ADR-032 定义，不另建第二套事件通道。
 
 ## 事件顺序与展示语义（强制）
 
@@ -483,7 +466,7 @@ Web 不允许自己猜测 Agent 状态。
 
 Chat 是平台默认首页。
 
-必须保留三期已有能力：
+平台 Chat 必须覆盖：
 
 - 消息
 - Tool Card
@@ -492,6 +475,24 @@ Chat 是平台默认首页。
 - Tool 输入输出
 - 执行状态
 - 结果展示
+
+### 9.1 授权范围引导与拒绝语义
+
+新会话在消息区顶部展示“当前授权范围”卡片，数据来自服务端解析后的有效
+AuthzGrant，不由前端或 LLM 推断：
+
+- 有 namespace 授权：列出已授权 namespace，并说明可在其中查询工作负载、Pod、
+  事件、日志和诊断；
+- 无 namespace 授权：说明当前没有可查询范围，需要管理员完成授权；
+- admin：说明拥有全集群及集群级资源权限。
+
+授权范围同时注入 Agent 上下文，但仅用于改善交互；真正门禁在每次工具调用执行前：
+
+- namespace 工具必须显式命中已授权 namespace；
+- Node、PV、StorageClass、Namespace 等集群级工具仅 admin 可用；
+- 越界时不执行工具、不发起审批，直接向模型返回稳定的 `SCOPE_DENIED` 结果；
+- 拒绝话术应说明当前请求缺少哪类范围、当前已授权 namespace 以及如何申请扩大授权，
+  不使用简单生硬的“无权限”。
 
 四期重构为组件化：
 
@@ -565,6 +566,17 @@ Button Visibility
 
 真正权限必须由后端 API 强制执行。
 
+平台管理页面按平台 Permission 显隐：`user` 与 `operator` 默认平台 Permission 为零，
+因此不展示 Skill 管理、配置中心、用户与权限、审计等管理入口。当前登录用户仍可进入聊天，
+但只能查看和操作自己的会话。
+
+会话权限由 `ownerUserId` 决定，不从角色名称推断：
+
+- 创建会话时由认证上下文写入所有者，客户端不得提交或修改所有者；
+- `user / operator` 只能列出、读取和操作自己的会话；
+- `admin` 可列出、读取、发送消息、审批、取消、重命名、置顶和删除全部会话；
+- 所有按会话 ID 访问的 HTTP 与 SSE 接口执行同一归属校验，非本人访问返回 `404`。
+
 ---
 
 # 11. 页面信息架构
@@ -580,6 +592,9 @@ Skill
 配置中心
 用户与权限
 ```
+
+侧栏入口受平台 Permission 控制。`user / operator` 默认只保留其有权使用的入口；
+配置中心、用户与权限及平台管理入口不出现在其菜单中。
 
 ---
 
@@ -797,7 +812,7 @@ procedural 自定义 Skill 的消费支持两种入口，均可追踪、可审�
 
 # 14. 资源创建能力
 
-三期已有资源创建、SSA、Approval、安全执行能力继续复用。
+资源创建、SSA、Approval 与安全执行是平台内部统一能力。
 
 四期不为：
 
@@ -844,7 +859,7 @@ Kubernetes
 
 # 15. 配置中心
 
-配置中心管理**平台运行时动态配置**，唯一权威源是 DB `settings` 表；`config.yaml` 不承载这 7 组动态键（`config init` 模板只输出静态/`platform:` 启动参数与 CLI 直用缺省）。页面保存只写 DB（敏感值加密落库、读面脱敏），server 与 Chat/Agent 运行时统一从 Store 读取；三期旧 config.yaml 的引擎键仅在 `migrate` 显式一次性导入时进入 settings 表，不随每次启动自动导入。
+配置中心管理**平台运行时动态配置**，唯一权威源是 DB `settings` 表；`config.yaml` 不承载这 7 组动态键（`config init` 模板只输出静态/`platform:` 启动参数与 CLI 直用缺省）。页面保存只写 DB（敏感值加密落库、读面脱敏），server 与 Chat/Agent 运行时统一从 Store 读取。
 
 配置中心分组（固定为这 7 组，平台部署后由管理员在页面维护）：
 
@@ -967,25 +982,69 @@ operator
 admin
 ```
 
-三角色只决定「权限上限」，不决定「谁来审批」：
+三角色固定为 `user / operator / admin`。角色、会话所有权和 namespace 资源授权是三层
+相互独立的授权模型：
 
 ```text
-user      获得 admin 授权的 namespace 后，拥有该 namespace 内除销毁类外的全部读写能力；
-          未授权 namespace 零操作（也不能发起查询/诊断）；销毁类（delete namespace /
-          delete pvc / delete pv）不授予，发起时确定性拒绝并提示联系管理员处理
-operator  与 user 相同的 namespace 授权，另加跨 namespace 与节点级运维；销毁类需 admin
-          显式委派（记录在案、可回收、有过期时间），委派后仍需二次确认并强制留痕
-admin     平台与集群全部能力；销毁类操作二次确认，操作仍落审计
+平台 Permission   决定能看到哪些平台页面、调用哪些平台管理 API；
+会话所有权        决定能访问哪些 Chat 会话及其历史、审批和运行控制；
+namespace 授权    决定能在哪些 Kubernetes namespace 内执行哪些资源操作。
 ```
+
+### 17.1 角色权限基线
+
+| 角色 | 平台 Permission | 会话权限 | namespace 资源权限 |
+| --- | --- | --- | --- |
+| `user` | 默认零 | 登录、创建会话并访问自己的会话 | 默认零；由 admin 按集群和 namespace 显式授权 |
+| `operator` | 默认零 | 登录、创建会话并访问自己的会话 | 默认零；必须按集群和 namespace 显式授权，不因角色自动获得跨 namespace 能力 |
+| `admin` | 全量 | 对全部会话可读写、运行控制与审批 | 全量；可管理平台用户、角色、授权、配置与集群接入 |
+
+- `user` 在已授权 namespace 内拥有除销毁类外的全部操作能力。
+- 创建用户时角色只能选择 `user / operator / admin`，默认 `user`；不得出现其他角色选项。
+- `operator` 与 `user` 使用相同的 namespace 授权边界；区别是 operator 可按操作策略承担更高等级的
+  运维能力，并可由 admin 单独委派销毁类能力。跨 namespace 操作仍需逐个 namespace 获得授权。
+- 销毁类 `delete namespace / delete pvc / delete pv` 默认仅 admin 可执行；可由 admin 单独委派给
+  operator，委派必须记录授权人、范围和有效期，执行时仍需二次确认并留痕。
+- 未获得 namespace 授权时，不能查询、诊断或操作该 namespace；未获得集群级授权时，不能读取
+  Node、PV、StorageClass 等集群范围对象。
+- 角色不决定普通业务会话“谁来审批”。普通角色只能确认自己的会话，或由审批子 Agent 按显式白名单
+  自动执行；`admin` 对全部会话的发送消息、运行控制和审批属于平台管理员能力，不建模为
+  “为他人指定审批人”，但必须记录操作者为该 admin 并写入审计。
 
 审批与角色解耦：是否确认由平台统一策略决定；审批主体只有操作者本人自确认或审批子
 agent（Approval Agent）自动两类，不引入「他人在线审批」，任何情况下不能审批自己的
 请求（会话内操作者自确认是其自身操作，不受该约束）。
 
-产品内权限仅作用于 Web 页面、API 入口与审批策略，不进入 CLI 执行路径；namespace /
-resource 真实权限由平台 AuthzGrant 派生到 Kubernetes RBAC 并在 API Server 强校验。
-Agent 在 Chat 内的诊断行为与角色统一，不因用户角色产生诊断差异；读取放开不等于
-写入放开，变更与销毁仍走统一确认与执行门禁。
+### 17.2 会话访问矩阵
+
+平台所有 `/api/v1/sessions*` HTTP 与 SSE 端点都要求有效登录态。
+
+| 操作 | user | operator | admin |
+| --- | --- | --- | --- |
+| 创建自己的会话 | 允许 | 允许 | 允许 |
+| 列出自己的会话 | 允许 | 允许 | 允许 |
+| 列出全部会话 | 禁止 | 禁止 | 允许（只读） |
+| 读取自己的会话历史与事件流 | 允许 | 允许 | 允许 |
+| 读取他人会话历史与事件流 | 禁止 | 禁止 | 允许 |
+| 发送消息、审批、取消运行 | 仅自己的会话 | 仅自己的会话 | 全部会话 |
+| 重命名、置顶、删除 | 仅自己的会话 | 仅自己的会话 | 全部会话 |
+
+约束：
+
+- `ownerUserId` 在会话创建时由后端从认证主体写入，创建后不可修改。
+- 客户端提交的 owner、角色或权限字段一律不可信。
+- 对非本人会话按 ID 发起操作返回 `404`，避免泄露会话是否存在。
+- admin 对他人会话的读写、运行控制与审批必须写审计。
+- 系统不得创建无 owner 的会话；发现异常无 owner 记录时由 admin 处置。
+
+### 17.3 Permission 与资源授权边界
+
+产品内平台 Permission 仅作用于 Web 页面、平台 API 入口与审批策略，不进入 CLI 执行路径。
+namespace / resource 的真实权限由平台 AuthzGrant 派生到 Kubernetes RBAC，并在 API Server
+强校验；执行前还必须完成 scope 判定与 SAR。
+
+Agent 在 Chat 内的诊断行为与角色统一，不因用户角色产生诊断差异；差异只来自授权 scope。
+读取授权不等于写入授权，变更与销毁仍走统一审批、Code Guard、Executor 与准入控制。
 
 权限不要在业务代码中大量直接判断：
 
@@ -1006,8 +1065,6 @@ Policy
 基础 Permission 示例：
 
 ```text
-chat.read
-chat.write
 cluster.read
 cluster.manage
 skill.read
@@ -1020,7 +1077,8 @@ settings.write
 user.manage
 ```
 
-角色只是默认 Permission 集合。
+`chat.read / chat.write` 不作为平台 Permission 使用；登录后的会话能力由上述会话访问矩阵约束。
+角色只是平台默认 Permission 集合，不能代替会话所有权或 namespace 授权。
 
 ---
 
@@ -1048,12 +1106,15 @@ user.manage
 
 ## 18.1 审批主体
 
-审批主体只有两类：
+普通业务会话的审批主体只有两类：
 
 ```text
-本人自确认            会话内操作者弹框确认，复用三期 Approval v2 与 WebUI pending 通道
+本人自确认            会话内操作者弹框确认，复用平台 Approval 与 WebUI pending 通道
 审批子 agent 自动     Approval Agent 仅接管自动审批路径，只处理白名单「可自动」项
 ```
+
+`admin` 对他人会话的读取、发送消息、运行控制和审批是平台管理员例外能力，不作为第三方审批人
+选择机制；相关动作统一以该 admin 为操作者写审计。
 
 不存在第三类「他人选择审批人」。审批中心的增量在于：自动路径决策主体是非人类（策略 /
 子 agent，落 AUTO 记录）；定时任务 / CI / MCP 等无人在线的执行面由中心统一定义决策
@@ -1256,7 +1317,7 @@ MySQL
 
 不提前引入 Redis。
 
-SQLite 面向单进程/单实例部署；MySQL 面向多副本或已有数据库场景。两种驱动共用统一 schema 版本与迁移入口，业务层只依赖 Store 接口。四期 migration 不得导致三期已保存的 session/audit/skill/config/报告无提示丢失；无法迁移的数据必须显式说明。
+SQLite 面向单进程/单实例部署；MySQL 面向多副本或已有数据库场景。两种驱动共用统一 schema 版本与迁移入口，业务层只依赖 Store 接口。
 
 多副本不止取决于数据库：除 MySQL 外，还需要会话/Token 状态持久化与 SSE、审批等待通道的跨副本方案（本期不引入 Redis）。在这些条件满足之前，平台进程保持单副本（见 ADR-030）。
 
@@ -1460,11 +1521,6 @@ Go 单二进制内嵌前端构建产物，由 `k8s-ai server` 在同一进程、
 适用：客户明确要求前端独立发布/回滚、企业已有统一静态资源托管/网关/CDN 规范、后续确需前后端独立
 维护和交付。
 
-## 三期兼容入口
-
-`k8s-ai web`（三期 webui）冻结为三期封版兼容入口：继续可用、只做兼容回归，不再承载四期新增能力，
-四期前端不长期依赖其 `/api/sessions` 裸 JSON 契约。详见 ADR-029 / ADR-036。
-
 ## 本地 / 单进程（开发调试与一体化回退）
 
 一体化形态本地直接启动：
@@ -1475,8 +1531,8 @@ k8s-ai server \
   --config /etc/k8s-ai/config.yaml
 ```
 
-开发阶段若后端尚未内嵌 SPA，可临时使用三期 `k8s-ai web` 验证 Chat（见构建与测试手册）；该入口只作
-兼容与本地调试，不作为生产交付目标。
+开发阶段前端使用 Vite dev server，API 统一指向平台 `server`；生产使用形态 A 内嵌 SPA
+或形态 B 的静态托管，不引入独立 Chat 服务入口。
 
 ## Kubernetes（生产主场景，两种形态均可）
 
@@ -1502,14 +1558,15 @@ Secret 注入，日志走标准输出，不再使用 `nohup` 重定向到文件�
 **7 组动态配置（model/skill/approval/memory/retention/mcp/ops）从 `config.yaml` 移出，唯一落在
 DB `settings` 表**：平台部署后由管理员在配置中心页面维护，server 启动只读 `platform:` 静态段，
 Chat/Agent/LLM 等运行时组件统一从 Store 读 DB；页面改动不会回写 `config.yaml`，改文件也不会覆盖
-DB 动态键。`migrate` 不再承担"启动时自动把 config.yaml 全量导入 settings 表"的职责，三期旧配置的
-迁移是显式、一次性入口，导入后以 DB 为权威。
+DB 动态键。`migrate` 只执行平台 schema 的单向、幂等升级，不在启动时导入文件配置。
 
 默认保持只读 RBAC。
 
 写权限显式开启。
 
-写执行依赖（关键约束）：当前镜像为 distroless static，不含 kubectl 与 shell，而三期写路径依赖 kubectl 工具。四期必须二选一：镜像内安装与集群版本兼容的固定版本 kubectl，或把写执行统一走 client-go；增强的执行器仍必须保持 Code Guard + internal/executor 双层边界，且为唯一写执行通道。
+写执行依赖（关键约束）：容器镜像保持最小化，写执行统一走 client-go；kubectl 受控通道只用于
+显式配置 kubectl 的非容器场景。增强的执行器仍必须保持 Code Guard + internal/executor
+双层边界，且为唯一写执行通道。
 
 
 # 27. 一键安装
@@ -1565,30 +1622,18 @@ ADMIN_PASSWORD
 
 # 29. 数据与配置迁移
 
-四期必须提供 Migration 方案。
-
-至少考虑：
+企业平台的 Migration 只维护同一平台内的单向、幂等升级：
 
 ```text
-旧 config.yaml
-旧 Skill
-旧 Session / Chat
-旧 Approval 状态
-旧 Report
-旧配置目录
-```
-
-原则：
-
-```text
-旧版本
+平台 schema vN
   ↓
-Migration
+平台 schema vN+1
   ↓
 四期 Store
 ```
 
-不能因为 Web 重构导致三期已有数据和配置无提示丢失。
+迁移不得导致平台既有 User、Session、Audit、Skill、Approval、Config 或 Report 数据无提示丢失；
+无法迁移的数据必须显式报告，不能静默丢弃。
 
 无法迁移的数据必须明确说明。
 
@@ -1633,7 +1678,7 @@ Tool Card
 Approval Card
 ```
 
-先保证三期 Chat 能完整运行。
+先保证平台 Chat 能完整运行。
 
 ---
 
@@ -1781,15 +1826,12 @@ Web：
 - Memory 正常
 - Retention 正常
 
-兼容性：
+平台验收：
 
-- CLI 行为不改变
-- 三期 Tool 不破坏
-- 三期 Skill 不破坏
-- 三期 SSA 不破坏
-- 三期 Approval / Code Guard 不降低安全性
-- 单进程可运行
-- Kubernetes 可运行
+- 会话按 owner 隔离，普通角色不可读写他人会话
+- 平台 Permission、会话所有权、namespace 授权三层判定均生效
+- Tool / Skill / SSA / Approval / Code Guard 保持统一执行链路
+- 单进程与 Kubernetes 两种交付形态可运行
 
 ---
 
@@ -1828,38 +1870,22 @@ CLI ≠ Web API Client
 
 # 34. Codex 开发约束
 
-四期属于大型架构改造。
+企业平台开发必须保持纵向切片和统一边界：
 
-不得采用：
-
-```text
-把旧 HTML 直接拆成几个 Vue 文件
-```
-
-作为主要迁移方案。
-
-应：
-
-1. 先建立工程骨架。
-2. 再建立 API Contract。
-3. 再建立 Store。
-4. 再建立 Auth。
-5. 再建立 Agent Session/Event。
-6. 再迁移 Chat。
-7. 再逐步迁移管理页面。
-8. 每阶段保持三期功能可运行。
-9. 不允许为了前端开发修改三期核心安全链路。
-10. 不允许为了新功能复制 Tool / Executor。
-11. 不允许 Skill 建立独立写执行路径。
-12. 每个阶段必须有测试和可运行结果。
+1. 先冻结 API、Store、Session/Event 与权限契约。
+2. 再实现平台服务与 Agent Runtime 接入。
+3. 再实现 Web/CLI/自动化任务的统一应用服务复用。
+4. 不允许为了新功能复制 Tool / Executor。
+5. 不允许 Skill 建立独立写执行路径。
+6. 每个阶段必须有自动化测试和可运行结果。
 
 四期开发过程中：
 
 ```text
 Architecture First
 Contract First
-Incremental Migration
-Backward Compatibility
+Incremental Delivery
+Single Authorization Model
 Security Boundary Unchanged
 ```
 
@@ -1884,3 +1910,5 @@ Security Boundary Unchanged
 | v1.10 | 2026-10-16 | procedural 命中双场景与只读工具落地状态回写（不改需求范围）：§13.3 两种入口已实现——① 自动意图检索重写为三级匹配（整句精确名称 → 整句子串 → 长句关键词打分：名称 3 / 领域 2 / 描述 1，每词只计一次最高权重），单轮最多注入 2 篇（`hit=auto`）；② 显式 `@技能名` 指定，`ChatRequest.skills` 随 send-message 转发，逐个 `FindByName` 精确解析（大小写不敏感），任一未知名/未启用整批拒绝、不做静默降级、不叠加自动检索（`hit=explicit`）。Agent 侧新增只读工具 `list_skills` / `get_skill`（`IsReadOnly`、`RiskSafe`、Schema 标注 READ ONLY / SAFE / APPROVAL NOT REQUIRED），`get_skill` 正文按 96 KiB 截断并置 `truncated`、assets 仅元数据且脚本 `inert=true`、未知名技能返回工具级错误文本；命中同步 `RecordHit`（`hit_count`/`last_hit`）并落库 `SKILL_RUN`（operation=retrieve，`ResultSummary={"hit":"auto"|"explicit"}`）审计。Web Chat 前端 `@` 输入按 `skill.read` 权限弹出已启用的 procedural Skill 并回填，提交时把已匹配的 `@名` 从 query 剥离、仅转发有效技能名。见开发计划-四期 v1.32，代码未提交、待真机验证后入库 |
 | v1.11 | 2026-10-21 | 配置面口径修订（不改范围，拆离动态键权威源）：`config.yaml` 只承载静态/`platform:` 启动参数；7 组动态键（model/skill/approval/memory/retention/mcp/ops）唯一落 DB `settings` 表，由配置中心页面维护、server 与 Chat/Agent/LLM 运行时从 Store 读，不再每次启动自动导入；`config init` 模板只输出静态/platform 键与 CLI 直用缺省；`k8s-ai chat/scan` 终端直用仍读本地文件+env+flag、不依赖平台 DB。见 ADR-031 v1.11、§15/§26、P6.12 |
 | v1.12 | 2026-10-22 | 部署架构口径统一（仅文档）：明确「前后端工程分离 + 单二进制一体化交付」，支持两种部署形态——形态 A 默认一体化（`go:embed web/dist` + SPA 同源单端口），形态 B 可选前后端分离（前端独立 Nginx 托管 `web/dist`、后端关闭静态路由只提供 API），两者共享同一 `/api/v1` 契约；分离模式默认同域路径分流、相对路径 `/api/v1`，不强制跨域/独立子域；允许独立发布/回滚并由 API 契约测试守住兼容面；维持单副本。见 ADR-029 / ADR-036、开发计划-四期 v1.38、部署手册 §4.9 |
+| v1.13 | 2026-10-23 | 企业平台权限分层与会话所有权口径冻结：平台 Permission、Session owner、namespace AuthzGrant 三层独立；user/operator 平台 Permission 默认零，登录与自有会话属于认证基础能力；会话 owner 创建后不可变，普通角色仅访问自己的会话，admin 对全部会话拥有完整读写与运行控制能力；operator 不自动跨 namespace；无权限平台管理入口隐藏且后端强校验。见 ADR-037、开发计划 v1.41 |
+| v1.14 | 2026-10-23 | 用户/权限复盘口径澄清：admin 对他人会话的读取、发送消息、运行控制和审批属于平台管理员例外能力，不建模为“为他人指定审批人”，但必须记录 admin 操作者并写审计；同步修正 §17/§18 中与 admin 全会话能力冲突的表述。停用账号 Token 即时失效、API Token 认证闭环、Grant 集群隔离/主体生命周期、组授权、admin 跨用户审计与销毁授权等遗留登记到开发计划 `U-01`–`U-10`，本轮保持现有行为。见开发计划 v1.44 |

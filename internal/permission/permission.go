@@ -13,8 +13,12 @@ import (
 
 // 基础 Permission 常量（对齐需求 v1.2 §17 的示例枚举）。
 const (
-	ChatRead        = "chat.read"
-	ChatWrite       = "chat.write"
+	ChatRead  = "chat.read"
+	ChatWrite = "chat.write"
+	// ChatReadAll 仅授予平台管理员：普通用户与操作员只能读取自己的会话。
+	ChatReadAll = "chat.read.all"
+	// ChatManageAll 仅授予平台管理员：可控制、审批和维护全部会话。
+	ChatManageAll   = "chat.manage.all"
 	ClusterRead     = "cluster.read"
 	ClusterManage   = "cluster.manage"
 	SkillRead       = "skill.read"
@@ -103,6 +107,12 @@ func (e *Enforcer) Policy() *Policy {
 // Has 判定 Permission 集合是否满足 required。
 // 支持精确匹配、全量通配 "*"，以及 "cluster.*" 形式的段通配。
 func (e *Enforcer) Has(perms []string, required string) bool {
+	return HasPermission(perms, required)
+}
+
+// HasPermission 判定 Permission 集合是否满足要求。独立函数供不持有路由
+// Policy 的调用方复用（例如会话归属判定），语义与 Enforcer.Has 完全一致。
+func HasPermission(perms []string, required string) bool {
 	if required == "" {
 		return true
 	}
