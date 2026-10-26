@@ -15,11 +15,21 @@ P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会�
 与授权架构修订（见
 `docs/02-架构与设计/13-方案-企业级身份权限与审批中心.md`，计划回写 v1.12/v1.13）。
 
+### Changed（2026-10-26，会话 API 包更名 internal/webui → internal/sessionapi）
+
+- 包 `internal/webui` 更名为 `internal/sessionapi`：三期 `a027590` 删除 `internal/cli/web.go`
+  与内嵌单文件页面后，该包只剩 `/api/v1/sessions*` 的 JSON + SSE 接口，旧名易被误读为旧 Web
+  界面仍在维护（见 ADR-039）。
+- 只改包名与引用（`internal/cli/server.go`、`tests/arch/readonly_test.go` 依赖方向白名单、
+  `tests/platform` 装配），HTTP 路径、请求响应契约、SSE 事件与审计动作名一律不变。
+- 配置键 `webui.addr` / `WebUIConfig` 与 settings 目录键 `webui_addr` 本次保留，登记为配置面
+  遗留项，后续单独收口。
+
 ### Tests（2026-10-26，P3.13 平台能力测试与红线回归完成）
 
 - 新增 `tests/platform` 端到端测试集：按 `internal/cli/server.go` 的生产装配路径拉起 SQLite
   Store、认证与角色、配置中心、集群管理、Skill 平台与 Chat 会话，`/api/v1/sessions*` 同样交给
-  `internal/webui`，与真实部署同构。
+  `internal/sessionapi`，与真实部署同构。
 - 平台能力回归：用户 CRUD 与三角色固定语义；零权限角色打管理面一律 403、未登记 `/api/v1/*`
   默认 403、匿名一律 401；配置中心分组读写与敏感键只写不读；Skill 导入/启停/内置不可覆盖；
   集群生命周期与 kubeconfig 密文（`v1:` 版本前缀）；会话 owner 越权八面（列表、历史与 SSE、
@@ -27,7 +37,7 @@ P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会�
 - 红线回归：Secret 口令、集群 kubeconfig、模型 API key 三类哨兵值在 API 响应、审计记录、
   SQLite 文件字节、持久化会话数据四处均无明文；`store.RedactJSONPayload` 对 secret/kubeconfig/
   api_key 键整值替换且不误伤普通字段。以变异验证（临时关闭落库脱敏后用例必须转红）确认断言有效。
-- 随测试补齐两处实现：新增 `internal/webui/audit.go`，admin 跨用户的读取、发消息、审批、取消、
+- 随测试补齐两处实现：新增 `internal/sessionapi/audit.go`，admin 跨用户的读取、发消息、审批、取消、
   改名、置顶、删除统一写审计，只记操作者身份与目标会话、不记对话正文与审批回传值（闭环遗留 U-06）；
   会话落库改走脱敏副本，消息正文、摘要、工具参数、结构化结果与会话名统一脱敏，且可检索的 `name`
   列与 `data` 同源，避免索引列绕过脱敏。

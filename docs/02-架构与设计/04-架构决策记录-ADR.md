@@ -495,6 +495,28 @@
   Kubernetes RBAC/SAR 仍是最终资源权限边界。P6.6 增加“仅授权 mysql-dev 的用户
   不能调用 Node/其他 namespace 工具”的回归。
 
+## ADR-039 会话 API 包更名 internal/webui → internal/sessionapi
+
+- **状态**：已接受（2026-10-26）
+- **背景**：三期 `a027590` 已删除 `internal/cli/web.go` 与内嵌单文件页面
+  `internal/webui/index.html`（含备份副本），四期前端改由 `web/` 独立工程构建，
+  并由 `k8s-ai server` 挂载 `web/dist` 同源提供。原 `webui` 包内已无任何静态资源，
+  只剩 `/api/v1/sessions*` 的 JSON + SSE 接口，包名与职责不符，且容易被误读为
+  “旧版 Web 界面仍在维护”。
+- **决策**：
+  1. 包 `internal/webui` 整体更名为 `internal/sessionapi`，包注释明确其职责为企业平台
+     会话（Chat Session）HTTP/SSE API：会话增删改查、置顶改名、Chat 运行与停止、
+     审批回传与事件流。
+  2. 命名取 `sessionapi` 而非 `chatapi`：全部路由都在 `/api/v1/sessions*` 之下，与
+     `internal/session`（模型与存储层）构成“模型 / API” 两层；`chatapi` 会与
+     `service.ChatService`、`internal/agent` 的语义重叠。
+  3. 只改包名与引用（`internal/cli/server.go` 装配、`tests/arch` 依赖方向白名单、
+     `tests/platform` 测试装配），HTTP 路径、请求响应契约、SSE 事件与审计动作名一律不变。
+  4. 配置键 `webui.addr` / `WebUIConfig` 与 settings 目录键 `webui_addr` 属配置与 API 面，
+     本次不动，登记为遗留项另行收口。
+- **后果**：`internal/webui` 不再存在；历史文档、历史 Changelog 与借鉴声明中的旧包名按
+  历史记录保留不改。AGENTS.md 分层清单里的 “Web UI” 层名待与配置键一并统一。
+
 ## 待决策事项（需在编码前确认）
 
 | # | 问题 | 建议 | 影响 |
