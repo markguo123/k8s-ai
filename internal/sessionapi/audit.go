@@ -1,4 +1,4 @@
-package webui
+package sessionapi
 
 import (
 	"context"
@@ -57,7 +57,7 @@ func (s *Server) recordCrossUserAction(r *http.Request, sess *session.Session, a
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
-		slog.Warn("webui: 跨用户会话审计序列化失败", "session", sess.ID, "action", action, "error", err)
+		slog.Warn("sessionapi: 跨用户会话审计序列化失败", "session", sess.ID, "action", action, "error", err)
 		return
 	}
 	if err := s.audit(r.Context(), store.AuditEvent{
@@ -72,7 +72,7 @@ func (s *Server) recordCrossUserAction(r *http.Request, sess *session.Session, a
 		ResultSummary: "admin cross-user session operation",
 		Status:        "success",
 	}); err != nil {
-		slog.Warn("webui: 跨用户会话审计写入失败", "session", sess.ID, "action", action, "error", err)
+		slog.Warn("sessionapi: 跨用户会话审计写入失败", "session", sess.ID, "action", action, "error", err)
 	}
 }
 

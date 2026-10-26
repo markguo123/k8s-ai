@@ -1,4 +1,4 @@
-package webui
+package sessionapi
 
 import (
 	"bufio"
@@ -21,7 +21,7 @@ import (
 // P3.13 平台能力测试：会话列表 / 历史 / SSE / 发消息 / 审批 / 取消 / 改名 /
 // 置顶 / 删除的 owner 越权矩阵，以及 U-06（admin 跨用户操作统一留痕）。
 
-// auditCapture 收集 webui 写出的审计事件，用于断言留痕动作与红线内容。
+// auditCapture 收集 sessionapi 写出的审计事件，用于断言留痕动作与红线内容。
 type auditCapture struct {
 	mu     sync.Mutex
 	events []store.AuditEvent
@@ -111,7 +111,7 @@ func (c *heldRunChat) Chat(ctx context.Context, _ service.ChatRequest, respond <
 	return out, nil
 }
 
-// ownerHarness 装配一套带认证与审计的 webui 测试服务。
+// ownerHarness 装配一套带认证与审计的 sessionapi 测试服务。
 func ownerHarness(t *testing.T, chat chatService) (*httptest.Server, *auditCapture) {
 	t.Helper()
 	capture := &auditCapture{}

@@ -30,9 +30,9 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/server"
 	"github.com/k8s-ai/k8s-ai/internal/service"
 	"github.com/k8s-ai/k8s-ai/internal/session"
+	"github.com/k8s-ai/k8s-ai/internal/sessionapi"
 	"github.com/k8s-ai/k8s-ai/internal/settings"
 	"github.com/k8s-ai/k8s-ai/internal/store"
-	"github.com/k8s-ai/k8s-ai/internal/webui"
 )
 
 const (
@@ -52,7 +52,7 @@ type harness struct {
 }
 
 // newHarness 装配平台并启动 HTTP 测试服务。会话路由与 internal/cli/server.go
-// 一致：/api/v1/sessions* 交给 webui，其余交给平台 API。
+// 一致：/api/v1/sessions* 交给 sessionapi，其余交给平台 API。
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	ctx := context.Background()
@@ -91,9 +91,9 @@ func newHarness(t *testing.T) *harness {
 		WithSkills(skillPlat).
 		WithAuthz(authzSvc).
 		Handler()
-	chatAPI := webui.New(newStoreChat(st), "test-model").
+	chatAPI := sessionapi.New(newStoreChat(st), "test-model").
 		WithAudit(auditSvc.Record).
-		WithScopeResolver(webui.AuthzScopeResolver(authzSvc))
+		WithScopeResolver(sessionapi.AuthzScopeResolver(authzSvc))
 	sessionHandler := chatAPI.AuthenticatedHandler(authSvc.UserByToken)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/sessions" || strings.HasPrefix(r.URL.Path, "/api/v1/sessions/") {
@@ -171,7 +171,7 @@ func (h *harness) do(method, path, token, body string) reply {
 	return reply{status: resp.StatusCode, body: string(raw)}
 }
 
-// plain 直接解析响应体：/api/v1/sessions* 由 webui 承载，用的是自身精简 JSON
+// plain 直接解析响应体：/api/v1/sessions* 由 sessionapi 承载，用的是自身精简 JSON
 // 契约（无 request_id 信封），与平台 API 的统一信封不同。
 func (r reply) plain(t *testing.T, dst any) {
 	t.Helper()
@@ -296,7 +296,7 @@ func (fakeConnector) Inspect(context.Context, []byte) (*cluster.Info, error) {
 	}, nil
 }
 
-// storeChat 是 webui chatService 桩：会话读写全部走真实 SessionStore，
+// storeChat 是 sessionapi chatService 桩：会话读写全部走真实 SessionStore，
 // 因此落库脱敏、owner 归属这些边界与生产同路径。Chat 本体不做 LLM 调用，
 // 只把用户输入落库并回一条收口事件。
 type storeChat struct {
@@ -320,7 +320,7 @@ func (c *storeChat) Chat(ctx context.Context, req service.ChatRequest, respond <
 	return out, nil
 }
 
-// lookupSession 读会话并把 Store 的未找到错误翻译为会话域错误：webui 的归属
+// lookupSession 读会话并把 Store 的未找到错误翻译为会话域错误：sessionapi 的归属
 // 判定依赖 session.ErrNotFound 才走「按创建者新建」分支，否则会把 404 变成 500。
 func (c *storeChat) lookupSession(id string) (*session.Session, error) {
 	if id == "" {

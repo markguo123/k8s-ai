@@ -1,4 +1,4 @@
-package webui
+package sessionapi
 
 import (
 	"context"
@@ -35,14 +35,14 @@ func (f *sseFakeChat) DeleteSession(string) error                            { r
 func (f *sseFakeChat) RenameSession(string, string) error                    { return nil }
 func (f *sseFakeChat) PinSession(string, bool) error                         { return nil }
 
-// TestNewAttachesSink 覆盖 P1.9 事件路由：webui.New 给服务挂 sink，
+// TestNewAttachesSink 覆盖 P1.9 事件路由：sessionapi.New 给服务挂 sink，
 // sink 下发的统一事件能按 session_id 扇出到该会话的 SSE 客户端。
 func TestNewAttachesSink(t *testing.T) {
 	var sink func(sse.Event)
 	fake := &sseFakeChat{emitter: func(s func(sse.Event)) { sink = s }}
 	srv := New(fake, "qwen-plus")
 	if sink == nil {
-		t.Fatal("webui.New 未给服务装配统一事件 sink")
+		t.Fatal("sessionapi.New 未给服务装配统一事件 sink")
 	}
 
 	b := srv.broadcaster("sse-web-1")

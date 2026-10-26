@@ -1,6 +1,7 @@
-// Package webui 实现企业平台 Chat Session HTTP/SSE API。
+// Package sessionapi 实现企业平台会话（Chat Session）HTTP/SSE API：
+// 会话增删改查、置顶改名、Chat 运行与停止、审批回传与事件流。
 // 底层复用 service.ChatService；所有会话访问由认证主体与 owner 约束。
-package webui
+package sessionapi
 
 import (
 	"context"
@@ -22,7 +23,7 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/tools"
 )
 
-// chatService 是 Web UI 依赖的最小应用服务接口（service.ChatService 满足）。
+// chatService 是会话 API 依赖的最小应用服务接口（service.ChatService 满足）。
 type chatService interface {
 	Chat(ctx context.Context, req service.ChatRequest, respond <-chan string) (<-chan service.ChatEvent, error)
 	GetSession(id string) (*session.Session, error)
@@ -119,7 +120,7 @@ type Server struct {
 	runs         map[string]context.CancelFunc // sessionID → 当前 Chat 运行取消函数
 }
 
-// New 创建 Web UI 服务。
+// New 创建会话 API 服务。
 func New(chat chatService, model string) *Server {
 	s := &Server{
 		chat:         chat,
@@ -134,7 +135,7 @@ func New(chat chatService, model string) *Server {
 		em.SetSink(func(e sse.Event) {
 			raw, err := json.Marshal(e)
 			if err != nil {
-				slog.Warn("webui: 统一事件序列化失败", "error", err)
+				slog.Warn("sessionapi: 统一事件序列化失败", "error", err)
 				return
 			}
 			s.broadcaster(e.SessionID).broadcast(raw)
@@ -345,7 +346,7 @@ func (s *Server) sessionToken(sessionID string) *session.TokenUsage {
 	}
 	usage, err := provider.SessionTokenUsage(context.Background(), sessionID)
 	if err != nil {
-		slog.Warn("webui: 读取会话 token 用量失败", "session", sessionID, "error", err)
+		slog.Warn("sessionapi: 读取会话 token 用量失败", "session", sessionID, "error", err)
 		return nil
 	}
 	if usage.IsZero() {
@@ -585,7 +586,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		for ev := range events {
 			raw, err := json.Marshal(ev)
 			if err != nil {
-				slog.Warn("webui: 事件序列化失败", "error", err)
+				slog.Warn("sessionapi: 事件序列化失败", "error", err)
 				continue
 			}
 			b.broadcast(raw)

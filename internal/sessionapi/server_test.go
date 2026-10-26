@@ -1,4 +1,4 @@
-package webui
+package sessionapi
 
 import (
 	"bufio"
@@ -16,7 +16,7 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/store"
 )
 
-// fakeChat 是 webui 测试用 ChatService 桩。
+// fakeChat 是 sessionapi 测试用 ChatService 桩。
 type fakeChat struct {
 	mu        sync.Mutex
 	sessions  map[string]*session.Session

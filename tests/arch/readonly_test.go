@@ -233,14 +233,14 @@ func TestDependencyDirections(t *testing.T) {
 	}
 
 	// 二期新增业务包禁止 CLI 直接依赖（经 service 组合根）；
-	// webui 与 server 同属展示/基础设施层，允许 cli 直接装配。
+	// sessionapi 与 server 同属展示/基础设施层，允许 cli 直接装配。
 	for _, to := range []string{"agent", "tools", "approval", "executor", "session", "audit", "mcp"} {
 		if graph[cliPkg][module+"/internal/"+to] {
 			t.Errorf("cli must not import internal/%s directly (must go through service)", to)
 		}
 	}
 	// kubernetes 基础设施不得反向依赖任何业务/领域包。
-	for _, to := range []string{"agent", "tools", "approval", "executor", "session", "audit", "webui", "mcp"} {
+	for _, to := range []string{"agent", "tools", "approval", "executor", "session", "audit", "sessionapi", "mcp"} {
 		if graph[k8sPkg][module+"/internal/"+to] {
 			t.Errorf("kubernetes must not import internal/%s", to)
 		}

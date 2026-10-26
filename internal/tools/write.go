@@ -116,7 +116,7 @@ func (t *kubectlTool) Risk(input json.RawMessage) model.RiskLevel {
 	return approval.ClassifyCommand(args["command"])
 }
 
-// extractKubectlSummary 从 executor.Result 中提取给 LLM 和 Web UI 的一行摘要文本。
+// extractKubectlSummary 从 executor.Result 中提取给 LLM 和前端的一行摘要文本。
 // 成功时：取 Stdout 前 200 字符（去除空行）；失败时：拼接 ExitCode + Stderr。
 func extractKubectlSummary(res executor.Result) string {
 	if res.ExitCode != 0 {
