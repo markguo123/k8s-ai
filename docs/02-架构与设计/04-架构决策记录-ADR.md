@@ -277,7 +277,7 @@
 
 ## ADR-031 平台配置面：`platform:` 静态段 + 7 组动态键唯一落 DB `settings`
 
-- **状态**：已接受（2026-10-14 方案定稿；2026-10-21 v1.11 修订：明确 7 组动态键唯一权威源；实现待 P6.12）
+- **状态**：已接受（2026-10-14 方案定稿；2026-10-21 v1.11 修订：明确 7 组动态键唯一权威源；2026-10-26 v1.12 修订：固化 server 静态 `config.yaml` 与 CLI 直用 `~/.k8s-ai/cli.yaml` 两份独立配置；实现仍待 P6.12）
 - **背景**：四期平台级参数（监听地址、平台库路径/DSN、管理员用户名、Token 有效期）当前只存在于
   `server` 命令行开关与进程环境变量中，配置文件同时覆盖 llm/agent/scan 等引擎参数。若引擎参数同时保留在
   YAML 与页面配置中心，会形成"文件 vs 页面"两处活配置漂移，并发修改互相覆盖；同时三期 `config init`
@@ -294,21 +294,27 @@
   3. 敏感值只走环境变量 / Secret：`K8S_AI_ADMIN_PASSWORD`（首启引导 admin，不进配置文件）、
      `K8S_AI_LLM_API_KEY`、需要时 `K8S_AI_PLATFORM_STORE_DSN`；YAML 只放非敏感默认值。模型 api_key、
      MCP env、kubeconfig 等动态敏感值加密落 DB（`SecretCipher`，`K8S_AI_ENC_KEY`），明文永不回读。
-  4. `k8s-ai server` 必须支持 `--config`；`--addr` / `--db` 降级为覆盖手段并保持兼容。静态段优先级沿用
+  4. 默认加载路径按命令面区分：`k8s-ai server` 默认读静态 `config.yaml`（仅 `platform:` 段），
+     `k8s-ai chat/scan` 默认读 `~/.k8s-ai/cli.yaml`，两者均支持 `--config` 覆盖并保留 `--addr` / `--db`
+     覆盖手段与兼容。`config init` 默认只输出 server 静态模板（仅 `platform:` 段），`config init --cli`
+     输出 CLI 直用全量模板（llm/agent/scan/kubernetes 等全量引擎键 + CLI 直用缺省，文件头注明仅 CLI 读取、
+     平台不读取也不回写）；`cli.yaml` 缺失时回退读取旧 `config.yaml` 兼容存量用户。静态段优先级沿用
      **CLI > 环境变量 > YAML > 默认**。
-  5. `k8s-ai config init` 只输出**静态/`platform:` 启动键与 CLI 直用缺省**，不再输出全量引擎键；模板键集合
-     由测试锁定，防止模板与代码再次漂移。`config validate` 对未识别键给出显式告警，拼错的键不再被静默忽略。
+  5. `config init --cli` 模板承载全量引擎键与 CLI 直用缺省，`config init` 默认模板只输出 server 静态/
+     `platform:` 启动键；两个模板键集合分别由测试锁定，防止模板与代码再次漂移。`config validate` 支持
+     `--mode server|cli` 分别校验静态段与全量引擎键，对未识别键给出显式告警，拼错的键不再被静默忽略。
   6. `migrate` 只作**显式一次性迁移**：三期旧 `config.yaml` 的动态键仅在管理员显式执行迁移时导入 settings
      表，导入后以 DB 为权威；不承担"启动时自动全量导入"的职责。
 - **理由**：企业化部署要求"一份 ConfigMap（静态）+ 一份 Secret（敏感）+ DB settings（动态）"即可完整描述
   平台运行参数，且该描述可评审、可 diff、可回滚；动态运营配置需要在线页面维护，唯一权威源只能落在 DB。
-  终端二进制直用（`k8s-ai chat / k8s-ai scan`）不依赖平台 DB，仍以本地 `config.yaml` + env + flags 静态
-  输入运行，与平台配置中心执行面隔离，互不覆盖。
+  终端二进制直用（`k8s-ai chat / k8s-ai scan`）不依赖平台 DB，仍以本地 `cli.yaml`（缺失时回退 `config.yaml`）
+  + env + flags 静态输入运行，与平台配置中心执行面隔离，互不覆盖；两份配置文件完全独立、互不回写。
 - **后果**：`server` 命令需接入配置加载（当前只读 flags）；`deploy/configmap.yaml` 与部署手册 §3、§4.9
-  同步；`config init` 模板从全量改为静态/启动级 + CLI 直用缺省；7 组动态键唯一落 DB（settings API/脱敏/
-  加密与前端 SettingsView 已随 P3.9/P3.10 落地）。落地任务 P6.12。
+  同步；`config init` 默认输出 server 静态 `config.yaml`，新增 `--cli` 输出 CLI 全量 `cli.yaml`；7 组动态键
+  唯一落 DB（settings API/脱敏/加密与前端 SettingsView 已随 P3.9/P3.10 落地）。落地任务 P6.12。
 - **落实状态**：配置中心后端（settings CRUD/脱敏/加密）与前端 SettingsView 已随 P3.9/P3.10 落地；
-  `platform:` 段接入、`config init` 模板收敛、运行时动态消费与左 rail UI 改造待 P6.12 实现。
+  双份配置模板（默认 server 静态 + `--cli` 全量）、`--mode server|cli` 校验、`platform:` 段接入、运行时
+  动态消费与左 rail UI 改造待 P6.12 实现。
 
 
 ## ADR-032 SSE 展示与顺序契约（分片不是展示单元，终态必须最后）

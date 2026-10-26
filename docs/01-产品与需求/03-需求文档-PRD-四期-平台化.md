@@ -1,7 +1,7 @@
 # k8s-ai 四期需求规格（平台化）
 
-> 版本：v1.14
-> 日期：2026-10-23
+> 版本：v1.15
+> 日期：2026-10-26
 > 状态：四期最终需求方案  
 > 目标：交付面向企业的多用户 Kubernetes AI 运维平台，在同一权限、会话、审计与安全执行体系下提供 Chat、诊断、集群管理、Skill、审批和治理能力。
 
@@ -859,7 +859,7 @@ Kubernetes
 
 # 15. 配置中心
 
-配置中心管理**平台运行时动态配置**，唯一权威源是 DB `settings` 表；`config.yaml` 不承载这 7 组动态键（`config init` 模板只输出静态/`platform:` 启动参数与 CLI 直用缺省）。页面保存只写 DB（敏感值加密落库、读面脱敏），server 与 Chat/Agent 运行时统一从 Store 读取。
+配置中心管理**平台运行时动态配置**，唯一权威源是 DB `settings` 表，与配置文件完全独立、互不覆盖：`config.yaml` 只承载静态/`platform:` 启动参数（由 `k8s-ai config init` 默认模板输出，最终形态经 K8s ConfigMap 挂载），CLI 直用配置独立为 `~/.k8s-ai/cli.yaml`（由 `k8s-ai config init --cli` 输出）。页面保存只写 DB（敏感值加密落库、读面脱敏），server 与 Chat/Agent 运行时统一从 Store 读取。
 
 配置中心分组（固定为这 7 组，平台部署后由管理员在页面维护）：
 
@@ -892,7 +892,7 @@ timeout
 
 ### CLI 直用边界
 
-`k8s-ai chat / k8s-ai scan [resource]` 属于**终端二进制直用**入口：仍以 `--config` 指定的本地配置（默认 `~/.k8s-ai/config.yaml`）+ 环境变量 + 命令行 flag 作为静态输入，**不依赖平台 DB**。平台页面修改 7 组动态键时只写 `settings` 表，不回写、不覆盖该本地文件；二者按执行面隔离，不存在同一份活配置的双权威。
+`k8s-ai chat / k8s-ai scan [resource]` 属于**终端二进制直用**入口：默认读取 CLI 直用配置 `~/.k8s-ai/cli.yaml`（由 `k8s-ai config init --cli` 生成，承载 llm/agent/scan/kubernetes 等全量引擎键与缺省，文件头注明仅 CLI 读取），以 `--config` / 环境变量 / 命令行 flag 作为覆盖输入，**不依赖平台 DB**；`cli.yaml` 缺失时回退读取旧的 `config.yaml` 兼容存量用户。`server` 读取的静态 `config.yaml` 与 CLI 的 `cli.yaml` 是两份独立文件；平台页面修改 7 组动态键只写 `settings` 表，不回写、不覆盖任何本地配置文件。按执行面隔离，不存在同一份活配置的双权威。
 
 ---
 
@@ -1555,6 +1555,8 @@ Secret 注入，日志走标准输出，不再使用 `nohup` 重定向到文件�
 `auth.admin_username`、`auth.token_ttl`、`auth.session_store`），是一份可评审、可 diff、可回滚的部署描述；
 敏感值（admin 首启口令、LLM api_key、含口令的 DSN）只从环境变量 / Secret 注入，YAML 中不得出现明文。
 
+CLI 直用配置（ADR-031 v1.12 修订）：`k8s-ai chat / scan` 默认读取独立的 `~/.k8s-ai/cli.yaml`，由 `k8s-ai config init --cli` 生成，承载 llm/agent/scan/kubernetes 等全量引擎键与缺省，文件头注明仅 CLI 读取、平台不读取也不回写；`cli.yaml` 缺失时回退读取旧 `config.yaml` 兼容存量用户。`config init` 默认仍输出 server 静态 `config.yaml`（只含 `platform:` 段）。默认加载路径按命令面区分：`server` → `config.yaml`，`chat/scan` → `cli.yaml`，`--config` 均可覆盖。`config validate` 支持 `--mode server|cli` 分别校验静态段与全量引擎键。
+
 **7 组动态配置（model/skill/approval/memory/retention/mcp/ops）从 `config.yaml` 移出，唯一落在
 DB `settings` 表**：平台部署后由管理员在配置中心页面维护，server 启动只读 `platform:` 静态段，
 Chat/Agent/LLM 等运行时组件统一从 Store 读 DB；页面改动不会回写 `config.yaml`，改文件也不会覆盖
@@ -1912,3 +1914,4 @@ Security Boundary Unchanged
 | v1.12 | 2026-10-22 | 部署架构口径统一（仅文档）：明确「前后端工程分离 + 单二进制一体化交付」，支持两种部署形态——形态 A 默认一体化（`go:embed web/dist` + SPA 同源单端口），形态 B 可选前后端分离（前端独立 Nginx 托管 `web/dist`、后端关闭静态路由只提供 API），两者共享同一 `/api/v1` 契约；分离模式默认同域路径分流、相对路径 `/api/v1`，不强制跨域/独立子域；允许独立发布/回滚并由 API 契约测试守住兼容面；维持单副本。见 ADR-029 / ADR-036、开发计划-四期 v1.38、部署手册 §4.9 |
 | v1.13 | 2026-10-23 | 企业平台权限分层与会话所有权口径冻结：平台 Permission、Session owner、namespace AuthzGrant 三层独立；user/operator 平台 Permission 默认零，登录与自有会话属于认证基础能力；会话 owner 创建后不可变，普通角色仅访问自己的会话，admin 对全部会话拥有完整读写与运行控制能力；operator 不自动跨 namespace；无权限平台管理入口隐藏且后端强校验。见 ADR-037、开发计划 v1.41 |
 | v1.14 | 2026-10-23 | 用户/权限复盘口径澄清：admin 对他人会话的读取、发送消息、运行控制和审批属于平台管理员例外能力，不建模为“为他人指定审批人”，但必须记录 admin 操作者并写审计；同步修正 §17/§18 中与 admin 全会话能力冲突的表述。停用账号 Token 即时失效、API Token 认证闭环、Grant 集群隔离/主体生命周期、组授权、admin 跨用户审计与销毁授权等遗留登记到开发计划 `U-01`–`U-10`，本轮保持现有行为。见开发计划 v1.44 |
+| v1.15 | 2026-10-26 | CLI 直用配置口径冻结：终端直用（`k8s-ai chat/scan`）默认读取独立 `~/.k8s-ai/cli.yaml`，由 `k8s-ai config init --cli` 输出，承载 llm/agent/scan/kubernetes 等全量引擎键与 CLI 直用缺省、文件头注明仅 CLI 读取；`cli.yaml` 缺失回退旧 `config.yaml` 兼容存量。`config init` 默认输出 server 静态 `config.yaml`（只含 `platform:` 段），server 与 CLI 配置为两份独立文件、完全独立、互不覆盖，7 组动态键唯一权威源仍为 DB `settings` 表；`config validate` 支持 `--mode server|cli`。仅文档口径修订、实现放 P6.12。见 ADR-031 v1.12、开发计划 v1.45 |
