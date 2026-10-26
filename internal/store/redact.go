@@ -5,6 +5,7 @@ import (
 	"regexp"
 
 	"github.com/k8s-ai/k8s-ai/internal/security"
+	"github.com/k8s-ai/k8s-ai/internal/session"
 )
 
 // redactor 对审计/审批敏感字段统一脱敏（与 audit/session 同一策略）。
@@ -54,4 +55,40 @@ func redactInPlace(v *any) {
 	case string:
 		*v = auditRedactor.Redact(val)
 	}
+}
+
+// redactSessionForStore 返回会话的落库副本：消息正文、摘要、工具调用参数与
+// 结构化结果统一脱敏后再序列化。
+//
+// 与 internal/session 文件 Store 的 write 同一口径（AGENTS.md：敏感信息在进入
+// 会话文件前必须脱敏），且只作用于副本——调用方内存中的会话保持原样，当前这轮
+// 对话的展示与 LLM 上下文不受影响。
+func redactSessionForStore(sess *session.Session) *session.Session {
+	if sess == nil {
+		return nil
+	}
+	out := *sess
+	// 会话名同样可能被人贴进凭据（改名入口是自由文本），落库前一起脱敏。
+	out.Name = auditRedactor.Redact(sess.Name)
+	if sess.Messages == nil {
+		return &out
+	}
+	out.Messages = make([]session.Message, len(sess.Messages))
+	for i, m := range sess.Messages {
+		m.Content = auditRedactor.Redact(m.Content)
+		m.Summary = auditRedactor.Redact(m.Summary)
+		if len(m.Arguments) > 0 {
+			m.Arguments = json.RawMessage(redactJSONPayload(string(m.Arguments)))
+		}
+		if m.Data != nil {
+			if data, err := json.Marshal(m.Data); err == nil {
+				var decoded any
+				if json.Unmarshal([]byte(redactJSONPayload(string(data))), &decoded) == nil {
+					m.Data = decoded
+				}
+			}
+		}
+		out.Messages[i] = m
+	}
+	return &out
 }

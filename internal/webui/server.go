@@ -110,6 +110,8 @@ type Server struct {
 	chat  chatService
 	model string
 	scope ScopeResolver
+	// audit 写跨用户会话操作留痕（U-06）；nil 时跳过，不影响业务请求。
+	audit AuditSink
 
 	mu           sync.Mutex
 	broadcasters map[string]*Broadcaster
@@ -363,6 +365,8 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeSessionAccessError(w, err)
 		return
 	}
+	// admin 经 chat.manage.all 续用他人会话同样要留痕。
+	s.recordCrossUserAction(r, sess, actionAdminSessionRead, store.AuditEventSession, nil)
 	if body.Name != "" && body.Name != sess.Name {
 		if err := s.chat.RenameSession(sess.ID, body.Name); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
@@ -386,7 +390,8 @@ func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("name must not be empty"))
 		return
 	}
-	if _, err := s.ownedSession(r, id); err != nil {
+	sess, err := s.ownedSession(r, id)
+	if err != nil {
 		writeSessionAccessError(w, err)
 		return
 	}
@@ -394,6 +399,7 @@ func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	s.recordCrossUserAction(r, sess, actionAdminSessionRename, store.AuditEventSession, map[string]any{"name": body.Name})
 	writeJSON(w, http.StatusOK, map[string]string{"id": id, "name": body.Name})
 }
 
@@ -407,7 +413,8 @@ func (s *Server) handlePinSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if _, err := s.ownedSession(r, id); err != nil {
+	sess, err := s.ownedSession(r, id)
+	if err != nil {
 		writeSessionAccessError(w, err)
 		return
 	}
@@ -415,12 +422,14 @@ func (s *Server) handlePinSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	s.recordCrossUserAction(r, sess, actionAdminSessionPin, store.AuditEventSession, map[string]any{"pinned": body.Pinned})
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "pinned": body.Pinned})
 }
 
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, err := s.ownedSession(r, id); err != nil {
+	sess, err := s.ownedSession(r, id)
+	if err != nil {
 		writeSessionAccessError(w, err)
 		return
 	}
@@ -428,6 +437,8 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	// 审计在内存态清理前写：删除后已无法从会话里取回 owner。
+	s.recordCrossUserAction(r, sess, actionAdminSessionDelete, store.AuditEventSession, nil)
 	s.mu.Lock()
 	if cancel, ok := s.runs[id]; ok {
 		cancel()
@@ -452,6 +463,8 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		writeSessionAccessError(w, err)
 		return
 	}
+	// admin 读取他人会话的历史快照/事件流属于跨用户读取，必须留痕。
+	s.recordCrossUserAction(r, sess, actionAdminSessionRead, store.AuditEventSession, nil)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -497,7 +510,8 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("query must not be empty"))
 		return
 	}
-	if _, err := s.ownedSession(r, id); err != nil {
+	sess, err := s.ownedSession(r, id)
+	if err != nil {
 		writeSessionAccessError(w, err)
 		return
 	}
@@ -556,6 +570,9 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	// admin 代他人发起对话是平台管理员例外能力（PRD §18），以该 admin 为操作者留痕；
+	// 只记身份，不记 query 内容。
+	s.recordCrossUserAction(r, sess, actionAdminSessionMessage, store.AuditEventSession, nil)
 	b := s.broadcaster(id)
 	go func() {
 		defer cancelChat()
@@ -580,7 +597,8 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 // handleCancel 取消当前会话正在执行的 Chat 运行。
 func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, err := s.ownedSession(r, id); err != nil {
+	sess, err := s.ownedSession(r, id)
+	if err != nil {
 		writeSessionAccessError(w, err)
 		return
 	}
@@ -592,6 +610,7 @@ func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cancel()
+	s.recordCrossUserAction(r, sess, actionAdminSessionCancel, store.AuditEventSession, nil)
 	writeJSON(w, http.StatusOK, map[string]string{"sessionId": id})
 }
 
@@ -605,7 +624,8 @@ func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if _, err := s.ownedSession(r, id); err != nil {
+	sess, err := s.ownedSession(r, id)
+	if err != nil {
 		writeSessionAccessError(w, err)
 		return
 	}
@@ -619,6 +639,8 @@ func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
 	select {
 	case respond <- body.Choice:
 		// 不回显 choice：Secret 值经此通道提交，响应体必须原样返回会话 id。
+		// 同理，跨用户审批审计只记身份，绝不记 choice 值。
+		s.recordCrossUserAction(r, sess, actionAdminSessionApprove, store.AuditEventApproval, nil)
 		writeJSON(w, http.StatusOK, map[string]string{"sessionId": id})
 	default:
 		writeError(w, http.StatusConflict, fmt.Errorf("approval already answered"))

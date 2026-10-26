@@ -100,7 +100,10 @@ func newServerCmd(deps Dependencies) *cobra.Command {
 				WithSkills(skillPlat).
 				WithAuthz(authzSvc).
 				Handler()
-			chatAPI := webui.New(chat, cfg.LLM.Model).WithScopeResolver(webui.AuthzScopeResolver(authzSvc))
+			// admin 跨用户会话操作（读取/改名/置顶/删除/发消息/审批/取消）统一留痕（U-06）。
+			chatAPI := webui.New(chat, cfg.LLM.Model).
+				WithAudit(auditSvc.Record).
+				WithScopeResolver(webui.AuthzScopeResolver(authzSvc))
 			sessionHandler := server.CORS(server.DefaultCORS())(
 				server.RequestID(chatAPI.AuthenticatedHandler(authSvc.UserByToken)),
 			)

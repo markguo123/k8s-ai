@@ -206,12 +206,16 @@ func (st *roleStore) Delete(ctx context.Context, id string) error {
 
 type sessionStore struct{ s *dbStore }
 
-func (st *sessionStore) marshal(sess *session.Session) (string, error) {
-	data, err := json.Marshal(sess)
+// sessionRow 返回会话的落库副本与 data 列：索引列（name 等）与 data 同源，
+// 都取自脱敏副本，避免可检索列绕过脱敏留下明文；只读副本，不修改调用方
+// 内存中的会话。
+func sessionRow(sess *session.Session) (*session.Session, string, error) {
+	redacted := redactSessionForStore(sess)
+	data, err := json.Marshal(redacted)
 	if err != nil {
-		return "", fmt.Errorf("marshal session: %w", err)
+		return nil, "", fmt.Errorf("marshal session: %w", err)
 	}
-	return string(data), nil
+	return redacted, string(data), nil
 }
 
 func (st *sessionStore) Create(ctx context.Context, sess *session.Session) error {
@@ -222,14 +226,14 @@ func (st *sessionStore) Create(ctx context.Context, sess *session.Session) error
 	if sess.LastModified.IsZero() {
 		sess.LastModified = now
 	}
-	data, err := st.marshal(sess)
+	row, data, err := sessionRow(sess)
 	if err != nil {
 		return err
 	}
 	_, err = st.s.db.ExecContext(ctx, `
 		INSERT INTO sessions (id, user_id, name, cluster_id, namespace, model, state, data, created_at, last_modified)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sess.ID, sess.UserID, sess.Name, sess.Cluster, sess.Namespace, sess.Model, sess.State,
+		sess.ID, sess.UserID, row.Name, row.Cluster, row.Namespace, row.Model, row.State,
 		data, sess.CreatedAt, sess.LastModified)
 	return mapErr(err, "create session")
 }
@@ -249,14 +253,14 @@ func (st *sessionStore) Get(ctx context.Context, id string) (*session.Session, e
 
 func (st *sessionStore) Update(ctx context.Context, sess *session.Session) error {
 	sess.LastModified = time.Now()
-	data, err := st.marshal(sess)
+	row, data, err := sessionRow(sess)
 	if err != nil {
 		return err
 	}
 	res, err := st.s.db.ExecContext(ctx, `
 		UPDATE sessions SET user_id=?, name=?, cluster_id=?, namespace=?, model=?, state=?, data=?, last_modified=?
 		WHERE id=?`,
-		sess.UserID, sess.Name, sess.Cluster, sess.Namespace, sess.Model, sess.State, data, sess.LastModified, sess.ID)
+		sess.UserID, row.Name, row.Cluster, row.Namespace, row.Model, row.State, data, sess.LastModified, sess.ID)
 	if err != nil {
 		return fmt.Errorf("update session: %w", err)
 	}
