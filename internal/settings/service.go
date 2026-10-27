@@ -69,9 +69,13 @@ type Item struct {
 	Source    string          `json:"source,omitempty"`
 	Desc      string          `json:"desc,omitempty"`
 	UpdatedAt *time.Time      `json:"updatedAt,omitempty"`
-	// EnvOverride 非空表示该键当前由部署期环境变量提供（D-29）：值以部署方为准，
-	// 页面写入只落 DB，并由前端提示"当前被环境变量覆盖"。
+	// EnvOverride 非空表示该键当前由部署期环境变量/Secret 提供（D-29 v1.51 两档口径）：
+	// 密钥态下页面写入只落 DB、运行值仍以部署方为准；种子态下保存一次即以页面为准。
+	// 两种命中都要在前端标注来源，保存时给显式提示，不得静默成功。
 	EnvOverride string `json:"envOverride,omitempty"`
+	// EnvOverrideTier 是 EnvOverride 的生效档位："secret" 恒优先 / "seed" 首启种子值。
+	// EnvOverride 为空时本字段为空。
+	EnvOverrideTier string `json:"envOverrideTier,omitempty"`
 }
 
 // GroupView 是一个配置分组的读取结果。
@@ -79,6 +83,9 @@ type GroupView struct {
 	Group               string `json:"group"`
 	EncryptionAvailable bool   `json:"encryptionAvailable"`
 	Items               []Item `json:"items"`
+	// Warnings 只在 PATCH 返回里填充：本次写入的键里有被部署期变量覆盖的项，逐条说明
+	// 生效结果（密钥态"已落库但运行值仍以 Secret 为准" / 种子态"已落库且此后以页面为准"）。
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // Service 是配置中心应用服务：读写都经统一 Store，变更写 CONFIG_CHANGE 审计。
@@ -112,12 +119,21 @@ func (s *Service) GetGroup(ctx context.Context, group string) (*GroupView, error
 		byKey[item.Key] = item
 	}
 	view := &GroupView{Group: group, EncryptionAvailable: s.cipher != nil}
-	overrides := s.ActiveEnvOverrides()
+	// 两档判定要看 DB 当前值：种子态 DB 有值即让位。本组键的 DB 取值直接复用上面
+	// 已读到的 stored，避免为标注来源再读一次库。
+	dbHas := make(map[string]bool, len(stored))
+	for _, saved := range stored {
+		if _, ok := envOverrideIndex[envKey(group, saved.Key)]; ok {
+			dbHas[envKey(group, saved.Key)] = hasContent(saved.Value)
+		}
+	}
+	overrides := s.activeEnvOverrides(dbHas)
 	for _, def := range catalog[group] {
 		item := renderItem(def, byKey[def.Key])
-		if env, ok := overrides[envKey(group, def.Key)]; ok {
-			// 部署期覆盖：页面标注来源并视为已配置，但值由部署方掌握，不回显。
-			item.EnvOverride = env
+		if ov, ok := overrides[envKey(group, def.Key)]; ok {
+			// 部署期覆盖：页面标注来源与档位并视为已配置，密钥值由部署方掌握，不回显。
+			item.EnvOverride = ov.Env
+			item.EnvOverrideTier = string(ov.Tier)
 			item.HasValue = true
 			if def.Sensitive {
 				item.Value = json.RawMessage("null")
@@ -157,6 +173,13 @@ func (s *Service) PatchGroup(ctx context.Context, group string, patch map[string
 			return nil, fmt.Errorf("%w: %s.%s: %v", ErrInvalid, group, key, err)
 		}
 		items = append(items, pending{key: key, def: def, value: value})
+	}
+
+	// 保存前先看覆盖态（P6.12 ⑩/⑪）：判定依据必须是"用户这次保存时看到的来源"，
+	// 写完再读就看不到了（种子态保存后 DB 已接管）。
+	preOverrides, err := s.ActiveEnvOverrides(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	var changed, sensitive int
@@ -226,6 +249,13 @@ func (s *Service) PatchGroup(ctx context.Context, group string, patch map[string
 	view, err := s.GetGroup(ctx, group)
 	if err != nil {
 		return nil, err
+	}
+	for _, key := range keys {
+		ov, ok := preOverrides[envKey(group, key)]
+		if !ok {
+			continue
+		}
+		view.Warnings = append(view.Warnings, EnvOverrideWarning(ov, group, key))
 	}
 	return view, nil
 }
@@ -385,12 +415,17 @@ func (s *Service) loadRuntime(ctx context.Context, base *config.Config) (*config
 		return nil, nil, err
 	}
 	configured := map[string]bool{}
+	// 顺带记录白名单键的 DB 取值状态：种子态环境变量只在 DB 无值时生效。
+	dbHas := map[string]bool{}
 	for _, group := range Groups() {
 		stored, err := s.store.Settings().ListByGroup(ctx, group)
 		if err != nil {
 			return nil, nil, fmt.Errorf("list settings %s: %w", group, err)
 		}
 		for _, item := range stored {
+			if _, ok := envOverrideIndex[envKey(group, item.Key)]; ok {
+				dbHas[envKey(group, item.Key)] = hasContent(item.Value)
+			}
 			def, lerr := lookup(group, item.Key)
 			if lerr != nil {
 				continue // 未知/内部分组键不参与运行时叠加
@@ -409,8 +444,8 @@ func (s *Service) loadRuntime(ctx context.Context, base *config.Config) (*config
 			configured[envKey(group, item.Key)] = true
 		}
 	}
-	// 环境变量白名单最后叠加：部署期只读覆盖，优先级最高（D-29）。
-	envByPath, envConfigured, err := s.envOverrideValues()
+	// 环境变量白名单最后叠加：密钥态恒优先，种子态只在 DB 无值时兜底（D-29 v1.51）。
+	envByPath, envConfigured, err := s.envOverrideValues(ctx, dbHas)
 	if err != nil {
 		return nil, nil, err
 	}
