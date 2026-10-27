@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -77,5 +78,33 @@ func TestRedactDSN(t *testing.T) {
 	}
 	if bad := RedactDSN("not-a-dsn"); !strings.Contains(bad, "unparseable") {
 		t.Fatalf("非法 DSN 也应安全占位, got %q", bad)
+	}
+}
+
+// TestOpenSQLiteUnusableDataPath 锁 PVC 挂错/不可写的负向口径（P6.1）：数据目录不可用时
+// 必须在打开阶段失败，最迟也要被 IsReady 判未就绪，不能"连上了就接活"。
+// 覆盖两种现场常见形态：挂载路径拼错导致父目录不存在、挂上的路径本身是目录。
+func TestOpenSQLiteUnusableDataPath(t *testing.T) {
+	cases := []struct {
+		name string
+		path string
+	}{
+		{"父目录不存在", filepath.Join(t.TempDir(), "pvc-missing", "k8s-ai.db")},
+		{"数据路径是目录", t.TempDir()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := OpenSQLite(tc.path)
+			if err != nil {
+				// 打开即失败：启动阶段拒绝装配，符合预期。
+				return
+			}
+			defer s.Close()
+			if err := IsReady(context.Background(), s); err == nil {
+				t.Fatalf("数据路径不可用却判就绪: %s", tc.path)
+			} else if !errors.Is(err, ErrNotReady) {
+				t.Fatalf("应包装 ErrNotReady, got %v", err)
+			}
+		})
 	}
 }

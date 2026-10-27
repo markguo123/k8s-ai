@@ -861,14 +861,16 @@ Kubernetes
 
 配置中心管理**平台运行时动态配置**，唯一权威源是 DB `settings` 表，与配置文件完全独立、互不覆盖：`config.yaml` 只承载静态/`platform:` 启动参数（由 `k8s-ai config init` 默认模板输出，最终形态经 K8s ConfigMap 挂载），CLI 直用配置独立为 `~/.k8s-ai/cli.yaml`（由 `k8s-ai config init --cli` 输出）。页面保存只写 DB（敏感值加密落库、读面脱敏），server 与 Chat/Agent 运行时统一从 Store 读取。
 
-读取优先级（v1.16 明确，见 ADR-040）：**环境变量覆盖层 > DB `settings` > 内置默认**。其中 **DB `settings` 是动态键的默认唯一权威源与唯一写入目标**（ADR-031 不变）：正常路径取值只来自 DB、页面保存也只写 DB；env 覆盖层只在白名单键命中时临时压过 DB，不回写、不持久化。
+读取优先级（v1.16 明确、v1.18 修订，见 ADR-040 v1.2）：**DB `settings` 是动态键的唯一权威源与唯一写入目标**；环境变量只按两档注入——**密钥态**（`K8S_AI_LLM_API_KEY`、`K8S_AI_PLATFORM_STORE_DSN`）env/Secret 恒优先；**种子态**（seed-once）仅当该键在 DB 无值时生效，页面保存过就以 DB 为准。一句话口径：**页面配过的以页面为准，页面没配过的用部署变量兜底，密钥永远以 Secret 为准**。env 命中一律不回写 DB。
 
-环境变量只作部署期注入与灰度覆盖，覆盖面**收窄**为 `K8S_AI_LLM_*`（endpoint / model / api_key /
-temperature / max_tokens / timeout）与 `K8S_AI_PLATFORM_STORE_DSN`，其余动态键只认 DB，不接受环境变量
-覆盖。内置默认（`http://localhost:8000/v1` + `qwen-plus`）仅作最后兜底：容器内部署若 DB 与环境变量
+环境变量覆盖面**冻结为 LLM 四键 + ops 四键**：`K8S_AI_LLM_{PROVIDER,ENDPOINT,API_KEY,MODEL}` 与
+`K8S_AI_{KUBECONFIG,KUBE_CONTEXT,NAMESPACE,KUBECTL_PATH}`，其中 `api_key` 属密钥态、其余属种子态；
+`K8S_AI_PLATFORM_STORE_DSN` 属静态段环境变量绑定，不属动态键。`temperature` / `max_tokens` / `timeout` **不纳入**
+环境变量覆盖，其余动态键只认 DB、不接受环境变量覆盖，键集合由测试锁定防止扩大。内置默认
+（`http://localhost:8000/v1` + `qwen-plus`）仅作最后兜底：容器内部署若 DB 与环境变量
 均未提供模型配置，Chat 必须返回明确可读的错误提示，不得静默失败或拿假默认值继续跑。
 
-页面保存仍只写 DB、不回写 `config.yaml`，保存后即时生效，不需要重启进程。
+页面保存仍只写 DB、不回写 `config.yaml`，保存后即时生效，不需要重启进程。凡当前生效值来自环境变量的键，页面必须标注来源（密钥态要说明「页面值暂不生效」），保存此类键时返回显式提示，不得静默成功；默认部署清单只注入 `K8S_AI_LLM_API_KEY`，非敏感覆盖只在 `deploy/example/` 演示。
 
 配置中心分组（固定为这 7 组，平台部署后由管理员在页面维护）：
 
@@ -1593,7 +1595,7 @@ CLI 直用配置（ADR-031 v1.12 修订）：`k8s-ai chat / scan` 默认读取�
 **7 组动态配置（model/skill/approval/memory/retention/mcp/ops）从 `config.yaml` 移出，唯一落在
 DB `settings` 表**：平台部署后由管理员在配置中心页面维护，server 启动只读 `platform:` 静态段，
 Chat/Agent/LLM 等运行时组件统一从 Store 读 DB；页面改动不会回写 `config.yaml`，改文件也不会覆盖
-DB 动态键；环境变量可作最高优先覆盖层，覆盖面收窄为 `K8S_AI_LLM_*` 与 `K8S_AI_PLATFORM_STORE_DSN`
+DB 动态键；环境变量按两档注入（密钥态 `api_key`/DSN 恒优先、种子态 seed-once 在 DB 有值时让位），覆盖面冻结为 LLM 四键 + ops 四键（另 DSN 走静态段绑定）
 （见 §15、ADR-040）。平台 schema 升级入口是 `k8s-ai db migrate`（单向、幂等，可作 K8s Job 或
 initContainer），`server` 启动内保留同一迁移的幂等兜底；`k8s-ai migrate` 只承担三期旧配置的一次性导入，
 两者职责不混用。
@@ -1972,3 +1974,4 @@ Security Boundary Unchanged
 | v1.15 | 2026-10-26 | CLI 直用配置口径冻结：终端直用（`k8s-ai chat/scan`）默认读取独立 `~/.k8s-ai/cli.yaml`，由 `k8s-ai config init --cli` 输出，承载 llm/agent/scan/kubernetes 等全量引擎键与 CLI 直用缺省、文件头注明仅 CLI 读取；`cli.yaml` 缺失回退旧 `config.yaml` 兼容存量。`config init` 默认输出 server 静态 `config.yaml`（只含 `platform:` 段），server 与 CLI 配置为两份独立文件、完全独立、互不覆盖，7 组动态键唯一权威源仍为 DB `settings` 表；`config validate` 支持 `--mode server|cli`。仅文档口径修订、实现放 P6.12。见 ADR-031 v1.12、开发计划 v1.45 |
 | v1.16 | 2026-10-27 | P6 产品安装部署开工前口径冻结（见开发计划 v1.48、ADR-031 v1.13、ADR-040/041/042）：① 动态配置读取优先级定为**环境变量覆盖层 > DB `settings` > 内置默认**，env 覆盖面收窄为 `K8S_AI_LLM_*` 与 `K8S_AI_PLATFORM_STORE_DSN`，内置默认仅兜底且未配置时 Chat 显式报错，页面改动即时生效；② 平台主存储改为 **MySQL**，SQLite 降为本地/离线兜底，DSN 只经环境变量/Secret 注入，主 MySQL 不解锁多副本；③ schema 迁移入口拆出 `k8s-ai db migrate`（可作 Job/initContainer），server 启动保留幂等兜底，与 `k8s-ai migrate` 配置导入分工明确；④ 镜像构建默认走 Dockerfile node 阶段（干净检出可复现），`go:embed all:web/dist` + `web/dist/.gitkeep` 占位，离线走 BuildKit named build context，`dist` 空时静态路由明确提示，未知 `/api/v1/*` 回 JSON 404，SSE 带 `X-Accel-Buffering: no`；⑤ 首启 admin 口令仅空库必需，`/readyz` = Store 连通 + 迁移完成、`/healthz` 保持进程级；⑥ install.sh 密钥语义冻结（ENC_KEY 复用/缺失才生成并备份/`--rotate` 显式轮换、ADMIN_PASSWORD 随机一次性打印、ENABLE_WRITE 二次确认、幂等重跑）；⑦ 新增安全红线 18/19：ENC_KEY 丢失即凭据不可恢复、禁止在产品清单与脚本硬编码任何环境信息。 |
 | v1.17 | 2026-10-27 | P6-A 口径批注确认（见开发计划 v1.49、ADR-040/041/042 增补）：① §15 澄清 **DB `settings` 是动态键的默认唯一权威源与唯一写入目标**，env 仅对白名单键作部署期只读覆盖、命中不回写、页面标注覆盖态；② §22 补数据库前置——产品不执行 CREATE DATABASE，库与账号由 DBA 预建并建议 utf8mb4，表级 DDL 显式 utf8mb4，平台账号只授该库 DML 与建表改表索引权限；③ §26 明确**前后端两个独立 Dockerfile**（仓库根 Dockerfile 构建后端镜像、deploy/web.Dockerfile 构建前端 Nginx 镜像，互不依赖），并明确 SQLite 兜底数据目录必须挂 PVC、MySQL 主口径下 PVC 仅承载报告与导出；④ 新增 deploy/example MySQL 接入示例清单（非产品默认、不含现场地址与口令），MySQL 连通、迁移幂等、重启续用门禁实跑用例计入 P6.1/P6.5/P6.8 验收；⑤ 测试库名 `k8s_ai_test`、产品默认库名 `k8s_ai`，凭据严禁入库。需求条目与优先级不变。 |
+| v1.18 | 2026-10-27 | | **动态配置优先级口径修订（仅文档，签收方案 A）**：环境变量覆盖由「对白名单键一律最高优先」改为**两档语义**。① **密钥态**（`K8S_AI_LLM_API_KEY`、`K8S_AI_PLATFORM_STORE_DSN`）env/Secret 恒优先，密钥只走 Secret、页面永不回显，env 命中时页面值不生效但必须标注来源并在保存时给出提示；② **种子态 seed-once**（`K8S_AI_LLM_{PROVIDER,ENDPOINT,MODEL}` + ops 四键 `K8S_AI_{KUBECONFIG,KUBE_CONTEXT,NAMESPACE,KUBECTL_PATH}`）仅在 DB 该键无值时生效，页面保存过即以 DB 为准、env 不再覆盖；③ 覆盖面**冻结为 LLM 四键 + ops 四键**，`TEMPERATURE/MAX_TOKENS/TIMEOUT` 明确不纳入 env 覆盖（非字符串键，常驻类型转换分支收益不划算），键集合由测试锁定；④ 默认部署清单只注入 `K8S_AI_LLM_API_KEY`，非敏感覆盖只在 `deploy/example/` 演示。修订起因：页面保存路径不感知 env 覆盖，会出现「写库成功、页面显示已保存、运行时仍用 env 旧值」的静默陷阱。一句话口径：页面配过的以页面为准，页面没配过的用部署变量兜底，密钥永远以 Secret 为准。见 §15/§22、开发计划 v1.51、D-21/D-29 修订、ADR-031 v1.14、ADR-040 v1.2。需求条目与优先级不变。 |
