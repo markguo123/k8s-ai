@@ -1,7 +1,7 @@
 # k8s-ai 四期需求规格（平台化）
 
-> 版本：v1.15
-> 日期：2026-10-26
+> 版本：v1.17
+> 日期：2026-10-27
 > 状态：四期最终需求方案  
 > 目标：交付面向企业的多用户 Kubernetes AI 运维平台，在同一权限、会话、审计与安全执行体系下提供 Chat、诊断、集群管理、Skill、审批和治理能力。
 
@@ -861,6 +861,15 @@ Kubernetes
 
 配置中心管理**平台运行时动态配置**，唯一权威源是 DB `settings` 表，与配置文件完全独立、互不覆盖：`config.yaml` 只承载静态/`platform:` 启动参数（由 `k8s-ai config init` 默认模板输出，最终形态经 K8s ConfigMap 挂载），CLI 直用配置独立为 `~/.k8s-ai/cli.yaml`（由 `k8s-ai config init --cli` 输出）。页面保存只写 DB（敏感值加密落库、读面脱敏），server 与 Chat/Agent 运行时统一从 Store 读取。
 
+读取优先级（v1.16 明确，见 ADR-040）：**环境变量覆盖层 > DB `settings` > 内置默认**。其中 **DB `settings` 是动态键的默认唯一权威源与唯一写入目标**（ADR-031 不变）：正常路径取值只来自 DB、页面保存也只写 DB；env 覆盖层只在白名单键命中时临时压过 DB，不回写、不持久化。
+
+环境变量只作部署期注入与灰度覆盖，覆盖面**收窄**为 `K8S_AI_LLM_*`（endpoint / model / api_key /
+temperature / max_tokens / timeout）与 `K8S_AI_PLATFORM_STORE_DSN`，其余动态键只认 DB，不接受环境变量
+覆盖。内置默认（`http://localhost:8000/v1` + `qwen-plus`）仅作最后兜底：容器内部署若 DB 与环境变量
+均未提供模型配置，Chat 必须返回明确可读的错误提示，不得静默失败或拿假默认值继续跑。
+
+页面保存仍只写 DB、不回写 `config.yaml`，保存后即时生效，不需要重启进程。
+
 配置中心分组（固定为这 7 组，平台部署后由管理员在页面维护）：
 
 ```text
@@ -1304,20 +1313,29 @@ CredentialStore
 默认：
 
 ```text
-SQLite
+MySQL
 ```
 
-可选：
+可选（本地单进程 / 离线兜底）：
 
 ```text
-MySQL
+SQLite
 ```
 
 保持业务层不依赖具体数据库。
 
 不提前引入 Redis。
 
-SQLite 面向单进程/单实例部署；MySQL 面向多副本或已有数据库场景。两种驱动共用统一 schema 版本与迁移入口，业务层只依赖 Store 接口。
+**四期主存储为 MySQL**（v1.16 修订，见 ADR-042）：企业环境已有数据库实例，平台库默认落 MySQL，SQLite 降为
+本地单进程开发与离线交付兜底，不再是生产默认。两种驱动共用统一 schema 版本与迁移入口，业务层只依赖 Store
+接口。含口令的 DSN 只经环境变量 / Secret 注入，YAML 中出现非空 `platform.store.dsn` 时 `config validate`
+必须告警。
+
+**数据库前置（v1.17 明确）**：产品**不执行** `CREATE DATABASE`。库、账号与权限由 DBA 预建，`server` 与 `k8s-ai db migrate` 只在已授权的库内建表与升级 schema。库默认字符集建议 utf8mb4；即使库默认是 utf8mb3，产品建表 DDL 也显式带 `DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`（`internal/store/dialect.go`），不依赖库默认。平台账号只授予该库的 DML 与建表/改表/索引/DROP，不需要 `SUPER`、`FILE` 等全局权限。
+
+**MySQL 门禁实跑（v1.17）**：`K8S_AI_TEST_MYSQL_DSN` 注入测试库后，连通、schema 迁移幂等、重启续用三类用例必须真实执行，不得长期停留在 skipped。门禁实例地址、端口与凭据只在本地或 CI 注入，严禁写入文档、清单与测试代码；`deploy/example/` 的 MySQL 清单属示例口径、非产品默认，只含占位值。
+
+主 MySQL **不等于**解锁多副本：单副本的真因是内存态会话/Token、SSE 与审批 pending 通道，与数据库驱动无关。
 
 多副本不止取决于数据库：除 MySQL 外，还需要会话/Token 状态持久化与 SSE、审批等待通道的跨副本方案（本期不引入 Redis）。在这些条件满足之前，平台进程保持单副本（见 ADR-030）。
 
@@ -1512,8 +1530,9 @@ Go 单二进制内嵌前端构建产物，由 `k8s-ai server` 在同一进程、
 前端独立构建为静态资源（`web/dist`），由独立 Nginx（或企业既有静态资源托管、网关、CDN）托管；
 后端服务关闭静态资源路由，只提供 `/api/v1`（含 Chat SSE）与 `/healthz`、`/readyz`、`/version`。
 默认**同域名、按路径分流**：`/assets/*` 与 `/`（SPA fallback）→ 前端服务，`/api/v1/*` → 后端服务。
-前端访问 API 使用相对路径 `/api/v1`（构建期可用 `VITE_API_BASE` 覆盖）；跨域与独立子域不作为当前
-强制需求。允许前后端独立发布、滚动与回滚，通过 `/api/v1` API 契约测试守住兼容面。
+前端访问 API 使用相对路径 `/api/v1`（构建期可用 `VITE_API_BASE` 覆盖；该变量当前尚未被前端消费，
+接入随 P6.13 收口）；跨域与独立子域不作为当前强制需求。允许前后端独立发布、滚动与回滚，通过
+`/api/v1` API 契约测试守住兼容面。
 
 该形态属于可选部署能力。不得为支持该形态而大规模重构后端、拆分微服务、重写前端 API 层或改变已有
 业务逻辑；实现以最小开关改动为原则（如后端关闭静态路由）。若成本明显增加，需重新评审。
@@ -1547,10 +1566,24 @@ k8s-ai server \
 `replicas: 1`；扩副本需先满足会话/Token 持久化与 SSE、审批通道跨副本方案（见 ADR-030）。多副本/
 高可用/分布式协调不属于四期目标。
 
-配置经 ConfigMap 挂载并以 `--config` 传入，数据目录用 PVC 承载（或改用 MySQL），初始 admin 密码经
-Secret 注入，日志走标准输出，不再使用 `nohup` 重定向到文件。
+配置经 ConfigMap 挂载并以 `--config` 传入。平台库默认 MySQL，DSN 经 Secret 注入；SQLite 兜底路径的数据目录
+用 PVC 承载，报告与导出文件按需可选挂载 PVC，未指定存储类时不创建 PVC。初始 admin 密码只在**空库首启**时经
+Secret 注入，已完成初始化的库重启不再要求该变量。日志走标准输出，不再使用 `nohup` 重定向到文件。
 
-配置面（ADR-031，v1.11 修订）：`config.yaml` 只承载**静态/启动级**参数（`platform:` 段：
+探针语义（v1.16 明确）：`/healthz` 是进程级 liveness，不触碰外部依赖；`/readyz` 必须真实反映可用状态，
+等于 Store 连通性探测 + schema 迁移完成标记，任一不满足即返回非 200。清单与实现都不得把两者写成同义的空壳。
+
+前端产物与镜像（v1.16 明确，见 ADR-041）：`web/dist` 以 `go:embed all:web/dist` 内嵌，仓库保留
+`web/dist/.gitkeep` 占位；镜像构建默认在 Dockerfile 的 node 阶段现场构建前端，保证干净检出即可复现，
+离线交付用 BuildKit named build context 覆盖该阶段以复用本地 `web/dist`。`web/dist` 为空时构建不失败，
+静态路由返回明确提示；未知 `/api/v1/*` 必须回 JSON 404，不得被 SPA fallback 吞成 `index.html`。
+
+Chat SSE 反代由服务端配合：SSE 响应带 `X-Accel-Buffering: no`，并在 Ingress / Nginx 关闭响应缓冲、放大读超时。
+
+清单与脚本中**禁止出现任何具体环境信息**（IP、域名、存储类名、镜像地址一律走参数或占位符）：本产品是通用
+交付物，不面向单一环境。
+
+配置面（ADR-031，v1.13 修订）：`config.yaml` 只承载**静态/启动级**参数（`platform:` 段：
 `server.addr`、`server.tls.*`、`store.driver`、`store.sqlite_path`、`store.dsn`、
 `auth.admin_username`、`auth.token_ttl`、`auth.session_store`），是一份可评审、可 diff、可回滚的部署描述；
 敏感值（admin 首启口令、LLM api_key、含口令的 DSN）只从环境变量 / Secret 注入，YAML 中不得出现明文。
@@ -1560,7 +1593,10 @@ CLI 直用配置（ADR-031 v1.12 修订）：`k8s-ai chat / scan` 默认读取�
 **7 组动态配置（model/skill/approval/memory/retention/mcp/ops）从 `config.yaml` 移出，唯一落在
 DB `settings` 表**：平台部署后由管理员在配置中心页面维护，server 启动只读 `platform:` 静态段，
 Chat/Agent/LLM 等运行时组件统一从 Store 读 DB；页面改动不会回写 `config.yaml`，改文件也不会覆盖
-DB 动态键。`migrate` 只执行平台 schema 的单向、幂等升级，不在启动时导入文件配置。
+DB 动态键；环境变量可作最高优先覆盖层，覆盖面收窄为 `K8S_AI_LLM_*` 与 `K8S_AI_PLATFORM_STORE_DSN`
+（见 §15、ADR-040）。平台 schema 升级入口是 `k8s-ai db migrate`（单向、幂等，可作 K8s Job 或
+initContainer），`server` 启动内保留同一迁移的幂等兜底；`k8s-ai migrate` 只承担三期旧配置的一次性导入，
+两者职责不混用。
 
 默认保持只读 RBAC。
 
@@ -1589,9 +1625,20 @@ ENABLE_WRITE
 ADMIN_PASSWORD
 ```
 
-脚本负责编排。
+脚本负责编排，不替代正式 YAML：正式清单必须能独立 `kubectl apply` 跑通，脚本只做参数替换、顺序编排与
+幂等重跑。
 
-不替代正式 YAML。
+密钥与口令语义（v1.16 冻结）：
+
+```text
+K8S_AI_ENC_KEY   已存在则复用，绝不覆盖；缺失才生成，并在本地备份（权限 600）；
+                 轮换只走显式 --rotate，重跑脚本不会改密钥
+ADMIN_PASSWORD   缺省时随机生成，只在本次安装打印一次，不再重复输出
+ENABLE_WRITE     true 时显式 apply rbac-write.example.yaml 并二次确认
+STORAGE_CLASS    为空则不创建 PVC（MySQL 主存储下 PVC 为可选）
+```
+
+脚本必须幂等：重复执行不重置密钥、不轮换口令、不改已存在的 Secret 数据；执行前支持 `kubectl diff` 预演。
 
 ---
 
@@ -1618,7 +1665,11 @@ ADMIN_PASSWORD
 16. 销毁类（delete namespace / pvc / pv）仅 admin，operator 需 admin 显式委派；未授权
     发起时确定性拒绝并提示联系管理员，不建审批、不阻塞等待。
 17. 自动审批仅限显式白名单「可自动」项，默认关闭 + 会话开关；白名单外至少自确认、
-    高危类与 shell 永不自动，总开关不能覆盖高危类。
+     高危类与 shell 永不自动，总开关不能覆盖高危类。
+18. `K8S_AI_ENC_KEY` 一旦丢失，已加密落库的凭据（模型 api_key、MCP env、kubeconfig）不可恢复；
+    密钥必须有离线备份，轮换必须走显式流程并重新加密存量。
+19. 产品清单、镜像与安装脚本不得硬编码任何具体环境信息（IP、域名、存储类、镜像仓库地址），
+    环境差异只允许由部署参数或占位符替换提供。
 
 ---
 
@@ -1638,6 +1689,10 @@ ADMIN_PASSWORD
 无法迁移的数据必须显式报告，不能静默丢弃。
 
 无法迁移的数据必须明确说明。
+
+迁移入口（v1.16 明确，见 ADR-042）：schema 升级由 `k8s-ai db migrate` 承担，仅做 schema、单向且幂等，
+可作 K8s Job 或 initContainer；`server` 启动内保留同一迁移的幂等兜底，Job 失败即阻塞启动。配置内容导入
+仍由 `k8s-ai migrate` 一次性显式执行，两个入口不混用。
 
 ---
 
@@ -1915,3 +1970,5 @@ Security Boundary Unchanged
 | v1.13 | 2026-10-23 | 企业平台权限分层与会话所有权口径冻结：平台 Permission、Session owner、namespace AuthzGrant 三层独立；user/operator 平台 Permission 默认零，登录与自有会话属于认证基础能力；会话 owner 创建后不可变，普通角色仅访问自己的会话，admin 对全部会话拥有完整读写与运行控制能力；operator 不自动跨 namespace；无权限平台管理入口隐藏且后端强校验。见 ADR-037、开发计划 v1.41 |
 | v1.14 | 2026-10-23 | 用户/权限复盘口径澄清：admin 对他人会话的读取、发送消息、运行控制和审批属于平台管理员例外能力，不建模为“为他人指定审批人”，但必须记录 admin 操作者并写审计；同步修正 §17/§18 中与 admin 全会话能力冲突的表述。停用账号 Token 即时失效、API Token 认证闭环、Grant 集群隔离/主体生命周期、组授权、admin 跨用户审计与销毁授权等遗留登记到开发计划 `U-01`–`U-10`，本轮保持现有行为。见开发计划 v1.44 |
 | v1.15 | 2026-10-26 | CLI 直用配置口径冻结：终端直用（`k8s-ai chat/scan`）默认读取独立 `~/.k8s-ai/cli.yaml`，由 `k8s-ai config init --cli` 输出，承载 llm/agent/scan/kubernetes 等全量引擎键与 CLI 直用缺省、文件头注明仅 CLI 读取；`cli.yaml` 缺失回退旧 `config.yaml` 兼容存量。`config init` 默认输出 server 静态 `config.yaml`（只含 `platform:` 段），server 与 CLI 配置为两份独立文件、完全独立、互不覆盖，7 组动态键唯一权威源仍为 DB `settings` 表；`config validate` 支持 `--mode server|cli`。仅文档口径修订、实现放 P6.12。见 ADR-031 v1.12、开发计划 v1.45 |
+| v1.16 | 2026-10-27 | P6 产品安装部署开工前口径冻结（见开发计划 v1.48、ADR-031 v1.13、ADR-040/041/042）：① 动态配置读取优先级定为**环境变量覆盖层 > DB `settings` > 内置默认**，env 覆盖面收窄为 `K8S_AI_LLM_*` 与 `K8S_AI_PLATFORM_STORE_DSN`，内置默认仅兜底且未配置时 Chat 显式报错，页面改动即时生效；② 平台主存储改为 **MySQL**，SQLite 降为本地/离线兜底，DSN 只经环境变量/Secret 注入，主 MySQL 不解锁多副本；③ schema 迁移入口拆出 `k8s-ai db migrate`（可作 Job/initContainer），server 启动保留幂等兜底，与 `k8s-ai migrate` 配置导入分工明确；④ 镜像构建默认走 Dockerfile node 阶段（干净检出可复现），`go:embed all:web/dist` + `web/dist/.gitkeep` 占位，离线走 BuildKit named build context，`dist` 空时静态路由明确提示，未知 `/api/v1/*` 回 JSON 404，SSE 带 `X-Accel-Buffering: no`；⑤ 首启 admin 口令仅空库必需，`/readyz` = Store 连通 + 迁移完成、`/healthz` 保持进程级；⑥ install.sh 密钥语义冻结（ENC_KEY 复用/缺失才生成并备份/`--rotate` 显式轮换、ADMIN_PASSWORD 随机一次性打印、ENABLE_WRITE 二次确认、幂等重跑）；⑦ 新增安全红线 18/19：ENC_KEY 丢失即凭据不可恢复、禁止在产品清单与脚本硬编码任何环境信息。 |
+| v1.17 | 2026-10-27 | P6-A 口径批注确认（见开发计划 v1.49、ADR-040/041/042 增补）：① §15 澄清 **DB `settings` 是动态键的默认唯一权威源与唯一写入目标**，env 仅对白名单键作部署期只读覆盖、命中不回写、页面标注覆盖态；② §22 补数据库前置——产品不执行 CREATE DATABASE，库与账号由 DBA 预建并建议 utf8mb4，表级 DDL 显式 utf8mb4，平台账号只授该库 DML 与建表改表索引权限；③ §26 明确**前后端两个独立 Dockerfile**（仓库根 Dockerfile 构建后端镜像、deploy/web.Dockerfile 构建前端 Nginx 镜像，互不依赖），并明确 SQLite 兜底数据目录必须挂 PVC、MySQL 主口径下 PVC 仅承载报告与导出；④ 新增 deploy/example MySQL 接入示例清单（非产品默认、不含现场地址与口令），MySQL 连通、迁移幂等、重启续用门禁实跑用例计入 P6.1/P6.5/P6.8 验收；⑤ 测试库名 `k8s_ai_test`、产品默认库名 `k8s_ai`，凭据严禁入库。需求条目与优先级不变。 |

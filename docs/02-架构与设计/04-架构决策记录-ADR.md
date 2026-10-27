@@ -1,8 +1,8 @@
 # k8s-ai 架构决策记录（ADR）
 
 - 版本：v1.0 → v4.0.0（四期新增 ADR）
-- 日期：2026-08-12（首版） / 2026-10-10（四期平台底座 ADR） / 2026-10-14（部署形态与前端交付口径） / 2026-10-22（新增 ADR-036 前后端分离部署形态） / 2026-10-23（新增 ADR-037 权限分层与会话隔离、ADR-038 Scope-aware Agent）
-- 状态：四期企业平台落地中（ADR-020~038）
+- 日期：2026-08-12（首版） / 2026-10-10（四期平台底座 ADR） / 2026-10-14（部署形态与前端交付口径） / 2026-10-22（新增 ADR-036 前后端分离部署形态） / 2026-10-23（新增 ADR-037 权限分层与会话隔离、ADR-038 Scope-aware Agent） / 2026-10-26（新增 ADR-039 会话 API 包更名） / 2026-10-27（新增 ADR-040 动态配置读取优先级、ADR-041 前端产物内嵌与镜像可复现构建、ADR-042 存储主口径与迁移入口拆分；ADR-031 v1.13）
+- 状态：四期企业平台落地中（ADR-020~042）
 
 ## ADR-001 两阶段扫描
 
@@ -277,7 +277,7 @@
 
 ## ADR-031 平台配置面：`platform:` 静态段 + 7 组动态键唯一落 DB `settings`
 
-- **状态**：已接受（2026-10-14 方案定稿；2026-10-21 v1.11 修订：明确 7 组动态键唯一权威源；2026-10-26 v1.12 修订：固化 server 静态 `config.yaml` 与 CLI 直用 `~/.k8s-ai/cli.yaml` 两份独立配置；实现仍待 P6.12）
+- **状态**：已接受（2026-10-14 方案定稿；2026-10-21 v1.11 修订：明确 7 组动态键唯一权威源；2026-10-26 v1.12 修订：固化 server 静态 `config.yaml` 与 CLI 直用 `~/.k8s-ai/cli.yaml` 两份独立配置；2026-10-27 v1.13 修订：动态键运行时新增**环境变量覆盖层**为最高优先，覆盖面收窄且由测试锁定，见 ADR-040；①②⑥ 仍待 P6.12，⑤ 运行时消费前移至 P6.1 本批）
 - **背景**：四期平台级参数（监听地址、平台库路径/DSN、管理员用户名、Token 有效期）当前只存在于
   `server` 命令行开关与进程环境变量中，配置文件同时覆盖 llm/agent/scan 等引擎参数。若引擎参数同时保留在
   YAML 与页面配置中心，会形成"文件 vs 页面"两处活配置漂移，并发修改互相覆盖；同时三期 `config init`
@@ -299,12 +299,17 @@
      覆盖手段与兼容。`config init` 默认只输出 server 静态模板（仅 `platform:` 段），`config init --cli`
      输出 CLI 直用全量模板（llm/agent/scan/kubernetes 等全量引擎键 + CLI 直用缺省，文件头注明仅 CLI 读取、
      平台不读取也不回写）；`cli.yaml` 缺失时回退读取旧 `config.yaml` 兼容存量用户。静态段优先级沿用
-     **CLI > 环境变量 > YAML > 默认**。
+     **CLI > 环境变量 > YAML > 默认**。（v1.13 补充：本条只管**静态段**；7 组动态键的运行时取值另有优先级
+     与环境变量覆盖面约定，见 ADR-040。）
   5. `config init --cli` 模板承载全量引擎键与 CLI 直用缺省，`config init` 默认模板只输出 server 静态/
      `platform:` 启动键；两个模板键集合分别由测试锁定，防止模板与代码再次漂移。`config validate` 支持
      `--mode server|cli` 分别校验静态段与全量引擎键，对未识别键给出显式告警，拼错的键不再被静默忽略。
   6. `migrate` 只作**显式一次性迁移**：三期旧 `config.yaml` 的动态键仅在管理员显式执行迁移时导入 settings
-     表，导入后以 DB 为权威；不承担"启动时自动全量导入"的职责。
+     表，导入后以 DB 为权威；不承担"启动时自动全量导入"的职责。平台 schema 升级另设 `k8s-ai db migrate`
+     入口，见 ADR-042。
+  7. （v1.13 新增）**动态键运行时优先级 = 环境变量覆盖层 > DB `settings` > 内置默认**，覆盖面收窄为
+     `K8S_AI_LLM_*` 与 `K8S_AI_PLATFORM_STORE_DSN` 并由测试锁定；内置默认仅兜底，容器内未配置时 Chat
+     显式报错不静默失败；页面保存只写 DB、即时生效。完整口径与理由见 ADR-040。
 - **理由**：企业化部署要求"一份 ConfigMap（静态）+ 一份 Secret（敏感）+ DB settings（动态）"即可完整描述
   平台运行参数，且该描述可评审、可 diff、可回滚；动态运营配置需要在线页面维护，唯一权威源只能落在 DB。
   终端二进制直用（`k8s-ai chat / k8s-ai scan`）不依赖平台 DB，仍以本地 `cli.yaml`（缺失时回退 `config.yaml`）
@@ -312,9 +317,10 @@
 - **后果**：`server` 命令需接入配置加载（当前只读 flags）；`deploy/configmap.yaml` 与部署手册 §3、§4.9
   同步；`config init` 默认输出 server 静态 `config.yaml`，新增 `--cli` 输出 CLI 全量 `cli.yaml`；7 组动态键
   唯一落 DB（settings API/脱敏/加密与前端 SettingsView 已随 P3.9/P3.10 落地）。落地任务 P6.12。
-- **落实状态**：配置中心后端（settings CRUD/脱敏/加密）与前端 SettingsView 已随 P3.9/P3.10 落地；
-  双份配置模板（默认 server 静态 + `--cli` 全量）、`--mode server|cli` 校验、`platform:` 段接入、运行时
-  动态消费与左 rail UI 改造待 P6.12 实现。
+- **落实状态（v1.13 更新）**：配置中心后端（settings CRUD/脱敏/加密）与前端 SettingsView、`platform:` 段
+  接入与消费、本人改密端点已落地；**运行时动态消费前移并入 P6.1 本批**（含 env 覆盖层与未配置显式报错）；
+  剩余待 P6.12：双份配置模板（默认 server 静态 + `--cli` 全量）、模板键集合测试锁定、`--mode server|cli`
+  校验与未识别键告警、env 覆盖面键集合测试锁定。
 
 
 ## ADR-032 SSE 展示与顺序契约（分片不是展示单元，终态必须最后）
@@ -516,6 +522,91 @@
      本次不动，登记为遗留项另行收口。
 - **后果**：`internal/webui` 不再存在；历史文档、历史 Changelog 与借鉴声明中的旧包名按
   历史记录保留不改。AGENTS.md 分层清单里的 “Web UI” 层名待与配置键一并统一。
+
+## ADR-040 动态配置读取优先级：环境变量覆盖层 > DB `settings` > 内置默认
+
+- **状态**：已接受（2026-10-27；配合 ADR-031 v1.13；实现落 P6.1，键集合锁定落 P6.12）
+- **背景**：ADR-031 定下「7 组动态键唯一权威源是 DB `settings`」，但运行时从未真正读取它——`internal/settings`
+  的分组常量只被 settings API 与自身测试引用，Chat 走 `service.NewChatWithStoreAndConfig(cfg, st)`，实际取值
+  来自配置文件里的 `llm.*` 与内置默认（`llm.endpoint=http://localhost:8000/v1`、`llm.model=qwen-plus`）。
+  后果有两个：配置中心页面改模型不生效；容器内 ConfigMap 已按口径不含 `llm.*`、页面又尚未配置时，Chat 拿假
+  默认去连一个不存在的地址，报出与真实原因无关的错误。P6 部署联调会第一时间撞上，必须在 P6-A 本批解决，
+  「页面即生效」不能继续标注为未实现。
+- **决策**：
+  1. 运行时取值优先级：**环境变量覆盖层 > DB `settings` > 内置默认**，其中 DB `settings` 是动态键的
+     **默认唯一权威源与唯一写入目标**（ADR-031 不变）：正常路径取值只来自 DB、页面保存也只写 DB；env 覆盖层
+     只对白名单键生效、只读不回写，命中时在配置中心标注覆盖态。
+  2. 环境变量覆盖面**收窄**为 `K8S_AI_LLM_{ENDPOINT,MODEL,API_KEY,TEMPERATURE,MAX_TOKENS,TIMEOUT}` 与
+     `K8S_AI_PLATFORM_STORE_DSN`；其余动态键（skill/approval/memory/retention/mcp/ops）只认 DB。新增
+     env 覆盖必须走 ADR 修订，覆盖面键集合由测试锁定，防止退化成第三处活配置。
+  3. 内置默认只作最后兜底。DB 与 env 都未提供模型配置时，Chat 返回可读错误并指明修复入口（配置中心 →
+     模型，或 `K8S_AI_LLM_*`），禁止静默套用假默认继续执行。
+  4. 页面保存只写 DB、不回写 `config.yaml`，保存后即时生效、不需重启；被 env 覆盖的键在 SettingsView 上
+     标注「已被环境变量覆盖」，避免管理员误以为改动已生效。
+  5. `config.yaml` 仍不承载动态键（ADR-031 不变）。env 覆盖层是部署期注入手段，不是第三份配置文件。
+- **理由**：容器化部署必须在镜像与 ConfigMap 之外注入 LLM 端点与密钥，尤其是「库还没配好」的首启窗口；
+  但覆盖面必须窄到可枚举、可测试，否则「唯一权威源」会重新散架。
+- **后果**：`server` 装配时把 settings service 注入 Chat/Agent/LLM 构造路径；`internal/settings` 增加 env
+  覆盖层与「取值来源」标注能力；前端 SettingsView 增加覆盖态；`deploy/configmap.yaml` 只保留静态段并给出
+  env 注入示例；P6.12 增加覆盖面键集合测试。
+- **落实状态**：待实现（P6.1 / P6.12）。
+
+## ADR-041 前端产物内嵌与镜像可复现构建
+
+- **状态**：已接受（2026-10-27；实现落 P6.11，形态 B 镜像落 P6.13）
+- **背景**：现有 Dockerfile 只有 `golang:alpine → distroless` 两阶段，不含前端构建。若直接 `go:embed web/dist`，
+  `dist` 目录不存在时编译直接失败；而 `web/.gitignore` 按整目录忽略 `dist`，既提交不了占位文件、`!dist/.gitkeep`
+  反向放行也无效；`.dockerignore` 未排除 `web/node_modules`，构建上下文会把宿主机依赖树整个灌进去。
+- **决策**：
+  1. 内嵌用 `go:embed all:web/dist`，仓库提交 `web/dist/.gitkeep` 占位；`web/.gitignore` 由整目录 `dist`
+     改为 `dist/*` + `!dist/.gitkeep`。
+  2. **前后端两个独立 Dockerfile**：仓库根 `Dockerfile` 构建后端镜像，`deploy/web.Dockerfile` 构建 Nginx
+     前端静态镜像，两者各自独立构建、互不依赖、可分别升级（形态 B 的后端直接复用同一后端镜像，靠
+     `platform.server.static_enabled: false` 关闭静态托管）。后端 Dockerfile 默认三阶段：**node 构建阶段**
+     （`npm ci && npm run build` 产出 dist）→ golang 构建阶段
+     （embed 该 dist）→ distroless 运行阶段。干净检出执行 `make docker` 即可产出含前端的镜像，这是默认路径。
+  3. 离线与加速路径用 BuildKit **named build context 覆盖同名 stage**：
+     `docker build --build-context webdist=./web/dist .`，把 node 阶段的产物替换成本地已构建的 `web/dist`。
+     同一份 Dockerfile 即可切换，不需要 `--prebuilt-dist` 这类无法跳过 stage 的伪开关；若构建环境 BuildKit
+     不可用，退化方案是另存 `deploy/Dockerfile.prebuilt-dist`。
+  4. node 阶段需要 npm registry：纯离线环境必须走第 3 条或配置内网镜像源，手册要显式写明。
+  5. `dist` 为空时构建不失败：静态路由检测到空目录时返回明确提示（未构建前端，请 `npm run build` 或改用
+     形态 B）；未知 `/api/v1/*` 必须返回 JSON 404，不得被 SPA history fallback 吞成 `index.html`。
+  6. `.dockerignore` 增加 `web/node_modules`。
+  7. 运行镜像仍是 distroless static nonroot：无 shell、无 kubectl，写执行只走 client-go（D-06 不变）。
+- **后果**：`make docker` 与本地构建脚本需要处理前端产物；CI 需要 node 层缓存；形态 B 的 `web.Dockerfile`
+  复用同一份 `web/dist`；`bin/` 直编产物在无前端时走空 dist 提示分支。
+- **落实状态**：待实现（P6.11）。
+
+## ADR-042 平台存储主口径 MySQL 与迁移入口拆分 `k8s-ai db migrate`
+
+- **状态**：已接受（2026-10-27；修订 D-04；实现落 P6.1 / P6.5）
+- **背景**：D-04 原口径是「SQLite 默认 + MySQL 可选」，且 `PlatformStoreConfig.DSN` 注释写着「本期不消费」，
+  `internal/cli/server.go` 直接硬编码 `store.OpenSQLite`，`platform.store.*` 实际无人读取。四期企业交付以
+  MySQL 为主存储，SQLite 只服务本地开发与离线兜底。另一方面，K8s 部署需要可独立执行的 schema 迁移入口
+  （Job / initContainer），不能只依赖 server 启动时的隐式迁移；而 `k8s-ai migrate` 这个名字已被三期的
+  「旧配置一次性导入」占用，语义必须分开。
+- **决策**：
+  1. 平台库默认 **MySQL**，`store.driver` 取 `mysql | sqlite`，`server` 与迁移命令都按驱动分派
+     （MySQL 走 `store.OpenMySQL`，SQLite 走 `store.OpenSQLite`）。
+  2. DSN 含口令，只经 `K8S_AI_PLATFORM_STORE_DSN` / Secret 注入；`platform.store.dsn` 键位保留但值只接受
+     env/Secret，`config validate` 对 YAML 中出现非空 dsn 给出告警。MySQL DSN 必须带 `parseTime=true`，
+     缺失即启动报错，不在运行期才炸。
+  3. 新增 **`k8s-ai db migrate`**：只做 schema 升级、单向且幂等，可作 K8s Job 或 initContainer；`server`
+     启动内保留同一迁移的幂等兜底。与 `k8s-ai migrate`（三期旧配置一次性导入）职责分离，`--help` 与手册
+     都要写清，initContainer 只用前者。
+  4. PVC 转为**可选**：`STORAGE_CLASS` 为空则不创建 PVC；PVC 只承载报告/导出文件与 SQLite 兜底数据目录。
+  5. MySQL 集成测试（`TestStoresMySQL`，`K8S_AI_TEST_MYSQL_DSN` 门控）必须进 CI 门禁实跑；该用例此前在
+     CI 中恒被跳过，主存储切换不能带着从未验证的驱动上线。门禁环境接入方式固定为两条：集群内部署走集群内
+     Service 地址，本地与 CI 门禁用外部可达地址，两者都只是 `K8S_AI_TEST_MYSQL_DSN` 的注入值；库与账号由 DBA
+     预建，产品不执行 `CREATE DATABASE`。若服务端库默认字符集不是 utf8mb4，表级 DDL 已显式
+     `DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`（`internal/store/dialect.go`），不依赖库默认。
+     `deploy/example/` 另出一份 MySQL 接入示例清单（占位值、示例口径、非产品默认，不含现场地址与凭据）。
+  6. 主 MySQL **不构成**扩副本前置：单副本的真因是内存态会话/Token、SSE 与审批 pending 通道（ADR-030 不变）。
+- **后果**：`go-sql-driver/mysql` 由 indirect 转为直接依赖；需要一台可长期使用的 MySQL 实例作为门禁环境
+  （人工前置，否则 MySQL 主路径无法验收）；`deploy/` 清单默认 `driver: mysql` + DSN Secret + 迁移 Job，
+  所有「SQLite 默认」表述同步修订。
+- **落实状态**：待实现（P6.1 驱动分派与 DSN 消费；P6.5 `db migrate` 与迁移 Job）。
 
 ## 待决策事项（需在编码前确认）
 
