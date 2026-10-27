@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/k8s-ai/k8s-ai/internal/session"
 )
@@ -38,6 +39,34 @@ type Store interface {
 	// Migrate 将 schema 升级到最新版本（幂等）。
 	Migrate(ctx context.Context) error
 	Close() error
+	// Ping 校验数据库连通性，供 /readyz 使用（P6.1）：不建表、不写数据。
+	Ping(ctx context.Context) error
+	// MigrationStatus 返回已应用的 schema 版本与期望版本（P6.1）：迁移表缺失时
+	// applied 为 0 且不报错，让调用方把"还没跑过迁移"当成未就绪而不是错误。
+	MigrationStatus(ctx context.Context) (applied int, expected int, err error)
+}
+
+// ErrNotReady 表示持久化层尚未进入可服务状态（P6.1 /readyz 判据）。
+var ErrNotReady = errors.New("store: not ready")
+
+// IsReady 报告存储是否可服务：能连通且 schema 已升到当前版本（P6.1/P6.5）。
+// 迁移未完成时返回包装了 ErrNotReady 的错误，错误里带上 applied/expected 版本，
+// 便于容器里直接从探针响应看出"迁移 Job 还没跑完"。
+func IsReady(ctx context.Context, st Store) error {
+	if st == nil {
+		return fmt.Errorf("%w: store is not wired", ErrNotReady)
+	}
+	if err := st.Ping(ctx); err != nil {
+		return fmt.Errorf("%w: store ping: %v", ErrNotReady, err)
+	}
+	applied, expected, err := st.MigrationStatus(ctx)
+	if err != nil {
+		return fmt.Errorf("%w: schema version: %v", ErrNotReady, err)
+	}
+	if applied < expected {
+		return fmt.Errorf("%w: schema version %d < expected %d (run k8s-ai db migrate)", ErrNotReady, applied, expected)
+	}
+	return nil
 }
 
 // UserStore 管理产品内用户（P1.5）。

@@ -21,9 +21,9 @@ type Config struct {
 	Scan       ScanConfig       `mapstructure:"scan"`
 	Report     ReportConfig     `mapstructure:"report"`
 	Rules      RulesConfig      `mapstructure:"rules"`
-	Agent      AgentConfig      `mapstructure:"agent"` // 二期 Agent
-	WebUI      WebUIConfig      `mapstructure:"webui"` // 二期 Web UI
-	MCP        MCPConfig        `mapstructure:"mcp"`   // 二期 MCP 预留
+	Agent      AgentConfig      `mapstructure:"agent"`    // 二期 Agent
+	WebUI      WebUIConfig      `mapstructure:"webui"`    // 二期 Web UI
+	MCP        MCPConfig        `mapstructure:"mcp"`      // 二期 MCP 预留
 	Platform   PlatformConfig   `mapstructure:"platform"` // 四期平台静态启动基线（P6.12）
 }
 
@@ -168,6 +168,10 @@ type PlatformConfig struct {
 type PlatformServerConfig struct {
 	Addr string            `mapstructure:"addr"`
 	TLS  PlatformTLSConfig `mapstructure:"tls"`
+	// StaticEnabled 控制是否由本进程托管内嵌前端产物（P6.1/P6.11，D-26）：
+	// true = 形态 A 一体化（单端口同时提供 SPA 与 API）；false = 形态 B 纯 API
+	// （静态资源交给独立前端镜像/Nginx）。
+	StaticEnabled bool `mapstructure:"static_enabled"`
 }
 
 // PlatformTLSConfig 控制平台服务 HTTPS 监听。
@@ -177,12 +181,27 @@ type PlatformTLSConfig struct {
 	KeyFile  string `mapstructure:"key_file"`
 }
 
-// PlatformStoreConfig 控制平台持久化存储（本期仅 sqlite）。
+// PlatformStoreConfig 控制平台持久化存储（P6.1 / D-31）。
+// 主路径是 mysql（DSN 经 Secret 注入）；sqlite 作为单机/离线兜底，
+// 兜底时 sqlite_path 必须落在持久卷上，禁止使用容器可写层。
 type PlatformStoreConfig struct {
 	Driver     string `mapstructure:"driver"`
 	SQLitePath string `mapstructure:"sqlite_path"`
-	// DSN 预留：切换非 SQLite 驱动时的连接串，本期不消费。
+	// DSN 是 mysql 驱动的 go-sql-driver 连接串，必须带 parseTime=true
+	// （TIMESTAMP 需要扫描为 time.Time）。口令等敏感值只经环境变量/Secret 注入，
+	// 不写入配置文件与日志。
 	DSN string `mapstructure:"dsn"`
+}
+
+// 存储驱动取值（platform.store.driver）。
+const (
+	StoreDriverSQLite = "sqlite"
+	StoreDriverMySQL  = "mysql"
+)
+
+// IsMySQL 报告当前配置是否使用 MySQL 驱动（空值按兜底驱动 sqlite 处理）。
+func (p PlatformStoreConfig) IsMySQL() bool {
+	return strings.EqualFold(strings.TrimSpace(p.Driver), StoreDriverMySQL)
 }
 
 // PlatformAuthConfig 控制平台内建账号与登录会话参数。
@@ -305,10 +324,11 @@ func setDefaults(v *viper.Viper) {
 
 	// 四期平台静态启动基线（P6.12）。
 	v.SetDefault("platform.server.addr", ":8080")
+	v.SetDefault("platform.server.static_enabled", true)
 	v.SetDefault("platform.server.tls.enabled", false)
 	v.SetDefault("platform.server.tls.cert_file", "")
 	v.SetDefault("platform.server.tls.key_file", "")
-	v.SetDefault("platform.store.driver", "sqlite")
+	v.SetDefault("platform.store.driver", StoreDriverSQLite)
 	v.SetDefault("platform.store.sqlite_path", "~/.k8s-ai/k8s-ai.db")
 	v.SetDefault("platform.store.dsn", "")
 	v.SetDefault("platform.auth.admin_username", "admin")
@@ -496,8 +516,8 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// Validate 校验平台静态启动基线（P6.12）：监听地址、TLS 成对、
-// 存储驱动本期仅 sqlite、管理员账号、会话 Token 时长与存储。
+// Validate 校验平台静态启动基线（P6.12/P6.1）：监听地址、TLS 成对、
+// 存储驱动与连接参数、管理员账号、会话 Token 时长与存储。
 func (p PlatformConfig) Validate() error {
 	if strings.TrimSpace(p.Server.Addr) == "" {
 		return fmt.Errorf("platform.server.addr must not be empty")
@@ -508,12 +528,16 @@ func (p PlatformConfig) Validate() error {
 		}
 	}
 	switch p.Store.Driver {
-	case "", "sqlite":
+	case "", StoreDriverSQLite:
+		if strings.TrimSpace(p.Store.SQLitePath) == "" {
+			return fmt.Errorf("platform.store.sqlite_path must not be empty")
+		}
+	case StoreDriverMySQL:
+		if err := validateMySQLDSN(p.Store.DSN); err != nil {
+			return err
+		}
 	default:
-		return fmt.Errorf("platform.store.driver must be sqlite (mysql not supported this phase)")
-	}
-	if strings.TrimSpace(p.Store.SQLitePath) == "" {
-		return fmt.Errorf("platform.store.sqlite_path must not be empty")
+		return fmt.Errorf("platform.store.driver must be %s or %s", StoreDriverSQLite, StoreDriverMySQL)
 	}
 	if strings.TrimSpace(p.Auth.AdminUsername) == "" {
 		return fmt.Errorf("platform.auth.admin_username must not be empty")
@@ -527,6 +551,38 @@ func (p PlatformConfig) Validate() error {
 		return fmt.Errorf("platform.auth.session_store must be memory (persistent store not supported this phase)")
 	}
 	return nil
+}
+
+// validateMySQLDSN 校验 MySQL 连接串：非空且参数段带 parseTime=true。
+// go-sql-driver 的 DSN 不是 URL，不能整体交给 url.Parse；这里只按驱动
+// 约定切出 "/" 之后的参数段做键值校验，避免把口令当路径误解析。
+func validateMySQLDSN(dsn string) error {
+	dsn = strings.TrimSpace(dsn)
+	if dsn == "" {
+		return fmt.Errorf("platform.store.dsn must not be empty when platform.store.driver is %s", StoreDriverMySQL)
+	}
+	idx := strings.LastIndex(dsn, "/")
+	if idx < 0 {
+		return fmt.Errorf("platform.store.dsn must include a database name (user:pass@tcp(host:port)/dbname)")
+	}
+	dbName, params, hasParams := strings.Cut(dsn[idx+1:], "?")
+	if strings.TrimSpace(dbName) == "" {
+		return fmt.Errorf("platform.store.dsn must include a database name (user:pass@tcp(host:port)/dbname)")
+	}
+	if !hasParams {
+		return fmt.Errorf("platform.store.dsn must set parseTime=true (got no query parameters)")
+	}
+	for _, pair := range strings.Split(params, "&") {
+		k, v, _ := strings.Cut(pair, "=")
+		if !strings.EqualFold(strings.TrimSpace(k), "parseTime") {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true", "1":
+			return nil
+		}
+	}
+	return fmt.Errorf("platform.store.dsn must set parseTime=true")
 }
 
 // validateSecretAccess enforces the Phase 3 Secret channel gate (D-12/R4.7):

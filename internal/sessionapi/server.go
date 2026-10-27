@@ -18,6 +18,7 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/permission"
 	"github.com/k8s-ai/k8s-ai/internal/service"
 	"github.com/k8s-ai/k8s-ai/internal/session"
+	"github.com/k8s-ai/k8s-ai/internal/settings"
 	"github.com/k8s-ai/k8s-ai/internal/sse"
 	"github.com/k8s-ai/k8s-ai/internal/store"
 	"github.com/k8s-ai/k8s-ai/internal/tools"
@@ -469,6 +470,9 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	// 反向代理（Nginx 等）默认缓冲响应体，会把 SSE 攒成一段一段；显式关闭本响应的
+	// 缓冲，代理配置遗漏时也能正常推流（P6.11）。
+	w.Header().Set("X-Accel-Buffering", "no")
 	snapshot, _ := json.Marshal(map[string]any{
 		"type":      "history",
 		"sessionId": sess.ID,
@@ -568,6 +572,12 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		delete(s.pending, id)
 		delete(s.runs, id)
 		s.mu.Unlock()
+		if errors.Is(err, settings.ErrModelNotConfigured) {
+			// 模型未配置是配置态问题，不是服务端故障：409 + 原提示，前端据此引导去
+			// 配置中心「模型」分组，而不是报 500 让用户以为后端坏了（P6.1）。
+			writeError(w, http.StatusConflict, err)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}

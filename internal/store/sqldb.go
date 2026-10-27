@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -51,6 +52,36 @@ func newDBStore(db *sql.DB, d dialect) *dbStore {
 }
 
 func (s *dbStore) Close() error { return s.db.Close() }
+
+// Ping 校验数据库连通（P6.1 /readyz 判据之一）。
+func (s *dbStore) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
+
+// MigrationStatus 读 schema_migrations 已应用的最高版本；迁移表还不存在时视为
+// "未迁移"（applied=0 且无错误），两驱动共用。
+func (s *dbStore) MigrationStatus(ctx context.Context) (int, int, error) {
+	var applied sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&applied)
+	if err != nil {
+		if isMissingTable(err) {
+			return 0, schemaVersion, nil
+		}
+		return 0, schemaVersion, err
+	}
+	if !applied.Valid {
+		return 0, schemaVersion, nil
+	}
+	return int(applied.Int64), schemaVersion, nil
+}
+
+// isMissingTable 识别"表不存在"：SQLite 报 no such table，MySQL 报 1146。
+func isMissingTable(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := toLowerASCII(err.Error())
+	return containsFold(msg, "no such table") || containsFold(msg, "doesn't exist") ||
+		containsFold(msg, "1146")
+}
 
 func (s *dbStore) Users() UserStore             { return s.users }
 func (s *dbStore) Roles() RoleStore             { return s.roles }

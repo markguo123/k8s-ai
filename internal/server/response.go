@@ -25,6 +25,8 @@ const (
 	codeUnauthorized    = "unauthorized"
 	codeForbidden       = "forbidden"
 	codeInternal        = "internal_error"
+	// codeUnavailable 用于 /readyz 未就绪（P6.1）：依赖未到位，重试可能成功。
+	codeUnavailable = "service_unavailable"
 )
 
 // APIError 统一的错误对象。

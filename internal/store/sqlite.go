@@ -398,6 +398,14 @@ func (st *auditStore) List(ctx context.Context) ([]*AuditEvent, error) {
 
 // ---- Settings ----
 
+// settings 表列名清单。sensitive 在 MySQL 8.0 是保留字，裸写会让 SQL 直接 1064
+// （真机 MySQL 8.0.36 验证过），统一用反引号包裹：MySQL 原生支持，SQLite 也为兼容
+// MySQL 接受反引号标识符。读写共用这一份清单，避免某条语句漏引。
+const (
+	settingsSensitiveCol = "`sensitive`"
+	settingsColumns      = "group_name, key_name, value, " + settingsSensitiveCol + ", created_at, updated_at"
+)
+
 type settingsStore struct{ s *dbStore }
 
 func (st *settingsStore) Set(ctx context.Context, set *Settings) error {
@@ -407,9 +415,9 @@ func (st *settingsStore) Set(ctx context.Context, set *Settings) error {
 	}
 	set.UpdatedAt = now
 	_, err := st.s.db.ExecContext(ctx, st.s.dialect.upsert("settings",
-		[]string{"group_name", "key_name", "value", "sensitive", "created_at", "updated_at"},
+		[]string{"group_name", "key_name", "value", settingsSensitiveCol, "created_at", "updated_at"},
 		[]string{"group_name", "key_name"},
-		[]string{"value", "sensitive", "updated_at"}),
+		[]string{"value", settingsSensitiveCol, "updated_at"}),
 		set.Group, set.Key, set.Value, boolInt(set.Sensitive), set.CreatedAt, set.UpdatedAt)
 	return mapErr(err, "set setting")
 }
@@ -417,9 +425,8 @@ func (st *settingsStore) Set(ctx context.Context, set *Settings) error {
 func (st *settingsStore) Get(ctx context.Context, group, key string) (*Settings, error) {
 	set := &Settings{}
 	var sensitive int
-	err := st.s.db.QueryRowContext(ctx, `
-		SELECT group_name, key_name, value, sensitive, created_at, updated_at
-		FROM settings WHERE group_name=? AND key_name=?`, group, key).
+	err := st.s.db.QueryRowContext(ctx, "SELECT "+settingsColumns+
+		" FROM settings WHERE group_name=? AND key_name=?", group, key).
 		Scan(&set.Group, &set.Key, &set.Value, &sensitive, &set.CreatedAt, &set.UpdatedAt)
 	if err != nil {
 		return nil, mapErr(err, "get setting")
@@ -429,9 +436,8 @@ func (st *settingsStore) Get(ctx context.Context, group, key string) (*Settings,
 }
 
 func (st *settingsStore) ListByGroup(ctx context.Context, group string) ([]*Settings, error) {
-	rows, err := st.s.db.QueryContext(ctx, `
-		SELECT group_name, key_name, value, sensitive, created_at, updated_at
-		FROM settings WHERE group_name=? ORDER BY key_name`, group)
+	rows, err := st.s.db.QueryContext(ctx, "SELECT "+settingsColumns+
+		" FROM settings WHERE group_name=? ORDER BY key_name", group)
 	if err != nil {
 		return nil, fmt.Errorf("list settings: %w", err)
 	}

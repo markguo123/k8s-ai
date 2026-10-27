@@ -8,3 +8,12 @@ docs/
 !README.md
 Dockerfile
 Makefile
+# 前端产物只来自镜像内的 node 阶段（D-30：构建可复现），本机 dist 不进上下文。
+web/dist
+**/node_modules
+web/coverage
+web/.visual
+web/.eslintcache
+# 代理/工具目录与本地调试配置不参与镜像构建（运行时配置由 ConfigMap/Secret 注入）。
+.agents/
+*.local.yaml

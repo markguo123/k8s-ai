@@ -82,7 +82,7 @@ func (d sqliteDialect) createTable(t tableSpec) string {
 		defs = append(defs, "  "+renderSQLiteColumn(c))
 	}
 	if len(t.primaryKey) > 0 {
-		defs = append(defs, "  PRIMARY KEY ("+strings.Join(t.primaryKey, ", ")+")")
+		defs = append(defs, "  PRIMARY KEY ("+strings.Join(quoteIdents(t.primaryKey), ", ")+")")
 	}
 	return fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (\n%s\n);", t.name, strings.Join(defs, ",\n"))
 }
@@ -121,6 +121,20 @@ func (sqliteDialect) isDuplicateColumnErr(err error) bool {
 	return containsFold(err.Error(), "duplicate column name")
 }
 
+// quoteIdent 用反引号包裹标识符。SQLite 和 MySQL 都接受反引号形式的标识符引用，
+// 统一加引号后列名不再受 MySQL 保留字表影响：settings.sensitive 在 MySQL 8.0 是
+// 保留字，裸写会让建表直接 1064（真机集成测试 TestStoresMySQL 覆盖）。
+func quoteIdent(name string) string { return "`" + name + "`" }
+
+// quoteIdents 批量包裹标识符，用于表级主键声明。
+func quoteIdents(names []string) []string {
+	out := make([]string, len(names))
+	for i, n := range names {
+		out[i] = quoteIdent(n)
+	}
+	return out
+}
+
 func renderSQLiteColumn(c column) string {
 	var typ string
 	switch c.kind {
@@ -133,7 +147,7 @@ func renderSQLiteColumn(c column) string {
 	case colTime, colTimeOrNull:
 		typ = "TIMESTAMP"
 	}
-	s := c.name + " " + typ
+	s := quoteIdent(c.name) + " " + typ
 	if c.autoIncrement {
 		return s + " PRIMARY KEY AUTOINCREMENT"
 	}
@@ -163,7 +177,7 @@ func (d mysqlDialect) createTable(t tableSpec) string {
 		defs = append(defs, "  "+renderMySQLColumn(c))
 	}
 	if len(t.primaryKey) > 0 {
-		defs = append(defs, "  PRIMARY KEY ("+strings.Join(t.primaryKey, ", ")+")")
+		defs = append(defs, "  PRIMARY KEY ("+strings.Join(quoteIdents(t.primaryKey), ", ")+")")
 	}
 	return fmt.Sprintf(
 		"CREATE TABLE IF NOT EXISTS %s (\n%s\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;",
@@ -225,11 +239,14 @@ func renderMySQLColumn(c column) string {
 	case colBool:
 		typ = "TINYINT(1)"
 	case colTime:
-		typ = "TIMESTAMP"
+		// 带 3 位小数秒：MySQL 的 TIMESTAMP 默认精度是 0，会把 SQLite 能保留的
+		// 毫秒直接截掉，同一秒内的 audit/turn/step 顺序就会退化（真机 MySQL 8.0.36
+		// 集成测试里 expires_at 往返失败暴露）。两个引擎统一到毫秒精度。
+		typ = "TIMESTAMP(3)"
 	case colTimeOrNull:
-		typ = "TIMESTAMP NULL"
+		typ = "TIMESTAMP(3) NULL"
 	}
-	s := c.name + " " + typ
+	s := quoteIdent(c.name) + " " + typ
 	if c.autoIncrement {
 		return s + " AUTO_INCREMENT PRIMARY KEY"
 	}

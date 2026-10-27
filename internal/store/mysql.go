@@ -4,7 +4,8 @@ import (
 	"database/sql"
 	"fmt"
 
-	_ "github.com/go-sql-driver/mysql"
+	// 同时注册驱动与供 RedactDSN 解析连接串。
+	"github.com/go-sql-driver/mysql"
 )
 
 // OpenMySQL 打开 MySQL 数据库并返回 Store（D-04 可选驱动）。业务与迁移逻辑
@@ -27,4 +28,18 @@ func OpenMySQL(dsn string) (Store, error) {
 		return nil, fmt.Errorf("ping mysql: %w", err)
 	}
 	return s, nil
+}
+
+// RedactDSN 返回可以安全写进日志的 MySQL 连接串（P6.1）：只保留用户、网络地址
+// 与库名，口令一律不落日志。解析失败时返回固定占位，绝不回显原始串。
+func RedactDSN(dsn string) string {
+	cfg, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		return "<unparseable mysql dsn>"
+	}
+	net := cfg.Net
+	if net == "" {
+		net = "tcp"
+	}
+	return fmt.Sprintf("%s@%s(%s)/%s", cfg.User, net, cfg.Addr, cfg.DBName)
 }

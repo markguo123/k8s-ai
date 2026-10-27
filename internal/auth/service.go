@@ -176,12 +176,13 @@ func (s *Service) Bootstrap(ctx context.Context, adminPassword string) error {
 // BootstrapWithName 与 Bootstrap 等价，但允许调用方指定首个管理员用户名
 // （P6.12：读取 platform.auth.admin_username 配置，为空回落默认 admin）。
 // 已有用户时不会重建或重命名管理员，但会修复三角色定义。
+//
+// 首启判定以 users 表为准（P6.1 / U-09）：库里已有用户就不再要求
+// K8S_AI_ADMIN_PASSWORD，已有库重启无需口令；只有空库首次引导才要求口令，
+// 缺口令时启动失败（不允许悄悄建一个空口令管理员）。
 func (s *Service) BootstrapWithName(ctx context.Context, adminUsername, adminPassword string) error {
 	if strings.TrimSpace(adminUsername) == "" {
 		adminUsername = DefaultAdminUsername
-	}
-	if strings.TrimSpace(adminPassword) == "" {
-		return errors.New("auth: bootstrap admin password must not be empty")
 	}
 	existing, err := s.users.List(ctx)
 	if err != nil {
@@ -189,6 +190,9 @@ func (s *Service) BootstrapWithName(ctx context.Context, adminUsername, adminPas
 	}
 	if len(existing) > 0 {
 		return s.reconcileRoles(ctx)
+	}
+	if strings.TrimSpace(adminPassword) == "" {
+		return errors.New("auth: first start requires an admin password (set K8S_AI_ADMIN_PASSWORD)")
 	}
 	now := s.now().UTC()
 	roleIDs := map[string]string{}

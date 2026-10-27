@@ -25,6 +25,9 @@ var (
 	ErrInvalid = errors.New("settings: invalid setting")
 	// ErrCipherRequired 写入包含敏感键但未装配静态加密器（P3.9）。
 	ErrCipherRequired = errors.New("settings: encryption cipher is required for sensitive keys")
+	// ErrModelNotConfigured 表示模型接入既无配置中心取值、也无环境变量覆盖，
+	// 生效值只剩内置默认端点与默认模型名（P6.1）。Chat 直接报错，不再静默连本地默认地址。
+	ErrModelNotConfigured = errors.New("settings: model is not configured")
 )
 
 // SecretCipher 是敏感配置值的静态加密接口（P3.9）：
@@ -66,6 +69,9 @@ type Item struct {
 	Source    string          `json:"source,omitempty"`
 	Desc      string          `json:"desc,omitempty"`
 	UpdatedAt *time.Time      `json:"updatedAt,omitempty"`
+	// EnvOverride 非空表示该键当前由部署期环境变量提供（D-29）：值以部署方为准，
+	// 页面写入只落 DB，并由前端提示"当前被环境变量覆盖"。
+	EnvOverride string `json:"envOverride,omitempty"`
 }
 
 // GroupView 是一个配置分组的读取结果。
@@ -79,6 +85,8 @@ type GroupView struct {
 type Service struct {
 	store  store.Store
 	cipher SecretCipher
+	// envLookup 是部署期环境变量覆盖的查找函数（D-29）；nil 时用 os.LookupEnv。
+	envLookup func(string) (string, bool)
 }
 
 // New 创建配置服务。
@@ -104,8 +112,18 @@ func (s *Service) GetGroup(ctx context.Context, group string) (*GroupView, error
 		byKey[item.Key] = item
 	}
 	view := &GroupView{Group: group, EncryptionAvailable: s.cipher != nil}
+	overrides := s.ActiveEnvOverrides()
 	for _, def := range catalog[group] {
-		view.Items = append(view.Items, renderItem(def, byKey[def.Key]))
+		item := renderItem(def, byKey[def.Key])
+		if env, ok := overrides[envKey(group, def.Key)]; ok {
+			// 部署期覆盖：页面标注来源并视为已配置，但值由部署方掌握，不回显。
+			item.EnvOverride = env
+			item.HasValue = true
+			if def.Sensitive {
+				item.Value = json.RawMessage("null")
+			}
+		}
+		view.Items = append(view.Items, item)
 	}
 	return view, nil
 }
@@ -314,23 +332,63 @@ func (s *Service) ImportConfig(ctx context.Context, cfg *config.Config) (ImportS
 	return summary, nil
 }
 
-// LoadRuntimeConfig 把配置中心的动态分组叠加到启动基线 config 上（P6.12）。
+// LoadRuntimeConfig 把动态配置叠加到启动基线 config 上（P6.12 / P6.1）。
 //
-// 口径：config.yaml 只供静态/平台参数作为启动基线；运行时组件（chat/llm/
-// agent/scan）统一从这里读取动态配置。本方法以 base（已 Load 的文件 + 默认值）
-// 为底，把 7 个动态分组中“有 Source（对应 config 路径）且已配置”的键回写到
-// config.Config 上；敏感键（api_key/kubeconfig/mcp servers）在叠加前解密，
-// 若已配置敏感值但服务未装配 SecretCipher，则整批返回 ErrCipherRequired，绝不
-// 以明文或半解密状态进入运行时。
+// 口径：config.yaml 只供静态与平台参数作为启动基线；运行时组件（chat/llm/
+// agent/scan）统一从这里取动态配置。叠加顺序由低到高是：文件与内置默认 <
+// DB settings < 环境变量白名单覆盖（D-29）。DB 是动态键的默认唯一权威源与唯一
+// 写入目标，环境变量只是部署期只读覆盖、不回写 DB。敏感键（api_key/kubeconfig/
+// mcp servers）在叠加前解密；已配置敏感值但未装配 SecretCipher 时整批返回
+// ErrCipherRequired，绝不以明文或半解密状态进入运行时。
 func (s *Service) LoadRuntimeConfig(ctx context.Context, base *config.Config) (*config.Config, error) {
-	raw, err := configValues(base)
+	cfg, _, err := s.loadRuntime(ctx, base)
+	return cfg, err
+}
+
+// ChatRuntimeConfig 是给 Chat/LLM 使用的运行时生效配置（P6.1）：在
+// LoadRuntimeConfig 之上再加一道"模型是否已配置"的门禁。
+//
+// 门禁口径：配置中心已存值或环境变量覆盖算"已配置"。文件里的 llm.endpoint 与
+// 内置默认在 Load 之后无法区分，因此把"生效端点与模型名同时等于目录默认值"判定为
+// 未配置并返回 ErrModelNotConfigured——容器里首次启动没配模型时必须明确报错，
+// 不允许静默去连本地默认地址。
+func (s *Service) ChatRuntimeConfig(ctx context.Context, base *config.Config) (*config.Config, error) {
+	cfg, configured, err := s.loadRuntime(ctx, base)
 	if err != nil {
 		return nil, err
 	}
+	if s.modelExplicitlyConfigured(configured, cfg) {
+		return cfg, nil
+	}
+	return nil, fmt.Errorf("%w: 请在配置中心「模型」分组设置接口地址与模型名，或部署时注入 K8S_AI_LLM_ENDPOINT / K8S_AI_LLM_MODEL", ErrModelNotConfigured)
+}
+
+// modelExplicitlyConfigured 判定模型接入是否已被显式配置。
+func (s *Service) modelExplicitlyConfigured(configured map[string]bool, cfg *config.Config) bool {
+	if configured[envKey(GroupModel, "base_url")] || configured[envKey(GroupModel, "model")] {
+		return true
+	}
+	defURL, err1 := lookup(GroupModel, "base_url")
+	defModel, err2 := lookup(GroupModel, "model")
+	if err1 != nil || err2 != nil {
+		return true // 目录缺失属异常配置，不在这里拦截对话
+	}
+	defEndpoint, _ := defURL.Default.(string)
+	defModelName, _ := defModel.Default.(string)
+	return cfg.LLM.Endpoint != defEndpoint || cfg.LLM.Model != defModelName
+}
+
+// loadRuntime 执行分层叠加，并回报"哪些动态键被显式配置过"（DB 存值或 env 覆盖）。
+func (s *Service) loadRuntime(ctx context.Context, base *config.Config) (*config.Config, map[string]bool, error) {
+	raw, err := configValues(base)
+	if err != nil {
+		return nil, nil, err
+	}
+	configured := map[string]bool{}
 	for _, group := range Groups() {
 		stored, err := s.store.Settings().ListByGroup(ctx, group)
 		if err != nil {
-			return nil, fmt.Errorf("list settings %s: %w", group, err)
+			return nil, nil, fmt.Errorf("list settings %s: %w", group, err)
 		}
 		for _, item := range stored {
 			def, lerr := lookup(group, item.Key)
@@ -345,10 +403,22 @@ func (s *Service) LoadRuntimeConfig(ctx context.Context, base *config.Config) (*
 			}
 			decoded, derr := decodeStored(def, item.Value, s.cipher)
 			if derr != nil {
-				return nil, fmt.Errorf("decode %s.%s: %w", group, item.Key, derr)
+				return nil, nil, fmt.Errorf("decode %s.%s: %w", group, item.Key, derr)
 			}
 			applyPath(raw, def.Source, decoded)
+			configured[envKey(group, item.Key)] = true
 		}
+	}
+	// 环境变量白名单最后叠加：部署期只读覆盖，优先级最高（D-29）。
+	envByPath, envConfigured, err := s.envOverrideValues()
+	if err != nil {
+		return nil, nil, err
+	}
+	for path, value := range envByPath {
+		applyPath(raw, path, value)
+	}
+	for key := range envConfigured {
+		configured[key] = true
 	}
 	var out config.Config
 	dec, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
@@ -356,15 +426,15 @@ func (s *Service) LoadRuntimeConfig(ctx context.Context, base *config.Config) (*
 		Result:     &out,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("build runtime config decoder: %w", err)
+		return nil, nil, fmt.Errorf("build runtime config decoder: %w", err)
 	}
 	if err := dec.Decode(raw); err != nil {
-		return nil, fmt.Errorf("decode runtime config: %w", err)
+		return nil, nil, fmt.Errorf("decode runtime config: %w", err)
 	}
 	if err := out.Validate(); err != nil {
-		return nil, fmt.Errorf("validate runtime config: %w", err)
+		return nil, nil, fmt.Errorf("validate runtime config: %w", err)
 	}
-	return &out, nil
+	return &out, configured, nil
 }
 
 // decodeStored 把 Store 里的一条配置值解码成可回写 config 的 Go 值。

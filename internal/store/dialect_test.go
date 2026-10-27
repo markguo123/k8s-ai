@@ -8,22 +8,22 @@ import (
 func TestSQLiteDialectRendersSchema(t *testing.T) {
 	d := sqliteDialect{}
 	users := d.createTable(schemaV1[1])
-	if !strings.Contains(users, "username TEXT NOT NULL UNIQUE") {
+	if !strings.Contains(users, "`username` TEXT NOT NULL UNIQUE") {
 		t.Fatalf("sqlite users should use TEXT UNIQUE: %s", users)
 	}
 	if strings.Contains(users, "VARCHAR") {
 		t.Fatalf("sqlite must not render VARCHAR: %s", users)
 	}
 	audit := d.createTable(schemaV1[3])
-	if !strings.Contains(audit, "id INTEGER PRIMARY KEY AUTOINCREMENT") {
+	if !strings.Contains(audit, "`id` INTEGER PRIMARY KEY AUTOINCREMENT") {
 		t.Fatalf("sqlite audit id must autoincrement: %s", audit)
 	}
 	settings := d.createTable(schemaV1[4])
-	if !strings.Contains(settings, "PRIMARY KEY (group_name, key_name)") {
+	if !strings.Contains(settings, "PRIMARY KEY (`group_name`, `key_name`)") {
 		t.Fatalf("sqlite settings needs composite pk: %s", settings)
 	}
 	turns := d.createTable(schemaV2[0])
-	if !strings.Contains(turns, "id TEXT NOT NULL PRIMARY KEY") {
+	if !strings.Contains(turns, "`id` TEXT NOT NULL PRIMARY KEY") {
 		t.Fatalf("sqlite turns id should be text primary: %s", turns)
 	}
 	if strings.Contains(turns, "VARCHAR") {
@@ -45,7 +45,7 @@ func TestSQLiteDialectRendersSchema(t *testing.T) {
 func TestMySQLDialectRendersSchema(t *testing.T) {
 	d := mysqlDialect{}
 	users := d.createTable(schemaV1[1])
-	if !strings.Contains(users, "username VARCHAR(191) NOT NULL UNIQUE") {
+	if !strings.Contains(users, "`username` VARCHAR(191) NOT NULL UNIQUE") {
 		t.Fatalf("mysql users should use VARCHAR unique: %s", users)
 	}
 	if !strings.Contains(users, "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4") {
@@ -64,14 +64,14 @@ func TestMySQLDialectRendersSchema(t *testing.T) {
 		}
 	}
 	audit := d.createTable(schemaV1[3])
-	if !strings.Contains(audit, "id INTEGER AUTO_INCREMENT PRIMARY KEY") {
+	if !strings.Contains(audit, "`id` INTEGER AUTO_INCREMENT PRIMARY KEY") {
 		t.Fatalf("mysql audit id should auto_increment: %s", audit)
 	}
 	settings := d.createTable(schemaV1[4])
-	if !strings.Contains(settings, "PRIMARY KEY (group_name, key_name)") {
+	if !strings.Contains(settings, "PRIMARY KEY (`group_name`, `key_name`)") {
 		t.Fatalf("mysql settings needs composite pk: %s", settings)
 	}
-	if !strings.Contains(settings, "sensitive TINYINT(1) NOT NULL DEFAULT 0") {
+	if !strings.Contains(settings, "`sensitive` TINYINT(1) NOT NULL DEFAULT 0") {
 		t.Fatalf("mysql bool column should be tinyint(1): %s", settings)
 	}
 	if strings.Contains(d.createIndex("idx_x", "t", "c"), "IF NOT EXISTS") {
@@ -103,6 +103,57 @@ func TestMySQLDialectDetectsDuplicateKey(t *testing.T) {
 	}
 	if !isUniqueViolation(errInexact("UNIQUE constraint failed: users.username")) {
 		t.Fatalf("should map sqlite unique violation to ErrExists")
+	}
+}
+
+// TestDialectQuotesColumnIdentifiers 锁住真机踩过的坑：MySQL 8.0.36 把 sensitive 当
+// 保留字，裸列名建表直接 1064，整套 MySQL 迁移在第一步就断。DDL 因此一律用反引号
+// 包裹标识符（SQLite 为兼容 MySQL 也接受反引号），CRUD SQL 里的 sensitive 走带引号的
+// 列清单常量。这里全量扫一遍 schema，新增列忘引号会立刻红。
+func TestDialectQuotesColumnIdentifiers(t *testing.T) {
+	versions := [][]tableSpec{schemaV1, schemaV2, schemaV4}
+	for _, d := range []dialect{sqliteDialect{}, mysqlDialect{}} {
+		for _, tables := range versions {
+			for _, tbl := range tables {
+				ddl := d.createTable(tbl)
+				for _, c := range tbl.cols {
+					want := quoteIdent(c.name)
+					if !strings.Contains(ddl, want) {
+						t.Fatalf("%s 表 %s 的列 %s 未加引号（应含 %s）: %s", d.name(), tbl.name, c.name, want, ddl)
+					}
+				}
+			}
+		}
+	}
+	// CRUD 侧：settings 读写必须用带引号的 sensitive。
+	if !strings.Contains(settingsColumns, settingsSensitiveCol) {
+		t.Fatalf("settings 列清单未引用带引号的 sensitive: %s", settingsColumns)
+	}
+}
+
+// TestMySQLTimeColumnsKeepMillisecondPrecision 锁 MySQL 时间列精度：TIMESTAMP 默认
+// 精度 0 会截掉 SQLite 保留的毫秒，同一份 CRUD 契约在两个驱动上行为就不一致了
+// （真机上 expires_at 毫秒丢失就是这么暴露的）。
+func TestMySQLTimeColumnsKeepMillisecondPrecision(t *testing.T) {
+	d := mysqlDialect{}
+	for _, tables := range [][]tableSpec{schemaV1, schemaV2, schemaV4} {
+		for _, tbl := range tables {
+			ddl := d.createTable(tbl)
+			for _, c := range tbl.cols {
+				switch c.kind {
+				case colTime:
+					want := quoteIdent(c.name) + " TIMESTAMP(3) NOT NULL"
+					if !strings.Contains(ddl, want) {
+						t.Fatalf("表 %s 时间列应保留毫秒（期望含 %s）: %s", tbl.name, want, ddl)
+					}
+				case colTimeOrNull:
+					want := quoteIdent(c.name) + " TIMESTAMP(3) NULL"
+					if !strings.Contains(ddl, want) {
+						t.Fatalf("表 %s 可空时间列应保留毫秒（期望含 %s）: %s", tbl.name, want, ddl)
+					}
+				}
+			}
+		}
 	}
 }
 

@@ -84,6 +84,10 @@ func permissionGate(enforcer *permission.Enforcer, resolve principalResolver, ne
 		access, required, registered := enforcer.Policy().RequireAccess(r.Method, r.URL.Path)
 		if !registered {
 			if isAPIRequest(r.URL.Path) {
+				// 未被访问策略登记的 API 路径一律在网关处拒绝（deny-by-default 不放松，
+				// 状态码沿用三期能力基线 tests/platform 锁定的 403）。P6.11 要锁的是
+				// "必须是统一 JSON 错误体"：/api/v1/* 由 newRootHandler 全量送进平台 API，
+				// 永远不可能落到 SPA fallback 变成 index.html。
 				writeError(w, r, http.StatusForbidden, codeForbidden, "endpoint not covered by access policy")
 				return
 			}

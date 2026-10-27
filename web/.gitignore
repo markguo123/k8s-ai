@@ -1,5 +1,8 @@
 node_modules
-dist
+# dist 内容由前端构建产出、不入库，但目录本身必须存在于干净检出，
+# 否则 go:embed all:dist 编译失败（P6.11 / D-30）。
+dist/*
+!dist/.gitkeep
 dist-ssr
 coverage
 .visual

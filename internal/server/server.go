@@ -57,10 +57,17 @@ type Server struct {
 	// authzSvc 是授权面应用服务（P3.11），nil 时 grants/tokens 端点返回 501。
 	authzSvc authzService
 	perms    *permission.Enforcer
-	mu       sync.Mutex
-	jobs     map[string]*ScanJob
-	running  bool
+	// ready 是就绪探针回调（P6.1）：由组合根注入 store 连通 + 迁移完成判定。
+	// nil 时按"进程活着即可用"处理，与一期行为一致。
+	ready   ReadinessCheck
+	mu      sync.Mutex
+	jobs    map[string]*ScanJob
+	running bool
 }
+
+// ReadinessCheck 报告服务是否可以接活（P6.1 /readyz 判据）。返回的 error 文本
+// 会出现在探针响应里，用于直接从 kubectl 看出未就绪原因（迁移未完成、存储不可写等）。
+type ReadinessCheck func(context.Context) error
 
 // New 创建服务（注入 ScanService）。
 func New(svc service.ScanService) *Server {
@@ -84,6 +91,12 @@ func NewWithPlatform(svc service.ScanService, auth authService, settingsSvc sett
 	s := NewWithAuth(svc, auth)
 	s.settings = settingsSvc
 	s.auditlog = audit
+	return s
+}
+
+// WithReadiness 注入就绪探针判定（P6.1）。链式可选，不破坏既有构造器签名。
+func (s *Server) WithReadiness(fn ReadinessCheck) *Server {
+	s.ready = fn
 	return s
 }
 
@@ -166,6 +179,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/skills/import-procedural", s.handleImportProceduralDocs)
 	mux.HandleFunc("POST /api/v1/skills/import-zip", s.handleImportProceduralZip)
 	mux.HandleFunc("PATCH /api/v1/skills/{name}/enabled", s.handlePatchSkillEnabled)
+	// 未登记的 /api/v1/* 一律回统一 JSON 错误体，不能被 SPA fallback 吞成 index.html
+	// （P6.11：前端拿到 HTML 会比 404 更难排查）。
+	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		mux.HandleFunc(method+" /api/v1/{path...}", s.handleAPINotFound)
+	}
 	return WithMiddleware(mux, DefaultCORS(), s.perms, s.principal)
 }
 
@@ -183,9 +201,26 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
-	// 无外部依赖；服务可运行即就绪。
+	if s.ready == nil {
+		// 未注入判据（例如纯 API 测试装配）：进程可运行即就绪。
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if err := s.ready(ctx); err != nil {
+		// 只回原因摘要，不外泄连接串等细节；细节在启动日志里。
+		writeError(w, r, http.StatusServiceUnavailable, codeUnavailable, err.Error())
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
+}
+
+// handleAPINotFound 处理未登记的 API 路径（P6.11）。
+func (s *Server) handleAPINotFound(w http.ResponseWriter, r *http.Request) {
+	writeError(w, r, http.StatusNotFound, codeNotFound, "unknown API path: "+r.Method+" "+r.URL.Path)
 }
 
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {

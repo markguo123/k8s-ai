@@ -28,6 +28,7 @@ func NewRootCmd(deps Dependencies) *cobra.Command {
 	root.PersistentFlags().String("config", "", "config file (default ~/.k8s-ai/config.yaml)")
 	root.AddCommand(newVersionCmd(deps))
 	root.AddCommand(newMigrateCmd(deps))
+	root.AddCommand(newDBCmd(deps))
 	root.AddCommand(newConfigCmd(deps))
 	root.AddCommand(newScanCmd(deps))
 	root.AddCommand(newChatCmd(deps))

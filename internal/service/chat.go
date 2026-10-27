@@ -134,6 +134,19 @@ type SkillPlatformBinder interface {
 	SetSkillPlatform(p *SkillPlatform)
 }
 
+// RuntimeConfigResolver 解析一轮对话的生效配置（P6.1 / D-29）。实现方按
+// "环境变量白名单覆盖 > DB settings > 文件与内置默认"的顺序叠加，并在模型未配置时
+// 返回明确错误。
+type RuntimeConfigResolver func(ctx context.Context) (*config.Config, error)
+
+// RuntimeConfigBinder 是 ChatService 的可选能力（P6.1）：注入运行时配置解析器后，
+// 每轮 Chat 的工具装配、审批策略、LLM 参数与 Agent 限额都按配置中心当前值生效，
+// 配置页面改完下一轮立即生效，不需要重启进程。未注入时沿用启动基线（CLI 直用仍走
+// config.yaml）。单独成接口是为了不让既有聊天测试桩背负配置中心依赖。
+type RuntimeConfigBinder interface {
+	SetRuntimeConfigResolver(RuntimeConfigResolver)
+}
+
 type chatService struct {
 	cfg            *config.Config
 	sessions       *session.Manager
@@ -152,6 +165,8 @@ type chatService struct {
 	// sink 非空时把统一 SSE 事件（P1.9 事件路由）实时广播给会话客户端；
 	// 三期 ChatEvent 事件流原样保留（D-08：迁移期旧事件继续可消费）。
 	sink func(sse.Event)
+	// resolveCfg 非空时每轮 Chat 用它取生效配置（P6.1，配置中心 + env 覆盖）。
+	resolveCfg RuntimeConfigResolver
 }
 
 // NewChat 创建二期 Agent 服务。
@@ -206,6 +221,24 @@ func NewChatWithStoreAndSink(cfg *config.Config, newReader func() (scanner.Reade
 	svc := newChat(cfg, newReader, llmFactory, scanFactory, newWriteRunner, st).(*chatService)
 	svc.sink = sink
 	return svc
+}
+
+// SetRuntimeConfigResolver 实现 RuntimeConfigBinder（P6.1）。
+func (s *chatService) SetRuntimeConfigResolver(fn RuntimeConfigResolver) { s.resolveCfg = fn }
+
+// effectiveConfig 返回本轮 Chat 的生效配置。装配了解析器时以其结果为准，解析失败
+// 直接向上报错——绝不静默回落到启动基线或内置默认模型地址（P6.1 验收口径）。
+// 生效范围是一轮 Chat 的装配面（工具/审批/LLM/Agent 限额）；会话默认 context 与
+// 三期审计目录属静态启动参数，仍沿用启动基线。
+func (s *chatService) effectiveConfig(ctx context.Context) (*config.Config, error) {
+	if s.resolveCfg == nil {
+		return s.cfg, nil
+	}
+	cfg, err := s.resolveCfg(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return cfg, nil
 }
 
 // SetSkillPlatform 挂载 Skill 平台底座（P3.8）：导入/启停后 create_resource 的
@@ -358,6 +391,11 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 	if req.UserID != "" && !req.AllowAnySession && sess.UserID != req.UserID {
 		return nil, fmt.Errorf("%w: session %s", session.ErrForbidden, req.SessionID)
 	}
+	// P6.1：本轮装配统一用生效配置，配置中心改模型后下一轮立即生效。
+	cfg, err := s.effectiveConfig(ctx)
+	if err != nil {
+		return nil, err
+	}
 	reader, err := s.newReader()
 	if err != nil {
 		return nil, err
@@ -369,7 +407,7 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 		return nil, err
 	}
 	// 诊断 Tool 复用一期 ScanService（P3）。
-	for _, dt := range tools.NewDiagnosisTools(s.scanFactory(), chatScanOptions(s.cfg)) {
+	for _, dt := range tools.NewDiagnosisTools(s.scanFactory(), chatScanOptions(cfg)) {
 		if err := reg.Register(dt); err != nil {
 			return nil, err
 		}
@@ -389,9 +427,9 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 	// liveReg 复用于 create_resource 的 Skill registry 与 procedural 意图检索，
 	// 保证导入/启停即时生效两端一致。
 	liveReg := s.liveSkillRegistry()
-	if s.cfg.Agent.Create.Enabled {
+	if cfg.Agent.Create.Enabled {
 		if runner, ok := writeRunner.(tools.CreateRunner); ok {
-			opts := createToolOptions(s.cfg)
+			opts := createToolOptions(cfg)
 			opts.Skills = liveReg
 			opts.OnSkillRun = s.skillRunAuditor(ctx, sess, scope)
 			if err := reg.Register(tools.NewCreateTool(opts, runner, s.proposals, sess.ID)); err != nil {
@@ -406,15 +444,15 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 			return nil, err
 		}
 	}
-	for _, name := range s.cfg.Agent.DisabledTools {
+	for _, name := range cfg.Agent.DisabledTools {
 		reg.Remove(strings.TrimSpace(name))
 	}
 	events := make(chan ChatEvent, 64)
 	pol := approval.Policy{
-		Mode:            approval.Mode(s.cfg.Agent.ApprovalMode),
-		RequireApproval: s.cfg.Agent.RequireApproval,
-		SkipPermissions: req.SkipPermissions || s.cfg.Agent.SkipPermissions,
-		DenyOps:         s.cfg.Agent.DenyOps,
+		Mode:            approval.Mode(cfg.Agent.ApprovalMode),
+		RequireApproval: cfg.Agent.RequireApproval,
+		SkipPermissions: req.SkipPermissions || cfg.Agent.SkipPermissions,
+		DenyOps:         cfg.Agent.DenyOps,
 	}
 	// P1.9: 生命周期观察器同时负责 Store 持久化与统一事件广播，approver 复用同一
 	// runScope 给 approval.required 补全关联字段。
@@ -426,15 +464,15 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 		scope:   scope,
 	}
 	client := s.llmFactory(llm.Options{
-		Endpoint:        s.cfg.LLM.Endpoint,
-		APIKey:          s.cfg.LLM.APIKey,
-		Model:           s.cfg.LLM.Model,
-		Temperature:     s.cfg.LLM.Temperature,
-		MaxTokens:       s.cfg.LLM.MaxTokens,
-		Timeout:         s.cfg.LLM.Timeout,
-		Thinking:        s.cfg.LLM.Thinking,
-		ReasoningFields: s.cfg.LLM.ReasoningFields,
-		DisableStream:   !s.cfg.LLM.Stream, // llm.stream=false：ChatStream 退化为非流式
+		Endpoint:        cfg.LLM.Endpoint,
+		APIKey:          cfg.LLM.APIKey,
+		Model:           cfg.LLM.Model,
+		Temperature:     cfg.LLM.Temperature,
+		MaxTokens:       cfg.LLM.MaxTokens,
+		Timeout:         cfg.LLM.Timeout,
+		Thinking:        cfg.LLM.Thinking,
+		ReasoningFields: cfg.LLM.ReasoningFields,
+		DisableStream:   !cfg.LLM.Stream, // llm.stream=false：ChatStream 退化为非流式
 	})
 	recorder := s.newAuditRecorder(sess, scope)
 	// P1.9: 会话创建即广播 session.created；后续 Turn/Step 生命周期由 Tracer 转发。
@@ -460,13 +498,13 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 		Recorder:       recorder,
 		Tracer:         tracer,
 		SkillContext:   skillCtx,
-		MaxIterations:  s.cfg.Agent.MaxIterations,
-		MaxToolCalls:   s.cfg.Agent.MaxToolCalls,
-		Timeout:        s.cfg.Agent.Timeout,
-		ToolCalling:    s.cfg.Agent.ToolCalling,
-		ResultMaxBytes: s.cfg.Agent.ResultMaxBytes,
-		TurnMaxBytes:   s.cfg.Agent.TurnMaxBytes,
-		HistoryTurns:   s.cfg.Agent.HistoryTurns,
+		MaxIterations:  cfg.Agent.MaxIterations,
+		MaxToolCalls:   cfg.Agent.MaxToolCalls,
+		Timeout:        cfg.Agent.Timeout,
+		ToolCalling:    cfg.Agent.ToolCalling,
+		ResultMaxBytes: cfg.Agent.ResultMaxBytes,
+		TurnMaxBytes:   cfg.Agent.TurnMaxBytes,
+		HistoryTurns:   cfg.Agent.HistoryTurns,
 		TurnUserID:     req.UserID,
 		AccessScope:    req.AccessScope,
 	})
