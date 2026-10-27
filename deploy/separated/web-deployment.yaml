@@ -1,0 +1,78 @@
+# 前端静态镜像 Deployment（P6.2 形态 B 专用，形态 A 不需要本文件）。
+#
+# 形态 B 下前端由独立 Nginx 镜像托管 web/dist，后端只留 API（见
+# deploy/separated/deployment.yaml）；前后端各自发布与回滚。
+# 镜像构建：docker build -f deploy/separated/web.Dockerfile -t k8s-ai-web:<TAG> .
+#
+# 端口说明：用 nginx-unprivileged 变体以非 root 身份运行，因此容器监听 8080
+# （非特权端口），由 Service 把 80 映射过来；这既满足 Pod Security restricted，
+# 也和「容器不需要 80」的实际拓扑一致。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-ai-web
+  namespace: k8s-ai
+  labels:
+    app: k8s-ai
+    component: web
+    app.kubernetes.io/component: web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-ai
+      component: web
+  template:
+    metadata:
+      labels:
+        app: k8s-ai
+        component: web
+    spec:
+      # 纯静态站点：不需要 Kubernetes API 身份。
+      automountServiceAccountToken: false
+      containers:
+        - name: web
+          # 镜像地址由部署方提供（deploy/install.sh 的 IMAGE/TAG 参数）。
+          image: k8s-ai-web:latest
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            # nginx-unprivileged 把 pid/temp/cache 都放在 /tmp，配只读根文件系统。
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            # nginx-unprivileged 的镜像用户就是 101，这里显式固定以便审计。
+            runAsUser: 101
+            runAsGroup: 101
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile: { type: RuntimeDefault }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        seccompProfile: { type: RuntimeDefault }

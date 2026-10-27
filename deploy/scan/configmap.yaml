@@ -1,0 +1,58 @@
+# 每日巡检（scan）专用配置（P6.2）。
+#
+# 为什么单独一份：k8s-ai scan 是终端直用通道，读的是「引擎键」
+# （kubernetes / llm / scan / report / agent / rules）；deploy/base/configmap.yaml 里的
+# k8s-ai-config 是平台进程静态配置，只有 platform: 段 + 落盘目录，scan 读不到引擎键。
+# 两份配置各自独立，不要合并、也不要互相引用。
+#
+# 与 k8s-ai config init --cli 生成的 ~/.k8s-ai/cli.yaml 同形状，可按现场需要增删键。
+# 敏感值不进 ConfigMap：模型密钥经 K8S_AI_LLM_API_KEY（Secret）注入。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k8s-ai-scan-config
+  namespace: k8s-ai
+  labels:
+    app: k8s-ai
+    app.kubernetes.io/component: scan-config
+data:
+  config.yaml: |
+    kubernetes:
+      kubeconfig: ""          # 集群内留空 = 用 ServiceAccount in-cluster 凭据
+      context: ""
+      namespace: ""           # 留空 = 全集群；非空 = 只扫该命名空间
+      kubectl_path: ""        # 镜像内无 kubectl，留空即走 client-go
+      timeout: 30s
+      qps: 20
+      burst: 40
+
+    llm:
+      enabled: true           # 改 false = 只出规则结论，不调模型
+      endpoint: "http://REPLACE_WITH_LLM_HOST:8000/v1"  # OpenAI Compatible 基础地址，必填（换成真实 host）
+      api_key: ""             # 只经 K8S_AI_LLM_API_KEY 注入
+      model: "REPLACE_WITH_MODEL_NAME"       # 建议非思考型快模型
+      temperature: 0.1
+      max_tokens: 4096
+      timeout: 120s
+
+    scan:
+      concurrency: 8
+      phase2_concurrency: 4
+      collect_logs: true
+      collect_events: true
+      max_log_lines: 500
+      max_log_bytes: 65536
+      pod_logs_timeout: 30s
+      timeout: 10m
+
+    report:
+      directory: /reports     # 必须是可写卷（CronJob 挂 PVC）
+      format: markdown
+
+    agent:
+      session_dir: /data/sessions   # scan 不用会话，仅为满足非空校验
+      audit_dir: /data/audit
+
+    rules:
+      enabled: []             # 非空则只启用这些规则
+      disabled: []

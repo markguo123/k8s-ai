@@ -77,7 +77,7 @@ func runScan(deps Dependencies, cmd *cobra.Command, podTarget string, f *scanFla
 	default:
 		return fmt.Errorf("invalid --report-mode %q (none|latest|daily)", f.reportMode)
 	}
-	cfg, err := deps.LoadConfig(loadOptionsFromFlags(cmd))
+	cfg, err := deps.LoadConfig(loadOptionsFromFlags(cmd, true))
 	if err != nil {
 		return err
 	}

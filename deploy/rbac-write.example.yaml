@@ -1,7 +1,7 @@
 # k8s-ai 二/三期：Agent 写操作与资源创建权限示例（RBAC）
 #
 # ⚠️ 说明：
-#   - 默认 deploy/clusterrole.yaml 保持只读（scan 巡检 + chat 只读调查）。
+#   - 默认 deploy/base/clusterrole.yaml 保持只读（scan 巡检 + chat 只读调查）。
 #   - 仅当需要 k8s-ai chat 执行"修复操作"（patch/scale/restart/delete）时，
 #     才按需授予以下写权限；LLM 永远不是权限主体，真实边界来自 RBAC。
 #   - 三期创建通道（create_resource）用 Server-Side Apply 提交，需要 create + patch

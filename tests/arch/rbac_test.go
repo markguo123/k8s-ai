@@ -25,11 +25,11 @@ type rbacManifest struct {
 	Rules []rbacRule `yaml:"rules"`
 }
 
-// TestRBACReadOnly 解析 deploy/clusterrole.yaml，断言默认清单保持只读：
+// TestRBACReadOnly 解析 deploy/base/clusterrole.yaml，断言默认清单保持只读：
 // verbs 限于 {get,list,watch}；resources 不含 pods/exec、pods/portforward、pods/attach 与写能力。
 // Secret 在二期放行为“元数据/键级读取”，故允许 secrets 的 get/list/watch（仍只读，SECURITY.md §3）。
 func TestRBACReadOnly(t *testing.T) {
-	raw, err := os.ReadFile("../../deploy/clusterrole.yaml")
+	raw, err := os.ReadFile("../../deploy/base/clusterrole.yaml")
 	if err != nil {
 		t.Fatalf("读取 clusterrole.yaml: %v", err)
 	}

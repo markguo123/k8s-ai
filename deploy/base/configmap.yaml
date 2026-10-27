@@ -1,0 +1,46 @@
+# 平台静态启动配置（P6.2 / D-21 / ADR-031 v1.14）。
+#
+# 本文件只承载「这台实例想跑成什么样」的静态/启动键（platform: 段 + 引擎落盘目录）。
+# 七组动态键（model / skill / approval / memory / retention / mcp / ops）的唯一权威源
+# 是 DB settings 表，由 Web 配置中心维护并即时生效：刻意不出现在这里，也不回写文件。
+#
+# 敏感值一律不写 ConfigMap：admin 首启口令 K8S_AI_ADMIN_PASSWORD、凭据加密密钥
+# K8S_AI_ENC_KEY、模型密钥 K8S_AI_LLM_API_KEY、存储 DSN K8S_AI_PLATFORM_STORE_DSN
+# 全部经 Secret 注入（见 deploy/base/secret.example.yaml 与 deploy/allinone/deployment.yaml）。
+#
+# 环境专有值同样不进清单：模型服务地址在配置中心页面填，数据库地址在 DSN 里，
+# 域名在 Ingress 里，存储类在 PVC 里。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k8s-ai-config
+  namespace: k8s-ai
+  labels:
+    app: k8s-ai
+    app.kubernetes.io/component: config
+data:
+  config.yaml: |
+    platform:
+      server:
+        addr: ":8080"            # 监听地址（编排层 --addr 可覆盖）
+        static_enabled: true     # 形态 A 内嵌 SPA；形态 B 用 deploy/separated/deployment.yaml（env 置 false）
+        tls:
+          enabled: false         # 需要 TLS 时挂证书卷并把 cert_file/key_file 配成一对
+          cert_file: ""
+          key_file: ""
+      store:
+        driver: mysql                    # 四期主存储；sqlite 为本地/单机兜底
+        sqlite_path: "/data/k8s-ai.db"   # 仅 driver=sqlite 使用，容器内必须落 PVC
+        dsn: ""                          # 只经 K8S_AI_PLATFORM_STORE_DSN（Secret）注入
+      auth:
+        admin_username: admin    # 空库首启时创建的内置管理员用户名
+        token_ttl: 24h           # 平台登录会话有效期
+        session_store: memory    # 本期固定内存态；扩副本前需先支持持久化会话
+
+    # 引擎侧落盘目录（静态键，非动态配置）：镜像根文件系统只读，一律指向可写卷。
+    report:
+      directory: /reports
+      format: markdown
+    agent:
+      session_dir: /data/sessions
+      audit_dir: /data/audit

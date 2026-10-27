@@ -34,7 +34,7 @@ func newServerCmd(deps Dependencies) *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			logger := slog.Default()
-			cfg, err := deps.LoadConfig(loadOptionsFromFlags(cmd))
+			cfg, err := deps.LoadConfig(loadOptionsFromFlags(cmd, false))
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}

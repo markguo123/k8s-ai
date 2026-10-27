@@ -36,7 +36,9 @@ func NewRootCmd(deps Dependencies) *cobra.Command {
 	return root
 }
 
-func loadOptionsFromFlags(cmd *cobra.Command) config.LoadOptions {
+// loadOptionsFromFlags 组装一次配置加载入参。cli 为 true 时走终端直用面
+// （默认 ~/.k8s-ai/cli.yaml，缺失回退 config.yaml）；平台面（server/db）传 false。
+func loadOptionsFromFlags(cmd *cobra.Command, cli bool) config.LoadOptions {
 	overrides := map[string]any{}
 	flagKeys := []struct{ flag, key string }{
 		{"kubeconfig", "kubernetes.kubeconfig"},
@@ -53,5 +55,6 @@ func loadOptionsFromFlags(cmd *cobra.Command) config.LoadOptions {
 	return config.LoadOptions{
 		ConfigFile: cmd.Flag("config").Value.String(),
 		Overrides:  overrides,
+		CLI:        cli,
 	}
 }

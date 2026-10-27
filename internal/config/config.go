@@ -216,11 +216,45 @@ type LoadOptions struct {
 	ConfigFile string         // explicit --config path
 	Overrides  map[string]any // CLI values, highest precedence
 	NoEnv      bool           // skip environment merging (test isolation)
+	CLI        bool           // 终端直用面（chat/scan）：默认读 cli.yaml，缺失回退 config.yaml
 }
 
 // DefaultConfigFile returns the default config path (~/.k8s-ai/config.yaml).
 func DefaultConfigFile() (string, error) {
 	return expandHome("~/.k8s-ai/config.yaml")
+}
+
+// DefaultCLIConfigFile 返回终端直用配置的默认路径（~/.k8s-ai/cli.yaml，D-21）。
+// 它与平台静态 config.yaml 是两份独立文件：由 `config init --cli` 生成，只有
+// k8s-ai chat / scan 读取，server 既不读取也不回写。
+func DefaultCLIConfigFile() (string, error) {
+	return expandHome("~/.k8s-ai/cli.yaml")
+}
+
+// ResolveConfigFile 解析实际生效的配置文件路径（显式 --config 优先）。终端直用面
+// 先取 cli.yaml，缺失时回退旧 config.yaml 以兼容存量部署；都没有时返回空串，
+// 表示只用默认值与环境变量。
+func ResolveConfigFile(explicit string, cli bool) (string, error) {
+	if explicit != "" {
+		return expandHome(explicit)
+	}
+	if cli {
+		cliPath, err := DefaultCLIConfigFile()
+		if err != nil {
+			return "", err
+		}
+		if fileExists(cliPath) {
+			return cliPath, nil
+		}
+	}
+	def, err := DefaultConfigFile()
+	if err != nil {
+		return "", err
+	}
+	if fileExists(def) {
+		return def, nil
+	}
+	return "", nil
 }
 
 // Load merges defaults, file, environment and overrides in that order.
@@ -235,7 +269,7 @@ func Load(opts LoadOptions) (*Config, error) {
 		v.AutomaticEnv()
 	}
 
-	path, err := resolveConfigPath(opts.ConfigFile)
+	path, err := ResolveConfigFile(opts.ConfigFile, opts.CLI)
 	if err != nil {
 		return nil, err
 	}
@@ -334,20 +368,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("platform.auth.admin_username", "admin")
 	v.SetDefault("platform.auth.token_ttl", 24*time.Hour)
 	v.SetDefault("platform.auth.session_store", "memory")
-}
-
-func resolveConfigPath(explicit string) (string, error) {
-	if explicit != "" {
-		return expandHome(explicit)
-	}
-	def, err := DefaultConfigFile()
-	if err != nil {
-		return "", err
-	}
-	if fileExists(def) {
-		return def, nil
-	}
-	return "", nil
 }
 
 func expandHome(path string) (string, error) {

@@ -1,0 +1,24 @@
+# 可选持久卷（P6.2 / P6.5 / D-31）：只在两种情况下需要，其余场景不要 apply 本文件。
+#   1) 报告与导出需要跨重启保留（默认清单把 /reports 挂 emptyDir，重启即清）；
+#   2) 用 SQLite 兜底存储（platform.store.driver=sqlite）——此时库文件所在的
+#      /data 必须落 PVC，禁止写在容器可写层。MySQL 主口径下 PVC 不承载业务数据。
+#
+# 挂载方式：先 apply 本文件，再 apply deploy/example/deployment-reports-pvc.yaml
+# 把后端 Deployment 的 emptyDir 换成 Claim。
+# 容量与访问模式按现场存储能力调整；单副本 RWO 足够，扩副本前改 RWX。
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: k8s-ai-data
+  namespace: k8s-ai
+  labels:
+    app: k8s-ai
+    app.kubernetes.io/component: storage
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+  # 必填：替换为现场存储类名（kubectl get storageclass）。
+  # 想用集群默认存储类就删掉这一行——留 REPLACE_ 开头的占位值会让 PVC 一直 Pending。
+  storageClassName: REPLACE_WITH_STORAGE_CLASS

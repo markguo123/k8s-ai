@@ -1,0 +1,127 @@
+# 平台主进程 Deployment —— 形态 B「前后端分离」的后端（纯 API，P6.2 / D-26）。
+#
+# 与 deploy/allinone/deployment.yaml 的唯一差异：容器多一条环境变量
+# K8S_AI_PLATFORM_SERVER_STATIC_ENABLED=false，即关闭内嵌 SPA 静态托管，本进程只提供
+# /api/v1（含 Chat SSE）与 /healthz /readyz /version，页面交给同目录
+# web-deployment.yaml 的 Nginx（站点配置 deploy/separated/nginx.conf 托管 web/dist）。
+# 其余字段必须与形态 A 逐字一致，由 tests/arch/deploy_manifest_test.go 断言，防止两套
+# 清单各自漂移。两形态的 Deployment 同名（k8s-ai-server），只能二选一 apply。
+#
+# 单副本与 Recreate 的理由、探针语义、镜像无 shell 等通用口径见
+# deploy/allinone/deployment.yaml 与部署手册，本文件不重复说明。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-ai-server
+  namespace: k8s-ai
+  labels:
+    app: k8s-ai
+    component: server
+    app.kubernetes.io/component: server
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: k8s-ai
+      component: server
+  template:
+    metadata:
+      labels:
+        app: k8s-ai
+        component: server
+    spec:
+      serviceAccountName: k8s-ai
+      # 平台要用自身身份访问本集群 API（集群端点默认走 in-cluster 配置）。
+      automountServiceAccountToken: true
+      containers:
+        - name: k8s-ai
+          # 镜像地址由部署方提供（deploy/install.sh 的 IMAGE/TAG 参数）；
+          # 清单里不写私有仓库地址这类环境专有值。
+          image: k8s-ai:latest
+          args: ["server", "--config", "/etc/k8s-ai/config.yaml", "--addr", ":8080"]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            # 存储 DSN（含数据库口令）：只走 Secret，ConfigMap 里的 dsn 恒为空。
+            - name: K8S_AI_PLATFORM_STORE_DSN
+              valueFrom:
+                secretKeyRef: { name: k8s-ai-store, key: dsn }
+            # 凭据加密密钥：kubeconfig / 配置中心敏感键的落库加密主密钥。
+            - name: K8S_AI_ENC_KEY
+              valueFrom:
+                secretKeyRef: { name: k8s-ai-enc, key: key }
+            # 首启管理员口令：仅空库首启必需，初始化完成后可以摘掉。
+            - name: K8S_AI_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: k8s-ai-admin, key: password, optional: true }
+            # 模型密钥（密钥态，env 恒优先）。其余动态键（模型地址/模型名/审批策略等）
+            # 一律由配置中心页面写入 DB settings，不在清单里注入；
+            # 非敏感部署期种子值见 deploy/example/env-overrides.example.yaml。
+            - name: K8S_AI_LLM_API_KEY
+              valueFrom:
+                secretKeyRef: { name: k8s-ai-llm, key: api_key, optional: true }
+            # 形态 B 的唯一差异：关掉内嵌 SPA 静态托管，本进程只提供 API（D-26）。
+            # 键名契约由 internal/config/platform_server_test.go 锁定，改键名会被测试挡住。
+            - name: K8S_AI_PLATFORM_SERVER_STATIC_ENABLED
+              value: "false"
+          volumeMounts:
+            - name: config
+              mountPath: /etc/k8s-ai
+              readOnly: true
+            # 可写区：/data 会话与审计落盘、/reports 报告导出。业务数据的权威存储是
+            # MySQL，这三个卷都是临时卷；要持久保留就 apply
+            # deploy/example/deployment-reports-pvc.yaml 换成 PVC。
+            - name: data
+              mountPath: /data
+            - name: reports
+              mountPath: /reports
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile: { type: RuntimeDefault }
+      volumes:
+        - name: config
+          configMap:
+            name: k8s-ai-config
+            defaultMode: 0444
+        - name: data
+          emptyDir: {}
+        - name: reports
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }

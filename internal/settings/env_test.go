@@ -29,7 +29,7 @@ func loadTestBaseline(t *testing.T) *config.Config {
 }
 
 // TestEnvOverrideWhitelistTiers 锁 D-29 v1.51 冻结口径：覆盖面严格等于 LLM 四键 + ops 四键，
-// 档位是 api_key 密钥态、其余种子态。加键或改档必须同步 ADR-040 / 部署手册 §3.5。
+// 档位是 api_key 密钥态、其余种子态。加键或改档必须同步 ADR-040 / 部署手册 §3.3 与 §4.9。
 func TestEnvOverrideWhitelistTiers(t *testing.T) {
 	want := map[string]EnvTier{
 		envKey(GroupModel, "provider"):   EnvTierSeed,

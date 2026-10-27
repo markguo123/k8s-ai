@@ -34,7 +34,7 @@ func newDBMigrateCmd(deps Dependencies) *cobra.Command {
 			"is meant to be used as a pre-upgrade Job or initContainer.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := deps.LoadConfig(loadOptionsFromFlags(cmd))
+			cfg, err := deps.LoadConfig(loadOptionsFromFlags(cmd, false))
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}

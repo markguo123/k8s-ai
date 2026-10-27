@@ -23,7 +23,8 @@ func newMigrateCmd(deps Dependencies) *cobra.Command {
 		Short: "Import Phase-3 config/session/audit/skill/report data",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := deps.LoadConfig(loadOptionsFromFlags(cmd))
+			// 三期旧配置一次性导入：源固定是平台静态 config.yaml，不走 CLI 直用面。
+			cfg, err := deps.LoadConfig(loadOptionsFromFlags(cmd, false))
 			if err != nil {
 				return err
 			}

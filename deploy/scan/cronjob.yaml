@@ -1,5 +1,13 @@
-# 每日巡检 CronJob：只读 scan + daily 报告，挂载报告 PVC。
-# 依赖：namespace/serviceaccount/clusterrole(+binding)/configmap/pvc/secret(可选)。
+# 一期每日巡检通道（可选件，P6.2）：只读 scan + daily 报告。
+#
+# 这份清单独立于四期平台清单：scan 是终端直用通道，配置来自本目录的
+# deploy/scan/configmap.yaml（k8s-ai-scan-config，引擎键），不是平台用的
+# k8s-ai-config（platform: 静态段）。平台 Web 配置中心的设置不会影响本 CronJob。
+#
+# 依赖（按序）：namespace / serviceaccount / clusterrole / clusterrolebinding /
+#   deploy/scan/configmap.yaml / deploy/base/pvc.yaml（报告要跨重启保留就必须有）。
+# 可选：k8s-ai-llm Secret（模型密钥）；没有就把 scan 配置里的 llm.enabled 改成 false。
+# spec.timeZone 需要 Kubernetes >= 1.27。
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -7,6 +15,7 @@ metadata:
   namespace: k8s-ai
   labels:
     app: k8s-ai
+    app.kubernetes.io/component: scan
 spec:
   schedule: "0 8 * * *"
   timeZone: "Asia/Shanghai"
@@ -31,8 +40,6 @@ spec:
                 - --config
                 - /etc/k8s-ai/config.yaml
               env:
-                - name: TZ
-                  value: "Asia/Shanghai"
                 - name: K8S_AI_LLM_API_KEY
                   valueFrom:
                     secretKeyRef:
@@ -45,8 +52,11 @@ spec:
                   readOnly: true
                 - name: reports
                   mountPath: /reports
+                - name: data
+                  mountPath: /data
               securityContext:
                 allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
                 runAsNonRoot: true
                 runAsUser: 65532
                 runAsGroup: 65532
@@ -62,9 +72,11 @@ spec:
           volumes:
             - name: config
               configMap:
-                name: k8s-ai-config
+                name: k8s-ai-scan-config
             - name: reports
               persistentVolumeClaim:
-                claimName: k8s-ai-reports
+                claimName: k8s-ai-data
+            - name: data
+              emptyDir: {}
           securityContext:
             fsGroup: 65532

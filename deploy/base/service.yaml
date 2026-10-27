@@ -1,0 +1,25 @@
+# 平台后端 Service（P6.2，形态 A / 形态 B 共用）。
+# 集群内入口 http://k8s-ai-server.k8s-ai.svc:8080：
+#   /api/v1/*               平台 API（含 Chat SSE）
+#   /healthz /readyz /version   探针与版本
+# 形态 A 下同一端口内嵌 SPA；形态 B 只提供 API，前端另有 k8s-ai-web。
+# 类型固定 ClusterIP：对外访问一律走 Ingress，清单里不写 NodePort/LoadBalancer
+# 这类环境专有值。
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-ai-server
+  namespace: k8s-ai
+  labels:
+    app: k8s-ai
+    component: server
+    app.kubernetes.io/component: server
+spec:
+  type: ClusterIP
+  selector:
+    app: k8s-ai
+    component: server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

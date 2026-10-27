@@ -1,11 +1,17 @@
-# k8s-ai 只读 RBAC：get/list/watch + pods/log get + secrets 元数据/键级读取（get/list/watch）。
+# 默认只读 RBAC（P6.2）：平台所有只读能力（巡检、Chat 只读调查、集群端点连通性测试、
+# 资源枚举）都只用下面的动词。
+# 口径：get/list/watch + pods/log get + secrets 元数据/键级读取（get/list/watch）。
 # 不授任何写动词；不含 pods/exec、pods/portforward、pods/attach、metrics（ADR-009 / SECURITY.md）。
+# LLM 永远不是权限主体：真实边界就是这份 ClusterRole，提示词无法绕过 RBAC。
+# 需要写操作（审批后的修复 / create_resource）时，另行显式 apply
+# deploy/rbac-write.example.yaml，默认清单保持只读。
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: k8s-ai-readonly
   labels:
     app: k8s-ai
+    app.kubernetes.io/component: identity
 rules:
   - apiGroups: [""]
     resources: [namespaces, pods, nodes, services, endpoints, events, configmaps]

@@ -58,7 +58,7 @@ func runChat(deps Dependencies, cmd *cobra.Command, args []string, f *chatFlags)
 	default:
 		return fmt.Errorf("invalid --format %q (text|json)", f.format)
 	}
-	cfg, err := deps.LoadConfig(loadOptionsFromFlags(cmd))
+	cfg, err := deps.LoadConfig(loadOptionsFromFlags(cmd, true))
 	if err != nil {
 		return err
 	}

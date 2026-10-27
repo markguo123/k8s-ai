@@ -184,7 +184,7 @@ func TestValidateErrors(t *testing.T) {
 
 func TestInit(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	written, err := Init(path, false)
+	written, err := Init(path, TemplateServer, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,10 +194,10 @@ func TestInit(t *testing.T) {
 	if !fileExists(path) {
 		t.Fatal("config file not created")
 	}
-	if _, err := Init(path, false); err == nil {
+	if _, err := Init(path, TemplateServer, false); err == nil {
 		t.Fatal("second init without force should fail")
 	}
-	if _, err := Init(path, true); err != nil {
+	if _, err := Init(path, TemplateServer, true); err != nil {
 		t.Fatalf("init with force: %v", err)
 	}
 }

@@ -1,0 +1,79 @@
+# 平台库结构升级 Job（P6.5 / D-31）。
+#
+# 职责边界：`k8s-ai db migrate` 只做 schema 升级，幂等可重跑；它不建库、不建账号
+# （库与账号由 DBA 预建，建议 utf8mb4），也不导入三期历史数据（那是顶层 `k8s-ai migrate`）。
+# server 启动时也带同样的幂等兜底，所以本 Job 是「升级前置闸」而不是唯一入口：
+# 先跑 Job 成功，再放行 Deployment，可避免多副本同时改表。
+#
+# 用 MySQL 兜底 SQLite 时也走同一份清单（DSN 换成不注入、改用 sqlite_path + PVC）。
+#
+# 重跑提示：Job 的 spec 不可变。第二次升级要先删掉旧 Job：
+#   kubectl -n k8s-ai delete job k8s-ai-db-migrate --ignore-not-found
+#   kubectl -n k8s-ai apply -f deploy/base/db-migrate-job.yaml
+#   kubectl -n k8s-ai wait --for=condition=complete job/k8s-ai-db-migrate --timeout=300s
+# deploy/install.sh 就是按这个顺序做的。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: k8s-ai-db-migrate
+  namespace: k8s-ai
+  labels:
+    app: k8s-ai
+    app.kubernetes.io/component: migration
+spec:
+  # 失败留痕：保留完成的 Job 一天，便于回看日志。
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 600
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app: k8s-ai
+        app.kubernetes.io/component: migration
+    spec:
+      restartPolicy: Never
+      # 迁移只连数据库，不需要 Kubernetes API 身份。
+      automountServiceAccountToken: false
+      containers:
+        - name: db-migrate
+          # 与后端同一个镜像、同一个 TAG；升级时两者一起换。
+          image: k8s-ai:latest
+          args: ["db", "migrate", "--config", "/etc/k8s-ai/config.yaml"]
+          env:
+            - name: K8S_AI_PLATFORM_STORE_DSN
+              valueFrom:
+                secretKeyRef: { name: k8s-ai-store, key: dsn }
+          volumeMounts:
+            - name: config
+              mountPath: /etc/k8s-ai
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile: { type: RuntimeDefault }
+      volumes:
+        - name: config
+          configMap:
+            name: k8s-ai-config
+            defaultMode: 0444
+        - name: tmp
+          emptyDir: {}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }

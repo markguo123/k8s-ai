@@ -143,31 +143,31 @@ k8s-ai scan --fail-on HIGH              # 达到 HIGH 返回退出码 2（CI 用
 
 ```bash
 # 1) 创建命名空间、SA、只读 RBAC、配置、报告 PVC
-kubectl apply -f deploy/namespace.yaml
-kubectl apply -f deploy/serviceaccount.yaml
-kubectl apply -f deploy/clusterrole.yaml
-kubectl apply -f deploy/clusterrolebinding.yaml
-kubectl apply -f deploy/configmap.yaml
-kubectl apply -f deploy/pvc.yaml
+kubectl apply -f deploy/base/namespace.yaml
+kubectl apply -f deploy/base/serviceaccount.yaml
+kubectl apply -f deploy/base/clusterrole.yaml
+kubectl apply -f deploy/base/clusterrolebinding.yaml
+kubectl apply -f deploy/base/configmap.yaml
+kubectl apply -f deploy/base/pvc.yaml
 
 # 2) 配置 LLM api_key（复制示例并替换）
-cp deploy/secret.example.yaml deploy/secret.yaml
+cp deploy/base/secret.example.yaml deploy/secret.yaml
 # 编辑 secret.yaml 替换 REPLACE_ME
 kubectl apply -f deploy/secret.yaml
 
 # 3) 每日 08:00（Asia/Shanghai）巡检
-kubectl apply -f deploy/cronjob.yaml
+kubectl apply -f deploy/scan/
 
 # （可选 1.2）HTTP Server
-kubectl apply -f deploy/deployment.yaml
-kubectl apply -f deploy/service.yaml
+kubectl apply -f deploy/allinone/deployment.yaml
+kubectl apply -f deploy/base/service.yaml
 ```
 
 CronJob 特性：`concurrencyPolicy: Forbid`（不并发）、`restartPolicy: OnFailure`、报告写入 PVC `/reports`（`latest.md` / `latest.json` / 时间戳文件）、非 root（uid 65532）。
 
 ### RBAC
 
-`deploy/clusterrole.yaml` 只授权只读动词（get/list/watch + pods/log get）；secrets 仅元数据/键级读取，不含 pods/exec、metrics。架构测试会解析清单断言只读约束。
+`deploy/base/clusterrole.yaml` 只授权只读动词（get/list/watch + pods/log get）；secrets 仅元数据/键级读取，不含 pods/exec、metrics。架构测试会解析清单断言只读约束。
 
 ## 安全
 
@@ -191,7 +191,7 @@ CronJob 特性：`concurrencyPolicy: Forbid`（不并发）、`restartPolicy: On
 | LLM 不编造       | Evidence ID 校验 + 命令白名单                 | diagnosis 单测                   |
 | 交互式命令拒绝   | deny_ops 硬拒（edit/attach/port-forward 等）  | executor 单测                    |
 | 单资源失败不中断 | collection_errors 隔离                        | scanner 错误隔离测试             |
-| RBAC 清单只读    | 解析 deploy/clusterrole.yaml 断言             | `tests/arch` RBAC 测试           |
+| RBAC 清单只读    | 解析 deploy/base/clusterrole.yaml 断言             | `tests/arch` RBAC 测试           |
 
 ## 故障示例
 

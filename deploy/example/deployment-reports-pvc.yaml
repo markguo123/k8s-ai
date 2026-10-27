@@ -1,0 +1,24 @@
+# 把后端 /reports 的临时卷换成 PVC（P6.5：报告与导出跨重启保留）。
+#
+# 本文件是 strategic merge patch，不是可 apply 的清单（刻意不写 apiVersion/kind）：
+# 只能用 kubectl patch --patch-file，`kubectl apply -R -f deploy/` 会在它这里报校验错误。
+#
+# 先 apply deploy/base/pvc.yaml（并把 storageClassName 换成现场存储类），再执行：
+#   kubectl -n k8s-ai patch deploy k8s-ai-server --type=strategic \
+#     --patch-file deploy/example/deployment-reports-pvc.yaml
+#
+# emptyDir 显式置空是必需的：同一个卷同时带 emptyDir 与 persistentVolumeClaim
+# 会被 API 校验拒绝。
+#
+# 什么时候真的需要：报告/导出要留档，或改用 SQLite 兜底存储（那时 /data 也要一起换成
+# 同一个 PVC——MySQL 主口径下业务数据都在库里，/data 只是临时落盘）。
+# SQLite 场景额外两步：ConfigMap 里 driver 改 sqlite，并把 mountPath 换成 /data 的
+# 卷名同样按本文件写法替换。
+spec:
+  template:
+    spec:
+      volumes:
+        - name: reports
+          emptyDir: null
+          persistentVolumeClaim:
+            claimName: k8s-ai-data

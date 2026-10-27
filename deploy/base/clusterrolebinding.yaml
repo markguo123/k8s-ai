@@ -1,0 +1,18 @@
+# 只读 ClusterRole 的绑定（P6.2）。
+# subjects[].namespace 是真实字段，-n 参数不会改写它：换命名空间部署时改这里，
+# 或由 deploy/install.sh 统一重写 "namespace: k8s-ai"。
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: k8s-ai-readonly
+  labels:
+    app: k8s-ai
+    app.kubernetes.io/component: identity
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: k8s-ai-readonly
+subjects:
+  - kind: ServiceAccount
+    name: k8s-ai
+    namespace: k8s-ai
