@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Check, InfoFilled, Key, Lock, Refresh, Setting } from '@element-plus/icons-vue'
+import { Check, InfoFilled, Key, Lock, Promotion, Refresh, Setting } from '@element-plus/icons-vue'
 
 import TechEmptyState from '@/components/TechEmptyState.vue'
 import {
@@ -57,6 +57,25 @@ const hasSensitiveItems = computed(
 const encryptionUnavailable = computed(
   () => hasSensitiveItems.value && view.value?.encryptionAvailable === false,
 )
+
+/** 部署期覆盖档位（D-29 两档）：决定徽标文案；未被覆盖时返回空。 */
+function envOverrideLabel(item: SettingsItem): string {
+  if (!item.envOverride) {
+    return ''
+  }
+  return item.envOverrideTier === 'seed' ? '部署种子值' : '部署 Secret 提供'
+}
+
+/** 覆盖态说明：密钥态要说清"保存了也不生效"，种子态要说清"保存后以页面为准"。 */
+function envOverrideHint(item: SettingsItem): string {
+  if (!item.envOverride) {
+    return ''
+  }
+  if (item.envOverrideTier === 'seed') {
+    return `当前值来自部署变量 ${item.envOverride}（首启种子值）；在此保存即以页面配置为准。`
+  }
+  return `运行值由部署密钥 ${item.envOverride} 提供且恒优先；在此保存只写入配置库，运行值不变。`
+}
 
 /** thinking/scan_thinking 是固定形状的思考开关，不从任意 JSON 文本推导。 */
 function isThinkingSwitch(item: SettingsItem): boolean {
@@ -307,7 +326,20 @@ async function handleSave(): Promise<void> {
     const next = await patchSettings(activeGroup.value, patch)
     view.value = next
     initDrafts(next)
-    ElMessage.success('配置已保存')
+    const warnings = next.warnings ?? []
+    if (warnings.length > 0) {
+      // 覆盖态下的保存不得静默成功：必须说明实际生效来源（P6.12 ⑩）。
+      ElMessage({
+        message: warnings.length > 1
+          ? `${warnings[0]}（另有 ${warnings.length - 1} 项同理）`
+          : warnings[0],
+        type: 'warning',
+        duration: 8000,
+        showClose: true,
+      })
+    } else {
+      ElMessage.success('配置已保存')
+    }
   } catch (error) {
     savingError.value = describeSettingsError('保存配置', error)
     ElMessage.error(savingError.value)
@@ -397,9 +429,29 @@ onMounted(loadGroup)
                       <el-icon class="tiny"><Key /></el-icon>
                       {{ item.hasValue ? '已配置' : '未配置' }}
                     </span>
+                    <span
+                      v-if="item.envOverride"
+                      class="pill"
+                      :class="item.envOverrideTier === 'seed' ? 'seed' : 'secret'"
+                    >
+                      <el-icon class="tiny">
+                        <Promotion v-if="item.envOverrideTier === 'seed'" />
+                        <Lock v-else />
+                      </el-icon>
+                      {{ envOverrideLabel(item) }}
+                      <span class="mono">{{ item.envOverride }}</span>
+                    </span>
                     <span v-if="item.source" class="faint mono small">← {{ item.source }}</span>
                   </div>
                   <div v-if="item.desc" class="muted small desc-line">{{ item.desc }}</div>
+                  <div
+                    v-if="envOverrideHint(item)"
+                    class="env-hint small"
+                    :class="item.envOverrideTier === 'seed' ? 'seed' : 'secret'"
+                  >
+                    <el-icon class="tiny"><InfoFilled /></el-icon>
+                    {{ envOverrideHint(item) }}
+                  </div>
                   <div v-if="shouldShowFormatHint(item)" class="faint small example-line">
                     <el-icon class="tiny"><InfoFilled /></el-icon>
                     {{ formatHint(item) }}
@@ -715,6 +767,29 @@ onMounted(loadGroup)
 .pill.mute {
   background: var(--app-surface-hover);
   color: var(--app-muted);
+}
+
+.pill.secret {
+  background: rgba(251, 191, 36, 0.14);
+  color: #fbbf24;
+}
+
+.pill.seed {
+  background: rgba(56, 189, 248, 0.14);
+  color: #38bdf8;
+}
+
+.env-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  line-height: 1.5;
+  color: #fbbf24;
+  overflow-wrap: anywhere;
+}
+
+.env-hint.seed {
+  color: #38bdf8;
 }
 
 .tiny {

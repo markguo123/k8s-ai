@@ -199,3 +199,114 @@ describe('SettingsView 配置控件可读性', () => {
     expect(text).toContain('取值范围：1 以上')
   })
 })
+
+/**
+ * P6.12 ⑩ 部署期覆盖态（D-29 两档）：覆盖来源必须在页面上看得见、保存时有提示，
+ * 不允许出现"页面改了但看起来没生效"的静默成功。
+ */
+const ENV_ITEMS = [
+  {
+    key: 'api_key',
+    kind: 'string',
+    value: null,
+    hasValue: true,
+    sensitive: true,
+    desc: '接口密钥（不回显）',
+    envOverride: 'K8S_AI_LLM_API_KEY',
+    envOverrideTier: 'secret',
+  },
+  {
+    key: 'model',
+    kind: 'string',
+    value: 'qwen-plus',
+    hasValue: true,
+    desc: '模型名',
+    envOverride: 'K8S_AI_LLM_MODEL',
+    envOverrideTier: 'seed',
+  },
+  { key: 'namespace', kind: 'string', value: 'default', hasValue: true, desc: '默认命名空间' },
+]
+
+function installScopedFetch(patchWarnings: string[] = []): void {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (_url: string, init?: RequestInit) => new Response(
+      JSON.stringify({
+        request_id: 'req-test',
+        timestamp: new Date().toISOString(),
+        data: {
+          group: 'model',
+          encryptionAvailable: true,
+          items: ENV_ITEMS,
+          ...(init?.method === 'PATCH' && patchWarnings.length > 0 ? { warnings: patchWarnings } : {}),
+        },
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    )),
+  )
+}
+
+describe('SettingsView 部署期覆盖态（P6.12 ⑩）', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    localStorage.setItem(TOKEN_KEY, 'tok-test')
+    localStorage.setItem(
+      USER_KEY,
+      JSON.stringify({ userId: 'u1', username: 'admin', displayName: '管理员', role: 'admin' }),
+    )
+    setActivePinia(createPinia())
+    document.body.innerHTML = ''
+  })
+
+  it('密钥态键显示"部署 Secret 提供"徽标并说明保存不改运行值', async () => {
+    installScopedFetch()
+    const wrapper = mount(SettingsView)
+    await flushPromises()
+    await vi.waitFor(() => expect(wrapper.findAll('.field')).toHaveLength(ENV_ITEMS.length))
+
+    const field = wrapper.findAll('.field')[0]
+    const badge = field!.find('.pill.secret')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toContain('部署 Secret 提供')
+    expect(badge.text()).toContain('K8S_AI_LLM_API_KEY')
+    expect(field!.find('.env-hint.secret').text()).toContain('运行值不变')
+  })
+
+  it('种子态键显示"部署种子值"徽标并说明保存后以页面为准', async () => {
+    installScopedFetch()
+    const wrapper = mount(SettingsView)
+    await flushPromises()
+    await vi.waitFor(() => expect(wrapper.findAll('.field')).toHaveLength(ENV_ITEMS.length))
+
+    const field = wrapper.findAll('.field')[1]
+    expect(field!.find('.pill.seed').text()).toContain('部署种子值')
+    expect(field!.find('.pill.seed').text()).toContain('K8S_AI_LLM_MODEL')
+    expect(field!.find('.env-hint.seed').text()).toContain('以页面配置为准')
+  })
+
+  it('未被部署变量覆盖的键不显示覆盖徽标', async () => {
+    installScopedFetch()
+    const wrapper = mount(SettingsView)
+    await flushPromises()
+    await vi.waitFor(() => expect(wrapper.findAll('.field')).toHaveLength(ENV_ITEMS.length))
+
+    const field = wrapper.findAll('.field')[2]
+    expect(field!.find('.pill').exists()).toBe(false)
+    expect(field!.find('.env-hint').exists()).toBe(false)
+  })
+
+  it('保存返回 warnings 时以警告收尾，不得报"配置已保存"', async () => {
+    installScopedFetch([
+      'namespace 已写入配置库并立即生效：该键此前由部署变量 K8S_AI_NAMESPACE 提供首启种子值，保存后以页面配置为准。',
+    ])
+    const wrapper = mount(SettingsView)
+    await flushPromises()
+    await vi.waitFor(() => expect(wrapper.findAll('.field')).toHaveLength(ENV_ITEMS.length))
+
+    await wrapper.findAll('.field')[2]!.find('input').setValue('team-a')
+    await wrapper.find('.form-head .el-button').trigger('click')
+
+    await vi.waitFor(() => expect(document.body.textContent).toContain('保存后以页面配置为准'))
+    expect(document.body.textContent).not.toContain('配置已保存')
+  })
+})

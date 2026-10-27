@@ -262,6 +262,10 @@ export interface SettingsItem {
   source?: string
   desc?: string
   updatedAt?: string
+  /** 该键当前由部署期环境变量/Secret 提供时给出变量名（D-29 两档口径），未覆盖则省略。 */
+  envOverride?: string
+  /** 覆盖档位：secret 恒优先（页面值暂不生效）；seed 首启种子值（保存一次即以页面为准）。 */
+  envOverrideTier?: 'secret' | 'seed' | string
 }
 
 /** GET /api/v1/settings/{group} 的 data（后端 settings.GroupView）。 */
@@ -270,6 +274,8 @@ export interface SettingsGroupView {
   /** 服务端是否已配置 K8S_AI_ENC_KEY；false 时敏感配置只能读状态不能保存。 */
   encryptionAvailable?: boolean
   items: SettingsItem[]
+  /** 仅 PATCH 返回：本次写入的键里有被部署期变量覆盖的项，逐条说明实际生效来源。 */
+  warnings?: string[]
 }
 
 /** 用户账号状态（后端 auth 仅开放 active | disabled；内置 admin 受保护）。 */

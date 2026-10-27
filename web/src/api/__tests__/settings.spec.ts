@@ -112,4 +112,29 @@ describe('settings API（P3.9/P3.10 前端契约）', () => {
     expect(normalized).not.toContain('secret')
     expect(describeSettingsError('保存配置', null)).toBe('保存配置失败，请稍后重试')
   })
+
+  it('覆盖态字段与保存警告按契约透传（P6.12 ⑩）', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(envelopeResponse(200, makeGroupView({
+      items: [
+        {
+          key: 'api_key',
+          kind: 'string',
+          value: null,
+          hasValue: true,
+          sensitive: true,
+          envOverride: 'K8S_AI_LLM_API_KEY',
+          envOverrideTier: 'secret',
+        },
+      ],
+      warnings: ['api_key 已写入配置库，但当前运行值仍由部署密钥 K8S_AI_LLM_API_KEY 提供。'],
+    })))
+    vi.stubGlobal('fetch', fetchMock)
+    localStorage.setItem(TOKEN_KEY, 'tok-demo')
+
+    const view = await patchSettings('model', { api_key: 'sk-page' })
+    expect(view.items[0]?.envOverride).toBe('K8S_AI_LLM_API_KEY')
+    expect(view.items[0]?.envOverrideTier).toBe('secret')
+    expect(view.warnings).toHaveLength(1)
+    expect(view.warnings?.[0]).toContain('K8S_AI_LLM_API_KEY')
+  })
 })
