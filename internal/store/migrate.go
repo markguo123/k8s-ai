@@ -8,7 +8,7 @@ import (
 
 // schemaVersion 是统一的逻辑 schema 版本。SQLite/MySQL 共用该版本号，
 // migrations 按版本逐个应用（P0.3/P1.12/P1.3）。只允许追加，禁止回跳。
-const schemaVersion = 4
+const schemaVersion = 5
 
 // migration 是一条单向升级步骤，通过 dialect 适配两个驱动。
 type migration struct {
@@ -38,6 +38,11 @@ var migrations = []migration{
 		version: 4,
 		name:    "authz grants and api tokens platform model",
 		up:      migrateV4,
+	},
+	{
+		version: 5,
+		name:    "widen long text columns to mysql mediumtext",
+		up:      migrateV5,
 	},
 }
 
@@ -402,6 +407,48 @@ func migrateV4(ctx context.Context, tx *sql.Tx, d dialect) error {
 				continue
 			}
 			return fmt.Errorf("create index %s: %w", idx.name, err)
+		}
+	}
+	return nil
+}
+
+// longTextRef 是一条长文本列引用（表名 + 列定义）。
+type longTextRef struct {
+	table string
+	col   column
+}
+
+// longTextColumns 从各版本 schema 派生长文本列（colLong）清单。刻意单源派生而不是
+// 手写清单：新增一个存 JSON 的列会自动进入放宽范围，不会出现"加了列忘了放宽类型"。
+func longTextColumns() []longTextRef {
+	var out []longTextRef
+	for _, tables := range [][]tableSpec{schemaV1, schemaV2, schemaV4} {
+		for _, t := range tables {
+			for _, c := range t.cols {
+				if c.kind == colLong {
+					out = append(out, longTextRef{table: t.name, col: c})
+				}
+			}
+		}
+	}
+	return out
+}
+
+// migrateV5 把全部长文本列重定义为 dialect 认定的长文本类型（MySQL TEXT →
+// MEDIUMTEXT）。
+//
+// 起因是真机事故：一次 47 命名空间 / 533 Pod 的巡检结果写进会话消息后，
+// sessions.data 超过 MySQL TEXT 的 64KB 上限，落库直接 Error 1406，整轮对话记录
+// 丢失。SQLite 的 TEXT 没有长度上限，modifyColumn 返回空串，本迁移在 SQLite 上是
+// 空操作；MySQL 侧重复 MODIFY 同类型列只是重建，可安全重跑。
+func migrateV5(ctx context.Context, tx *sql.Tx, d dialect) error {
+	for _, ref := range longTextColumns() {
+		q := d.modifyColumn(ref.table, ref.col)
+		if q == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, q); err != nil {
+			return fmt.Errorf("widen column %s.%s: %w", ref.table, ref.col.name, err)
 		}
 	}
 	return nil

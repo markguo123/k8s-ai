@@ -11,7 +11,10 @@ type colKind int
 const (
 	// colText 短文本：可作主键/唯一键/索引列（SQLite TEXT，MySQL VARCHAR(191)）。
 	colText colKind = iota
-	// colLong 长文本：不可建索引，常存放 JSON（SQLite/MySQL 均为 TEXT）。
+	// colLong 长文本：不可建索引，常存放 JSON（SQLite TEXT，MySQL MEDIUMTEXT）。
+	// MySQL 侧刻意不用 TEXT：TEXT 上限只有 64KB，一次全集群巡检的工具结果就能把
+	// sessions.data 撑过上限（真机报 Error 1406 "Data too long for column 'data'"，
+	// 那一轮对话记录整条静默丢失）。
 	colLong
 	// colInt 整数。
 	colInt
@@ -69,6 +72,10 @@ type dialect interface {
 	addColumn(table string, c column) string
 	// isDuplicateColumnErr 判断"列已存在"错误（补列幂等需忽略）。
 	isDuplicateColumnErr(err error) bool
+	// modifyColumn 渲染"按当前 colKind 重定义已有列"的语句：补列只能加新列，
+	// 放宽一个已存在列的类型必须走这里。SQLite 的 TEXT 本就没有长度上限，
+	// 返回空串表示无需执行，由迁移步骤跳过。
+	modifyColumn(table string, c column) string
 }
 
 // sqliteDialect 是 SQLite 的 SQL 方言。
@@ -120,6 +127,9 @@ func (sqliteDialect) isDuplicateColumnErr(err error) bool {
 	}
 	return containsFold(err.Error(), "duplicate column name")
 }
+
+// SQLite 的 TEXT 是动态长度，长文本列无需放宽：返回空串，迁移步骤据此跳过。
+func (sqliteDialect) modifyColumn(string, column) string { return "" }
 
 // quoteIdent 用反引号包裹标识符。SQLite 和 MySQL 都接受反引号形式的标识符引用，
 // 统一加引号后列名不再受 MySQL 保留字表影响：settings.sensitive 在 MySQL 8.0 是
@@ -225,6 +235,12 @@ func (mysqlDialect) isDuplicateColumnErr(err error) bool {
 	return containsFold(err.Error(), "duplicate column name")
 }
 
+// MODIFY COLUMN 重复执行只是把列重建成同一类型，可安全幂等重跑；渲染结果保留
+// NOT NULL 且不带 DEFAULT（长文本列一律由业务侧显式写入），与建表口径一致。
+func (mysqlDialect) modifyColumn(table string, c column) string {
+	return fmt.Sprintf("ALTER TABLE %s MODIFY COLUMN %s;", table, renderMySQLColumn(c))
+}
+
 func renderMySQLColumn(c column) string {
 	var typ string
 	switch c.kind {
@@ -233,7 +249,8 @@ func renderMySQLColumn(c column) string {
 	case colTextMedium:
 		typ = "VARCHAR(1024)"
 	case colLong:
-		typ = "TEXT"
+		// MEDIUMTEXT（16MB）而不是 TEXT（64KB）：原因见 colLong 注释里的真机事故。
+		typ = "MEDIUMTEXT"
 	case colInt:
 		typ = "INTEGER"
 	case colBool:
