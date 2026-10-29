@@ -62,6 +62,8 @@ deploy/
 
 ## 前置
 
+> 走 `deploy/install.sh` 一键安装时本节全部由脚本代劳；这里保留手工 apply 的完整口径，两套语义等价。
+
 1. 构建并推送镜像（构建与推仓由部署方执行，清单里不写私有仓库地址）。后端有两档镜像，
    构建阶段完全相同，只差运行阶段（P6.3 / D-33）：默认档内置 bash/jq/kubectl，容器内排障
    能力与本地 CLI 对齐；无 shell 变体给安全基线禁止容器内解释器的现场，配 `ConfigMap` 里
@@ -100,6 +102,29 @@ deploy/
    账号需要 `SELECT/INSERT/UPDATE/DELETE/CREATE/ALTER/INDEX/REFERENCES`。DSN 必须带 `parseTime=true`。
 3. 生成凭据加密密钥（64 位 hex）：`openssl rand -hex 32`。轮换会使已加密的库内存量凭据不可解，
    参见 `base/secret.example.yaml` 的轮换须知。
+
+## 一键安装（推荐）
+
+手工 apply 与脚本等价，日常交付优先用 `deploy/install.sh`：它把镜像构建推送、Secret 幂等、PVC、迁移 Job、
+暴露层和验收摘要串成九阶段，失败会停在当阶段并给出根因与下一条可复制命令，全程 tee 到 `install-<ts>.log`。
+
+```bash
+cp deploy/install.env.example install.env    # 42 个参数全注释模板，值全是占位符
+chmod 600 install.env                        # 里面有 DSN，按密钥管理
+
+deploy/install.sh --env-file install.env --dry-run   # 只渲染清单 + 占位符残留断言，不碰集群
+deploy/install.sh --env-file install.env --diff      # 走 kubectl diff 先看差异
+deploy/install.sh --env-file install.env             # 真装：构建 → 推送 → 九阶段发布
+deploy/install.sh --env-file install.env             # 重跑验幂等：不重置密钥、不覆盖已有口令
+```
+
+- 参数优先级 `CLI flag > 环境变量 > install.env > 内置默认`；CLI 写法必须带等号（`--IMAGE=<addr>`）。
+- `K8S_AI_ENC_KEY` 复用优先、缺失才生成并在 `ENC_KEY_BACKUP_DIR` 留 600 备份；轮换只走 `--rotate`，
+  且**当前版本不做自动重加密**，轮换后必须在配置中心重录模型 api_key、MCP env 与集群凭据。
+- `ENABLE_MINIO=true` 当前被明确拒绝：自带 MinIO 清单随开发计划 P8.8 交付，先用现场已有 S3 兼容桶
+  （`BLOBS_BACKEND=s3` 指向它）。
+- `BUILD=true` 但探测不到容器运行时时自动降级为只发布；离线场景用 `--load-tar=<tar>` 导入。
+- 参数口径的权威源是 `docs/03-运维与部署/01-部署与安装.md` §4.10，本文件只引用不复制。
 
 ## 形态 A：前后端一体化
 

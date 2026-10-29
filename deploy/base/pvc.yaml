@@ -23,5 +23,5 @@ spec:
       storage: 5Gi
   # 保持注释 = 用集群默认存储类（install.sh 的 STORAGE_CLASS 留空就是这个语义）。
   # 现场要指定就取消注释并改成 kubectl get storageclass 里的名字；
-  # 取消注释却仍留 REPLACE_ 开头的占位值会让 PVC 一直 Pending。
+  # 取消注释却仍保留下面这行的模板占位值，会让 PVC 一直卡在 Pending。
   # storageClassName: REPLACE_WITH_STORAGE_CLASS
