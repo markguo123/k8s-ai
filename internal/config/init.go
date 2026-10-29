@@ -47,6 +47,22 @@ platform:
     driver: mysql             # 四期主存储 MySQL；sqlite 为本地/单机兜底
     sqlite_path: "~/.k8s-ai/k8s-ai.db"  # driver=sqlite 时的库文件（容器内须挂 PVC）
     dsn: ""                   # 只经 K8S_AI_PLATFORM_STORE_DSN / Secret 注入；YAML 留空
+  blobs:                      # 二进制对象后端：附件、报告产物、可选的会话正文外置（P8.1 / D-32）
+    driver: db                # off | db | dir | s3；默认 db（正文进 DB），老环境升级零行为变化
+    prefix: k8sai             # 对象键首段，≤32 字符，只允许小写字母数字与 - _
+    dir: ""                   # driver=dir 的根目录；留空由进程按场景取默认（容器内 /data/blobs）
+    endpoint: ""              # driver=s3 才用：host:port，不含 scheme（环境专有值，别提交进仓库）
+    region: us-east-1         # 签名区域；MinIO 默认 us-east-1
+    use_tls: false            # 自签 MinIO 常见 false；生产建议挂证书后改 true
+    path_style: true          # MinIO/Ceph 必须 true（虚拟主机寻址会解析不到桶名）
+    bucket: k8s-ai            # driver=s3 必填
+    access_key: ""            # 只经 K8S_AI_PLATFORM_BLOBS_ACCESS_KEY / Secret 注入；YAML 留空
+    secret_key: ""            # 只经 K8S_AI_PLATFORM_BLOBS_SECRET_KEY / Secret 注入；YAML 留空
+    create_bucket: true       # 启动期幂等建桶；无建桶权限的现场置 false 并预先建桶
+    presign_ttl: 15m          # 预签名下载链接有效期，≤24h
+    max_object_size: 32MiB    # 单对象上限，≤256MiB，超限直接拒绝（不截断）
+    session_data: false       # 会话正文外置开关；只在 driver=dir/s3 时建议开启
+    gc_grace_period: 168h     # GC 宽限期：未引用对象超过该时长才回收
   auth:
     admin_username: "admin"   # 首次初始化内置管理员用户名
     token_ttl: 24h            # 登录会话 Token 有效期（> 0）
@@ -142,6 +158,15 @@ agent:
 rules:
   enabled: []                 # 非空则只启用这些规则
   disabled: []                # 禁用指定规则
+
+# 二进制产物本地目录（P8.1 / D-32）：终端直用只允许 off | dir 两档；桶与凭据
+# 键（endpoint/bucket/access_key/secret_key 等）属平台形态，写在 cli.yaml 里会被
+# k8s-ai config validate --mode cli 点名告警；driver 写 s3 会在构造后端时被拒绝
+# （写 db 按 dir 等价处理并提示），见方案 15 §11。
+platform:
+  blobs:
+    driver: dir               # off | dir
+    dir: "~/.k8s-ai/blobs"    # 与 cli.yaml/k8s-ai.db/sessions/audit 同处，整目录可拷走
 `
 
 // DefaultTemplate 保留为 server 静态模板的别名（三期调用方兼容）。

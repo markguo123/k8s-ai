@@ -673,6 +673,20 @@
 - **后果**：镜像约 20MB → 约 180MB、CVE 面上升（交付前镜像扫描报告归档）；容器内具备本地命令执行能力，故上述加固项为必配；换来 K8s 形态与本地 CLI 形态的执行能力对齐（管道、聚合统计、heredoc、非交互 `kubectl exec`）。代码面为 `Options`/config 各一个布尔键、两处可指导文案与启动探测，`tests/arch` 增加「shell 执行点唯一且必须被闸门包裹」红线。
 - **落实状态**：待实现（P6.3）。方案见 `16-方案-容器执行通道与镜像基座-四期.md` v1.1。
 
+## ADR-045 一键安装：配置三层分层、暴露层可插拔（默认 NodePort）与 LLM 辅助边界
+
+- **状态**：已接受（2026-10-29）；实现落 P6.4，安装辅助拆到 P6.14/P6.15（可选、不进关键路径）
+- **背景**：P6.4 开工前的口径评审，用户提出四点：① 原口径「`STORAGE_CLASS` 为空则不创建 PVC」不合现场习惯，空值应当表示「用集群默认存储类」而不是放弃持久化；② Ingress 要求客户端能解析域名，内网现场没有真实域名时只能逐台改客户端 hosts，因此 Ingress 不能是必经路径；③ 脚本必须做到「配好参数就一键装成」，涵盖镜像构建与服务发布，提示与日志完善，不允许运维再回头手改 YAML；④ 安装过程可以借 LLM 能力，但**千万不要为非大模型功夫**，没有模型时用户手改参数执行脚本也必须装通。现状约束：正式清单刻意零环境专有值（`REPLACE_` 占位 + Service 固定 ClusterIP），部署手册 §4.4 是手工 apply 十步，脚本路径与手工路径必须同口径、可互相验证。
+- **决策**：
+  1. 配置来源三层：**CLI flag > 环境变量 > `install.env` > 内置默认**。交互只用于「必填缺失补问」与「危险动作二次确认」，`--yes` 走全无人值守；★必填缺失即拒绝，不猜默认值。
+  2. 脚本两段一体：**BUILD 段**（有 docker/podman 就构建并推送，构建参数与 P6.3 对齐——`GOPROXY`、kubectl 离线投递优先；`--load-tar` 走 `docker load` 离线导入；无容器运行时降级为纯发布）；**DEPLOY 段九阶段**（前置检查 → 命名空间/RBAC/ConfigMap → Secret 幂等 → PVC 等待 Bound → 迁移 Job 等待成功 → Deployment/Service 等待 rollout → 对外暴露 → 写权限 RBAC → 验收摘要）。
+  3. `STORAGE_CLASS` 语义修正：为空 = 渲染时省略 `storageClassName` 字段，由集群默认存储类供给；PVC **默认创建**（承载 `/reports` 与导出，`REPORT_STORAGE_SIZE` 默认 5Gi），`PERSIST_REPORTS=false` 才退化为 emptyDir；集群无默认存储类且未显式指定时，前置检查失败并列出 `kubectl get sc` 供选择。
+  4. 暴露层可插拔：`EXPOSE=nodeport|ingress`，**默认 `nodeport`**；`INGRESS_HOST` 给了才启用 Ingress（两者可并存）；`NODE_PORT` 为空由集群分配，apply 后回读 `.spec.ports[0].nodePort` 并列出全部节点 IP 的访问 URL，同时打印 `port-forward` 兜底命令；nodePort 占用做前置检查。**不改 Go 代码**——登录 token 存 localStorage 并经 `Authorization` 头发送、`allowsOrigin` 放行同源、SPA 用同源相对路径，NodePort 直连与 Ingress 同域行为一致；正式清单 Service 仍固定 ClusterIP 以保持可独立 apply。
+  5. 渲染与幂等：清单渲染进 `mktemp -d`（`trap` 清理），只替换已知锚点串，产物断言零 `REPLACE_` 残留、零示例域名残留；仓库 YAML 不被就地改写；Secret 走 `kubectl create secret generic --dry-run=client -o yaml | kubectl apply -f -`，`k8s-ai-enc` 复用优先、`k8s-ai-admin` 仅不存在时创建，DSN 与口令经 stdin 注入，不进 `ps` 与 shell history。
+  6. 可诊断性：全程 tee 到 `install-<ts>.log`，阶段带序号与耗时，`-v` 展开原始输出，`--dry-run` 只渲染、`--diff` 预演；失败必须打印阶段名 + 根因摘要 + 下一条可复制命令；原地重跑不动已存在的密钥与口令。
+  7. LLM 边界：**脚本本体零 LLM、零外呼**。安装辅助拆为两个可选任务且不进关键路径——**P6.14 `install doctor`**（装后只读诊断，复用平台 agent / 只读工具 / 审批链路，日志与事件摘要先脱敏再进模型，不自动修复）与 **P6.15 `install plan`**（读集群实况产出 `install.env` 草稿与逐项理由，LLM 不生成也不执行 `kubectl apply`）；`install.sh` 失败时末行提示 doctor 命令。
+- **后果**：安装路径从「手工十步 + 手改 YAML」收敛为「一份 env + 一条命令」，同时保留正式清单独立 apply 的可审计性；默认 NodePort 意味着对外端口落在 30000-32767，需要标准 80/443 的现场仍走 Ingress 或自备 LB；PVC 默认创建把「无默认存储类」暴露成前置检查失败而不是运行期一直 Pending；`tests/arch` 需新增脚本红线（含「每个 `REPLACE_` 占位都有对应参数」与「零环境专有值」两条），清单占位变更会被测试挡住；P6.14/P6.15 可延后，不影响 v4.0.0 准出。
+- **落实状态**：待实现（P6.4）。参数表权威源为部署手册 §4.10，`deploy/README.md`、PRD §27 与本 ADR 只引用不复制，避免三处漂移。
 ## 待决策事项（需在编码前确认）
 
 | # | 问题 | 建议 | 影响 |

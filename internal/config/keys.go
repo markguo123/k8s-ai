@@ -54,6 +54,14 @@ var platformStaticEngineKeys = map[string]bool{
 	"agent.audit_dir":   true,
 }
 
+// cliPlatformKeys 是终端直用模板（cli.yaml）允许出现的 platform: 键。CLI 只允许本地
+// 目录后端（off|dir），因此只消费这两个键；其余 platform: 键属平台进程，出现在
+// cli.yaml 里会被 `config validate --mode cli` 点名告警（D-32 / 方案 15 §11）。
+var cliPlatformKeys = map[string]bool{
+	"platform.blobs.driver": true,
+	"platform.blobs.dir":    true,
+}
+
 // keyIndex 是 Config 可识别键的索引，分三类：
 //   - leaf：标量与 map 字段的可写键（KnownKeys 返回这些）；
 //   - node：结构体父段（llm、platform.server），本身不是配置项但必须识别，
@@ -191,7 +199,12 @@ func Diagnostics(path string, mode ValidateMode) ([]string, error) {
 			}
 		case ValidateModeCLI:
 			if section == "platform" {
-				warnings = append(warnings, "platform: 段是平台静态启动参数，由 server 读取配置文件；终端直用不消费")
+				// 不再是整段一刀切：CLI 确实要读 blobs 的本地目录两键，其余键逐个点名。
+				if offenders := keysOutsidePrefix("platform.", cliPlatformKeys, leaves); len(offenders) > 0 {
+					warnings = append(warnings, fmt.Sprintf(
+						"platform: 段是平台静态启动参数，由 server 读取；终端直用只消费 platform.blobs.driver/dir，这些键会被忽略：%s",
+						strings.Join(offenders, "、")))
+				}
 			}
 		}
 	}
@@ -199,15 +212,20 @@ func Diagnostics(path string, mode ValidateMode) ([]string, error) {
 	if dsn, ok := leaves["platform.store.dsn"].(string); ok && strings.TrimSpace(dsn) != "" {
 		warnings = append(warnings, "platform.store.dsn 在配置文件里非空：DSN 含口令，应只经 K8S_AI_PLATFORM_STORE_DSN / Secret 注入")
 	}
+	warnings = append(warnings, blobsConfigWarnings(leaves)...)
 	return warnings, nil
 }
 
 // misplacedStaticKeys 返回该引擎段下不在平台静态白名单里的键（已排序）。
 func misplacedStaticKeys(section string, leaves map[string]any) []string {
-	prefix := section + "."
+	return keysOutsidePrefix(section+".", platformStaticEngineKeys, leaves)
+}
+
+// keysOutsidePrefix 返回以 prefix 开头、但不在 allowed 白名单里的键（已排序）。
+func keysOutsidePrefix(prefix string, allowed map[string]bool, leaves map[string]any) []string {
 	var out []string
 	for key := range leaves {
-		if !strings.HasPrefix(key, prefix) || platformStaticEngineKeys[key] {
+		if !strings.HasPrefix(key, prefix) || allowed[key] {
 			continue
 		}
 		out = append(out, key)

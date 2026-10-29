@@ -3,8 +3,9 @@
 #   /api/v1/*               平台 API（含 Chat SSE）
 #   /healthz /readyz /version   探针与版本
 # 形态 A 下同一端口内嵌 SPA；形态 B 只提供 API，前端另有 k8s-ai-web。
-# 类型固定 ClusterIP：对外访问一律走 Ingress，清单里不写 NodePort/LoadBalancer
-# 这类环境专有值。
+# 类型固定 ClusterIP：正式清单刻意不写 NodePort/LoadBalancer 这类环境专有值，保持可独立 apply。
+# 对外入口由 install.sh 渲染（默认 NodePort，NODE_PORT 留空则集群随机分配；给了 INGRESS_HOST
+# 才启用 Ingress，见 deploy/{allinone,separated}/ingress.yaml 与部署手册 §4.6/§4.10）。
 apiVersion: v1
 kind: Service
 metadata:

@@ -5,8 +5,16 @@
 
 | 形态 | 前端由谁托管 | 需要构建的镜像 | 清单目录 | 入口 |
 | --- | --- | --- | --- | --- |
-| A 前后端一体化（默认） | 后端进程 `go:embed` 内嵌 SPA | `k8s-ai` | `base/` + `allinone/` | `allinone/ingress.yaml` 单 path `/` |
-| B 前后端分离 | 独立 Nginx 镜像 | `k8s-ai` + `k8s-ai-web` | `base/` + `separated/` | `separated/ingress.yaml` 按路径分流 |
+| A 前后端一体化（默认） | 后端进程 `go:embed` 内嵌 SPA | `k8s-ai` | `base/` + `allinone/` | 默认 NodePort；启用 Ingress 时为 `allinone/ingress.yaml` 单 path `/` |
+| B 前后端分离 | 独立 Nginx 镜像 | `k8s-ai` + `k8s-ai-web` | `base/` + `separated/` | 默认 NodePort（前端 Service）；启用 Ingress 时为 `separated/ingress.yaml` 按路径分流 |
+
+**对外入口默认 NodePort**：现场常常没有可用域名，Ingress 用自定义域名要逐台改客户端 hosts，所以
+`install.sh` 默认 `EXPOSE=nodeport`（`NODE_PORT` 留空由集群分配并在末行回显各节点 URL），给了
+`INGRESS_HOST` 才启用 Ingress，两者可并存。正式清单的 Service 固定 `ClusterIP`，暴露层由脚本渲染，
+**切换暴露方式不需要改任何代码**（token 走 `Authorization` 头、SPA 用同源相对路径）。
+
+> **一键安装参数表的唯一权威源是 [部署手册 §4.10](../docs/03-运维与部署/01-部署与安装.md)**；
+> 本文件只讲清单结构、占位值与排障，不复制参数表，避免两处漂移。
 
 形态 B 的后端仍是同一个镜像，只多一条 `K8S_AI_PLATFORM_SERVER_STATIC_ENABLED=false`
 关掉内嵌静态托管。两份 `deployment.yaml` 除这条 env 之外必须逐字段一致，由
@@ -34,7 +42,7 @@ deploy/
 | `base/secret.example.yaml` | `k8s-ai-store` / `k8s-ai-enc` / `k8s-ai-admin` / `k8s-ai-llm` | 必需（复制后填值，勿直接 apply） |
 | `base/db-migrate-job.yaml` | Job `k8s-ai-db-migrate`（`k8s-ai db migrate`） | 必需（首次与每次升级） |
 | `base/service.yaml` | Service `k8s-ai-server`:8080 | 必需（两形态共用） |
-| `base/pvc.yaml` | PVC `k8s-ai-data`（5Gi RWO） | 可选（报告留档或 SQLite 兜底） |
+| `base/pvc.yaml` | PVC `k8s-ai-data`（默认 5Gi RWO，承载报告与导出） | 默认创建（`STORAGE_CLASS` 留空走集群默认存储类；SQLite 兜底时必须） |
 | `allinone/deployment.yaml` | Deployment `k8s-ai-server`（内嵌 SPA） | 形态 A |
 | `allinone/ingress.yaml` | Ingress `k8s-ai`（单入口，含 SSE 关缓冲） | 形态 A |
 | `separated/deployment.yaml` | Deployment `k8s-ai-server`（纯 API） | 形态 B |
@@ -145,7 +153,8 @@ Deployment 即可，不需要先删；反向切换同理。
 
 ## 可选件
 
-- 报告跨重启保留：先 `kubectl apply -f deploy/base/pvc.yaml`（改 `storageClassName`），再
+- 报告跨重启保留：先 `kubectl apply -f deploy/base/pvc.yaml`（`storageClassName` 留注释=集群默认存储类，
+  要指定就改成现场存储类名），再
   `kubectl -n k8s-ai patch deploy k8s-ai-server --type=strategic --patch-file deploy/example/deployment-reports-pvc.yaml`。
 - 部署期种子配置（模型地址/模型名/默认命名空间）：`deploy/example/env-overrides.example.yaml`。
   密钥态变量（DSN、`K8S_AI_LLM_API_KEY`）恒优先，种子态只在配置库该键为空时生效一次。
@@ -180,7 +189,7 @@ Get-ChildItem deploy -Recurse -Filter *.yaml | ForEach-Object {
 | --- | --- |
 | `base/secret.example.yaml`、`example/secret-mysql.example.yaml` | `REPLACE_ME` |
 | `allinone/ingress.yaml`、`separated/ingress.yaml` | `k8s-ai.example.com`、`ingressClassName: nginx` |
-| `base/pvc.yaml` | `REPLACE_WITH_STORAGE_CLASS`（留占位会让 PVC 一直 Pending） |
+| `base/pvc.yaml` | `# storageClassName` 默认注释掉=用集群默认存储类；取消注释必须填真实存储类名（填 `REPLACE_` 占位会让 PVC 一直 Pending） |
 | `scan/configmap.yaml` | `REPLACE_WITH_LLM_HOST`、`REPLACE_WITH_MODEL_NAME` |
 | 两份 `deployment.yaml`、`base/db-migrate-job.yaml`、`separated/web-deployment.yaml` | `image:` 换成现场仓库地址与 TAG |
 
@@ -189,7 +198,8 @@ Get-ChildItem deploy -Recurse -Filter *.yaml | ForEach-Object {
 ```bash
 kubectl -n k8s-ai get deploy,svc,ingress,job
 kubectl -n k8s-ai logs deploy/k8s-ai-server | head -50
-kubectl -n k8s-ai exec deploy/k8s-ai-server -- version    # 镜像无 shell，直接跑子命令
+kubectl -n k8s-ai exec deploy/k8s-ai-server -- version   # 默认档内置 bash/jq/kubectl（P6.3）
+kubectl -n k8s-ai exec deploy/k8s-ai-server -- kubectl version --client   # 镜像内 kubectl 就位
 curl -s https://<host>/version
 ```
 

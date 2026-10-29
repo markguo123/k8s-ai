@@ -32,6 +32,22 @@ data:
         driver: mysql                    # 四期主存储；sqlite 为本地/单机兜底
         sqlite_path: "/data/k8s-ai.db"   # 仅 driver=sqlite 使用，容器内必须落 PVC
         dsn: ""                          # 只经 K8S_AI_PLATFORM_STORE_DSN（Secret）注入
+      blobs:                      # 二进制对象后端（P8.1 / D-32）：附件、报告产物、可选会话正文外置
+        driver: db                # off | db | dir | s3；默认 db，未接对象存储时行为与四期前一致
+        prefix: k8sai             # 对象键首段，≤32 字符
+        dir: ""                   # driver=dir 才用；容器内留空 = /data/blobs（须挂可写卷）
+        endpoint: ""              # driver=s3 才用；现场地址属环境专有值，经 Secret/env 注入
+        region: us-east-1         # 签名区域；MinIO 默认 us-east-1
+        use_tls: false            # 集群内自建 MinIO 常见 false
+        path_style: true          # MinIO/Ceph 必须 true
+        bucket: k8s-ai            # driver=s3 必填
+        access_key: ""            # 只经 K8S_AI_PLATFORM_BLOBS_ACCESS_KEY（Secret）注入
+        secret_key: ""            # 只经 K8S_AI_PLATFORM_BLOBS_SECRET_KEY（Secret）注入
+        create_bucket: true       # 无建桶权限的现场置 false 并预先建桶
+        presign_ttl: 15m          # 预签名下载链接有效期，≤24h
+        max_object_size: 32MiB    # 单对象上限，≤256MiB
+        session_data: false       # 会话正文外置；仅 driver=dir/s3 时建议开启
+        gc_grace_period: 168h     # GC 宽限期
       auth:
         admin_username: admin    # 空库首启时创建的内置管理员用户名
         token_ttl: 24h           # 平台登录会话有效期

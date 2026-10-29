@@ -19,6 +19,21 @@ var serverTemplateKeys = []string{
 	"platform.auth.admin_username",
 	"platform.auth.session_store",
 	"platform.auth.token_ttl",
+	"platform.blobs.access_key",
+	"platform.blobs.bucket",
+	"platform.blobs.create_bucket",
+	"platform.blobs.dir",
+	"platform.blobs.driver",
+	"platform.blobs.endpoint",
+	"platform.blobs.gc_grace_period",
+	"platform.blobs.max_object_size",
+	"platform.blobs.path_style",
+	"platform.blobs.prefix",
+	"platform.blobs.presign_ttl",
+	"platform.blobs.region",
+	"platform.blobs.secret_key",
+	"platform.blobs.session_data",
+	"platform.blobs.use_tls",
 	"platform.exec.shell_enabled",
 	"platform.server.addr",
 	"platform.server.static_enabled",
@@ -71,6 +86,9 @@ var cliTemplateKeys = []string{
 	"llm.temperature",
 	"llm.thinking.type",
 	"llm.timeout",
+	// CLI 只消费 blobs 的本地目录两键（off|dir），其余 platform: 键属平台进程。
+	"platform.blobs.dir",
+	"platform.blobs.driver",
 	"report.directory",
 	"report.format",
 	"rules.disabled",
@@ -148,7 +166,7 @@ func TestCLITemplateKeySet(t *testing.T) {
 		t.Errorf("cli 模板键集合漂移\n got: %v\nwant: %v", got, cliTemplateKeys)
 	}
 	secs := templateSections(t, CLITemplate)
-	want := []string{"agent", "kubernetes", "llm", "report", "rules", "scan"}
+	want := []string{"agent", "kubernetes", "llm", "platform", "report", "rules", "scan"}
 	if !equalKeys(secs, want) {
 		t.Errorf("cli 模板段应为 %v，实际 %v", want, secs)
 	}

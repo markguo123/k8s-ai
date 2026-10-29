@@ -3,7 +3,7 @@
 # 本文件是 strategic merge patch，不是可 apply 的清单（刻意不写 apiVersion/kind）：
 # 只能用 kubectl patch --patch-file，`kubectl apply -R -f deploy/` 会在它这里报校验错误。
 #
-# 先 apply deploy/base/pvc.yaml（并把 storageClassName 换成现场存储类），再执行：
+# 先 apply deploy/base/pvc.yaml（storageClassName 留注释即用集群默认存储类，要指定就改成现场值），再执行：
 #   kubectl -n k8s-ai patch deploy k8s-ai-server --type=strategic \
 #     --patch-file deploy/example/deployment-reports-pvc.yaml
 #

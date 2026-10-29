@@ -161,8 +161,10 @@ type MCPServerConfig struct {
 type PlatformConfig struct {
 	Server PlatformServerConfig `mapstructure:"server"`
 	Store  PlatformStoreConfig  `mapstructure:"store"`
-	Auth   PlatformAuthConfig   `mapstructure:"auth"`
-	Exec   PlatformExecConfig   `mapstructure:"exec"`
+	// Blobs 是二进制对象后端（附件/报告产物/可选会话正文外置，P8.1 / D-32）。
+	Blobs PlatformBlobsConfig `mapstructure:"blobs"`
+	Auth  PlatformAuthConfig  `mapstructure:"auth"`
+	Exec  PlatformExecConfig  `mapstructure:"exec"`
 }
 
 // PlatformExecConfig 控制命令执行通道（P6.3 / D-33 / ADR-044 v1.1）。
@@ -379,6 +381,23 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("platform.store.driver", StoreDriverSQLite)
 	v.SetDefault("platform.store.sqlite_path", "~/.k8s-ai/k8s-ai.db")
 	v.SetDefault("platform.store.dsn", "")
+	// 二进制对象后端（P8.1 / D-32）：默认 db，未配置的环境升级即无感。每个键都必须
+	// 有默认值，viper 才能在 Unmarshal 时合并只来自环境变量（Secret）注入的取值。
+	v.SetDefault("platform.blobs.driver", BlobDriverDB)
+	v.SetDefault("platform.blobs.prefix", "k8sai")
+	v.SetDefault("platform.blobs.dir", "")
+	v.SetDefault("platform.blobs.endpoint", "")
+	v.SetDefault("platform.blobs.region", "us-east-1")
+	v.SetDefault("platform.blobs.use_tls", false)
+	v.SetDefault("platform.blobs.path_style", true)
+	v.SetDefault("platform.blobs.bucket", "k8s-ai")
+	v.SetDefault("platform.blobs.access_key", "")
+	v.SetDefault("platform.blobs.secret_key", "")
+	v.SetDefault("platform.blobs.create_bucket", true)
+	v.SetDefault("platform.blobs.presign_ttl", 15*time.Minute)
+	v.SetDefault("platform.blobs.max_object_size", "32MiB")
+	v.SetDefault("platform.blobs.session_data", false)
+	v.SetDefault("platform.blobs.gc_grace_period", 168*time.Hour)
 	v.SetDefault("platform.auth.admin_username", "admin")
 	v.SetDefault("platform.auth.token_ttl", 24*time.Hour)
 	v.SetDefault("platform.auth.session_store", "memory")
@@ -426,6 +445,11 @@ func expandHomePaths(cfg *Config) error {
 		return err
 	}
 	cfg.Platform.Store.SQLitePath = sqlitePath
+	blobsDir, err := expandHome(cfg.Platform.Blobs.Dir)
+	if err != nil {
+		return err
+	}
+	cfg.Platform.Blobs.Dir = blobsDir
 	certFile, err := expandHome(cfg.Platform.Server.TLS.CertFile)
 	if err != nil {
 		return err
@@ -585,6 +609,11 @@ func (p PlatformConfig) Validate() error {
 	case "", "memory":
 	default:
 		return fmt.Errorf("platform.auth.session_store must be memory (persistent store not supported this phase)")
+	}
+	// blob 后端放在最后校验：存储驱动与密钥的错误更靠近「服务起不来」的根因，
+	// 先报它们能让现场少绕一圈。
+	if err := p.Blobs.Validate(); err != nil {
+		return err
 	}
 	return nil
 }

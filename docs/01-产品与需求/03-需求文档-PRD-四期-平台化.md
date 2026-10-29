@@ -1,6 +1,6 @@
 # k8s-ai 四期需求规格（平台化）
 
-> 版本：v1.19
+> 版本：v1.20
 > 日期：2026-10-29
 > 状态：四期最终需求方案  
 > 目标：交付面向企业的多用户 Kubernetes AI 运维平台，在同一权限、会话、审计与安全执行体系下提供 Chat、诊断、集群管理、Skill、审批和治理能力。
@@ -1580,7 +1580,10 @@ k8s-ai server \
 
 配置经 ConfigMap 挂载并以 `--config` 传入。平台库默认 MySQL，DSN 经 Secret 注入；SQLite 兜底路径的数据目录
 用 PVC 承载；报告与导出文件的落点由 `platform.blobs.driver` 决定（`db` 落库、`dir` 需挂载 PVC、`s3` 走桶可免
-PVC），未指定存储类时不创建 PVC。初始 admin 密码只在**空库首启**时经
+PVC）。**报告 PVC 默认创建**：`STORAGE_CLASS` 为空表示**使用集群默认存储类**（渲染时省略该字段），
+而不是放弃持久化；集群没有默认存储类且未显式指定时，安装前置检查失败并列出可选存储类。对外入口
+**默认 NodePort**（可指定端口，未指定由集群分配并在安装末行回显各节点访问 URL），Ingress 为**可选项**
+（给了 `INGRESS_HOST` 才启用），原因是现场常无真实域名、走自定义域名需逐台改客户端 hosts。初始 admin 密码只在**空库首启**时经
 Secret 注入，已完成初始化的库重启不再要求该变量。日志走标准输出，不再使用 `nohup` 重定向到文件。
 
 探针语义（v1.16 明确）：`/healthz` 是进程级 liveness，不触碰外部依赖；`/readyz` 必须真实反映可用状态，
@@ -1635,24 +1638,42 @@ deploy/install.sh
 参数：
 
 ```text
-IMAGE
-TAG
-NAMESPACE
-STORAGE_CLASS
-INGRESS_HOST
-ENABLE_WRITE
-ADMIN_PASSWORD
-BLOBS_BACKEND
+IMAGE                  必填，脚本不内置默认仓库地址
+TAG                    必填
+BUILD                  是否由脚本构建并推送镜像，默认 true；无容器运行时自动降级为纯发布
+NAMESPACE              默认 k8s-ai
+FORM                   allinone（形态 A，默认）/ separated（形态 B）
+IMAGE_WEB              形态 B 必填的前端镜像地址
+STORE_DRIVER           mysql（默认）/ sqlite
+MYSQL_DSN              mysql 模式必填，经 stdin 写入 Secret，不进 ConfigMap
+STORAGE_CLASS          为空则用集群默认存储类（不是不建 PVC）
+REPORT_STORAGE_SIZE    报告 PVC 容量，默认 5Gi
+PERSIST_REPORTS        默认 true；false 时 /reports 退化为 emptyDir
+EXPOSE                 nodeport（默认）/ ingress
+NODE_PORT              为空由集群在 NodePort 区间随机分配，安装末行回显实际端口与节点 URL
+INGRESS_HOST           可选；提供才启用 Ingress，与 NodePort 可并存
+INGRESS_CLASS          启用 Ingress 时必填
+ENABLE_WRITE           true 时显式 apply 写权限 RBAC 并二次确认
+ADMIN_PASSWORD         缺省随机生成，只打印一次
+LLM_API_KEY            可选，首启播种的模型密钥
+IMAGE_PULL_SECRET      可选，私有仓库拉取凭据
+BLOBS_BACKEND          off / db / dir / s3，缺省 db，不传时与旧版行为完全一致
 BLOBS_ENDPOINT
 BLOBS_BUCKET
 BLOBS_ACCESS_KEY
 BLOBS_SECRET_KEY
-ENABLE_MINIO
+ENABLE_MINIO           默认 false；true 时装 MinIO 并隐含要求 BLOBS_BACKEND=s3
 MINIO_STORAGE_SIZE
 ```
 
-脚本负责编排，不替代正式 YAML：正式清单必须能独立 `kubectl apply` 跑通，脚本只做参数替换、顺序编排与
-幂等重跑。
+脚本负责编排，不替代正式 YAML：正式清单必须能独立 `kubectl apply` 跑通。脚本分**两段一体**——BUILD 段
+（有 docker/podman 时构建并推送镜像，构建参数与 P6.3 对齐；`--load-tar` 走离线导入；无容器运行时降级为
+纯发布）与 DEPLOY 段**九阶段**（前置检查 → 命名空间/RBAC/ConfigMap → Secret 幂等 → PVC 等待 Bound →
+迁移 Job 等待成功 → Deployment/Service 等待 rollout → 对外暴露 → 写权限 RBAC → 验收摘要）。配置来源
+三层 **CLI flag > 环境变量 > `install.env` > 内置默认**，交互只用于必填缺失补问与危险动作二次确认，
+`--yes` 全无人值守；★必填缺失即拒绝而非猜测。清单渲染进临时目录并断言零占位符残留，仓库 YAML 不被就地
+改写；全程 tee 日志、阶段带耗时，支持 `--dry-run`（只渲染）与 `--diff`（预演），失败时打印阶段名、根因摘要与
+下一条可复制命令。
 
 密钥与口令语义（v1.16 冻结）：
 
@@ -1661,7 +1682,9 @@ K8S_AI_ENC_KEY   已存在则复用，绝不覆盖；缺失才生成，并在本
                  轮换只走显式 --rotate，重跑脚本不会改密钥
 ADMIN_PASSWORD   缺省时随机生成，只在本次安装打印一次，不再重复输出
 ENABLE_WRITE     true 时显式 apply rbac-write.example.yaml 并二次确认
-STORAGE_CLASS    为空则不创建 PVC（MySQL 主存储下 PVC 为可选）
+STORAGE_CLASS    为空则用集群默认存储类；PVC 默认创建承载报告与导出，
+                 PERSIST_REPORTS=false 才退化 emptyDir
+ADMIN_PASSWORD   仅在不存在的 Secret 上创建；重跑不改已存在口令
 BLOBS_BACKEND    off / db / dir / s3，缺省即 db，不传时与旧版行为完全一致
 ENABLE_MINIO     默认 false；true 时装 MinIO，并隐含要求 BLOBS_BACKEND=s3
                  BLOBS_BACKEND=s3 且 ENABLE_MINIO=false 时，强校验 endpoint、bucket、
@@ -1669,6 +1692,10 @@ ENABLE_MINIO     默认 false；true 时装 MinIO，并隐含要求 BLOBS_BACKEN
 ```
 
 脚本必须幂等：重复执行不重置密钥、不轮换口令、不改已存在的 Secret 数据；执行前支持 `kubectl diff` 预演。
+
+LLM 只作**辅助安装**（D-34 / ADR-045）：脚本本体零 LLM、零外呼，可选的 `k8s-ai install doctor`（装后只读
+诊断）与 `k8s-ai install plan`（读集群实况产出 `install.env` 草稿）是独立子命令，不进安装关键路径；
+**没有模型时，用户手改参数执行脚本也必须装通**。
 
 ---
 
@@ -2011,3 +2038,4 @@ Security Boundary Unchanged
 | v1.17 | 2026-10-27 | P6-A 口径批注确认（见开发计划 v1.49、ADR-040/041/042 增补）：① §15 澄清 **DB `settings` 是动态键的默认唯一权威源与唯一写入目标**，env 仅对白名单键作部署期只读覆盖、命中不回写、页面标注覆盖态；② §22 补数据库前置——产品不执行 CREATE DATABASE，库与账号由 DBA 预建并建议 utf8mb4，表级 DDL 显式 utf8mb4，平台账号只授该库 DML 与建表改表索引权限；③ §26 明确**前后端两个独立 Dockerfile**（仓库根 Dockerfile 构建后端镜像、deploy/web.Dockerfile 构建前端 Nginx 镜像，互不依赖），并明确 SQLite 兜底数据目录必须挂 PVC、MySQL 主口径下 PVC 仅承载报告与导出；④ 新增 deploy/example MySQL 接入示例清单（非产品默认、不含现场地址与口令），MySQL 连通、迁移幂等、重启续用门禁实跑用例计入 P6.1/P6.5/P6.8 验收；⑤ 测试库名 `k8s_ai_test`、产品默认库名 `k8s_ai`，凭据严禁入库。需求条目与优先级不变。 |
 | v1.18 | 2026-10-27 | | **动态配置优先级口径修订（仅文档，签收方案 A）**：环境变量覆盖由「对白名单键一律最高优先」改为**两档语义**。① **密钥态**（`K8S_AI_LLM_API_KEY`、`K8S_AI_PLATFORM_STORE_DSN`）env/Secret 恒优先，密钥只走 Secret、页面永不回显，env 命中时页面值不生效但必须标注来源并在保存时给出提示；② **种子态 seed-once**（`K8S_AI_LLM_{PROVIDER,ENDPOINT,MODEL}` + ops 四键 `K8S_AI_{KUBECONFIG,KUBE_CONTEXT,NAMESPACE,KUBECTL_PATH}`）仅在 DB 该键无值时生效，页面保存过即以 DB 为准、env 不再覆盖；③ 覆盖面**冻结为 LLM 四键 + ops 四键**，`TEMPERATURE/MAX_TOKENS/TIMEOUT` 明确不纳入 env 覆盖（非字符串键，常驻类型转换分支收益不划算），键集合由测试锁定；④ 默认部署清单只注入 `K8S_AI_LLM_API_KEY`，非敏感覆盖只在 `deploy/example/` 演示。修订起因：页面保存路径不感知 env 覆盖，会出现「写库成功、页面显示已保存、运行时仍用 env 旧值」的静默陷阱。一句话口径：页面配过的以页面为准，页面没配过的用部署变量兜底，密钥永远以 Secret 为准。见 §15/§22、开发计划 v1.51、D-21/D-29 修订、ADR-031 v1.14、ADR-040 v1.2。需求条目与优先级不变。 |
 | v1.19 | 2026-10-29 | 两条部署与存储口径统一（仅文档，不改需求范围）：① **存储边界**（D-32、ADR-043、方案《15-方案-存储边界与对象存储-四期.md》、开发计划 v1.52 新增主线 P8）——大载荷统一经 internal/blobstore 决定落点，新增静态段 platform.blobs.*（driver 取 off、db、dir、s3，默认 db，不入动态键白名单），默认后端行为与现状一致，s3 对接 S3 兼容对象存储且 MinIO 只是默认交付后端，MySQL 仍是会话唯一权威源，dir 后端限制多副本扩容须在文档与校验中备注，CLI 仅允许 off 与 dir；② **容器执行通道口径翻转**（D-33、ADR-044 v1.1、方案《16-方案-容器执行通道与镜像基座-四期.md》）——默认镜像运行阶段改 debian:bookworm-slim 并内置 bash、coreutils、jq、curl 与构建期校验下载的 kubectl，platform.exec.shell_enabled 默认 true，安全由 shell 必经真人审批、既有红线、集群 RBAC、脱敏与全量审计、Deployment 加固收口，保留 Dockerfile.distroless 无 shell 变体，取消 initContainer 投递 kubectl；§22/§26/§27/§28 同步回写，开发计划 v1.53、部署手册 §2.2 与 §4.16/§4.17 |
+| v1.20 | 2026-10-29 | 一键安装口径冻结（仅文档，不改需求范围，见开发计划 v1.56、D-34、ADR-045）：① **`STORAGE_CLASS` 语义修正**：由「为空则不创建 PVC」改为「为空即用集群默认存储类」，PVC 默认创建承载报告与导出，集群无默认存储类且未指定时前置检查失败并列出可选值；② **暴露层改可选**：`EXPOSE=nodeport/ingress` 且**默认 NodePort**（现场常无真实域名，Ingress 自定义域名要逐台改客户端 hosts），`NODE_PORT` 为空由集群分配并回显节点 URL，Ingress 仅在给出 `INGRESS_HOST` 时启用，且经核对无需改 Go 代码（token 走 `Authorization` 头、同源放行、SPA 相对路径），正式清单 Service 仍固定 ClusterIP；③ **脚本两段一体 + 九阶段 + 配置三层**（CLI flag > env > `install.env` > 内置默认），参数表补齐 BUILD/FORM/IMAGE_WEB/REPORT_STORAGE_SIZE/PERSIST_REPORTS/EXPOSE/NODE_PORT/INGRESS_CLASS/IMAGE_PULL_SECRET，渲染进临时目录并断言零占位符残留、不就地改写仓库 YAML，DSN 与口令经 stdin 注入；④ **LLM 仅辅助**：脚本本体零 LLM，可选 `install doctor`/`install plan` 子命令（开发计划 P6.14/P6.15）不进关键路径，无模型时纯参数必须装通。§26/§27 同步回写，部署手册 §4.4/§4.6/§4.10 与 `deploy/` 注释同步 |
