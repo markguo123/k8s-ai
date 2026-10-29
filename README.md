@@ -81,7 +81,9 @@ make build
 make docker VERSION=v4.0.0-dev
 ```
 
-镜像基于 distroless static（非 root、小体积），prompts 已内嵌，无需挂载额外文件。
+镜像运行阶段基于 `debian:bookworm-slim`，非 root（uid 65532）并内置 `bash`、coreutils、`jq`、
+`curl` 与 `kubectl`，容器内排障与 kubectl 通道和 CLI 等价（ADR-044 v1.1）；硬合规现场另有
+`Dockerfile.distroless` 无 shell 变体。prompts 已内嵌，无需挂载额外文件。
 
 ## 快速开始
 

@@ -1,7 +1,7 @@
 # k8s-ai 四期需求规格（平台化）
 
-> 版本：v1.17
-> 日期：2026-10-27
+> 版本：v1.19
+> 日期：2026-10-29
 > 状态：四期最终需求方案  
 > 目标：交付面向企业的多用户 Kubernetes AI 运维平台，在同一权限、会话、审计与安全执行体系下提供 Chat、诊断、集群管理、Skill、审批和治理能力。
 
@@ -1341,6 +1341,16 @@ SQLite
 
 多副本不止取决于数据库：除 MySQL 外，还需要会话/Token 状态持久化与 SSE、审批等待通道的跨副本方案（本期不引入 Redis）。在这些条件满足之前，平台进程保持单副本（见 ADR-030）。
 
+**大载荷落点与对象存储（v1.19 修订，见 D-32、ADR-043、方案《15-方案-存储边界与对象存储-四期.md》）**：
+会话正文、巡检报告产物、会话附件这三类大载荷统一经 `internal/blobstore` 抽象决定落点。配置新增静态段
+`platform.blobs.*`（`driver` 取 `off` / `db` / `dir` / `s3`，默认 `db`），与 `platform.store.dsn` 同级，
+**不登记进动态配置键白名单**、配置中心页面不展示。默认 `db` 后端行为与现状一致（长文本列 + 报告目录兼容），
+零配置即可升级、无迁移风险；`s3` 对接 S3 兼容对象存储，MinIO 只是默认交付后端，接口面禁止出现厂商私有 API。
+MySQL 仍是会话与业务数据的**唯一权威源**，桶只承载报告、导出、附件这类可重算或用户自有备份的对象；业务表
+新增可空引用列指向对象，不做历史数据 backfill。`session_data` 会话正文外置开关默认关闭。
+`dir` 后端把数据落在挂载目录，适配单机与离线交付，但会限制后端多副本横向扩容，`config validate` 与交付文档
+必须显式备注该限制。CLI 可用后端只有 `off` 与 `dir`，二进制保持零配置直用（见 §29、ADR-031 v1.12）。
+
 ---
 
 # 23. API Contract
@@ -1569,7 +1579,8 @@ k8s-ai server \
 高可用/分布式协调不属于四期目标。
 
 配置经 ConfigMap 挂载并以 `--config` 传入。平台库默认 MySQL，DSN 经 Secret 注入；SQLite 兜底路径的数据目录
-用 PVC 承载，报告与导出文件按需可选挂载 PVC，未指定存储类时不创建 PVC。初始 admin 密码只在**空库首启**时经
+用 PVC 承载；报告与导出文件的落点由 `platform.blobs.driver` 决定（`db` 落库、`dir` 需挂载 PVC、`s3` 走桶可免
+PVC），未指定存储类时不创建 PVC。初始 admin 密码只在**空库首启**时经
 Secret 注入，已完成初始化的库重启不再要求该变量。日志走标准输出，不再使用 `nohup` 重定向到文件。
 
 探针语义（v1.16 明确）：`/healthz` 是进程级 liveness，不触碰外部依赖；`/readyz` 必须真实反映可用状态，
@@ -1604,9 +1615,15 @@ initContainer），`server` 启动内保留同一迁移的幂等兜底；`k8s-ai
 
 写权限显式开启。
 
-写执行依赖（关键约束）：容器镜像保持最小化，写执行统一走 client-go；kubectl 受控通道只用于
-显式配置 kubectl 的非容器场景。增强的执行器仍必须保持 Code Guard + internal/executor
-双层边界，且为唯一写执行通道。
+执行通道依赖（关键约束，v1.19 修订，见 D-33、ADR-044 v1.1、方案《16-方案-容器执行通道与镜像基座-四期.md》）：
+默认交付镜像运行阶段基座为 `debian:bookworm-slim`，内置 `bash`、coreutils、`jq`、`curl` 等排查工具，以及构建期
+按版本与 sha256 校验下载的 `kubectl`，容器内 Chat 保持与本地 CLI 等价的读命令、shell 管道与 kubectl 写通道能力，
+平台已有能力不因部署进 Kubernetes 而丢失。静态开关 `platform.exec.shell_enabled` 默认 `true`；置 `false` 时在构造
+执行命令之前返回可指导文案，配套 `Dockerfile.distroless` 无 shell 变体供硬合规现场选用。安全不靠隐藏工具，而由
+shell 命令必经真人审批、Secret 值与 `--raw` 与交互式动词红线、集群 RBAC（默认只读、不含 `pods/exec`）、输出脱敏与
+全量审计、Deployment 安全加固（非 root 65532、`allowPrivilegeEscalation: false`、drop ALL capabilities、
+`seccompProfile: RuntimeDefault`、只读根文件系统 + 可写 emptyDir）共同收口。Code Guard + `internal/executor`
+双层边界不变，且仍是唯一写执行通道。
 
 
 # 27. 一键安装
@@ -1625,6 +1642,13 @@ STORAGE_CLASS
 INGRESS_HOST
 ENABLE_WRITE
 ADMIN_PASSWORD
+BLOBS_BACKEND
+BLOBS_ENDPOINT
+BLOBS_BUCKET
+BLOBS_ACCESS_KEY
+BLOBS_SECRET_KEY
+ENABLE_MINIO
+MINIO_STORAGE_SIZE
 ```
 
 脚本负责编排，不替代正式 YAML：正式清单必须能独立 `kubectl apply` 跑通，脚本只做参数替换、顺序编排与
@@ -1638,6 +1662,10 @@ K8S_AI_ENC_KEY   已存在则复用，绝不覆盖；缺失才生成，并在本
 ADMIN_PASSWORD   缺省时随机生成，只在本次安装打印一次，不再重复输出
 ENABLE_WRITE     true 时显式 apply rbac-write.example.yaml 并二次确认
 STORAGE_CLASS    为空则不创建 PVC（MySQL 主存储下 PVC 为可选）
+BLOBS_BACKEND    off / db / dir / s3，缺省即 db，不传时与旧版行为完全一致
+ENABLE_MINIO     默认 false；true 时装 MinIO，并隐含要求 BLOBS_BACKEND=s3
+                 BLOBS_BACKEND=s3 且 ENABLE_MINIO=false 时，强校验 endpoint、bucket、
+                 access key、secret key 四项齐备，缺项即拒绝而非猜测
 ```
 
 脚本必须幂等：重复执行不重置密钥、不轮换口令、不改已存在的 Secret 数据；执行前支持 `kubectl diff` 预演。
@@ -1672,6 +1700,13 @@ STORAGE_CLASS    为空则不创建 PVC（MySQL 主存储下 PVC 为可选）
     密钥必须有离线备份，轮换必须走显式流程并重新加密存量。
 19. 产品清单、镜像与安装脚本不得硬编码任何具体环境信息（IP、域名、存储类、镜像仓库地址），
     环境差异只允许由部署参数或占位符替换提供。
+20. 容器内 shell 与 kubectl 默认可用，但 shell 命令必须经真人审批，且永不被 `skip_permissions` 或
+    `require_approval=false` 免除；开启写权限即给予真实破坏力，交付文档必须写明该口径。
+21. 默认交付镜像的容器加固为必配（非 root、drop ALL capabilities、`allowPrivilegeEscalation: false`、
+    `seccompProfile: RuntimeDefault`、只读根文件系统）；禁止容器内 shell 的现场改用 `Dockerfile.distroless`
+    并置 `platform.exec.shell_enabled=false`。
+22. 附件与报告的二进制内容永不进 LLM 请求；审计与 SSE 事件只落对象引用（key、size、sha256、mediaType），
+    presigned URL 不写库、不进事件、不进审计、不进日志；对象存储 AK/SK 只走环境变量与 Secret。
 
 ---
 
@@ -1975,3 +2010,4 @@ Security Boundary Unchanged
 | v1.16 | 2026-10-27 | P6 产品安装部署开工前口径冻结（见开发计划 v1.48、ADR-031 v1.13、ADR-040/041/042）：① 动态配置读取优先级定为**环境变量覆盖层 > DB `settings` > 内置默认**，env 覆盖面收窄为 `K8S_AI_LLM_*` 与 `K8S_AI_PLATFORM_STORE_DSN`，内置默认仅兜底且未配置时 Chat 显式报错，页面改动即时生效；② 平台主存储改为 **MySQL**，SQLite 降为本地/离线兜底，DSN 只经环境变量/Secret 注入，主 MySQL 不解锁多副本；③ schema 迁移入口拆出 `k8s-ai db migrate`（可作 Job/initContainer），server 启动保留幂等兜底，与 `k8s-ai migrate` 配置导入分工明确；④ 镜像构建默认走 Dockerfile node 阶段（干净检出可复现），`go:embed all:web/dist` + `web/dist/.gitkeep` 占位，离线走 BuildKit named build context，`dist` 空时静态路由明确提示，未知 `/api/v1/*` 回 JSON 404，SSE 带 `X-Accel-Buffering: no`；⑤ 首启 admin 口令仅空库必需，`/readyz` = Store 连通 + 迁移完成、`/healthz` 保持进程级；⑥ install.sh 密钥语义冻结（ENC_KEY 复用/缺失才生成并备份/`--rotate` 显式轮换、ADMIN_PASSWORD 随机一次性打印、ENABLE_WRITE 二次确认、幂等重跑）；⑦ 新增安全红线 18/19：ENC_KEY 丢失即凭据不可恢复、禁止在产品清单与脚本硬编码任何环境信息。 |
 | v1.17 | 2026-10-27 | P6-A 口径批注确认（见开发计划 v1.49、ADR-040/041/042 增补）：① §15 澄清 **DB `settings` 是动态键的默认唯一权威源与唯一写入目标**，env 仅对白名单键作部署期只读覆盖、命中不回写、页面标注覆盖态；② §22 补数据库前置——产品不执行 CREATE DATABASE，库与账号由 DBA 预建并建议 utf8mb4，表级 DDL 显式 utf8mb4，平台账号只授该库 DML 与建表改表索引权限；③ §26 明确**前后端两个独立 Dockerfile**（仓库根 Dockerfile 构建后端镜像、deploy/web.Dockerfile 构建前端 Nginx 镜像，互不依赖），并明确 SQLite 兜底数据目录必须挂 PVC、MySQL 主口径下 PVC 仅承载报告与导出；④ 新增 deploy/example MySQL 接入示例清单（非产品默认、不含现场地址与口令），MySQL 连通、迁移幂等、重启续用门禁实跑用例计入 P6.1/P6.5/P6.8 验收；⑤ 测试库名 `k8s_ai_test`、产品默认库名 `k8s_ai`，凭据严禁入库。需求条目与优先级不变。 |
 | v1.18 | 2026-10-27 | | **动态配置优先级口径修订（仅文档，签收方案 A）**：环境变量覆盖由「对白名单键一律最高优先」改为**两档语义**。① **密钥态**（`K8S_AI_LLM_API_KEY`、`K8S_AI_PLATFORM_STORE_DSN`）env/Secret 恒优先，密钥只走 Secret、页面永不回显，env 命中时页面值不生效但必须标注来源并在保存时给出提示；② **种子态 seed-once**（`K8S_AI_LLM_{PROVIDER,ENDPOINT,MODEL}` + ops 四键 `K8S_AI_{KUBECONFIG,KUBE_CONTEXT,NAMESPACE,KUBECTL_PATH}`）仅在 DB 该键无值时生效，页面保存过即以 DB 为准、env 不再覆盖；③ 覆盖面**冻结为 LLM 四键 + ops 四键**，`TEMPERATURE/MAX_TOKENS/TIMEOUT` 明确不纳入 env 覆盖（非字符串键，常驻类型转换分支收益不划算），键集合由测试锁定；④ 默认部署清单只注入 `K8S_AI_LLM_API_KEY`，非敏感覆盖只在 `deploy/example/` 演示。修订起因：页面保存路径不感知 env 覆盖，会出现「写库成功、页面显示已保存、运行时仍用 env 旧值」的静默陷阱。一句话口径：页面配过的以页面为准，页面没配过的用部署变量兜底，密钥永远以 Secret 为准。见 §15/§22、开发计划 v1.51、D-21/D-29 修订、ADR-031 v1.14、ADR-040 v1.2。需求条目与优先级不变。 |
+| v1.19 | 2026-10-29 | 两条部署与存储口径统一（仅文档，不改需求范围）：① **存储边界**（D-32、ADR-043、方案《15-方案-存储边界与对象存储-四期.md》、开发计划 v1.52 新增主线 P8）——大载荷统一经 internal/blobstore 决定落点，新增静态段 platform.blobs.*（driver 取 off、db、dir、s3，默认 db，不入动态键白名单），默认后端行为与现状一致，s3 对接 S3 兼容对象存储且 MinIO 只是默认交付后端，MySQL 仍是会话唯一权威源，dir 后端限制多副本扩容须在文档与校验中备注，CLI 仅允许 off 与 dir；② **容器执行通道口径翻转**（D-33、ADR-044 v1.1、方案《16-方案-容器执行通道与镜像基座-四期.md》）——默认镜像运行阶段改 debian:bookworm-slim 并内置 bash、coreutils、jq、curl 与构建期校验下载的 kubectl，platform.exec.shell_enabled 默认 true，安全由 shell 必经真人审批、既有红线、集群 RBAC、脱敏与全量审计、Deployment 加固收口，保留 Dockerfile.distroless 无 shell 变体，取消 initContainer 投递 kubectl；§22/§26/§27/§28 同步回写，开发计划 v1.53、部署手册 §2.2 与 §4.16/§4.17 |

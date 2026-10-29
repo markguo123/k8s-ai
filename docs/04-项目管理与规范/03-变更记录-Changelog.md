@@ -15,6 +15,18 @@ P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会�
 与授权架构修订（见
 `docs/02-架构与设计/13-方案-企业级身份权限与审批中心.md`，计划回写 v1.12/v1.13）。
 
+### Changed（2026-10-29，容器执行通道口径翻转 ADR-044 v1.1 / D-33 改写）
+
+- 默认交付镜像运行阶段由 `gcr.io/distroless/static-debian12:nonroot` 改 `debian:bookworm-slim`，内置
+  `bash`、coreutils、`jq`、`curl`、DNS/ICMP 诊断工具与构建期校验下载的 `kubectl`，运行用户仍 uid/gid 65532；
+  另存 `Dockerfile.distroless` 无 shell 变体（`platform.exec.shell_enabled: false` 配套）。
+- 静态开关 `platform.exec.shell_enabled` **默认 `true`**，容器内 shell 与 kubectl 通道默认可用，安全由
+  「shell 命令必经真人审批 + Secret 内容值/`--raw`/交互式动词/`deny_ops` 红线 + 集群 RBAC + 输出脱敏与全量
+  审计 + Deployment 加固」收口；取消 initContainer 投递 kubectl 方案。
+- 同步回写：ADR-044 → v1.1、ADR-041 第 2/7 条、D-06 措辞、D-33 整体改写、方案 16 → v1.1、PRD → v1.19、
+  开发计划 → v1.53（P6.3 0.75d → 1.0d，P6 14.50 → 14.75，合计 82.75 人日）、部署手册 §2.2/§4.2/§4.13/§4.16
+  与新增 §4.17、README 与项目宣讲镜像口径。**均为文档口径改动，代码实现随 P6.3 落地。**
+
 ### Changed（2026-10-26，会话 API 包更名 internal/webui → internal/sessionapi）
 
 - 包 `internal/webui` 更名为 `internal/sessionapi`：三期 `a027590` 删除 `internal/cli/web.go`

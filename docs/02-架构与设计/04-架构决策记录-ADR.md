@@ -1,8 +1,8 @@
 # k8s-ai 架构决策记录（ADR）
 
 - 版本：v1.0 → v4.0.0（四期新增 ADR）
-- 日期：2026-08-12（首版） / 2026-10-10（四期平台底座 ADR） / 2026-10-14（部署形态与前端交付口径） / 2026-10-22（新增 ADR-036 前后端分离部署形态） / 2026-10-23（新增 ADR-037 权限分层与会话隔离、ADR-038 Scope-aware Agent） / 2026-10-26（新增 ADR-039 会话 API 包更名） / 2026-10-27（新增 ADR-040 动态配置读取优先级、ADR-041 前端产物内嵌与镜像可复现构建、ADR-042 存储主口径与迁移入口拆分；ADR-031 v1.14、ADR-040 v1.2）
-- 状态：四期企业平台落地中（ADR-020~042）
+- 日期：2026-08-12（首版） / 2026-10-10（四期平台底座 ADR） / 2026-10-14（部署形态与前端交付口径） / 2026-10-22（新增 ADR-036 前后端分离部署形态） / 2026-10-23（新增 ADR-037 权限分层与会话隔离、ADR-038 Scope-aware Agent） / 2026-10-26（新增 ADR-039 会话 API 包更名） / 2026-10-27（新增 ADR-040 动态配置读取优先级、ADR-041 前端产物内嵌与镜像可复现构建、ADR-042 存储主口径与迁移入口拆分；ADR-031 v1.14、ADR-040 v1.2） / 2026-10-28（新增 ADR-043 存储边界与对象存储、ADR-044 容器执行通道与镜像基座；ADR-042 落实状态回写） / 2026-10-29（**ADR-044 修订 v1.1 口径翻转**：默认交付镜像内置 shell 与 kubectl，ADR-041 第 7 条同步修订，T9 收口措辞更新）
+- 状态：四期企业平台落地中（ADR-020~044）
 
 ## ADR-001 两阶段扫描
 
@@ -582,7 +582,7 @@
      前端静态镜像，两者各自独立构建、互不依赖、可分别升级（形态 B 的后端直接复用同一后端镜像，靠
      `platform.server.static_enabled: false` 关闭静态托管）。后端 Dockerfile 默认三阶段：**node 构建阶段**
      （`npm ci && npm run build` 产出 dist）→ golang 构建阶段
-     （embed 该 dist）→ distroless 运行阶段。干净检出执行 `make docker` 即可产出含前端的镜像，这是默认路径。
+     （embed 该 dist）→ 运行阶段（基座与工具层由 ADR-044 决定，见其 v1.1）。干净检出执行 `make docker` 即可产出含前端的镜像，这是默认路径。
   3. 离线与加速路径用 BuildKit **named build context 覆盖同名 stage**：
      `docker build --build-context webdist=./web/dist .`，把 node 阶段的产物替换成本地已构建的 `web/dist`。
      同一份 Dockerfile 即可切换，不需要 `--prebuilt-dist` 这类无法跳过 stage 的伪开关；若构建环境 BuildKit
@@ -591,7 +591,7 @@
   5. `dist` 为空时构建不失败：静态路由检测到空目录时返回明确提示（未构建前端，请 `npm run build` 或改用
      形态 B）；未知 `/api/v1/*` 必须返回 JSON 404，不得被 SPA history fallback 吞成 `index.html`。
   6. `.dockerignore` 增加 `web/node_modules`。
-  7. 运行镜像仍是 distroless static nonroot：无 shell、无 kubectl，写执行只走 client-go（D-06 不变）。
+  7. 运行阶段的基座与工具层由 ADR-044 决定：首版为 distroless static nonroot（无 shell、无 kubectl）；**2026-10-29 起改为 `debian:bookworm-slim` + bash/coreutils/jq/curl/kubectl，仍保持非 root（ADR-044 v1.1）**，写执行仍只走 client-go 与 `internal/executor` 唯一出口，本 ADR 的构建阶段设计（node 构建 dist → golang embed → 运行阶段）不受影响。
 - **后果**：`make docker` 与本地构建脚本需要处理前端产物；CI 需要 node 层缓存；形态 B 的 `web.Dockerfile`
   复用同一份 `web/dist`；`bin/` 直编产物在无前端时走空 dist 提示分支。
 - **落实状态**：待实现（P6.11）。
@@ -624,7 +624,54 @@
 - **后果**：`go-sql-driver/mysql` 由 indirect 转为直接依赖；需要一台可长期使用的 MySQL 实例作为门禁环境
   （人工前置，否则 MySQL 主路径无法验收）；`deploy/` 清单默认 `driver: mysql` + DSN Secret + 迁移 Job，
   所有「SQLite 默认」表述同步修订。
-- **落实状态**：待实现（P6.1 驱动分派与 DSN 消费；P6.5 `db migrate` 与迁移 Job）。
+- **落实状态**：已落地（P6.1 驱动分派与 DSN 消费、`k8s-ai db migrate` 与启动幂等兜底见 e034e56；P6.2/P6.5 清单与
+  `deploy/base/db-migrate-job.yaml` 见 c21b3a8，并在真机形态 A 完成一次端到端部署；MySQL 门禁实跑通过）。
+  真机纠偏：会话正文列必须由 TEXT 放宽为 MEDIUMTEXT（v5 迁移幂等放宽），否则整轮会话静默丢失，见 5ce77d7。
+
+## ADR-043 存储边界与对象存储：正文外置到 `internal/blobstore`，默认 `db` 后端零行为变化
+
+- **状态**：已接受（2026-10-28；实现落新增主线 P8 / M8；附件上传通道 P8.7 延后 v4.2）
+- **背景**：
+  1. 会话正文整份 JSON 存 MySQL `sessions.data`，且会话列表每次请求 `SELECT data FROM sessions` 全表读正文
+     （`internal/store/sqlite.go`），索引列写好却不用于 List；会话规模上去后列表页必然把整库正文读进内存。
+  2. 真机已因此出过两次事故：正文超 TEXT 上限触发 `Error 1406 Data too long`，整轮会话静默丢失（热修 MEDIUMTEXT +
+     v5 幂等放宽，见 5ce77d7）；扫描报告写 Pod 内 emptyDir，重启即丢且 Web 面看不到任何报告。
+  3. 会话上传图片/文件是确定要做的能力，大正文继续进关系表不是可选项。
+- **决策**：
+  1. 新增 `internal/blobstore`，接口 `Put/Get/Stat/Delete/List/Driver` + 可选 `Presigner`/`Maintainer`，
+     业务侧只见 `Ref{Key,SHA256,Size,MediaType,UpdatedAt}`，永不接触桶名与凭据。
+  2. 后端四档 `off|db|dir|s3`，**默认 `db`（正文进 `blob_objects.payload`，与业务行同事务）= 默认交付零行为变化**；
+     `dir` 面向单机 appliance 且带 flock 硬约束（与单副本口径 D-19/D-20 一致）；`s3` 面向平台化交付。
+  3. key 固定 `{prefix}/{category}/{scope}/.../{sha256}{ext}`，内容寻址天然去重幂等；`ValidateKey` 是防穿越唯一闸门，
+     总长上限 191（沿用 VARCHAR(191) 约定）。
+  4. schema v6 新增 `blob_objects`/`attachments`/`reports` 与 `sessions.data_blob_key`/`data_size`；生命周期契约
+     `Acquire/Release/ListCollectable/Forget`，GC 顺序固定，宽限期默认 168h，本期出 `k8s-ai blobs gc`，P5 接调度。
+     P5 的 Retention 与 Memory 写入方必须 blob-aware，这是 P8 排在 P4/P5 之前的唯一硬理由。
+  5. 配置全部归静态 `platform.blobs.*`，**不进动态键白名单、配置中心页面不展示**（改桶需重启，与 D-29/ADR-040 两档
+     语义不冲突）；AK/SK 走 env/Secret，与 `K8S_AI_PLATFORM_STORE_DSN` 同机制。
+  6. CLI 只允许 `off|dir`，`chat/scan` 不读 endpoint/AK/SK，保证「一个二进制丢到 master 节点」的直用形态不变。
+  7. 写顺序恒为「校验 → Put → 同事务（业务行 + Acquire）」；会话外置失败回退 inline 仅 WARN，不阻塞 Agent。
+  8. SDK 用 `minio-go/v7` 但只允许 S3 通用子集，禁 MinIO 私有 API；MinIO 服务端 AGPLv3 需法务过审后才作为默认交付，
+     未过审 `ENABLE_MINIO` 默认 false、交付改走现场已有桶。
+- **后果**：新增三表两列与一条 GC 链路；`dir` 后端把「不可横向扩容」从默认约束变成显式配置约束；报告产物
+  出现「桶为权威、目录为现场副本」双写，退役另期处理；平台进程仍维持单副本，多副本前置项（SSE sink、
+  `ProposalStore` 外移）另期登记。
+- **落实状态**：待实现（P8.1 配置与 validate → P8.2 接口与 `db` 后端 → P8.3 `dir` → P8.4 `s3` → P8.5 报告 →
+  P8.6 会话读写收敛 → P8.8 部署面 → P8.9 门禁与 CLI）。方案见 `15-方案-存储边界与对象存储-四期.md`。
+
+## ADR-044 容器执行通道：默认交付镜像内置 shell 与 kubectl，安全由审批闸门与 RBAC 收口
+
+- **状态**：已接受（2026-10-28 首版；2026-10-29 **修订 v1.1 整体改写**；实现落 P6.3，0.75d → 1.0d，顺序提前到 P8.1 之前）
+- **背景**：交付镜像运行阶段曾是 `gcr.io/distroless/static-debian12:nonroot`，无 shell、无 kubectl，而 `internal/executor/kubectl.go` 的 shell 分支硬编码 `bash -c`、argv 分支 `LookPath("kubectl")`，容器内只能跑到 `exec` 那一刻才失败，把 `executable file not found` 原样回给 LLM 诱发无意义重试。首版方案选「基座不变 + shell 策略级关闭 + initContainer 投递 kubectl」，评审时用户否决：平台已有能力不能因为部署在 K8s 里就丢失，shell 是排障刚需，Agent 类产品的通行做法是权限大但必须人审批，而不是删掉工具。核对 AGENTS.md 后确认：它只要求含 shell 构造的命令经真人审批且不被 `--skip-permissions` 免除，**从未要求镜像内不存在 shell**，「物理关闭」是 D-06 被读严的结果。
+- **决策**：
+  1. 运行阶段基座换 `debian:bookworm-slim`，内置 `bash` + coreutils + `jq` + `curl` + 网络诊断工具 + `kubectl`（构建期按 `KUBECTL_VERSION` + sha256 校验下载，可用 `KUBECTL_DOWNLOAD_BASE` 指内网 mirror），保持 uid/gid 65532 非 root。
+  2. 新增 `Dockerfile.distroless` 无 shell 变体，供安全基线明确禁止容器内 shell、或入口直接暴露公网的现场选用。
+  3. 新增静态配置 `platform.exec.shell_enabled`（**默认 `true`**）：关闭时在 `Runner.RunKubectl` 判定为 shell 命令后、构造 `exec.Cmd` 之前返回可指导的工具级文案；启动探测 `bash`/`kubectl`，缺失只打 WARN/INFO，不阻塞启动。
+  4. 安全边界由四件事承担而不是「没有解释器」：含 shell 语法的命令永远人工审批且 `--skip-permissions` 不免除；Secret 内容值 / `--raw` / 交互式动词 / `deny_ops` 红线不变；真实权限由集群 RBAC 决定（默认只读、写权限现场显式开启、不含 `pods/exec`）；输出脱敏与全量审计。清单侧配 Pod 加固：`runAsNonRoot`、drop ALL capabilities、`allowPrivilegeEscalation: false`、`readOnlyRootFilesystem` + `/tmp` 与 `/home/k8sai` emptyDir、resources，NetworkPolicy 可选。
+  5. 取消首版的 initContainer 投递 kubectl 与 `K8S_AI_KUBECTL_PATH` 指向要求（配置键 `kubernetes.kubectl_path` 保留给自定义路径与非容器场景）；否决页面上传二进制、否决内置 `helm`/`python`/`node` 运行时。
+  6. 「按需执行 Pod + `pods/exec`」不再是 shell 能力的替代路径，**降级为五期多租户隔离议题**：只有需要 per-session 降权身份与爆炸半径控制时才做，且必须与 TokenRequest 派生身份同批交付，不做半套。
+- **后果**：镜像约 20MB → 约 180MB、CVE 面上升（交付前镜像扫描报告归档）；容器内具备本地命令执行能力，故上述加固项为必配；换来 K8s 形态与本地 CLI 形态的执行能力对齐（管道、聚合统计、heredoc、非交互 `kubectl exec`）。代码面为 `Options`/config 各一个布尔键、两处可指导文案与启动探测，`tests/arch` 增加「shell 执行点唯一且必须被闸门包裹」红线。
+- **落实状态**：待实现（P6.3）。方案见 `16-方案-容器执行通道与镜像基座-四期.md` v1.1。
 
 ## 待决策事项（需在编码前确认）
 
@@ -638,4 +685,4 @@
 | T6 | 报告时间戳时区 | CronJob 显式 TZ；本地默认本地时区 | 日报可读性 |
 | T7 | 单 ns 事件截断阈值 | 5000 条 | 内存 |
 | T8 | envtest 是否纳入默认 CI | 否（ADR-018） | 测试复杂度 |
-| T9 | 镜像写执行方案 D-06 签收 | client-go 统一写执行（distroless 无 kubectl/shell） | K8s 形态下的写能力 |
+| T9 | 镜像写执行方案 D-06 签收 | **已收口（ADR-044 v1.1）**：默认镜像内置 shell 与 kubectl、容器内 shell 默认可用；写能力边界由人工审批 + 集群 RBAC + 红线 + 脱敏审计承担，`shell_enabled=false` 与无 shell 变体镜像留给硬合规现场 | K8s 形态下的写能力与排障能力 |
