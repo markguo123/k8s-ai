@@ -9,3 +9,8 @@ coverage.out
 .DS_Store
 k8s-ai-test.yaml
 k8s-ai-v4.yaml
+
+# kubectl 离线投递目录：投递进来的二进制不入库，只保留占位与说明（见该目录 README）
+deploy/kubectl/*
+!deploy/kubectl/.gitkeep
+!deploy/kubectl/README.md

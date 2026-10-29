@@ -69,9 +69,17 @@ deploy/
    docker build -f deploy/separated/web.Dockerfile --build-arg VERSION=4.0.0 -t <registry>/k8s-ai-web:4.0.0 .
    ```
 
-   默认档会在构建阶段下载 kubectl 并做 sha256 校验：`KUBECTL_VERSION` 按现场集群次版本调
-   （kubectl 官方支持 ±1 次版本偏差），内网构建把 `KUBECTL_DOWNLOAD_BASE` 指向 mirror（目录
-   结构与 `dl.k8s.io/release` 一致），置空 `KUBECTL_VERSION` 则不内置 kubectl。
+   默认档的 `kubectl` 有两条投递路径，**离线投递优先**（细节见 `deploy/kubectl/README.md`）：
+
+   1. **离线投递（气隙/内网交付主路径，构建全程零外网）**：把 `kubectl` 放进 `deploy/kubectl/`
+      （同名再放一份内容为裸 hash 的 `kubectl.sha256` 就会一并校验），不需要任何 build-arg。
+   2. **mirror 下载**：`deploy/kubectl/` 为空时按 `KUBECTL_VERSION`/`KUBECTL_DOWNLOAD_BASE`
+      下载并 `sha256sum -c` 校验。base 的目录结构须与 `dl.k8s.io/release` 一致，国内无出口到
+      `dl.k8s.io` 时可用 `https://files.m.daocloud.io/dl.k8s.io/release`。
+
+   `KUBECTL_VERSION` 按现场集群次版本调（官方支持 ±1 次版本偏差）；置空且不投递则不内置 kubectl，
+   只读链路不受影响。Go 依赖代理同理：`--build-arg GOPROXY=https://goproxy.cn,direct`。
+   无 shell 变体的基座在 `gcr.io`，内网需先同步到内网 registry 再构建。
 
    构建后自查（P6.3 §8.3）：
 

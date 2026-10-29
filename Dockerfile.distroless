@@ -11,6 +11,10 @@
 # exec.Cmd 之前返回可指导文案，argv 直调与 client-go 读写通道不受影响。
 # 只读链路（结构化只读工具与 scan）走 client-go，两档镜像行为完全一致。
 #
+# 国内/内网构建同样要传 --build-arg GOPROXY=https://goproxy.cn,direct；本档运行阶段不内置 kubectl，
+# 无需 KUBECTL_* 参数。注意本档基座在 gcr.io，现场取不到时先把 distroless 基座同步进内网 registry，
+# 再把下方 FROM 指过去。
+#
 # 构建示例：
 #   docker build -f Dockerfile.distroless --build-arg VERSION=4.0.0 --build-arg COMMIT=<sha> \
 #                -t k8s-ai:4.0.0-noshell .
@@ -32,6 +36,11 @@ RUN rm -rf /dist && mkdir -p /dist && cp -r /web/dist/. /dist/
 
 FROM golang:1.26-alpine AS build
 WORKDIR /src
+# 依赖代理：默认沿用 Go 官方取值（保持可复现与中立），国内构建传
+#   --build-arg GOPROXY=https://goproxy.cn,direct
+# 本段在两档镜像里逐字一致（tests/arch 断言），构建参数只加在一档上会让两档镜像分叉。
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=${GOPROXY}
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .

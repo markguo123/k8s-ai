@@ -6,9 +6,13 @@
 #
 # 构建示例：
 #   docker build --build-arg VERSION=4.0.0 --build-arg COMMIT=<sha> -t k8s-ai:4.0.0 .
-# 内网构建（kubectl 走内网 mirror，目录结构需与 dl.k8s.io/release 一致）：
-#   docker build --build-arg KUBECTL_DOWNLOAD_BASE=http://mirror.internal/k8s-release \
-#                --build-arg KUBECTL_VERSION=v1.29.15 -t k8s-ai:4.0.0 .
+# 国内/内网构建（两个参数都要传，否则会卡在被墙的站点上各等 5 分钟）：
+#   GOPROXY 走国内代理；kubectl 不走 dl.k8s.io，两种投递方式任选（详见下方 kubectl 段注释）：
+#     docker build --build-arg GOPROXY=https://goproxy.cn,direct \
+#                  --build-arg KUBECTL_DOWNLOAD_BASE=https://files.m.daocloud.io/dl.k8s.io/release \
+#                  --build-arg KUBECTL_VERSION=v1.28.13 -t k8s-ai:4.0.0 .
+#   离线投递（推荐，构建全程零外网）：把 kubectl 放进 deploy/kubectl/ 即可，kubectl 无需额外参数。
+#   内网自建 mirror 时把 base 换成与 dl.k8s.io/release 目录结构一致的根路径即可。
 # 构建断言（P6.3 §8.3，交付前自查）：
 #   docker run --rm --entrypoint /bin/bash <img> -lc 'id -u; command -v bash jq kubectl; kubectl version --client'
 #   期望 uid=65532，三个命令都可用。
@@ -38,6 +42,11 @@ RUN rm -rf /dist && mkdir -p /dist && cp -r /web/dist/. /dist/
 
 FROM golang:1.26-alpine AS build
 WORKDIR /src
+# 依赖代理：默认沿用 Go 官方取值（保持可复现与中立），国内构建传
+#   --build-arg GOPROXY=https://goproxy.cn,direct
+# 本段在两档镜像里逐字一致（tests/arch 断言），构建参数只加在一档上会让两档镜像分叉。
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=${GOPROXY}
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
@@ -66,16 +75,35 @@ RUN apt-get update \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# kubectl 在构建阶段下载并做 sha256 校验（运行期不联网、不下载）。
+# kubectl 在构建阶段落地并做 sha256 校验（运行期不联网、不下载）。两条投递路径，离线优先：
+#   A. 离线投递：把目标版本的 kubectl 放进 deploy/kubectl/（同名再放一份裸 hash 的
+#      kubectl.sha256 就会一起校验），构建全程不访问任何外部站点——气隙交付走这条。
+#      用 bind mount 读上下文而不是 COPY：不额外产生镜像层，目录里有没有二进制都不影响
+#      其它层的缓存（deploy/kubectl/ 目录本身必须存在，仓库里用 .gitkeep 钉住）。
+#   B. mirror 下载：A 不存在时按 KUBECTL_DOWNLOAD_BASE/KUBECTL_VERSION 下载并校验。
 #   KUBECTL_VERSION：按现场集群次版本调整（kubectl 官方支持 ±1 次版本偏差）；
-#     置空 = 本镜像不内置 kubectl，kubectl 工具会拿到"kubectl not found"可指导文案，
+#     置空且未离线投递 = 本镜像不内置 kubectl，kubectl 工具会拿到"kubectl not found"可指导文案，
 #     只读链路（client-go 结构化工具与 scan）不受影响。
-#   KUBECTL_DOWNLOAD_BASE：内网 mirror 根路径，目录结构需与 dl.k8s.io/release 一致。
+#   KUBECTL_DOWNLOAD_BASE：mirror 根路径，目录结构需与 dl.k8s.io/release 一致。
+#     无出口网络的现场用离线投递；有出口但 dl.k8s.io 不可达时可用国内 mirror，例如
+#     https://files.m.daocloud.io/dl.k8s.io/release（布局与 dl.k8s.io/release 逐字一致，
+#     且提供裸 hash 的 .sha256）。
 #   TARGETARCH 由 BuildKit 注入，跨架构构建时自动取对应二进制。
 ARG KUBECTL_VERSION=v1.29.15
-ARG KUBECTL_DOWNLOAD_BASE=https://dl.k8s.io/release
+ARG KUBECTL_DOWNLOAD_BASE=https://files.m.daocloud.io/dl.k8s.io/release
 ARG TARGETARCH
-RUN set -eu; \
+RUN --mount=type=bind,source=deploy/kubectl,target=/kubectl-vendor,readonly set -eu; \
+    verify() { printf '%s  %s\n' "$(cat "$1")" "$2" | sha256sum -c -; }; \
+    if [ -f /kubectl-vendor/kubectl ]; then \
+        install -m 0755 /kubectl-vendor/kubectl /usr/local/bin/kubectl; \
+        if [ -f /kubectl-vendor/kubectl.sha256 ]; then \
+            verify /kubectl-vendor/kubectl.sha256 /usr/local/bin/kubectl; \
+        else \
+            echo "提示：deploy/kubectl/kubectl.sha256 缺失，离线投递的 kubectl 未做校验和验证"; \
+        fi; \
+        echo "kubectl 来自离线投递 deploy/kubectl/（$(wc -c < /usr/local/bin/kubectl) 字节）"; \
+        exit 0; \
+    fi; \
     if [ -z "${KUBECTL_VERSION}" ]; then \
         echo "KUBECTL_VERSION 为空：跳过 kubectl 内置（保留 shell 工具层）"; \
         exit 0; \
@@ -84,7 +112,7 @@ RUN set -eu; \
     base="${KUBECTL_DOWNLOAD_BASE}/${KUBECTL_VERSION}/bin/linux/${arch}"; \
     curl -fsSLo /usr/local/bin/kubectl "${base}/kubectl"; \
     curl -fsSLo /tmp/kubectl.sha256 "${base}/kubectl.sha256"; \
-    printf '%s  %s\n' "$(cat /tmp/kubectl.sha256)" /usr/local/bin/kubectl | sha256sum -c -; \
+    verify /tmp/kubectl.sha256 /usr/local/bin/kubectl; \
     chmod 0755 /usr/local/bin/kubectl; \
     rm -f /tmp/kubectl.sha256
 

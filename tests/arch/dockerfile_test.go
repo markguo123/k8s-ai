@@ -107,6 +107,46 @@ func TestDefaultImageRuntimeStageHasShellToolchain(t *testing.T) {
 	}
 }
 
+// TestKubectlOfflineDeliveryIsFirstPath 锁"气隙交付不依赖外网"（P6.3）：kubectl 必须先查
+// deploy/kubectl/ 的离线投递，再考虑 mirror 下载。顺序即优先级——反过来的话，没有出口的
+// 现场连镜像都构建不出来，而这类现场才是本产品的交付常态。
+func TestKubectlOfflineDeliveryIsFirstPath(t *testing.T) {
+	content := readRepoFile(t, "Dockerfile")
+	_, runtime, _ := strings.Cut(content, buildBlockEnd)
+
+	if !strings.Contains(runtime, "--mount=type=bind,source=deploy/kubectl") {
+		t.Error("默认镜像必须用 bind mount 读 deploy/kubectl（COPY 会把投递的二进制固化成一整层镜像）")
+	}
+	// bind mount 的源目录不存在时构建直接失败，所以干净检出后这个目录必须在。
+	if _, err := os.Stat(filepath.Join("..", "..", "deploy", "kubectl", ".gitkeep")); err != nil {
+		t.Errorf("deploy/kubectl/ 必须存在（bind mount 源目录缺失会让所有构建失败）：%v", err)
+	}
+	if _, err := os.Stat(filepath.Join("..", "..", "deploy", "kubectl", "README.md")); err != nil {
+		t.Errorf("deploy/kubectl/README.md 必须存在：离线投递是内网交付主路径，取二进制的步骤要写在旁边：%v", err)
+	}
+
+	vendor := strings.Index(runtime, "/kubectl-vendor/kubectl")
+	download := strings.Index(runtime, "curl -fsSLo")
+	if vendor < 0 || download < 0 {
+		t.Fatalf("kubectl 投递必须同时有离线路径与下载路径（vendor=%d download=%d）", vendor, download)
+	}
+	if vendor > download {
+		t.Error("必须先判离线投递再下载：优先下载会让无出口网络的环境无法构建")
+	}
+	if !strings.Contains(runtime, "sha256sum -c") {
+		t.Error("kubectl 投递必须保留 sha256 校验")
+	}
+
+	// 投递目录只收二进制、不入库：否则仓库会被 50MB 的二进制撑爆。
+	gitignore := readRepoFile(t, ".gitignore")
+	// 但占位与说明文档必须放行：否则干净检出后 README 消失，上面两条断言反而变成自杀。
+	if !strings.Contains(gitignore, "deploy/kubectl/*") ||
+		!strings.Contains(gitignore, "!deploy/kubectl/.gitkeep") ||
+		!strings.Contains(gitignore, "!deploy/kubectl/README.md") {
+		t.Error(".gitignore 必须忽略 deploy/kubectl/ 下的投递二进制，同时放行 .gitkeep 与 README.md")
+	}
+}
+
 // TestDistrolessImageRuntimeStageHasNoShell 锁无 shell 变体：运行阶段不得引入任何解释器
 // 或工具层（这一档的存在意义就是"容器里没有可执行 shell"）。
 func TestDistrolessImageRuntimeStageHasNoShell(t *testing.T) {

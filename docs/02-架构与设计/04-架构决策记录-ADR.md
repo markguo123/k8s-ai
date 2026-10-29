@@ -664,7 +664,7 @@
 - **状态**：已接受（2026-10-28 首版；2026-10-29 **修订 v1.1 整体改写**；实现落 P6.3，0.75d → 1.0d，顺序提前到 P8.1 之前）
 - **背景**：交付镜像运行阶段曾是 `gcr.io/distroless/static-debian12:nonroot`，无 shell、无 kubectl，而 `internal/executor/kubectl.go` 的 shell 分支硬编码 `bash -c`、argv 分支 `LookPath("kubectl")`，容器内只能跑到 `exec` 那一刻才失败，把 `executable file not found` 原样回给 LLM 诱发无意义重试。首版方案选「基座不变 + shell 策略级关闭 + initContainer 投递 kubectl」，评审时用户否决：平台已有能力不能因为部署在 K8s 里就丢失，shell 是排障刚需，Agent 类产品的通行做法是权限大但必须人审批，而不是删掉工具。核对 AGENTS.md 后确认：它只要求含 shell 构造的命令经真人审批且不被 `--skip-permissions` 免除，**从未要求镜像内不存在 shell**，「物理关闭」是 D-06 被读严的结果。
 - **决策**：
-  1. 运行阶段基座换 `debian:bookworm-slim`，内置 `bash` + coreutils + `jq` + `curl` + 网络诊断工具 + `kubectl`（构建期按 `KUBECTL_VERSION` + sha256 校验下载，可用 `KUBECTL_DOWNLOAD_BASE` 指内网 mirror），保持 uid/gid 65532 非 root。
+  1. 运行阶段基座换 `debian:bookworm-slim`，内置 `bash` + coreutils + `jq` + `curl` + 网络诊断工具 + `kubectl`（构建期落地并做 sha256 校验：优先用 `deploy/kubectl/` 投递的二进制，否则按 `KUBECTL_VERSION`/`KUBECTL_DOWNLOAD_BASE` 下载），保持 uid/gid 65532 非 root。
   2. 新增 `Dockerfile.distroless` 无 shell 变体，供安全基线明确禁止容器内 shell、或入口直接暴露公网的现场选用。
   3. 新增静态配置 `platform.exec.shell_enabled`（**默认 `true`**）：关闭时在 `Runner.RunKubectl` 判定为 shell 命令后、构造 `exec.Cmd` 之前返回可指导的工具级文案；启动探测 `bash`/`kubectl`，缺失只打 WARN/INFO，不阻塞启动。
   4. 安全边界由四件事承担而不是「没有解释器」：含 shell 语法的命令永远人工审批且 `--skip-permissions` 不免除；Secret 内容值 / `--raw` / 交互式动词 / `deny_ops` 红线不变；真实权限由集群 RBAC 决定（默认只读、写权限现场显式开启、不含 `pods/exec`）；输出脱敏与全量审计。清单侧配 Pod 加固：`runAsNonRoot`、drop ALL capabilities、`allowPrivilegeEscalation: false`、`readOnlyRootFilesystem` + `/tmp` 与 `/home/k8sai` emptyDir、resources，NetworkPolicy 可选。
