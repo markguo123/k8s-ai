@@ -51,6 +51,10 @@ platform:
     admin_username: "admin"   # 首次初始化内置管理员用户名
     token_ttl: 24h            # 登录会话 Token 有效期（> 0）
     session_store: memory     # 本期固定内存态；扩副本前需先支持持久化会话
+  exec:
+    shell_enabled: true       # 含管道/串联/重定向的 shell 命令通道（D-33）：默认开启，
+                              # 且这类命令一律经真人审批；仅无 shell 镜像变体
+                              # （Dockerfile.distroless）部署时置 false
 
 # 落盘目录（静态键，非动态配置）：本机运行保持默认；容器部署换成可写卷挂载点。
 report:

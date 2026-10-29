@@ -162,6 +162,20 @@ type PlatformConfig struct {
 	Server PlatformServerConfig `mapstructure:"server"`
 	Store  PlatformStoreConfig  `mapstructure:"store"`
 	Auth   PlatformAuthConfig   `mapstructure:"auth"`
+	Exec   PlatformExecConfig   `mapstructure:"exec"`
+}
+
+// PlatformExecConfig 控制命令执行通道（P6.3 / D-33 / ADR-044 v1.1）。
+// 它是静态启动参数：改它要改配置文件并重启，不进配置中心页面（7 组动态键不含它）。
+type PlatformExecConfig struct {
+	// ShellEnabled 决定含 shell 构造（管道、串联、重定向、命令替换、heredoc）的
+	// kubectl 命令能否进入执行。默认 true，与本地 CLI 的执行能力对齐：安全不靠
+	// "镜像里没有 shell"，而靠 shell 命令必须经真人审批、且不被 --skip-permissions
+	// 免除（AGENTS.md）。
+	// 部署在无 shell 镜像变体（Dockerfile.distroless）时置 false：executor 在构造
+	// exec.Cmd **之前**拒绝并返回可指导文案，argv 直调与 client-go 写通道不受影响，
+	// 也不会再把 "bash: executable file not found" 这类环境错误抛给模型。
+	ShellEnabled bool `mapstructure:"shell_enabled"`
 }
 
 // PlatformServerConfig 控制平台 HTTP 服务监听参数。
@@ -368,6 +382,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("platform.auth.admin_username", "admin")
 	v.SetDefault("platform.auth.token_ttl", 24*time.Hour)
 	v.SetDefault("platform.auth.session_store", "memory")
+	// 执行通道默认开启（D-33）：关闭是给无 shell 镜像变体的现场用的。
+	v.SetDefault("platform.exec.shell_enabled", true)
 }
 
 func expandHome(path string) (string, error) {

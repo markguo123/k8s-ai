@@ -46,6 +46,7 @@ deploy/
 | `example/secret-mysql.example.yaml` | MySQL DSN 示例 + DBA 前置 SQL | 参考 |
 | `example/env-overrides.example.yaml` | 部署期种子态/密钥态环境变量示例 | 参考（patch） |
 | `example/deployment-reports-pvc.yaml` | `/reports` 换 PVC 的 patch | 可选（patch） |
+| `example/networkpolicy.yaml` | 容器出站白名单样例（占位地址，换成现场地址再 apply） | 可选 |
 
 > 不要整目录递归 apply：`deploy/example/` 下是 `kubectl patch --patch-file` 用的补丁，
 > 刻意不写 `apiVersion`/`kind`，`kubectl apply -R -f deploy/` 会在它这里报错；
@@ -53,13 +54,30 @@ deploy/
 
 ## 前置
 
-1. 构建并推送镜像（构建与推仓由部署方执行，清单里不写私有仓库地址）：
+1. 构建并推送镜像（构建与推仓由部署方执行，清单里不写私有仓库地址）。后端有两档镜像，
+   构建阶段完全相同，只差运行阶段（P6.3 / D-33）：默认档内置 bash/jq/kubectl，容器内排障
+   能力与本地 CLI 对齐；无 shell 变体给安全基线禁止容器内解释器的现场，配 `ConfigMap` 里
+   `platform.exec.shell_enabled: false`。
 
    ```bash
-   # 后端（形态 A 已内嵌前端产物；形态 B 复用同一镜像）
+   # 后端默认档（形态 A 已内嵌前端产物；形态 B 复用同一镜像）
    docker build --build-arg VERSION=4.0.0 --build-arg COMMIT=<sha> -t <registry>/k8s-ai:4.0.0 .
+   # 后端无 shell 变体（配 platform.exec.shell_enabled=false 使用）
+   docker build -f Dockerfile.distroless --build-arg VERSION=4.0.0 --build-arg COMMIT=<sha> \
+     -t <registry>/k8s-ai:4.0.0-noshell .
    # 仅形态 B 追加前端镜像
    docker build -f deploy/separated/web.Dockerfile --build-arg VERSION=4.0.0 -t <registry>/k8s-ai-web:4.0.0 .
+   ```
+
+   默认档会在构建阶段下载 kubectl 并做 sha256 校验：`KUBECTL_VERSION` 按现场集群次版本调
+   （kubectl 官方支持 ±1 次版本偏差），内网构建把 `KUBECTL_DOWNLOAD_BASE` 指向 mirror（目录
+   结构与 `dl.k8s.io/release` 一致），置空 `KUBECTL_VERSION` 则不内置 kubectl。
+
+   构建后自查（P6.3 §8.3）：
+
+   ```bash
+   docker run --rm --entrypoint /bin/bash <registry>/k8s-ai:4.0.0 -lc \
+     'id -u; command -v bash jq kubectl; kubectl version --client'   # 期望 65532 + 三个路径
    ```
 
 2. 数据库由 DBA 预建（产品不执行 `CREATE DATABASE`）：库名建议 `k8s_ai`、字符集 `utf8mb4`，

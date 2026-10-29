@@ -19,6 +19,7 @@ var serverTemplateKeys = []string{
 	"platform.auth.admin_username",
 	"platform.auth.session_store",
 	"platform.auth.token_ttl",
+	"platform.exec.shell_enabled",
 	"platform.server.addr",
 	"platform.server.static_enabled",
 	"platform.server.tls.cert_file",

@@ -10,7 +10,14 @@
 #   /healthz 进程级存活，不碰外部依赖；/readyz = Store 连通 + schema 迁移到位。
 #   迁移没做完时 /readyz 非 200，流量不会进来，但 Pod 不会被反复重启。
 #
-# 镜像是 distroless static nonroot：无 shell、无 kubectl，写执行只走 client-go（P6.3）。
+# 镜像档位（P6.3 / D-33 / ADR-044 v1.1）：默认交付镜像（仓库根 Dockerfile）内置 bash、jq
+# 与 kubectl，容器内排障能力与本地 CLI 对齐。安全不靠"镜像里没有解释器"：含 shell 构造的
+# 命令一律经真人审批且不被 --skip-permissions 免除，写操作经人工审批，Secret 值与 --raw 硬拒，
+# 真实权限由集群 RBAC 决定。安全基线禁止容器内 shell 的现场改用 Dockerfile.distroless 构建
+# 无 shell 变体，同时把 ConfigMap 里 platform.exec.shell_enabled 置为 false。
+#
+# 只读根文件系统 + 非 root 65532（与镜像 USER 一致）：/tmp 与 /home/k8sai 必须是可写卷，
+# 后者是 kubectl 服务发现缓存（$HOME/.kube）的落点，缺了会在首次 kubectl 调用时写失败。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -70,7 +77,7 @@ spec:
               mountPath: /etc/k8s-ai
               readOnly: true
             # 可写区：/data 会话与审计落盘、/reports 报告导出。业务数据的权威存储是
-            # MySQL，这三个卷都是临时卷；要持久保留就 apply
+            # MySQL，这几个卷都是临时卷；要持久保留就 apply
             # deploy/example/deployment-reports-pvc.yaml 换成 PVC。
             - name: data
               mountPath: /data
@@ -78,6 +85,10 @@ spec:
               mountPath: /reports
             - name: tmp
               mountPath: /tmp
+            # 镜像 ENV HOME=/home/k8sai：kubectl 把服务发现缓存写在 $HOME/.kube。
+            # 只读根文件系统下这个目录不挂可写卷，kubectl 会在运行期报缓存写入失败。
+            - name: home
+              mountPath: /home/k8sai
           readinessProbe:
             httpGet: { path: /readyz, port: http }
             initialDelaySeconds: 5
@@ -116,6 +127,8 @@ spec:
         - name: reports
           emptyDir: {}
         - name: tmp
+          emptyDir: {}
+        - name: home
           emptyDir: {}
       securityContext:
         runAsNonRoot: true

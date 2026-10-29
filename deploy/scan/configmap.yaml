@@ -21,7 +21,7 @@ data:
       kubeconfig: ""          # 集群内留空 = 用 ServiceAccount in-cluster 凭据
       context: ""
       namespace: ""           # 留空 = 全集群；非空 = 只扫该命名空间
-      kubectl_path: ""        # 镜像内无 kubectl，留空即走 client-go
+      kubectl_path: ""        # 巡检链路走 client-go，不依赖 kubectl，留空即可
       timeout: 30s
       qps: 20
       burst: 40

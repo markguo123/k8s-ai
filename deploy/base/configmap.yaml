@@ -36,6 +36,11 @@ data:
         admin_username: admin    # 空库首启时创建的内置管理员用户名
         token_ttl: 24h           # 平台登录会话有效期
         session_store: memory    # 本期固定内存态；扩副本前需先支持持久化会话
+      exec:
+        shell_enabled: true      # 含管道/串联/重定向的 shell 命令通道（P6.3 / D-33）：默认开启，
+                                 # 这类命令一律经真人审批且不被 --skip-permissions 免除。
+                                 # 用 Dockerfile.distroless 无 shell 变体部署时置 false，
+                                 # executor 会在执行前返回可指导文案而不是让模型反复重试。
 
     # 引擎侧落盘目录（静态键，非动态配置）：镜像根文件系统只读，一律指向可写卷。
     report:

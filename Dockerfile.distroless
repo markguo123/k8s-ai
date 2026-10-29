@@ -1,0 +1,55 @@
+# syntax=docker/dockerfile:1
+# k8s-ai 后端镜像的**无 shell 变体**（P6.3 / D-33 / ADR-044 v1.1）。
+#
+# 什么时候用这一档：现场安全基线明确禁止业务容器内存在命令解释器，或入口直接暴露公网、
+# 希望把镜像 CVE 面压到最小。它与根目录 Dockerfile 共用同一段构建阶段（下方 BEGIN/END
+# 之间必须逐字一致，tests/arch/dockerfile_test.go 会断言），差别只在运行阶段：
+# distroless static 里没有任何 shell、没有 kubectl。
+#
+# 用这一档必须同时把 platform.exec.shell_enabled 置为 false（deploy/base/configmap.yaml）：
+# 否则含管道构造的命令会在执行时才失败，模型只能反复重试；置 false 后 executor 在构造
+# exec.Cmd 之前返回可指导文案，argv 直调与 client-go 读写通道不受影响。
+# 只读链路（结构化只读工具与 scan）走 client-go，两档镜像行为完全一致。
+#
+# 构建示例：
+#   docker build -f Dockerfile.distroless --build-arg VERSION=4.0.0 --build-arg COMMIT=<sha> \
+#                -t k8s-ai:4.0.0-noshell .
+# 构建断言（P6.3 §8.3）：镜像内不应存在 /bin/sh
+#   docker run --rm --entrypoint /usr/bin/env <img> 2>&1 | grep -q . || echo "no shell as expected"
+
+# ---- BUILD STAGES BEGIN ----
+# 本段在两档镜像（Dockerfile / Dockerfile.distroless）里必须逐字一致（tests/arch 断言）：
+# 两档镜像只允许在运行阶段分叉，构建出的二进制与前端产物必须完全相同。
+FROM node:22-alpine AS webdist
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+# 产物归一到阶段根目录的 /dist：与 --build-context 覆盖时「目录根下 dist/」的
+# 路径约定一致，两条构建路径共用同一条 COPY。
+RUN rm -rf /dist && mkdir -p /dist && cp -r /web/dist/. /dist/
+
+FROM golang:1.26-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+# 先清掉可能随上下文带进来的本地产物，保证镜像里的 dist 只来自构建阶段。
+RUN rm -rf ./web/dist
+COPY --from=webdist /dist ./web/dist
+ARG VERSION=dev
+ARG COMMIT=none
+ARG DATE=unknown
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags "-s -w \
+      -X github.com/k8s-ai/k8s-ai/internal/version.Version=${VERSION} \
+      -X github.com/k8s-ai/k8s-ai/internal/version.Commit=${COMMIT} \
+      -X github.com/k8s-ai/k8s-ai/internal/version.Date=${DATE}" \
+    -o /out/k8s-ai ./cmd/k8s-ai
+# ---- BUILD STAGES END ----
+
+# 无 shell 运行阶段：distroless nonroot 的 uid 固定 65532，与 deploy 清单 runAsUser 一致。
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/k8s-ai /usr/local/bin/k8s-ai
+ENTRYPOINT ["/usr/local/bin/k8s-ai"]

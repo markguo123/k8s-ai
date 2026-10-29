@@ -320,6 +320,9 @@ func chatWriteRunner(cfg *config.Config) (tools.WriteRunner, error) {
 		Kubeconfig: cfg.Kubernetes.Kubeconfig,
 		MaxBytes:   cfg.Agent.CmdMaxBytes,
 		DenyOps:    cfg.Agent.DenyOps,
+		// shell 通道开关来自静态配置（platform.exec.shell_enabled，默认开启）：
+		// Options 的零值是关闭，装配方必须显式传，别让默认镜像丢掉管道排障能力。
+		ShellEnabled: cfg.Platform.Exec.ShellEnabled,
 		Clientset:  cs,
 		Namespace:  cfg.Kubernetes.Namespace,
 		RESTConfig: restConfig,

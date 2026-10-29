@@ -1,5 +1,7 @@
 // Package executor 是二期唯一允许执行写操作与 os/exec 的包
-// （架构测试守护）：kubectl 以 argv 直调二进制（无 shell），其余走 client-go。
+// （架构测试守护）：kubectl 默认以 argv 直调二进制（无 shell），其余走 client-go；
+// 含 shell 构造的命令只在「人工审批通过 + 本实例 shell 通道开启」时才走 bash -c
+// （D-33 / ADR-044 v1.1，闸门见 Runner.shellEnabled）。
 package executor
 
 import (
@@ -33,6 +35,11 @@ type Options struct {
 	MaxBytes int
 	// DenyOps 硬拦截子串（agent.deny_ops）。
 	DenyOps []string
+	// ShellEnabled 允许含 shell 构造（管道、串联、重定向、命令替换、heredoc）的命令
+	// 走 bash -c（platform.exec.shell_enabled，D-33/ADR-044 v1.1）。
+	// 装配方必须显式从配置传入：零值是关闭（fail-closed），漏装配只会少能力，
+	// 不会静默放开 shell 执行面。argv 直调与 client-go 写通道不受该开关影响。
+	ShellEnabled bool
 	// Clientset client-go 客户端（写操作）。
 	Clientset kubernetes.Interface
 	// Namespace 默认命名空间（结构化写操作缺省时使用）。

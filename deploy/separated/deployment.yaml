@@ -7,8 +7,9 @@
 # 其余字段必须与形态 A 逐字一致，由 tests/arch/deploy_manifest_test.go 断言，防止两套
 # 清单各自漂移。两形态的 Deployment 同名（k8s-ai-server），只能二选一 apply。
 #
-# 单副本与 Recreate 的理由、探针语义、镜像无 shell 等通用口径见
-# deploy/allinone/deployment.yaml 与部署手册，本文件不重复说明。
+# 单副本与 Recreate 的理由、探针语义、镜像档位（默认档内置 bash/jq/kubectl，无 shell 变体
+# 见 Dockerfile.distroless）等通用口径见 deploy/allinone/deployment.yaml 与部署手册，
+# 本文件不重复说明。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -72,7 +73,7 @@ spec:
               mountPath: /etc/k8s-ai
               readOnly: true
             # 可写区：/data 会话与审计落盘、/reports 报告导出。业务数据的权威存储是
-            # MySQL，这三个卷都是临时卷；要持久保留就 apply
+            # MySQL，这几个卷都是临时卷；要持久保留就 apply
             # deploy/example/deployment-reports-pvc.yaml 换成 PVC。
             - name: data
               mountPath: /data
@@ -80,6 +81,10 @@ spec:
               mountPath: /reports
             - name: tmp
               mountPath: /tmp
+            # 镜像 ENV HOME=/home/k8sai：kubectl 把服务发现缓存写在 $HOME/.kube。
+            # 只读根文件系统下这个目录不挂可写卷，kubectl 会在运行期报缓存写入失败。
+            - name: home
+              mountPath: /home/k8sai
           readinessProbe:
             httpGet: { path: /readyz, port: http }
             initialDelaySeconds: 5
@@ -118,6 +123,8 @@ spec:
         - name: reports
           emptyDir: {}
         - name: tmp
+          emptyDir: {}
+        - name: home
           emptyDir: {}
       securityContext:
         runAsNonRoot: true
