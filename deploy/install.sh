@@ -124,6 +124,7 @@ SEC_ADMIN=k8s-ai-admin
 SEC_LLM=k8s-ai-llm
 SEC_BLOBS=k8s-ai-blobs
 PVC_NAME=k8s-ai-data
+PVC_DEFER_BIND=0   # WaitForFirstConsumer 存储类：把 Bound 校验推迟到工作负载就绪之后
 
 # --- 输出与日志 --------------------------------------------------------------
 if [[ -t 1 ]]; then
@@ -733,6 +734,7 @@ apply_rendered() {
 run_diff() {
   stage "预演差异（kubectl diff，不写入任何资源）"
   render_all
+  pvc_align_class   # 既有 PVC 的存储类不可变：先对齐再比对，免得预演出假差异
   local rel rc
   for rel in "${RENDER_LIST[@]}"; do
     rc=0
@@ -865,21 +867,99 @@ stage_secrets() {
 }
 
 # --- 阶段 4：PVC -------------------------------------------------------------
+# 要不要等 Bound，取决于存储类的 volumeBindingMode：Immediate 当场供给，等 Bound 有意
+# 义；WaitForFirstConsumer 必须等工作负载调度到节点才供给，此时在这里等必然白等到超时，
+# 所以改成阶段 6 工作负载就绪后再校验（pvc_verify_deferred_bind）。
+pvc_resolve_class() { # 输出本次 PVC 实际用的存储类名：PVC 已有值 > STORAGE_CLASS > 集群默认
+  local name=""
+  name="$("$KUBECTL_BIN" -n "$NAMESPACE" get pvc "$PVC_NAME" -o jsonpath='{.spec.storageClassName}' 2>/dev/null || true)"
+  if [[ -z "$name" ]]; then name="$STORAGE_CLASS"; fi
+  if [[ -z "$name" ]]; then
+    name="$("$KUBECTL_BIN" get sc -o jsonpath='{range .items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")]}{.metadata.name}{end}' 2>/dev/null | tr -d ' ' || true)"
+  fi
+  printf '%s' "$name"
+}
+
+sc_field() { # $1=存储类名 $2=字段名（volumeBindingMode / provisioner）
+  "$KUBECTL_BIN" get storageclass "$1" -o "jsonpath={.$2}" 2>/dev/null || true
+}
+
+pvc_diag() { # PVC 没 Bound 时的统一排障输出
+  _emit "$("$KUBECTL_BIN" -n "$NAMESPACE" get pvc "$PVC_NAME" -o wide 2>&1 || true)"
+  _emit "$("$KUBECTL_BIN" -n "$NAMESPACE" describe pvc "$PVC_NAME" 2>&1 | tail -n 25 || true)"
+  _emit "$("$KUBECTL_BIN" get storageclass 2>&1 || true)"
+}
+
+# storageClassName 创建后不可修改。既有 PVC 已经定了存储类时：参数留空就沿用既有值重新渲染
+# （否则 apply 会被 API 判成「把存储类改回未指定」而拒绝）；参数给了别的名字就直接拒绝，
+# 因为这个字段无论怎么改都改不动，猜一个只会把失败推到更晚的阶段。
+pvc_align_class() {
+  is_true "$PERSIST_REPORTS" || return 0
+  local existing
+  existing="$("$KUBECTL_BIN" -n "$NAMESPACE" get pvc "$PVC_NAME" -o jsonpath='{.spec.storageClassName}' 2>/dev/null || true)"
+  [[ -n "$existing" ]] || return 0
+  if [[ -z "$STORAGE_CLASS" ]]; then
+    STORAGE_CLASS="$existing"
+    info "PVC ${PVC_NAME} 已存在（存储类 ${existing}）：storageClassName 不可变，本次沿用该值重新渲染"
+    render_one base/pvc.yaml
+    return 0
+  fi
+  if [[ "$STORAGE_CLASS" != "$existing" ]]; then
+    die "PVC ${PVC_NAME} 已绑定存储类 ${existing}，与参数 STORAGE_CLASS=${STORAGE_CLASS} 冲突" \
+      "storageClassName 创建后不可修改：二选一——把 STORAGE_CLASS 改成 ${existing}；或确认历史报告可弃后执行 kubectl -n ${NAMESPACE} delete pvc ${PVC_NAME} 再重跑"
+  fi
+}
+
 stage_pvc() {
   stage "阶段 4/9 持久卷"
   if ! is_true "$PERSIST_REPORTS"; then
     warn "PERSIST_REPORTS=false：/reports 用 emptyDir，Pod 重启即清空（仅适合临时验证）"
     stage_done; return 0
   fi
+  pvc_align_class   # 先对齐不可变的 storageClassName，再下发
   apply_rendered base/pvc.yaml
-  info "等待 PVC Bound（最多 ${WAIT_TIMEOUT}s）"
-  if ! "$KUBECTL_BIN" -n "$NAMESPACE" wait --for=condition=bound "persistentvolumeclaim/${PVC_NAME}" --timeout="${WAIT_TIMEOUT}s" >/dev/null 2>&1; then
-    _emit "$("$KUBECTL_BIN" -n "$NAMESPACE" describe pvc "$PVC_NAME" 2>&1 | tail -n 25 || true)"
-    _emit "$("$KUBECTL_BIN" get storageclass 2>&1 || true)"
-    die "PVC ${PVC_NAME} 在 ${WAIT_TIMEOUT}s 内没有 Bound" "看上面的 events：常见是存储类没有 provisioner、容量超限、或访问模式不匹配（多副本要 RWX）"
+
+  local class mode phase
+  class="$(pvc_resolve_class)"
+  mode="$(sc_field "${class:-none}" volumeBindingMode)"
+  phase="$("$KUBECTL_BIN" -n "$NAMESPACE" get pvc "$PVC_NAME" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+
+  if [[ "$phase" == "Bound" ]]; then
+    ok "PVC ${PVC_NAME} 已 Bound（${REPORT_STORAGE_SIZE}，存储类 ${class:-<未知>}）"
+    stage_done; return 0
   fi
-  ok "PVC ${PVC_NAME} 已 Bound（${REPORT_STORAGE_SIZE}，存储类 ${STORAGE_CLASS:-集群默认}）"
+
+  if [[ "$mode" == "WaitForFirstConsumer" ]]; then
+    info "存储类 ${class} 的绑定模式是 WaitForFirstConsumer（延迟绑定）：PVC 此刻 Pending 属正常"
+    info "  卷要等阶段 6 的工作负载调度到节点时才供给，本阶段不等待，改到工作负载就绪后校验"
+    PVC_DEFER_BIND=1
+    stage_done; return 0
+  fi
+
+  info "等待 PVC Bound（存储类 ${class:-<未指定>}，绑定模式 ${mode:-<未知>}，最多 ${WAIT_TIMEOUT}s）"
+  if ! "$KUBECTL_BIN" -n "$NAMESPACE" wait --for=condition=bound "persistentvolumeclaim/${PVC_NAME}" --timeout="${WAIT_TIMEOUT}s" >/dev/null 2>&1; then
+    pvc_diag
+    die "PVC ${PVC_NAME} 在 ${WAIT_TIMEOUT}s 内没有 Bound" \
+      "看上面 events：多为存储类无 provisioner、容量超限、访问模式不匹配（多副本要 RWX）；绑定模式为 WaitForFirstConsumer 时属正常延迟，本脚本会自动改到阶段 6 之后校验"
+  fi
+  ok "PVC ${PVC_NAME} 已 Bound（${REPORT_STORAGE_SIZE}，存储类 ${class:-集群默认}）"
   stage_done
+}
+
+# 延迟绑定模式下，工作负载调度后 PVC 必须已 Bound；仍 Pending 说明供给本身失败
+# （provisioner 不健康、NFS 目录不可写、节点没有本地盘等），Pod 会卡在 Pending。
+pvc_verify_deferred_bind() {
+  [[ $PVC_DEFER_BIND -eq 1 ]] || return 0
+  local class
+  class="$(pvc_resolve_class)"
+  info "校验延迟绑定的 PVC ${PVC_NAME}（存储类 ${class:-<未知>}）"
+  if ! "$KUBECTL_BIN" -n "$NAMESPACE" wait --for=condition=bound "persistentvolumeclaim/${PVC_NAME}" --timeout=60s >/dev/null 2>&1; then
+    pvc_diag
+    _emit "$("$KUBECTL_BIN" -n "$NAMESPACE" get pods -o wide 2>&1 | tail -n 12 || true)"
+    die "延迟绑定模式下 PVC 仍未 Bound：${class} 的 provisioner 没能创建出卷" \
+      "看上面 events 里 provisioner 的报错（NFS/CSI 常见是导出目录不存在、权限不足或后端不可达）；修好后原地重跑本脚本"
+  fi
+  ok "PVC ${PVC_NAME} 已随工作负载 Bound"
 }
 
 # --- 阶段 5：迁移 Job --------------------------------------------------------
@@ -932,6 +1012,7 @@ stage_workloads() {
     fi
     ok "${d} 已 Ready"
   done
+  pvc_verify_deferred_bind   # 延迟绑定模式在这里才真正校验（工作负载已调度）
   stage_done
 }
 
