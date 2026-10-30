@@ -162,6 +162,51 @@ func NormalizeExt(ext string) (string, error) {
 	return ext, nil
 }
 
+// validateSpecHead 提前校验 Spec 里「与内容无关的那半」：category、scope、ext，返回
+// 规范化后的 ext。
+//
+// 它在流式读取之前跑：非法 spec 如果不先拒掉，就会在临时目录里留下垃圾文件、甚至把
+// 客户端正文整份拷进磁盘才发现 key 拼不出来。权威校验仍在 BuildKey→ValidateKey（唯一
+// 净化点不变），这里只是把同样的规则提前到碰到第一个字节之前。
+//
+// sha256 段无法在此校验：它来自实际写入的字节，只能等流读完再交给 BuildKey。
+func validateSpecHead(spec Spec) (string, error) {
+	if !ValidCategory(spec.Category) {
+		return "", fmt.Errorf("%w: category %q not in whitelist %s",
+			ErrKeyInvalid, spec.Category, strings.Join(categories, "|"))
+	}
+	if len(spec.Scope) == 0 {
+		return "", fmt.Errorf("%w: scope must not be empty", ErrKeyInvalid)
+	}
+	for _, seg := range spec.Scope {
+		if !keySegmentRe.MatchString(seg) || strings.Trim(seg, ".") == "" {
+			return "", fmt.Errorf("%w: scope segment %q is invalid", ErrKeyInvalid, seg)
+		}
+	}
+	return NormalizeExt(spec.Ext)
+}
+
+// shaOfKey 取 key 尾段开头的内容寻址摘要。调用方必须已过 ValidateKey（尾段前 64 位
+// 一定是小写十六进制），这里只做切片，不再重复正则。
+func shaOfKey(key string) string {
+	tail := key[strings.LastIndex(key, "/")+1:]
+	if len(tail) < SHA256HexLen {
+		return ""
+	}
+	return tail[:SHA256HexLen]
+}
+
+// extOfKey 取 key 尾段的扩展名（含点），没有扩展名返回空串。摘要段是纯十六进制，不含
+// 点，因此尾段里最后一个点一定是扩展名的起点。
+func extOfKey(key string) string {
+	tail := key[strings.LastIndex(key, "/")+1:]
+	i := strings.LastIndex(tail, ".")
+	if i <= 0 {
+		return ""
+	}
+	return tail[i:]
+}
+
 // NormalizePrefix 规范化并校验对象 key 的顶层 prefix：空取 DefaultPrefix，容忍首尾空白
 // 与误写的尾随斜杠（"k8sai/" 拼出的 key 会带空段，必须在这里而不是拼接处拒掉）。
 func NormalizePrefix(prefix string) (string, error) {

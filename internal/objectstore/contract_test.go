@@ -263,10 +263,35 @@ func runContract(t *testing.T, name string, maxBytes int64, newBackend func(*tes
 			t.Fatalf("List 空前缀 = %v, want ErrKeyInvalid", err)
 		}
 	})
+
+	t.Run(name+" Stat 与 Put 的 media type 自洽", func(t *testing.T) {
+		// 目录后端除 key 之外不存任何旁路元数据，media type 只能由尾段扩展名推导；db/s3
+		// 可以把声明值存进元数据列。两种做法都允许，但**同一个后端内 Put 与 Stat 必须给
+		// 出同一个值**，否则同一个报告的下载响应头会随调用次数漂移。
+		ctx := context.Background()
+		st := open(t)
+		put, err := st.Put(ctx, objectstore.Spec{
+			Category: objectstore.CategoryReports, Scope: []string{"u-5"}, Ext: "log",
+		}, strings.NewReader("line\n"))
+		if err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		stat, err := st.Stat(ctx, put.Key)
+		if err != nil {
+			t.Fatalf("Stat: %v", err)
+		}
+		if put.MediaType != stat.MediaType {
+			t.Fatalf("media type 不自洽：Put %q vs Stat %q", put.MediaType, stat.MediaType)
+		}
+		if put.MediaType != "text/plain; charset=utf-8" {
+			t.Fatalf("media type = %q, want 扩展名推导值", put.MediaType)
+		}
+	})
 }
 
 // TestDBBackendContract 跑 driver=db 后端（正文在 objects.payload）。
-// dir/s3 后端在 P8.3/P8.4 各自加一个 TestXxxContract 注册进同一套用例。
+// 其余后端各自加一个 TestXxxContract 注册进同一套用例（dir 见 TestDirBackendContract，
+// s3 随 P8.4 落地）。
 func TestDBBackendContract(t *testing.T) {
 	const maxBytes = 1 << 20
 	runContract(t, "db", maxBytes, func(t *testing.T) objectstore.Store {
