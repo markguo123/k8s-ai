@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/k8s-ai/k8s-ai/internal/objectstore"
 	"github.com/k8s-ai/k8s-ai/internal/session"
 )
 
@@ -35,6 +36,18 @@ type Store interface {
 	Credentials() CredentialStore
 	AuthzGrants() AuthzGrantStore
 	ApiTokens() ApiTokenStore
+
+	// Objects 返回对象元数据登记表（objects 表）入口（P8.2，方案 15 §6.5）。
+	// 引用计数只能经 WithTx 的 Tx 改，这里给的是读面、登记与 GC 生命周期动作。
+	Objects() ObjectStore
+	// ObjectContent 返回 driver="db" 的对象内容后端（兼容/兜底后端，正文放
+	// objects.payload，体积上限见 ObjectContentLimit）。对象存储故障不影响基础业务，
+	// 因此它不进 /readyz（方案 15 §11.1），装配层拿 objectstore.Probe 单独上报。
+	ObjectContent(prefix string, maxBytes int64) (objectstore.Store, error)
+	// WithTx 在一个数据库事务内执行 fn（P8.2）：对象引用计数与引用它的业务行必须
+	// 同事务提交，否则「行提交了、引用没加」会留下永久孤儿，「引用加了、行回滚」会
+	// 让对象永远回收不掉。
+	WithTx(ctx context.Context, fn func(*Tx) error) error
 
 	// Migrate 将 schema 升级到最新版本（幂等）。
 	Migrate(ctx context.Context) error

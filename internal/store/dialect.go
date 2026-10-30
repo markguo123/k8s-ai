@@ -27,6 +27,11 @@ const (
 	// colTextMedium 中等长度文本：不建索引，可安全 ALTER 追加（SQLite TEXT，
 	// MySQL VARCHAR(1024)）。用于审计摘要这类需要补列且必须带 DEFAULT 的字段。
 	colTextMedium
+	// colBytes 二进制正文：不可建索引，存放对象内容（SQLite BLOB，MySQL
+	// MEDIUMBLOB 16MB）。刻意不与 colLong 混用：MySQL 的 TEXT/MEDIUMTEXT 带字符集与
+	// 排序规则，按 utf8mb4 解码会破坏非 UTF-8 字节（PNG/gzip 直接损坏），二进制正文
+	// 必须落 BINARY 族（方案 15 §6.1）。
+	colBytes
 )
 
 // column 描述统一 schema 的一列。
@@ -39,13 +44,17 @@ type column struct {
 	autoIncrement bool
 	unique        bool
 	primary       bool
+	// nullable 让二进制列显式可空（objects.payload 只有 db 后端写，其他后端恒 NULL）。
+	// colTimeOrNull 天然可空，不需要再带这个标记。
+	nullable bool
 }
 
 // indexSpec 描述一张表上的一个二级索引。
 type indexSpec struct {
-	name  string
-	table string
-	cols  string
+	name   string
+	table  string
+	cols   string
+	unique bool
 }
 
 // tableSpec 描述一张表的统一结构，由 dialect 渲染为 SQLite/MySQL DDL。
@@ -63,6 +72,9 @@ type dialect interface {
 	createTable(t tableSpec) string
 	// createIndex 渲染建索引语句（SQLite 支持 IF NOT EXISTS，MySQL 不支持）。
 	createIndex(name, table, cols string) string
+	// createUniqueIndex 渲染唯一索引语句。幂等锚点（如 attachments 的
+	// UNIQUE(session_id,sha256,name)）靠它，重复执行由 isDuplicateIndexErr 容忍。
+	createUniqueIndex(name, table, cols string) string
 	// upsert 渲染单行插入或更新（SQLite ON CONFLICT / MySQL ON DUPLICATE KEY）。
 	upsert(table string, cols, conflictCols, updateCols []string) string
 	// isDuplicateIndexErr 判断"索引已存在"错误（MySQL 幂等迁移需忽略）。
@@ -96,6 +108,10 @@ func (d sqliteDialect) createTable(t tableSpec) string {
 
 func (sqliteDialect) createIndex(name, table, cols string) string {
 	return fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON %s (%s);", name, table, cols)
+}
+
+func (sqliteDialect) createUniqueIndex(name, table, cols string) string {
+	return fmt.Sprintf("CREATE UNIQUE INDEX IF NOT EXISTS %s ON %s (%s);", name, table, cols)
 }
 
 // upsert 生成 SQLite 的 ON CONFLICT(cols) DO UPDATE SET col=excluded.col。
@@ -152,6 +168,8 @@ func renderSQLiteColumn(c column) string {
 		typ = "TEXT"
 	case colTextMedium:
 		typ = "TEXT"
+	case colBytes:
+		typ = "BLOB"
 	case colInt, colBool:
 		typ = "INTEGER"
 	case colTime, colTimeOrNull:
@@ -161,7 +179,7 @@ func renderSQLiteColumn(c column) string {
 	if c.autoIncrement {
 		return s + " PRIMARY KEY AUTOINCREMENT"
 	}
-	if c.kind != colTimeOrNull {
+	if c.kind != colTimeOrNull && !c.nullable {
 		s += " NOT NULL"
 	}
 	if c.unique {
@@ -198,6 +216,10 @@ func (d mysqlDialect) createTable(t tableSpec) string {
 // isDuplicateIndexErr 容忍重复索引（幂等迁移）。
 func (mysqlDialect) createIndex(name, table, cols string) string {
 	return fmt.Sprintf("CREATE INDEX %s ON %s (%s);", name, table, cols)
+}
+
+func (mysqlDialect) createUniqueIndex(name, table, cols string) string {
+	return fmt.Sprintf("CREATE UNIQUE INDEX %s ON %s (%s);", name, table, cols)
 }
 
 // upsert 生成 MySQL 的 ON DUPLICATE KEY UPDATE col=VALUES(col)。
@@ -251,6 +273,10 @@ func renderMySQLColumn(c column) string {
 	case colLong:
 		// MEDIUMTEXT（16MB）而不是 TEXT（64KB）：原因见 colLong 注释里的真机事故。
 		typ = "MEDIUMTEXT"
+	case colBytes:
+		// MEDIUMBLOB（16MB）而不是 BLOB（64KB）：对象正文上限默认 32MiB，且二进制列
+		// 不能带字符集，理由见 colBytes 注释。
+		typ = "MEDIUMBLOB"
 	case colInt:
 		typ = "INTEGER"
 	case colBool:
@@ -267,7 +293,7 @@ func renderMySQLColumn(c column) string {
 	if c.autoIncrement {
 		return s + " AUTO_INCREMENT PRIMARY KEY"
 	}
-	if c.kind != colTimeOrNull {
+	if c.kind != colTimeOrNull && !c.nullable {
 		s += " NOT NULL"
 	}
 	if c.unique {
@@ -276,8 +302,10 @@ func renderMySQLColumn(c column) string {
 	if c.primary {
 		s += " PRIMARY KEY"
 	}
-	// MySQL 8.0.13 才支持 TEXT 默认值；长文本列业务侧始终显式写入，故略去默认值。
-	if c.def != "" && c.kind != colLong {
+	// MySQL 8.0.13 才支持 TEXT/BLOB 默认值；长文本与二进制列业务侧始终显式写入，
+	// 故一并略去默认值（否则低版本 MySQL 建表直接 1101 "BLOB/TEXT column can't
+	// have a default value"）。
+	if c.def != "" && c.kind != colLong && c.kind != colBytes {
 		s += " DEFAULT " + c.def
 	}
 	return s

@@ -189,3 +189,40 @@ type RetentionPolicy struct {
 	CleanupMode   string    `json:"cleanupMode,omitempty"`
 	UpdatedAt     time.Time `json:"updatedAt"`
 }
+
+// Attachment 是会话附件的元数据行（方案 15 §6.2）：正文在对象存储里，本表只存展示名
+// 与引用。Name 是服务端净化后的展示名（去路径、去控制字符、≤191），真名永不参与对象
+// key，因此 BlobKey 不参与任何业务判定，也不回给前端（§8.1 第 7 步）。
+type Attachment struct {
+	ID        string    `json:"id"`
+	SessionID string    `json:"sessionId"`
+	TurnID    string    `json:"turnId,omitempty"`
+	UserID    string    `json:"userId,omitempty"`
+	Name      string    `json:"name"`
+	BlobKey   string    `json:"-"`
+	MediaType string    `json:"mediaType,omitempty"`
+	Size      int64     `json:"size"`
+	SHA256    string    `json:"sha256"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// Report 是一次巡检渲染产物的落点登记（方案 15 §6.2）。Kind 取 latest-md /
+// latest-json / daily-md，一个渲染产物一行，kind 不唯一：同 scan 重跑产生新对象新行，
+// 旧行仍是有效历史。ScanID 允许为空（CLI 本地扫描不入表）。
+//
+// CreatedBy 必须由写入方显式带：扫描任务是进程内对象、没有 owner 列可继承，重启后 Web
+// 仍要能按归属列出历史报告。Available 由对账维护，false 时列表可见但下载返回 410。
+type Report struct {
+	ID        string    `json:"id"`
+	ClusterID string    `json:"clusterId,omitempty"`
+	ScanID    string    `json:"scanId,omitempty"`
+	Kind      string    `json:"kind"`
+	BlobKey   string    `json:"-"`
+	MediaType string    `json:"mediaType,omitempty"`
+	Size      int64     `json:"size"`
+	SHA256    string    `json:"sha256"`
+	Findings  int64     `json:"findings"`
+	CreatedBy string    `json:"createdBy,omitempty"`
+	Available bool      `json:"available"`
+	CreatedAt time.Time `json:"createdAt"`
+}

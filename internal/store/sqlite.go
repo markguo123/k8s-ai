@@ -252,12 +252,19 @@ func (st *sessionStore) Get(ctx context.Context, id string) (*session.Session, e
 }
 
 func (st *sessionStore) Update(ctx context.Context, sess *session.Session) error {
+	return updateSession(ctx, st.s.db, sess)
+}
+
+// updateSession 是会话 UPDATE 语句的唯一出处：非事务入口（Sessions().Update）与事务
+// 入口（Tx.UpdateSession）共用同一条语句。两处各写一遍，加列时漏改一边就是静默的数据
+// 不一致——列表页读到新值、详情页读到旧值这类问题最难查。
+func updateSession(ctx context.Context, ex execer, sess *session.Session) error {
 	sess.LastModified = time.Now()
 	row, data, err := sessionRow(sess)
 	if err != nil {
 		return err
 	}
-	res, err := st.s.db.ExecContext(ctx, `
+	res, err := ex.ExecContext(ctx, `
 		UPDATE sessions SET user_id=?, name=?, cluster_id=?, namespace=?, model=?, state=?, data=?, last_modified=?
 		WHERE id=?`,
 		sess.UserID, row.Name, row.Cluster, row.Namespace, row.Model, row.State, data, sess.LastModified, sess.ID)

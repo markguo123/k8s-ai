@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/k8s-ai/k8s-ai/internal/objectstore"
 )
 
 // dbStore 是 Store 的通用数据库实现（D-04）：core CRUD 只依赖 *sql.DB 与
@@ -28,6 +30,7 @@ type dbStore struct {
 	credentials *credentialStore
 	authzGrants *authzGrantStore
 	apiTokens   *apiTokenStore
+	objects     *objectStore
 }
 
 // newDBStore 组装通用 Store 并装配各子 Store。
@@ -48,6 +51,7 @@ func newDBStore(db *sql.DB, d dialect) *dbStore {
 	s.credentials = &credentialStore{s}
 	s.authzGrants = &authzGrantStore{s}
 	s.apiTokens = &apiTokenStore{s}
+	s.objects = &objectStore{s}
 	return s
 }
 
@@ -98,6 +102,20 @@ func (s *dbStore) Clusters() ClusterStore       { return s.clusters }
 func (s *dbStore) Credentials() CredentialStore { return s.credentials }
 func (s *dbStore) AuthzGrants() AuthzGrantStore { return s.authzGrants }
 func (s *dbStore) ApiTokens() ApiTokenStore     { return s.apiTokens }
+
+// Objects 返回对象元数据登记表入口（P8.2）。
+func (s *dbStore) Objects() ObjectStore { return s.objects }
+
+// ObjectContent 返回 db 内容后端。prefix 在这里过 NormalizePrefix：它是唯一读
+// platform.blobs.prefix 的入口，把非法前缀挡在装配期，而不是等第一次写对象时才报
+// 一句看不懂的 ErrKeyInvalid。
+func (s *dbStore) ObjectContent(prefix string, maxBytes int64) (objectstore.Store, error) {
+	normalized, err := objectstore.NormalizePrefix(prefix)
+	if err != nil {
+		return nil, fmt.Errorf("invalid blobs prefix: %w", err)
+	}
+	return newObjectContent(s, normalized, maxBytes), nil
+}
 
 // ---- shared helpers（两个驱动通用） ----
 
