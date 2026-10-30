@@ -76,6 +76,10 @@ func TestPlatformBlobsDefaults(t *testing.T) {
 	if b.Dir != "" {
 		t.Errorf("dir 默认留空，由使用方按场景取默认: %q", b.Dir)
 	}
+	// tmp_dir 默认留空 = 用 os.TempDir()（容器里已是 emptyDir）；配置面不猜路径。
+	if b.TmpDir != "" {
+		t.Errorf("tmp_dir 默认应留空: %q", b.TmpDir)
+	}
 	if b.Endpoint != "" || b.AccessKey != "" || b.SecretKey != "" {
 		t.Errorf("默认不得内置任何 endpoint/凭据: %+v", b)
 	}
@@ -225,6 +229,7 @@ func TestPlatformBlobsEnvOverride(t *testing.T) {
 	t.Setenv("K8S_AI_PLATFORM_BLOBS_BUCKET", "k8s-ai-reports")
 	t.Setenv("K8S_AI_PLATFORM_BLOBS_ACCESS_KEY", "ak-from-secret")
 	t.Setenv("K8S_AI_PLATFORM_BLOBS_SECRET_KEY", "sk-from-secret")
+	t.Setenv("K8S_AI_PLATFORM_BLOBS_TMP_DIR", "/var/tmp/k8s-ai-put")
 	cfg, err := Load(LoadOptions{})
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -232,6 +237,9 @@ func TestPlatformBlobsEnvOverride(t *testing.T) {
 	b := cfg.Platform.Blobs
 	if !b.IsS3() || b.Endpoint == "" || b.Bucket == "" || b.AccessKey != "ak-from-secret" || b.SecretKey != "sk-from-secret" {
 		t.Fatalf("env 注入未生效: %+v", b)
+	}
+	if b.TmpDir != "/var/tmp/k8s-ai-put" {
+		t.Fatalf("tmp_dir env 注入未生效: %q", b.TmpDir)
 	}
 }
 

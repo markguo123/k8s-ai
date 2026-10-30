@@ -392,6 +392,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("platform.blobs.driver", BlobDriverDB)
 	v.SetDefault("platform.blobs.prefix", "k8sai")
 	v.SetDefault("platform.blobs.dir", "")
+	// tmp_dir 留空时由 objectstore 取 os.TempDir()（方案 15 §14）：装配层决定回落值，
+	// 配置面不猜，避免 validate 在有无临时卷的不同环境下结论不一致。
+	v.SetDefault("platform.blobs.tmp_dir", "")
 	v.SetDefault("platform.blobs.endpoint", "")
 	v.SetDefault("platform.blobs.region", "us-east-1")
 	v.SetDefault("platform.blobs.use_tls", false)

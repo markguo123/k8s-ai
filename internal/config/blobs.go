@@ -12,7 +12,7 @@ import (
 const (
 	// BlobDriverOff 关闭二进制产物通道：只保留结构化结论，不写任何对象。
 	BlobDriverOff = "off"
-	// BlobDriverDB 是默认后端：正文落 DB 行（schema v6 的 blob_objects/attachments/reports）。
+	// BlobDriverDB 是默认后端：正文落平台库 objects 表的 payload 列（schema v6）。
 	// 默认取它，保证没改配置的环境升级即无感。
 	BlobDriverDB = "db"
 	// BlobDriverDir 本地目录：单机/离线交付常用，跨副本不共享，扩副本前必须切 s3。
@@ -29,7 +29,7 @@ const (
 )
 
 // blobPrefixPattern 约束对象键首段：小写字母数字开头，只允许 - 与 _。
-// key 的防穿越闸门在 internal/blobstore 的 ValidateKey（三后端共享），这里只把
+// key 的防穿越闸门在 internal/objectstore 的 ValidateKey（三后端共享），这里只把
 // 配置面关严，避免把一个带斜杠或大写的段当 prefix 传下去。
 var blobPrefixPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
@@ -50,6 +50,10 @@ type PlatformBlobsConfig struct {
 	// Dir 是 driver=dir 的根目录；留空由使用方按场景取默认（容器 /data/blobs、
 	// CLI ~/.k8s-ai/blobs），配置面不猜这个默认值。
 	Dir string `mapstructure:"dir"`
+	// TmpDir 是上传落盘的中转目录（driver=s3 先把正文流式落到这里算摘要，再单次 PUT，
+	// 方案 15 §14）。留空取 os.TempDir()：容器里 /tmp 已是 emptyDir，显式键是为现场把
+	// 临时盘指到大容量卷。与 Dir 同口径——配置面只做形状校验，可写性交给启动期 Ensure。
+	TmpDir string `mapstructure:"tmp_dir"`
 	// Endpoint 是 driver=s3 的服务地址：host:port，不带 scheme。
 	Endpoint string `mapstructure:"endpoint"`
 	// Region 是 S3 签名区域；MinIO 常见 us-east-1。

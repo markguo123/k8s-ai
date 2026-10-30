@@ -51,6 +51,7 @@ platform:
     driver: db                # off | db | dir | s3；默认 db（正文进 DB），老环境升级零行为变化
     prefix: k8sai             # 对象键首段，≤32 字符，只允许小写字母数字与 - _
     dir: ""                   # driver=dir 的根目录；留空由进程按场景取默认（容器内 /data/blobs）
+    tmp_dir: ""               # driver=s3 的上传落盘中转目录；留空取进程临时目录（容器里即 /tmp）
     endpoint: ""              # driver=s3 才用：host:port，不含 scheme（环境专有值，别提交进仓库）
     region: us-east-1         # 签名区域；MinIO 默认 us-east-1
     use_tls: false            # 自签 MinIO 常见 false；生产建议挂证书后改 true

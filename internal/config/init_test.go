@@ -34,6 +34,7 @@ var serverTemplateKeys = []string{
 	"platform.blobs.region",
 	"platform.blobs.secret_key",
 	"platform.blobs.session_data",
+	"platform.blobs.tmp_dir",
 	"platform.blobs.use_tls",
 	"platform.exec.shell_enabled",
 	"platform.server.addr",
