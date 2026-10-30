@@ -1,7 +1,7 @@
 # k8s-ai 架构决策记录（ADR）
 
 - 版本：v1.0 → v4.0.0（四期新增 ADR）
-- 日期：2026-08-12（首版） / 2026-10-10（四期平台底座 ADR） / 2026-10-14（部署形态与前端交付口径） / 2026-10-22（新增 ADR-036 前后端分离部署形态） / 2026-10-23（新增 ADR-037 权限分层与会话隔离、ADR-038 Scope-aware Agent） / 2026-10-26（新增 ADR-039 会话 API 包更名） / 2026-10-27（新增 ADR-040 动态配置读取优先级、ADR-041 前端产物内嵌与镜像可复现构建、ADR-042 存储主口径与迁移入口拆分；ADR-031 v1.14、ADR-040 v1.2） / 2026-10-28（新增 ADR-043 存储边界与对象存储、ADR-044 容器执行通道与镜像基座；ADR-042 落实状态回写） / 2026-10-29（**ADR-044 修订 v1.1 口径翻转**：默认交付镜像内置 shell 与 kubectl，ADR-041 第 7 条同步修订，T9 收口措辞更新）
+- 日期：2026-08-12（首版） / 2026-10-10（四期平台底座 ADR） / 2026-10-14（部署形态与前端交付口径） / 2026-10-22（新增 ADR-036 前后端分离部署形态） / 2026-10-23（新增 ADR-037 权限分层与会话隔离、ADR-038 Scope-aware Agent） / 2026-10-26（新增 ADR-039 会话 API 包更名） / 2026-10-27（新增 ADR-040 动态配置读取优先级、ADR-041 前端产物内嵌与镜像可复现构建、ADR-042 存储主口径与迁移入口拆分；ADR-031 v1.14、ADR-040 v1.2） / 2026-10-28（新增 ADR-043 存储边界与对象存储、ADR-044 容器执行通道与镜像基座；ADR-042 落实状态回写） / 2026-10-29（**ADR-044 修订 v1.1 口径翻转**：默认交付镜像内置 shell 与 kubectl，ADR-041 第 7 条同步修订，T9 收口措辞更新） / 2026-10-30（**ADR-043 修订 v1.1**：按 DEV-v4.0.0 真实代码纠偏为「MySQL + S3 兼容对象存储」双存储架构、包名改 `internal/objectstore`、补对象状态机/事务设施/对账与备份恢复/故障隔离；新增 **ADR-046 会话事实源收敛到平台库**，P8 工时 7.50 → 11.00 人日；同日 **ADR-046 落实状态回写**：P8.0 代码与测试已落地，方案 15 升 v1.4）
 - 状态：四期企业平台落地中（ADR-020~044）
 
 ## ADR-001 两阶段扫描
@@ -628,36 +628,31 @@
   `deploy/base/db-migrate-job.yaml` 见 c21b3a8，并在真机形态 A 完成一次端到端部署；MySQL 门禁实跑通过）。
   真机纠偏：会话正文列必须由 TEXT 放宽为 MEDIUMTEXT（v5 迁移幂等放宽），否则整轮会话静默丢失，见 5ce77d7。
 
-## ADR-043 存储边界与对象存储：正文外置到 `internal/blobstore`，默认 `db` 后端零行为变化
+## ADR-043 存储边界与对象存储：双存储架构与 `internal/objectstore` 抽象，默认 `db` 后端零行为变化
 
-- **状态**：已接受（2026-10-28；实现落新增主线 P8 / M8；附件上传通道 P8.7 延后 v4.2）
+- **状态**：已接受（2026-10-28 首版；**2026-10-30 修订 v1.1**：按 DEV-v4.0.0 真实代码纠偏，补命名、状态机、事务设施、对账与备份恢复、故障隔离与依赖口径；实现落新增主线 P8 / M8，附件上传通道 P8.7 延后 v4.2）
 - **背景**：
-  1. 会话正文整份 JSON 存 MySQL `sessions.data`，且会话列表每次请求 `SELECT data FROM sessions` 全表读正文
-     （`internal/store/sqlite.go`），索引列写好却不用于 List；会话规模上去后列表页必然把整库正文读进内存。
-  2. 真机已因此出过两次事故：正文超 TEXT 上限触发 `Error 1406 Data too long`，整轮会话静默丢失（热修 MEDIUMTEXT +
-     v5 幂等放宽，见 5ce77d7）；扫描报告写 Pod 内 emptyDir，重启即丢且 Web 面看不到任何报告。
-  3. 会话上传图片/文件是确定要做的能力，大正文继续进关系表不是可选项。
+  1. 四期的真问题不是「大正文该不该进桶」，而是「谁是大载荷的权威源」还没定死。核对代码后的事实：Web 会话的读写走容器内文件存储（`internal/service/chat.go:179` 装配 `session.NewFileStore`，`deploy/base/configmap.yaml` 的 `session_dir: /data/sessions` 挂在 emptyDir 上），MySQL `sessions` 表只在回合末被影子写一次且失败仅 WARN，读取方只有迁移工具——**平台重启即丢全部会话**（详见 ADR-046）。
+  2. v1.0 背景里「会话列表每次请求 `SELECT data FROM sessions` 全表读正文」的定位不准确：那条 SQL 只在 `service/migrate.go` 被调用，不在 Web 热路径；列表的真实放大在 `internal/session/store.go:165` 的 `fileStore.List()`——`ReadDir` 后逐个读全量正文反序列化。事故根因（正文超列宽触发 `Error 1406` 静默丢整轮，热修 MEDIUMTEXT + schema v5）与「会话规模上去后列表必然放大」的判断仍然成立，只是堵点在文件侧。
+  3. 扫描报告只写 Pod 内 emptyDir，重启即清、Web 完全看不到；`server.go` 无任何 report 路由，`ScanJob` 是进程内 map 且无 owner，报告归属无处可查。
+  4. 会话上传图片/文件是确定要做的能力，大正文继续只靠关系表不是可选项。
 - **决策**：
-  1. 新增 `internal/blobstore`，接口 `Put/Get/Stat/Delete/List/Driver` + 可选 `Presigner`/`Maintainer`，
-     业务侧只见 `Ref{Key,SHA256,Size,MediaType,UpdatedAt}`，永不接触桶名与凭据。
-  2. 后端四档 `off|db|dir|s3`，**默认 `db`（正文进 `blob_objects.payload`，与业务行同事务）= 默认交付零行为变化**；
-     `dir` 面向单机 appliance 且带 flock 硬约束（与单副本口径 D-19/D-20 一致）；`s3` 面向平台化交付。
-  3. key 固定 `{prefix}/{category}/{scope}/.../{sha256}{ext}`，内容寻址天然去重幂等；`ValidateKey` 是防穿越唯一闸门，
-     总长上限 191（沿用 VARCHAR(191) 约定）。
-  4. schema v6 新增 `blob_objects`/`attachments`/`reports` 与 `sessions.data_blob_key`/`data_size`；生命周期契约
-     `Acquire/Release/ListCollectable/Forget`，GC 顺序固定，宽限期默认 168h，本期出 `k8s-ai blobs gc`，P5 接调度。
-     P5 的 Retention 与 Memory 写入方必须 blob-aware，这是 P8 排在 P4/P5 之前的唯一硬理由。
-  5. 配置全部归静态 `platform.blobs.*`，**不进动态键白名单、配置中心页面不展示**（改桶需重启，与 D-29/ADR-040 两档
-     语义不冲突）；AK/SK 走 env/Secret，与 `K8S_AI_PLATFORM_STORE_DSN` 同机制。
-  6. CLI 只允许 `off|dir`，`chat/scan` 不读 endpoint/AK/SK，保证「一个二进制丢到 master 节点」的直用形态不变。
-  7. 写顺序恒为「校验 → Put → 同事务（业务行 + Acquire）」；会话外置失败回退 inline 仅 WARN，不阻塞 Agent。
-  8. SDK 用 `minio-go/v7` 但只允许 S3 通用子集，禁 MinIO 私有 API；MinIO 服务端 AGPLv3 需法务过审后才作为默认交付，
-     未过审 `ENABLE_MINIO` 默认 false、交付改走现场已有桶。
-- **后果**：新增三表两列与一条 GC 链路；`dir` 后端把「不可横向扩容」从默认约束变成显式配置约束；报告产物
-  出现「桶为权威、目录为现场副本」双写，退役另期处理；平台进程仍维持单副本，多副本前置项（SSE sink、
-  `ProposalStore` 外移）另期登记。
-- **落实状态**：待实现（P8.1 配置与 validate → P8.2 接口与 `db` 后端 → P8.3 `dir` → P8.4 `s3` → P8.5 报告 →
-  P8.6 会话读写收敛 → P8.8 部署面 → P8.9 门禁与 CLI）。方案见 `15-方案-存储边界与对象存储-四期.md`。
+  1. **双存储定位**：MySQL 是业务数据与**对象元数据**的唯一权威源；对象存储只承载实际文件内容与大体积非结构化数据，不是任何业务对象的清单；容器卷/本地目录只作临时缓冲与现场副本，永不作事实源。引入对象存储不改变 MySQL 的默认业务数据库地位：不迁移业务表、不把结构化数据搬进桶、不引入第二套业务查询面。
+  2. 新增 `internal/objectstore`（v1.0 曾名 `blobstore`，实现落地前改名零成本），接口 `Store{Put,Get,Stat,Delete,List,Driver}` + 可选 `Presigner`/`Maintainer`/`Probe`，业务侧只见 `Ref{Key,SHA256,Size,MediaType,UpdatedAt}`，永不接触桶名与凭据。**`Put` 收 `Spec{Category,Scope,Ext,MediaType}` 并由实现端按实际 sha256 组装 key**（v1.0 让调用方拼 key，等于要求调用方先把整个对象读进内存算摘要）。配置命名空间保留已落地的 `platform.blobs.*`：`platform.store.*` 已被业务库占用，改名要同时动配置、两套模板键集合、清单、`install.sh`、架构门禁与手册六处，不划算。
+  3. **哨兵错误区分 `ErrUnavailable` 与 `ErrNotFound`**：不可达被误判成「对象不存在」会让一次网络抖动把健康对象判死，这是降级与对账两条链路的前提。
+  4. 后端四档 `off|db|dir|s3`，**默认 `db` = 默认交付零行为变化**；`db` 定位是兼容/兜底，有效上限建议 ≤8MiB（validate WARN 不硬拒）；`dir` 面向单机 appliance 且带 flock 硬约束；`s3` 面向平台化交付。**混合后端读取靠 `objects.driver` 列**，改配置不清库，旧对象仍按原后端读。
+  5. key 固定 `{prefix}/{category}/{scope}/{sha256}{ext}`，内容寻址天然去重幂等；`ValidateKey` 是三后端共享的唯一防穿越闸门，总长上限 191；`Spec.Scope` 只允许内部生成的 ID，用户可控原文一律只进元数据列。
+  6. **对象元数据模型（schema v6）**：`objects`（含 `sha256/size/media_type/category/driver/ref_count/state/deleted_at/created_by`，`payload` 仅 `db` 后端写）+ `attachments`（`UNIQUE(session_id,sha256,name)` 作幂等锚点）+ `reports`（含 `created_by`，由写入方显式带）+ `sessions.data_blob_key/data_size`。新增列种类 `colBytes`（SQLite `BLOB` / MySQL `MEDIUMBLOB`），必须与 `colLong` 同样排除默认值渲染。
+  7. **对象状态机** `ready/orphaned/missing/deleting` + 逻辑删除 `deleted_at`；GC 两段式且认领必须是 CAS，顺序固定「先 `Forget` 元数据行、再 `Delete` 内容」——最坏只留下可被桶扫描回收的孤儿，绝不制造悬空引用。
+  8. **事务设施是新增前置**：`internal/store` 当前没有任何事务入口（`BeginTx` 只在 `migrate.go`），v1.0 的「引用计数与业务行同事务」无承载。v1.1 补 `store.WithTx` + 收窄的 `Tx` 方法集（`UpdateSession/InsertAttachment/InsertReport/Acquire/Release`），不改 16 个既有 store 接口签名、不引入 ORM。
+  9. **一致性对账与备份恢复**：新增 `blobs verify [--deep] [--strict]`；**备份顺序固定「先 MySQL 后桶」**（保证库恢复点 ≤ 桶快照点，差异只能是孤儿而非悬空）；`gc_grace_period`（168h）必须远大于备份窗口；恢复后 `verify --strict` 准出；ETag 不等于 sha256，深校验必须下载重算；RPO 不对称——结构化结论可重算，附件与历史报告字节不可重算。
+  10. **故障隔离**：`/readyz` 判据**不含**对象存储（现状只有一个 `s.ready`，挂上去就是桶抖动摘 Pod、波及聊天/审批/审计）；启动期 fail-fast，运行期只让对象类端点返回明确 503，无熔断器、无后台重试队列、无写缓冲；扫描/审批/审计/聊天不 import objectstore，隔离性由架构门禁保证而非运行时兜底。运维可见性走 `GET /api/v1/storage/health`（复用 `settings.read`）。
+  11. **会话正文整篇外置四期不实现**：内容寻址下每轮产生一个全新对象，写放大只是从 MySQL 行搬进桶。`platform.blobs.session_data` 键保留但 validate 硬拒 `true`；行内正文改由 `agent.session_max_bytes`（默认 12MiB，低于 `MEDIUMTEXT` 16MiB）闸门 + 85% 一次性预警 + 超限拒绝写库（不静默截断）承担，列表一律不读正文。
+  12. 配置全部归静态 `platform.blobs.*`（新增 `tmp_dir`），**不进动态键白名单、配置中心页面不展示**；AK/SK 只走 env/Secret，SDK 错误与预签名 URL 必须过脱敏（新增 `X-Amz-*` 系列规则）；预签名 TTL 三重收紧（配置 24h 上限 → 运行期 ≤15m → 只 GET、不落库不进 SSE/审计/日志）。
+  13. CLI 只允许 `off|dir` 且在构造入口硬拒 `s3`（`Config.Validate` 无 mode 上下文，白名单不能下放），`~/.k8s-ai` 整目录自洽可搬迁，blob 失败只 WARN 不丢本地产物。
+  14. SDK 用 `minio-go/v7` 且只用 S3 通用子集，禁 MinIO 私有 API，`tests/arch` 门禁保证 SDK 只出现在 `internal/objectstore/s3.go`；**不引入 `go mod vendor`**（仓库现状无 vendor，v1.0 该条与事实不符），构建走内网 GOPROXY；`no_s3` slim 变体本轮不做（需要假实现才编得过）。MinIO 服务端 AGPLv3 未过法务前，自带 MinIO 清单只放 `deploy/example/`、`ENABLE_MINIO` 明确拒绝不变。
+- **后果**：新增三表两列、`WithTx` 设施、状态机与 GC/verify 两条链路；`dir` 后端把「不可横向扩容」从默认约束变成显式配置约束；报告产物出现「桶为权威、目录为现场副本」双写，退役另期处理；新增 `report.read` 权限位且必须同步 `defaultRoles()`（`reconcileRoles` 每次启动会覆盖内置角色的手工改动）；平台进程仍维持单副本，多副本前置项（SSE sink、`ProposalStore` 外移）另期登记。
+- **落实状态**：P8.1（配置面 15 键 + validate + 清单 + `install.sh` 参数）已落地；**P8.0 会话事实源收敛已随 ADR-046 落地**；其余待实现，顺序 P8.2 → P8.3 → P8.4 → P8.5 → P8.6 → P8.8 → P8.9 → P8.10 → P8.11。方案见 `15-方案-存储边界与对象存储-四期.md` v1.4。
 
 ## ADR-044 容器执行通道：默认交付镜像内置 shell 与 kubectl，安全由审批闸门与 RBAC 收口
 
@@ -687,6 +682,23 @@
   7. LLM 边界：**脚本本体零 LLM、零外呼**。安装辅助拆为两个可选任务且不进关键路径——**P6.14 `install doctor`**（装后只读诊断，复用平台 agent / 只读工具 / 审批链路，日志与事件摘要先脱敏再进模型，不自动修复）与 **P6.15 `install plan`**（读集群实况产出 `install.env` 草稿与逐项理由，LLM 不生成也不执行 `kubectl apply`）；`install.sh` 失败时末行提示 doctor 命令。
 - **后果**：安装路径从「手工十步 + 手改 YAML」收敛为「一份 env + 一条命令」，同时保留正式清单独立 apply 的可审计性；默认 NodePort 意味着对外端口落在 30000-32767，需要标准 80/443 的现场仍走 Ingress 或自备 LB；PVC 默认创建把「无默认存储类」暴露成前置检查失败而不是运行期一直 Pending；`tests/arch` 需新增脚本红线（含「每个 `REPLACE_` 占位都有对应参数」与「零环境专有值」两条），清单占位变更会被测试挡住；P6.14/P6.15 可延后，不影响 v4.0.0 准出。
 - **落实状态**：待实现（P6.4）。参数表权威源为部署手册 §4.10，`deploy/README.md`、PRD §27 与本 ADR 只引用不复制，避免三处漂移。
+
+## ADR-046 会话事实源收敛到平台库：`internal/session` 文件存储降级为 CLI 专用
+
+- **状态**：已接受（2026-10-30）；实现落新增主线 **P8.0 / M8**，是 P8.6 与对象存储一切引用列的硬前置
+- **背景**：
+  1. 逐条核对 DEV-v4.0.0 代码：Web/API 的会话列表、详情、重命名、置顶、清空、删除全部经 `ChatService` → `session.Manager` → `session.NewFileStore(agent.session_dir)`（`internal/service/chat.go:179`、`internal/sessionapi/server.go:157-165`）。部署侧 `/data` 是 emptyDir（`deploy/allinone/deployment.yaml`），`deploy/example/deployment-reports-pvc.yaml` 只把 `reports` 卷换成 PVC、不动 `/data`。**结论：平台重启或 Pod 重建即全部会话丢失**，与 ADR-042「MySQL 是业务数据权威源」直接冲突。
+  2. MySQL `sessions` 表是「只写不读且写得不全」的影子副本：只有回合末一次 `sessionStore.Update`，失败仅 `slog.Warn`（`chat.go:656-663`）；`DeleteSession/ClearSession/RenameSession/PinSession`（`chat.go:841-871`）根本不写库。**用户删除会话后，整份正文永久留在数据库里**，这是合规删除面上的实质缺陷，也意味着任何建在 `sessions` 表上的报表都不可信。
+  3. 会话审计 `audit_dir/{id}.jsonl`（`chat.go:569`）与库内 Turn/Step 是两套真相，且平台侧没有任何读取方（`internal/server` 无审计读路由）。
+  4. 不先收敛事实源就建对象存储会放大问题：`sessions.data_blob_key`、`attachments.session_id`、`reports` 的归属全部指向一张没人读、也从不删除的表。
+- **决策**：
+  1. **平台模式下 MySQL 是会话的唯一事实源**：给 `store` 增一个实现 `session.Store` 的 DB 适配器（两个接口只差 `context.Context`，约 60 行），平台模式装配它；`session.NewFileStore` 降级为 CLI 专用后端，CLI 行为与文件布局一字不改。
+  2. **读写全切换，不做双读兜底**：列表走索引列不读正文、详情按 id 取整行；重命名/置顶/清空/删除一律同步落库，删除即真删（含 Turn 关联，正文随会话行消失）。刻意不留「读库失败回落文件」的路径——双读必然产生两套真相，正是本决策要消除的东西。
+  3. **一次性兜底导入**：`k8s-ai migrate --platform --sessions-dir <目录>` 复用 `internal/service/migrate.go` 骨架把存量文件导入库（`--platform` 按 `platform.store.*` 连平台库、与显式 `--db` 互斥，MySQL 现场不必临时造 SQLite 文件；`k8s-ai db migrate` 仍只升 schema，不承担数据导入）。**导入是一次性语义**：整轮零失败后按目录打「已导入」标记，重复执行整类跳过并提示 `--force`——否则已被用户删除的旧会话会被下一次导入从旧文件里复活，「删除」就不是终态。平台启动时若 `session_dir` 仍有文件，INFO 明示「这些文件不再被读取」并直接给出导入命令，不静默忽略。
+  4. **审计 jsonl 降级为可选副本**：平台模式的会话审计以库内 Turn/Step + 审计事件为准，`audit_dir` 的 jsonl 保留为 CLI 产物与可选排障副本，写失败只 WARN。不在平台侧提供 jsonl 读端点（避免第二套审计口径）。开关是新增静态键 `agent.audit_file_copy`，**默认 `true`**：平台侧本来就没有 jsonl 读路由，默认关死等于拿掉现场排障时唯一能直接 tail 的事件流水，而留着这份副本并不改变「库内 Turn/Step + 审计事件是权威」的事实；置 `false` 时以 `audit.NopRecorder` 占位，库内 `audit_events` 一条不少。
+  5. 与对象存储的边界：本 ADR 只解决「谁说了算」，不解决大正文落点；正文容量闸门与外置取舍属 ADR-043（其 v1.1 明确四期不做整篇外置）。
+- **后果**：平台模式的会话生命周期第一次真正受 MySQL 事务与容量约束，`sessions.data` 的 `MEDIUMTEXT` 上限变成需要显式管理的闸门（`agent.session_max_bytes`，ADR-043 v1.1 第 11 条）；`/data` PVC 从「会话必需」降级为「只服务 SQLite 兜底」，P6.4 的 PVC 口径与部署手册需同步（方案 15 §19 三态裁决）；测试面新增「重启不丢会话」「删除后库内无正文残留」「重命名/置顶持久化」三条硬断言；工时 1.5 人日，是 P8 从 7.5 人日升到 11.5 人日的主要来源。
+- **落实状态**：**代码已落地（P8.0，开发计划 v1.61）**。① `internal/store/sessionsync.go` 提供 `NewDatabaseSessionStore`（同步无 ctx 的 `session.Store` 适配带 ctx 的 `store.SessionStore`，单次操作 30s 超时；`ErrNotFound` → `session.ErrNotFound`、`ErrExists` → 普通「已存在」错误；落库前走 `redactSessionForStore`，脱敏面比文件副本更宽）；② `newChat` 按是否装配平台库分流后端，聊天主流程去掉对同一会话行的第二次写，`Delete/Clear/Rename/Pin` 经同一后端自动落库；③ `sessionStore.Delete` 同事务级联清 `steps`/`turns`（表间无外键；只删 `sessions` 行时已删会话正文仍可按 `session_id` 读回），`audit_events` 刻意保留；④ `agent.audit_file_copy` + `audit.NopRecorder`；⑤ `migrate --platform/--force` 一次性导入；⑥ 平台模式启动 INFO 点名残留会话文件。测试覆盖四后端语义等价、错误口径负向、落库脱敏、副本两态、CLI 文件布局不变、删除级联与审计保留。**仍待后续任务**：列表不读正文列与 `agent.session_max_bytes` 闸门属 P8.6，删除时解除对象引用属 P8.2/P8.5。方案见 `15-方案-存储边界与对象存储-四期.md` v1.4 §1、§20、§22。
 ## 待决策事项（需在编码前确认）
 
 | # | 问题 | 建议 | 影响 |
@@ -700,3 +712,4 @@
 | T7 | 单 ns 事件截断阈值 | 5000 条 | 内存 |
 | T8 | envtest 是否纳入默认 CI | 否（ADR-018） | 测试复杂度 |
 | T9 | 镜像写执行方案 D-06 签收 | **已收口（ADR-044 v1.1）**：默认镜像内置 shell 与 kubectl、容器内 shell 默认可用；写能力边界由人工审批 + 集群 RBAC + 红线 + 脱敏审计承担，`shell_enabled=false` 与无 shell 变体镜像留给硬合规现场 | K8s 形态下的写能力与排障能力 |
+| T10 | 对象存储引入的两项外部依赖（ADR-043 v1.1 §23.3） | ① MinIO Server 的 AGPLv3 法务口径未定 → 自带 MinIO 清单只进 `deploy/example/`、`ENABLE_MINIO` 保持明确拒绝；② 现场是否已有 S3 兼容桶未确认 → 决定 P8.4 真机门禁端点与主交付样例。两者都不阻塞 P8.0/P8.2/P8.3 | 对象存储交付形态与真机验收 |

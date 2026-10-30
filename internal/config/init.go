@@ -79,6 +79,8 @@ report:
 agent:
   session_dir: "~/.k8s-ai/sessions"  # 会话落盘（容器内 e.g. /data/sessions）
   audit_dir: "~/.k8s-ai/audit"       # 审计落盘（容器内 e.g. /data/audit）
+  audit_file_copy: true              # 会话审计 jsonl 副本：审计事实源是平台库 audit_events，
+                                     # 置 false 只写库、不再产生文件副本（P8.0）
 `
 
 // CLITemplate is written by `k8s-ai config init --cli`（终端直用全量引擎键）。

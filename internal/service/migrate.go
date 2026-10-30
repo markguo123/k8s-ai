@@ -32,6 +32,7 @@ type SourceReport struct {
 	Imported     int              `json:"imported"`
 	Skipped      int              `json:"skipped"` // 已存在/已迁移，不做重复写
 	Kept         int              `json:"kept"`    // 显式保留在原位置（如报告文件）
+	Note         string           `json:"note,omitempty"` // 需要人工知道的处理口径（如整类跳过）
 	Unmigratable []UnmigratedItem `json:"unmigratable,omitempty"`
 }
 
@@ -58,6 +59,9 @@ type MigrateOptions struct {
 	SessionDir string
 	AuditDir   string
 	ReportsDir string
+	// Force 重导入三期会话：P8.0 起平台库是会话事实源，会话目录的一次性兜底导入
+	// 默认只执行一次（否则平台上已删除的旧会话会被下一次 migrate 复活）。
+	Force bool
 	// Cipher 用于静态加密 config 里的敏感键（P3.9）。未配置时导入含
 	// 非默认敏感键的 config 会整批报错，绝不静默丢弃、也不回落明文。
 	Cipher settings.SecretCipher
@@ -66,7 +70,8 @@ type MigrateOptions struct {
 // Migrate 执行四期底座迁移（计划 P1.12）：
 //   - 先做 Store schema 迁移（幂等）；
 //   - config.yaml 复用配置中心 ImportConfig（逐键幂等）；
-//   - 三期 session 文件逐文件导入，写库前整体脱敏；
+//   - 三期 session 文件逐文件导入，写库前整体脱敏（一次性兜底：整目录导入成功后
+//     打标记，重复执行整类跳过，MigrateOptions.Force 可强制重导入）；
 //   - 三期 audit JSONL 逐行翻译为四期 AuditEvent 并落库（按文件记已迁移标记去重）；
 //   - 内置 Skill 种子写入 SkillStore（Upsert 幂等 + 迁移标记）；
 //   - 报告文件无存储表，显式报告保留，不删除不迁移。
@@ -89,7 +94,7 @@ func Migrate(ctx context.Context, opts MigrateOptions) (MigrateReport, error) {
 		rep.Config = sum
 	}
 	var err error
-	if rep.Sessions, err = migrateSessions(ctx, opts.Store, opts.SessionDir); err != nil {
+	if rep.Sessions, err = migrateSessions(ctx, opts.Store, opts.SessionDir, opts.Force); err != nil {
 		return rep, err
 	}
 	if rep.Audit, err = migrateAudit(ctx, opts.Store, opts.AuditDir); err != nil {
@@ -118,9 +123,14 @@ func migrateConfig(ctx context.Context, st store.Store, cfg *config.Config, ciph
 	return sum, nil
 }
 
-// migrateSessions 扫描 <dir>/*.json 导入历史会话。已存在于 Store 的会话跳过
-// （幂等）；解析/存储失败的条目进 Unmigratable 并附原因，绝不静默丢弃。
-func migrateSessions(ctx context.Context, st store.Store, dir string) (SourceReport, error) {
+// migrateSessions 扫描 <dir>/*.json 导入历史会话（一次性兜底导入，P8.0）。
+// 已存在于 Store 的会话跳过（幂等）；解析/存储失败的条目进 Unmigratable 并附原因，
+// 绝不静默丢弃。
+//
+// 整轮无失败后按目录打「已导入」标记，后续 migrate 整类跳过：P8.0 起平台库是会话
+// 事实源，用户在 Web 上删掉的会话不能被下一次 migrate 从旧文件里复活（删除必须
+// 是终态，否则合规上等于「已删会话正文仍可取回」）。确需重导入用 --force。
+func migrateSessions(ctx context.Context, st store.Store, dir string, force bool) (SourceReport, error) {
 	rep := SourceReport{}
 	if dir == "" {
 		return rep, nil
@@ -131,6 +141,24 @@ func migrateSessions(ctx context.Context, st store.Store, dir string) (SourceRep
 			return rep, nil
 		}
 		return rep, fmt.Errorf("read sessions dir %s: %w", dir, err)
+	}
+	jsonFiles := 0
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+			jsonFiles++
+		}
+	}
+	marker := "sessions:" + filepath.ToSlash(filepath.Clean(dir))
+	if !force {
+		done, err := migrationDone(ctx, st, marker)
+		if err != nil {
+			return rep, err
+		}
+		if done {
+			rep.Found, rep.Skipped = jsonFiles, jsonFiles
+			rep.Note = "该会话目录已完成过一次导入，本次整体跳过（重导入请加 --force，会复活库中已删除的旧会话）"
+			return rep, nil
+		}
 	}
 	existing, err := knownSessions(ctx, st)
 	if err != nil {
@@ -171,6 +199,13 @@ func migrateSessions(ctx context.Context, st store.Store, dir string) (SourceRep
 		}
 		rep.Imported++
 		existing[redacted.ID] = true
+	}
+	// 只在整轮零失败时打标记：半途中断（目录读不出、个别文件写库失败）保持可重试。
+	if len(rep.Unmigratable) == 0 {
+		if err := markMigration(ctx, st, marker); err != nil {
+			return rep, err
+		}
+		rep.Note = "已标记该目录导入完成，后续 migrate 不再重复导入会话"
 	}
 	return rep, nil
 }

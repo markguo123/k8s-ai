@@ -99,9 +99,14 @@ type AgentConfig struct {
 	HistoryTurns    int           `mapstructure:"history_turns"`
 	SessionDir      string        `mapstructure:"session_dir"`
 	AuditDir        string        `mapstructure:"audit_dir"`
-	DisabledTools   []string      `mapstructure:"disabled_tools"`
-	Create          CreateConfig  `mapstructure:"create"`
-	Secret          SecretConfig  `mapstructure:"secret"`
+	// AuditFileCopy keeps the per-session audit JSONL file in addition to the
+	// platform audit table (P8.0). The platform DB is the source of truth; the
+	// file is an optional copy. Default true keeps existing deployments intact,
+	// and CLI mode (no platform store) always writes it.
+	AuditFileCopy bool         `mapstructure:"audit_file_copy"`
+	DisabledTools []string     `mapstructure:"disabled_tools"`
+	Create        CreateConfig `mapstructure:"create"`
+	Secret        SecretConfig `mapstructure:"secret"`
 }
 
 // CreateConfig controls the Phase 3 resource-creation capability
@@ -358,6 +363,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("agent.history_turns", 20)
 	v.SetDefault("agent.session_dir", "~/.k8s-ai/sessions")
 	v.SetDefault("agent.audit_dir", "~/.k8s-ai/audit")
+	v.SetDefault("agent.audit_file_copy", true)
 
 	// Phase 3 resource creation (RESOURCE_CREATE_DESIGN.md / DEVELOPMENT_PLAN_三期.md).
 	v.SetDefault("agent.create.enabled", true)

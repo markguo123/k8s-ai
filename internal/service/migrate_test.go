@@ -297,3 +297,75 @@ func TestMigrateReportUnmigratableCount(t *testing.T) {
 		t.Fatalf("UnmigratableCount = %d, want 4", got)
 	}
 }
+
+// TestMigrateSessionsImportOnceAndForce 锁住 P8.0 的会话迁移口径：三期会话目录是
+// 一次性兜底导入，整轮成功后打标记、后续 migrate 整类跳过，平台上已删除的旧会话
+// 不能被下一次导入复活；确需重导入用 Force。
+func TestMigrateSessionsImportOnceAndForce(t *testing.T) {
+	sessDir := t.TempDir()
+	for _, id := range []string{"old-a", "old-b"} {
+		now := time.Now().UTC()
+		raw, err := json.Marshal(session.Session{
+			ID: id, Name: "三期会话 " + id, State: "done",
+			CreatedAt: now, LastModified: now,
+			Messages: []session.Message{{Role: "user", Type: "text", Content: "历史提问"}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFixtureFile(t, filepath.Join(sessDir, id+".json"), string(raw))
+	}
+
+	ctx := context.Background()
+	st := persistTestStore(t)
+	opts := MigrateOptions{Store: st, SessionDir: sessDir}
+
+	rep1, err := Migrate(ctx, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep1.Sessions.Found != 2 || rep1.Sessions.Imported != 2 || rep1.Sessions.Skipped != 0 {
+		t.Fatalf("首次 sessions report = %+v", rep1.Sessions)
+	}
+	if rep1.Sessions.Note == "" || len(rep1.Sessions.Unmigratable) != 0 {
+		t.Fatalf("首次导入应打完成标记且无不可迁移项: %+v", rep1.Sessions)
+	}
+
+	// 模拟运维在平台上删掉一条导入后的历史会话（删除必须是终态）。
+	if err := st.Sessions().Delete(ctx, "old-a"); err != nil {
+		t.Fatal(err)
+	}
+
+	rep2, err := Migrate(ctx, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep2.Sessions.Found != 2 || rep2.Sessions.Imported != 0 || rep2.Sessions.Skipped != 2 {
+		t.Fatalf("二次 sessions report = %+v", rep2.Sessions)
+	}
+	if !strings.Contains(rep2.Sessions.Note, "--force") {
+		t.Fatalf("整类跳过必须说明重导入方式: %+v", rep2.Sessions)
+	}
+	sessions, err := st.Sessions().List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 || sessions[0].ID != "old-b" {
+		t.Fatalf("已删除的旧会话被 migrate 复活: %+v", sessions)
+	}
+
+	// Force：显式重导入（会找回库中已删除的 old-a）。
+	rep3, err := Migrate(ctx, MigrateOptions{Store: st, SessionDir: sessDir, Force: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep3.Sessions.Imported != 1 || rep3.Sessions.Skipped != 1 {
+		t.Fatalf("force sessions report = %+v", rep3.Sessions)
+	}
+	if sessions, err = st.Sessions().List(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("force 重导入后 sessions = %+v", sessions)
+	}
+}

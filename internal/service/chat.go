@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -159,6 +160,10 @@ type chatService struct {
 	proposals *tools.ProposalStore
 	// store 是四期 SQLite/MySQL 统一持久化门面：非空时把 Turn/Step 生命周期记录落库（P1.8）。
 	store store.Store
+	// sessionsInStore 表示会话事实源已是平台库（P8.0 / ADR-046）：会话读写经
+	// store.NewDatabaseSessionStore 直接进 sessions 表，fileStore 只留给终端直用
+	// （无平台库）模式，因此聊天主流程不再对同一行做第二次写。
+	sessionsInStore bool
 	// skillsPlat 是四期 Skill 平台应用服务（P3.5），非空时 create_resource 的
 	// dry-run / apply 消费其实时 registry（custom/third-party 与启停即时生效）。
 	skillsPlat *SkillPlatform
@@ -175,11 +180,22 @@ func NewChat(cfg *config.Config, newReader func() (scanner.Reader, error), llmFa
 }
 
 func newChat(cfg *config.Config, newReader func() (scanner.Reader, error), llmFactory func(llm.Options) llm.LLMClient, scanFactory func() tools.ScanRunner, newWriteRunner func() (tools.WriteRunner, error), st store.Store) ChatService {
-	var store session.Store
-	store, err := session.NewFileStore(cfg.Agent.SessionDir)
-	if err != nil {
-		slog.Warn("chat: 会话目录不可用，回退内存存储", "dir", cfg.Agent.SessionDir, "error", err)
-		store = session.NewMemoryStore()
+	// 会话事实源分流（P8.0）：装配了平台库就一律读写平台库——容器卷上的会话目录
+	// 不作事实源（清卷即丢历史正文；删除只落文件还会在库里留下已删会话的整份正文）。
+	var sessStore session.Store
+	sessionsInStore := false
+	if st != nil {
+		sessStore = store.NewDatabaseSessionStore(st.Sessions())
+		sessionsInStore = true
+		warnLegacySessionFiles(cfg.Agent.SessionDir)
+	} else {
+		fileStore, err := session.NewFileStore(cfg.Agent.SessionDir)
+		if err != nil {
+			slog.Warn("chat: 会话目录不可用，回退内存存储", "dir", cfg.Agent.SessionDir, "error", err)
+			sessStore = session.NewMemoryStore()
+		} else {
+			sessStore = fileStore
+		}
 	}
 	if llmFactory == nil {
 		llmFactory = func(o llm.Options) llm.LLMClient { return llm.New(o) }
@@ -191,14 +207,15 @@ func newChat(cfg *config.Config, newReader func() (scanner.Reader, error), llmFa
 		newWriteRunner = func() (tools.WriteRunner, error) { return chatWriteRunner(cfg) }
 	}
 	return &chatService{
-		cfg:            cfg,
-		sessions:       session.NewManager(store),
-		llmFactory:     llmFactory,
-		newReader:      newReader,
-		scanFactory:    scanFactory,
-		newWriteRunner: newWriteRunner,
-		proposals:      tools.NewProposalStore(),
-		store:          st,
+		cfg:             cfg,
+		sessions:        session.NewManager(sessStore),
+		sessionsInStore: sessionsInStore,
+		llmFactory:      llmFactory,
+		newReader:       newReader,
+		scanFactory:     scanFactory,
+		newWriteRunner:  newWriteRunner,
+		proposals:       tools.NewProposalStore(),
+		store:           st,
 	}
 }
 
@@ -206,6 +223,29 @@ func newChat(cfg *config.Config, newReader func() (scanner.Reader, error), llmFa
 // Session/Turn 及其 Reason/Tool/Observe/Approval/Response Step 记录入库，与三期文件会话并存。
 func NewChatWithStore(cfg *config.Config, newReader func() (scanner.Reader, error), llmFactory func(llm.Options) llm.LLMClient, scanFactory func() tools.ScanRunner, newWriteRunner func() (tools.WriteRunner, error), st store.Store) ChatService {
 	return newChat(cfg, newReader, llmFactory, scanFactory, newWriteRunner, st)
+}
+
+// warnLegacySessionFiles 平台模式启动时点名会话目录里残留的历史文件（P8.0 / ADR-046）。
+// 平台模式下这些文件不再被读取，升级现场如果没人告知，只会看到「历史会话全没了」，
+// 容易被当成数据丢失故障；这里明说补救办法（一次性导入）而不是静默忽略。
+func warnLegacySessionFiles(dir string) {
+	if dir == "" {
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	legacy := 0
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+			legacy++
+		}
+	}
+	if legacy > 0 {
+		slog.Info("chat: 会话目录里的历史文件不再被读取（平台模式会话事实源是平台库），如需保留历史请执行 k8s-ai migrate --platform --sessions-dir",
+			"dir", dir, "files", legacy)
+	}
 }
 
 // NewChatWithSink 创建四期 Agent 服务：保留三期事件流，并通过 sink 实时广播统一 SSE 事件（P1.9）。
@@ -323,9 +363,9 @@ func chatWriteRunner(cfg *config.Config) (tools.WriteRunner, error) {
 		// shell 通道开关来自静态配置（platform.exec.shell_enabled，默认开启）：
 		// Options 的零值是关闭，装配方必须显式传，别让默认镜像丢掉管道排障能力。
 		ShellEnabled: cfg.Platform.Exec.ShellEnabled,
-		Clientset:  cs,
-		Namespace:  cfg.Kubernetes.Namespace,
-		RESTConfig: restConfig,
+		Clientset:    cs,
+		Namespace:    cfg.Kubernetes.Namespace,
+		RESTConfig:   restConfig,
 	}), nil
 }
 
@@ -521,7 +561,10 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 func (s *chatService) chatTracer(ctx context.Context, sess *session.Session, scope *runScope) agent.Tracer {
 	var persist agent.Tracer
 	if s.store != nil {
-		if err := s.store.Sessions().Create(ctx, sess); err != nil && !errors.Is(err, store.ErrExists) {
+		if s.sessionsInStore {
+			// 会话行已由 session.Store 适配器在建会话时写入（P8.0），这里不再补写一次。
+			persist = &persistTracer{store: s.store}
+		} else if err := s.store.Sessions().Create(ctx, sess); err != nil && !errors.Is(err, store.ErrExists) {
 			slog.Warn("chat: 四期会话初始化失败，本轮跳过 Turn/Step 持久化", "session", sess.ID, "error", err)
 		} else {
 			persist = &persistTracer{store: s.store}
@@ -566,14 +609,20 @@ func (t *persistTracer) StepUpdated(ctx context.Context, step *session.Step) {
 // newAuditRecorder 为会话创建审计记录器（目录不存在自动创建；失败回退日志记录器）。
 // 装配了四期 Store 时同一事件同时落 AuditStore（P1.11），关联字段取自会话与本轮 turn/step。
 func (s *chatService) newAuditRecorder(sess *session.Session, scope *runScope) audit.Recorder {
-	path := filepath.Join(s.cfg.Agent.AuditDir, sess.ID+".jsonl")
 	var inner audit.Recorder
-	fileRecorder, err := audit.NewFileRecorder(path)
-	if err != nil {
-		slog.Warn("chat: 审计文件不可用，回退日志记录器", "path", path, "error", err)
-		inner = &audit.LogRecorder{}
+	if s.auditFileCopyEnabled() {
+		path := filepath.Join(s.cfg.Agent.AuditDir, sess.ID+".jsonl")
+		fileRecorder, err := audit.NewFileRecorder(path)
+		if err != nil {
+			slog.Warn("chat: 审计文件不可用，回退日志记录器", "path", path, "error", err)
+			inner = &audit.LogRecorder{}
+		} else {
+			inner = fileRecorder
+		}
 	} else {
-		inner = fileRecorder
+		// 副本已关闭（agent.audit_file_copy=false）：审计事实源是平台库 audit_events，
+		// 会话目录里不再产生第二份可含事件负载的落盘文件（P8.0）。
+		inner = audit.NopRecorder{}
 	}
 	if s.store == nil {
 		return inner
@@ -583,6 +632,16 @@ func (s *chatService) newAuditRecorder(sess *session.Session, scope *runScope) a
 		UserID:    sess.UserID,
 		ClusterID: sess.Cluster,
 	})
+}
+
+// auditFileCopyEnabled 判断本轮是否还写会话审计 jsonl 副本（P8.0）：
+// 终端直用（无平台库）恒为 true——文件就是审计唯一出口；平台模式下由
+// agent.audit_file_copy 决定，默认 true 保持既有部署行为不变。
+func (s *chatService) auditFileCopyEnabled() bool {
+	if s.store == nil {
+		return true
+	}
+	return s.cfg == nil || s.cfg.Agent.AuditFileCopy
 }
 
 func (s *chatService) runChat(ctx context.Context, ag *agent.Agent, sess *session.Session, req ChatRequest, events chan<- ChatEvent, recorder audit.Recorder, sink func(sse.Event), scope *runScope) {
@@ -656,7 +715,8 @@ func (s *chatService) runChat(ctx context.Context, ag *agent.Agent, sess *sessio
 	if err := s.sessions.Update(sess); err != nil {
 		slog.Warn("chat: 保存会话失败", "session", sess.ID, "error", err)
 	}
-	if s.store != nil {
+	// 会话事实源已是平台库时，上一行就是落库，不再重复写同一行（正文可达 MiB 级）。
+	if s.store != nil && !s.sessionsInStore {
 		if err := s.store.Sessions().Update(ctx, sess); err != nil {
 			slog.Warn("chat: 四期会话保存失败", "session", sess.ID, "error", err)
 		}

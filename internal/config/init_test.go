@@ -15,6 +15,7 @@ import (
 // 7 组动态键唯一落 DB settings，其余引擎键属终端直用。
 var serverTemplateKeys = []string{
 	"agent.audit_dir",
+	"agent.audit_file_copy",
 	"agent.session_dir",
 	"platform.auth.admin_username",
 	"platform.auth.session_store",

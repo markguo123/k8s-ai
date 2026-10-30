@@ -288,12 +288,39 @@ func (st *sessionStore) List(ctx context.Context) ([]*session.Session, error) {
 	return out, rows.Err()
 }
 
+// Delete 删除会话并一并清掉它的 Turn/Step 记录（P8.0 / ADR-046：删除即终态）。
+//
+// 只删 sessions 行是不够的：Turn 的 input/output 与 Step 的 params/result 同样能
+// 拼回已删会话的正文，平台上删掉的会话若内容仍可按 session_id 查出来，等于「删除」
+// 不成立。表间没有外键（SQLite/MySQL 共用同一套建表语句，不依赖级联），所以级联必须
+// 在这里显式做，并放进同一事务，避免两步之间失败留下半删状态。
+//
+// audit_events 刻意不删：审计必须活过会话删除（AGENTS.md 审计留存），二者职责不同。
 func (st *sessionStore) Delete(ctx context.Context, id string) error {
-	res, err := st.s.db.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, id)
+	tx, err := st.s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("delete session: %w", err)
 	}
-	return ensureAffected(res, "delete session")
+	defer func() { _ = tx.Rollback() }()
+	for _, query := range []string{
+		`DELETE FROM steps WHERE session_id = ?`,
+		`DELETE FROM turns WHERE session_id = ?`,
+	} {
+		if _, err := tx.ExecContext(ctx, query, id); err != nil {
+			return fmt.Errorf("delete session: %w", err)
+		}
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete session: %w", err)
+	}
+	if err := ensureAffected(res, "delete session"); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("delete session: %w", err)
+	}
+	return nil
 }
 
 // ---- Audit ----

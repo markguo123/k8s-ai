@@ -1,7 +1,7 @@
 # k8s-ai 四期需求规格（平台化）
 
-> 版本：v1.20
-> 日期：2026-10-29
+> 版本：v1.21
+> 日期：2026-10-30
 > 状态：四期最终需求方案  
 > 目标：交付面向企业的多用户 Kubernetes AI 运维平台，在同一权限、会话、审计与安全执行体系下提供 Chat、诊断、集群管理、Skill、审批和治理能力。
 
@@ -349,6 +349,8 @@ created_at
 updated_at
 status
 ```
+
+**会话事实源（v1.21 明确，见 ADR-046、D-35、方案 15 v1.3）**：平台模式下 Session 的**唯一事实源是平台库**（MySQL 主口径 / SQLite 兜底），会话元数据与消息正文一律同库存储；重命名、置顶、清空、删除四类操作必须同步落库，**删除即真删**，正文与轮次随会话一并消失，不允许在库里留下已删会话的正文副本。`internal/session` 的文件存储降级为 CLI 终端直用后端，CLI 行为与文件布局保持不变。验收口径三条：平台重启或 Pod 重建后会话完整可续用；已删除会话在库中不存在任何正文残留；会话列表不读取正文。
 
 ---
 
@@ -1341,15 +1343,25 @@ SQLite
 
 多副本不止取决于数据库：除 MySQL 外，还需要会话/Token 状态持久化与 SSE、审批等待通道的跨副本方案（本期不引入 Redis）。在这些条件满足之前，平台进程保持单副本（见 ADR-030）。
 
-**大载荷落点与对象存储（v1.19 修订，见 D-32、ADR-043、方案《15-方案-存储边界与对象存储-四期.md》）**：
-会话正文、巡检报告产物、会话附件这三类大载荷统一经 `internal/blobstore` 抽象决定落点。配置新增静态段
-`platform.blobs.*`（`driver` 取 `off` / `db` / `dir` / `s3`，默认 `db`），与 `platform.store.dsn` 同级，
-**不登记进动态配置键白名单**、配置中心页面不展示。默认 `db` 后端行为与现状一致（长文本列 + 报告目录兼容），
-零配置即可升级、无迁移风险；`s3` 对接 S3 兼容对象存储，MinIO 只是默认交付后端，接口面禁止出现厂商私有 API。
-MySQL 仍是会话与业务数据的**唯一权威源**，桶只承载报告、导出、附件这类可重算或用户自有备份的对象；业务表
-新增可空引用列指向对象，不做历史数据 backfill。`session_data` 会话正文外置开关默认关闭。
-`dir` 后端把数据落在挂载目录，适配单机与离线交付，但会限制后端多副本横向扩容，`config validate` 与交付文档
-必须显式备注该限制。CLI 可用后端只有 `off` 与 `dir`，二进制保持零配置直用（见 §29、ADR-031 v1.12）。
+**双存储架构与对象存储落点（v1.21 修订，见 D-32 修订、D-35、ADR-043 v1.1、ADR-046、方案《15-方案-存储边界与对象存储-四期.md》v1.3）**：
+
+平台采用 **MySQL + S3 兼容对象存储的双存储架构**，职责边界如下，且**不因引入对象存储而改变 MySQL 的默认业务数据库地位**：
+
+| 载体 | 存什么 | 权威性 |
+| --- | --- | --- |
+| MySQL | 全部结构化业务数据（用户/角色/授权/集群凭据/设置/Skill/审批/审计/Turn/Step）、会话正文、**对象元数据** | **唯一权威源** |
+| S3 兼容对象存储 | 实际文件内容与大体积非结构化数据（巡检报告产物、会话附件、预留导出） | 内容权威；**不是任何业务对象的清单** |
+| 容器卷 / 本地目录 | 临时缓冲、报告现场副本、CLI 的 `~/.k8s-ai`、SQLite 兜底库文件 | **永不作事实源** |
+
+要求：
+
+1. **统一抽象**：业务模块只依赖 `internal/objectstore` 接口（`Put/Get/Stat/Delete/List/Driver` + 可选 `Presigner`/`Maintainer`/`Probe`），不得直接依赖 MinIO SDK 或任何厂商实现；`minio-go` 只允许出现在 `internal/objectstore/s3.go`，由架构测试守住。标准 S3 兼容接口即能力边界，MinIO / Ceph RGW / AWS S3 都是可选后端实现，产品**不自建 S3 服务端**。
+2. **配置面**：静态段 `platform.blobs.*`（`driver` 取 `off`/`db`/`dir`/`s3`，默认 `db`），与 `platform.store.dsn` 同级，**不登记进动态配置键白名单**、配置中心页面不展示。默认 `db` 后端行为与现状一致，零配置即可升级。`dir` 后端限制后端多副本横向扩容，`config validate` 与交付文档必须显式备注。CLI 可用后端只有 `off` 与 `dir`，二进制保持零配置直用（§29、ADR-031 v1.12）。
+3. **对象元数据与生命周期**：`objects` 元数据表恒定在 MySQL，含 `sha256/size/media_type/category/driver/ref_count/state/deleted_at/created_by`；状态机 `ready`/`orphaned`/`missing`/`deleting` + 逻辑删除，物理回收两段式且**先删元数据行、再删对象内容**；写顺序恒为「内容写成功 → 同事务写业务行 + 引用计数 +1」，因此只允许出现可回收的孤儿对象，**不允许出现悬空引用**。
+4. **故障隔离（验收级）**：对象存储故障**不得影响不依赖文件存储的基础业务**——Chat、审批、审计、扫描采集、设置、鉴权必须照常可用，`/readyz` 判据不含对象存储；启动期配置错误 fail-fast，运行期只让对象类端点返回明确 503，不做熔断、不做后台重试队列、不做写缓冲假装成功。
+5. **备份与一致性（验收级）**：备份顺序固定「**先 MySQL、后对象存储**」，GC 宽限期必须远大于备份窗口；提供 `k8s-ai blobs verify [--deep] [--strict]` 对账与恢复后准出门禁；`gc`/`verify` 幂等可重跑。附件与历史报告内容不可重算，其备份频率必须匹配业务的可追溯要求。
+6. **会话正文四期不外置**：`platform.blobs.session_data` 保留但取值 `true` 必须被拒绝；行内正文由 `agent.session_max_bytes` 上限（默认 12MiB）保护，超限**明确拒绝并报错、不静默截断**，接近上限前给出一次性预警；会话列表一律不读取正文。
+7. **访问控制**：报告读取新增 `report.read` 权限位，普通用户仅能读自己触发的报告；附件跟随会话 owner（ADR-037），不新增权限位；下载强制 `Content-Disposition: attachment` 与 `X-Content-Type-Options: nosniff`；元数据在而对象缺 → 410，后端不可达 → 503，两者不得混用。
 
 ---
 
@@ -1628,7 +1640,6 @@ shell 命令必经真人审批、Secret 值与 `--raw` 与交互式动词红线�
 `seccompProfile: RuntimeDefault`、只读根文件系统 + 可写 emptyDir）共同收口。Code Guard + `internal/executor`
 双层边界不变，且仍是唯一写执行通道。
 
-
 # 27. 一键安装
 
 ```text
@@ -1732,8 +1743,13 @@ LLM 只作**辅助安装**（D-34 / ADR-045）：脚本本体零 LLM、零外呼
 21. 默认交付镜像的容器加固为必配（非 root、drop ALL capabilities、`allowPrivilegeEscalation: false`、
     `seccompProfile: RuntimeDefault`、只读根文件系统）；禁止容器内 shell 的现场改用 `Dockerfile.distroless`
     并置 `platform.exec.shell_enabled=false`。
-22. 附件与报告的二进制内容永不进 LLM 请求；审计与 SSE 事件只落对象引用（key、size、sha256、mediaType），
-    presigned URL 不写库、不进事件、不进审计、不进日志；对象存储 AK/SK 只走环境变量与 Secret。
+22. 附件与报告的二进制内容永不进 LLM 请求；审计与 SSE 事件只落对象引用（对象 id、sha256、size、mediaType），对象 key 与 presigned
+    URL 不写库、不进事件、不进审计、不进日志；对象存储 AK/SK 只走环境变量与 Secret，SDK 报错与预签名 URL 必须先经脱敏
+    才能进日志与错误响应（`X-Amz-Signature`/`X-Amz-Credential`/`Signature=` 等一律抹除）。
+23. 对象存储故障不得波及基础业务：对象存储不可达时 Chat、审批、审计、扫描采集、设置、鉴权必须照常可用，`/readyz` 判据不含
+    对象存储；写路径失败必须显式报错，禁止用熔断器、后台重试队列或写缓冲制造「看起来成功、其实没落盘」的状态。
+24. 备份顺序固定「先 MySQL、后对象存储」，GC 宽限期必须远大于备份窗口；恢复后必须经 `k8s-ai blobs verify --strict` 准出。
+    禁止把 MySQL 恢复点置于桶快照之后——那会造出不可修复的悬空引用（引用在库、内容不在桶）。
 
 ---
 
@@ -2039,3 +2055,4 @@ Security Boundary Unchanged
 | v1.18 | 2026-10-27 | | **动态配置优先级口径修订（仅文档，签收方案 A）**：环境变量覆盖由「对白名单键一律最高优先」改为**两档语义**。① **密钥态**（`K8S_AI_LLM_API_KEY`、`K8S_AI_PLATFORM_STORE_DSN`）env/Secret 恒优先，密钥只走 Secret、页面永不回显，env 命中时页面值不生效但必须标注来源并在保存时给出提示；② **种子态 seed-once**（`K8S_AI_LLM_{PROVIDER,ENDPOINT,MODEL}` + ops 四键 `K8S_AI_{KUBECONFIG,KUBE_CONTEXT,NAMESPACE,KUBECTL_PATH}`）仅在 DB 该键无值时生效，页面保存过即以 DB 为准、env 不再覆盖；③ 覆盖面**冻结为 LLM 四键 + ops 四键**，`TEMPERATURE/MAX_TOKENS/TIMEOUT` 明确不纳入 env 覆盖（非字符串键，常驻类型转换分支收益不划算），键集合由测试锁定；④ 默认部署清单只注入 `K8S_AI_LLM_API_KEY`，非敏感覆盖只在 `deploy/example/` 演示。修订起因：页面保存路径不感知 env 覆盖，会出现「写库成功、页面显示已保存、运行时仍用 env 旧值」的静默陷阱。一句话口径：页面配过的以页面为准，页面没配过的用部署变量兜底，密钥永远以 Secret 为准。见 §15/§22、开发计划 v1.51、D-21/D-29 修订、ADR-031 v1.14、ADR-040 v1.2。需求条目与优先级不变。 |
 | v1.19 | 2026-10-29 | 两条部署与存储口径统一（仅文档，不改需求范围）：① **存储边界**（D-32、ADR-043、方案《15-方案-存储边界与对象存储-四期.md》、开发计划 v1.52 新增主线 P8）——大载荷统一经 internal/blobstore 决定落点，新增静态段 platform.blobs.*（driver 取 off、db、dir、s3，默认 db，不入动态键白名单），默认后端行为与现状一致，s3 对接 S3 兼容对象存储且 MinIO 只是默认交付后端，MySQL 仍是会话唯一权威源，dir 后端限制多副本扩容须在文档与校验中备注，CLI 仅允许 off 与 dir；② **容器执行通道口径翻转**（D-33、ADR-044 v1.1、方案《16-方案-容器执行通道与镜像基座-四期.md》）——默认镜像运行阶段改 debian:bookworm-slim 并内置 bash、coreutils、jq、curl 与构建期校验下载的 kubectl，platform.exec.shell_enabled 默认 true，安全由 shell 必经真人审批、既有红线、集群 RBAC、脱敏与全量审计、Deployment 加固收口，保留 Dockerfile.distroless 无 shell 变体，取消 initContainer 投递 kubectl；§22/§26/§27/§28 同步回写，开发计划 v1.53、部署手册 §2.2 与 §4.16/§4.17 |
 | v1.20 | 2026-10-29 | 一键安装口径冻结（仅文档，不改需求范围，见开发计划 v1.56、D-34、ADR-045）：① **`STORAGE_CLASS` 语义修正**：由「为空则不创建 PVC」改为「为空即用集群默认存储类」，PVC 默认创建承载报告与导出，集群无默认存储类且未指定时前置检查失败并列出可选值；② **暴露层改可选**：`EXPOSE=nodeport/ingress` 且**默认 NodePort**（现场常无真实域名，Ingress 自定义域名要逐台改客户端 hosts），`NODE_PORT` 为空由集群分配并回显节点 URL，Ingress 仅在给出 `INGRESS_HOST` 时启用，且经核对无需改 Go 代码（token 走 `Authorization` 头、同源放行、SPA 相对路径），正式清单 Service 仍固定 ClusterIP；③ **脚本两段一体 + 九阶段 + 配置三层**（CLI flag > env > `install.env` > 内置默认），参数表补齐 BUILD/FORM/IMAGE_WEB/REPORT_STORAGE_SIZE/PERSIST_REPORTS/EXPOSE/NODE_PORT/INGRESS_CLASS/IMAGE_PULL_SECRET，渲染进临时目录并断言零占位符残留、不就地改写仓库 YAML，DSN 与口令经 stdin 注入；④ **LLM 仅辅助**：脚本本体零 LLM，可选 `install doctor`/`install plan` 子命令（开发计划 P6.14/P6.15）不进关键路径，无模型时纯参数必须装通。§26/§27 同步回写，部署手册 §4.4/§4.6/§4.10 与 `deploy/` 注释同步 |
+| v1.21 | 2026-10-30 | 存储边界与对象存储架构评审回写（仅文档，不改需求范围与优先级，见方案《15-方案-存储边界与对象存储-四期.md》v1.3、ADR-043 v1.1、新增 ADR-046、开发计划 v1.60）：① **双存储职责表冻结**——MySQL 是默认业务数据库并持有对象元数据与状态机，对象存储只承载实际文件内容与大体积非结构化数据；业务数据不迁桶，不因引入对象存储改变 MySQL 默认业务库定位。② **统一抽象改名**——抽象层包名定为 `internal/objectstore`（`internal/blobstore`、表名 `blob_objects` 为早期草案命名，落地时统一为 `objects`），业务模块禁止直接 import 厂商 SDK；配置面沿用已落地的 `platform.blobs.*` 静态段与 `BLOBS_*` 安装变量不改名，CLI 侧 `blobs gc`、`blobs verify` 命令名保留。③ **新增前置任务 P8.0 会话事实源收敛**（ADR-046）——现状 Web 会话权威源是容器内文件存储、MySQL 只写不读，且删除、清空、改名、置顶只写文件存储，导致库内残留已删会话整份正文（合规风险），对象存储接入前必须先让 Web 读写路径统一走平台库。④ **元数据与一致性**——`objects` 表 + `ready`、`orphaned`、`missing`、`deleting` 四态状态机 + 两段式 GC（先解除引用并落库，再删桶内内容），`internal/store` 新增 `WithTx` 事务入口（现状无任何事务边界）。⑤ **故障隔离写入验收级条款**——`/readyz` 判据不含对象存储，启动期配置错误 fail-fast、运行期只把对象端点降级为 503，桶不可达不得把整个进程打成不可用。⑥ **备份与恢复**——顺序固定「先 MySQL、后对象存储」，`gc_grace_period` 默认 168h 且必须远大于备份窗口，恢复后以 `blobs verify --strict` 为准出关口，并明确 ETag 不等于 sha256、不可用作完整性依据。⑦ **会话正文四期不外置**——`session_data` 不落桶，改为新增 `agent.session_max_bytes`（默认 12MiB、达 85% 预警）抑制单会话膨胀，`db` 后端单行超 8MiB 出 WARN。⑧ **安全口径**——红线 22 改写为对象引用与凭据脱敏的完整表述，新增红线 23（桶故障不得波及基础业务、禁止熔断器与写缓冲伪造成功）与红线 24（备份顺序与 verify 准出）。⑨ **落地约束登记**——新增权限位须同步权限注册表且注意内置角色权限每次启动由代码覆盖、页面改动不持久，新增静态配置键须登记进静态引擎键白名单，未登记的新 API 路由在权限网关默认 403。§22 整段改写、§7.1 增会话事实源条款、§28 红线同步；P8 工时由 7.50 调至 11.00 人日，附件上传通道 P8.7 延至 v4.2。 |

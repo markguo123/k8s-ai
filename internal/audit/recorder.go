@@ -76,6 +76,16 @@ func (l *LogRecorder) Write(_ context.Context, e Event) error {
 // Close 无操作。
 func (l *LogRecorder) Close() error { return nil }
 
+// NopRecorder 丢弃事件（不落任何本地副本）：平台模式关闭 agent.audit_file_copy
+// 时用它占位，审计事实源仍是平台库 audit_events（P8.0）。
+type NopRecorder struct{}
+
+// Write 无操作。
+func (NopRecorder) Write(_ context.Context, _ Event) error { return nil }
+
+// Close 无操作。
+func (NopRecorder) Close() error { return nil }
+
 func baseName(path string) string {
 	for i := len(path) - 1; i >= 0; i-- {
 		if path[i] == '/' || path[i] == '\\' {

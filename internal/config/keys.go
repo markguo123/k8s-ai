@@ -52,6 +52,9 @@ var platformStaticEngineKeys = map[string]bool{
 	"report.format":     true,
 	"agent.session_dir": true,
 	"agent.audit_dir":   true,
+	// 审计文件副本开关（P8.0）：审计事实源是平台库 audit_events，jsonl 只是可选
+	// 副本，属「这台实例的落盘形状」，不进配置中心动态键。
+	"agent.audit_file_copy": true,
 }
 
 // cliPlatformKeys 是终端直用模板（cli.yaml）允许出现的 platform: 键。CLI 只允许本地
