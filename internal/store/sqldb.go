@@ -15,6 +15,10 @@ type dbStore struct {
 	db      *sql.DB
 	dialect dialect
 
+	// sessionMaxBytes 是单会话正文上限（agent.session_max_bytes 的有效值），由
+	// WithSessionMaxBytes 注入；未注入时取 DefaultSessionMaxBytes（P8.6）。
+	sessionMaxBytes int64
+
 	users       *userStore
 	roles       *roleStore
 	sessions    *sessionStore
@@ -35,8 +39,14 @@ type dbStore struct {
 }
 
 // newDBStore 组装通用 Store 并装配各子 Store。
-func newDBStore(db *sql.DB, d dialect) *dbStore {
-	s := &dbStore{db: db, dialect: d}
+func newDBStore(db *sql.DB, d dialect, opts ...Option) *dbStore {
+	s := &dbStore{db: db, dialect: d, sessionMaxBytes: DefaultSessionMaxBytes}
+	for _, opt := range opts {
+		opt(s)
+	}
+	if s.sessionMaxBytes <= 0 {
+		s.sessionMaxBytes = DefaultSessionMaxBytes
+	}
 	s.users = &userStore{s}
 	s.roles = &roleStore{s}
 	s.sessions = &sessionStore{s}
@@ -55,6 +65,15 @@ func newDBStore(db *sql.DB, d dialect) *dbStore {
 	s.objects = &objectStore{s}
 	s.reports = &reportStore{s}
 	return s
+}
+
+// Option 是 OpenSQLite/OpenMySQL 的可选装配项。用变参而不是再加一层构造函数：
+// 两驱动的构造函数只多一个可选参数，变参让既有调用点一行不改。
+type Option func(*dbStore)
+
+// WithSessionMaxBytes 注入单会话正文上限（P8.6）。传 <=0 视为未配置，退回兜底默认值。
+func WithSessionMaxBytes(n int64) Option {
+	return func(s *dbStore) { s.sessionMaxBytes = n }
 }
 
 func (s *dbStore) Close() error { return s.db.Close() }

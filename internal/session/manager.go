@@ -72,6 +72,16 @@ func (m *Manager) Update(s *Session) error {
 	return m.store.Update(s)
 }
 
+// UpdateSized 更新会话并回报正文容量（P8.6）。底层 Store 具备可选能力 SizedStore 时
+// 透传其回报，否则退回普通 Update 并给出零回报——文件/内存后端没有容量闸门，调用方
+// 不该因为「拿不到容量信息」就把它当成错误。
+func (m *Manager) UpdateSized(s *Session) (SizeReport, error) {
+	if sized, ok := m.store.(SizedStore); ok {
+		return sized.UpdateSized(s)
+	}
+	return SizeReport{}, m.Update(s)
+}
+
 // List 列出会话（最近优先）。
 func (m *Manager) List() ([]*Session, error) {
 	return m.store.List()

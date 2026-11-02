@@ -285,8 +285,8 @@ func TestPlatformBlobsCLITemplateLoadsDirBackend(t *testing.T) {
 	}
 }
 
-// TestBlobsDiagnosticsWarnings 锁两条软告警：凭据明文进配置文件、db 后端开会话外置。
-// 都是 WARN 不 fail（灰度可控），但绝不能一声不吭。
+// TestBlobsDiagnosticsWarnings 锁凭据明文的软告警：WARN 不 fail（灰度可控），但绝不能
+// 一声不吭。会话外置不在此列——它已由 Validate 硬拒，见 TestBlobsSessionDataHardReject。
 func TestBlobsDiagnosticsWarnings(t *testing.T) {
 	path := writeTempConfig(t, ""+
 		"platform:\n"+
@@ -302,8 +302,9 @@ func TestBlobsDiagnosticsWarnings(t *testing.T) {
 	if !strings.Contains(joined, "platform.blobs.access_key") {
 		t.Errorf("凭据明文应告警, got %v", warnings)
 	}
-	if !strings.Contains(joined, "platform.blobs.session_data") {
-		t.Errorf("db 后端开 session_data 应告警, got %v", warnings)
+	// 会话外置是硬拒而非软告警：Diagnostics 只报形状，不该在这里同时给一条 WARN。
+	if strings.Contains(joined, "session_data") {
+		t.Errorf("session_data 应由 Validate 硬拒而不是软告警, got %v", warnings)
 	}
 
 	clean := writeTempConfig(t, ""+
@@ -318,5 +319,47 @@ func TestBlobsDiagnosticsWarnings(t *testing.T) {
 	}
 	if len(warnings) != 0 {
 		t.Errorf("凭据留空且非 db 后端应零告警, got %v", warnings)
+	}
+}
+
+// TestBlobsSessionDataHardReject 锁 P8.6 口径：session_data=true 在任何 driver 下都被
+// Load/validate 拒绝，且文案要给出可执行的下一步（调 agent.session_max_bytes 或挂 PVC），
+// 不能只说「不支持」。会话正文的外置与否是「谁是事实源」的问题，放行 true 会让
+// sessions.data 与桶各持一份正文，删除/迁移/GC 都要再判一次来源。
+func TestBlobsSessionDataHardReject(t *testing.T) {
+	for _, driver := range []string{BlobDriverDB, BlobDriverDir} {
+		b := defaultBlobs(t)
+		b.Driver = driver
+		b.SessionData = true
+		err := b.Validate()
+		if err == nil {
+			t.Fatalf("driver=%s：session_data=true 应被拒绝", driver)
+		}
+		msg := err.Error()
+		for _, want := range []string{"platform.blobs.session_data", "agent.session_max_bytes"} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("driver=%s：错误应包含 %s, got %v", driver, want, msg)
+			}
+		}
+	}
+
+	// 走完整 Load：`config validate` 与 server 启动都经这条路，拒启必须在这里也生效。
+	path := writeTempConfig(t, ""+
+		"platform:\n"+
+		"  blobs:\n"+
+		"    driver: dir\n"+
+		"    dir: /tmp/k8s-ai-blobs\n"+
+		"    session_data: true\n")
+	if _, err := Load(LoadOptions{ConfigFile: path, NoEnv: true}); err == nil {
+		t.Fatal("Load 应拒绝 session_data=true")
+	} else if !strings.Contains(err.Error(), "session_data") {
+		t.Errorf("Load 错误应指名 session_data, got %v", err)
+	}
+
+	// 关掉开关（默认值）不受影响。
+	off := defaultBlobs(t)
+	off.Driver = BlobDriverDir
+	if err := off.Validate(); err != nil {
+		t.Errorf("session_data=false 应通过校验, got %v", err)
 	}
 }

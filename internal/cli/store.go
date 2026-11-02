@@ -20,10 +20,13 @@ func openPlatformStore(cfg *config.Config) (store.Store, string, error) {
 		return nil, "", fmt.Errorf("config not loaded")
 	}
 	sc := cfg.Platform.Store
+	// 会话正文上限由配置说了算，装配层负责把有效值传进 store（P8.6）：判定在写入漏斗上，
+	// 上限值在配置面，中间这一层不接上，配置改了就是不生效。
+	limit := store.WithSessionMaxBytes(cfg.Agent.EffectiveSessionMaxBytes())
 	if sc.IsMySQL() {
 		// 先算安全目标再连接：连接失败时错误也要能指名目标库，且不带口令。
 		target := mysqlTarget(sc.DSN)
-		st, err := store.OpenMySQL(sc.DSN)
+		st, err := store.OpenMySQL(sc.DSN, limit)
 		if err != nil {
 			return nil, "", fmt.Errorf("open store %s: %w", target, err)
 		}
@@ -36,7 +39,7 @@ func openPlatformStore(cfg *config.Config) (store.Store, string, error) {
 	if err := ensureSQLiteDir(path); err != nil {
 		return nil, "", err
 	}
-	st, err := store.OpenSQLite(path)
+	st, err := store.OpenSQLite(path, limit)
 	if err != nil {
 		return nil, "", fmt.Errorf("open store: %w", err)
 	}

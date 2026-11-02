@@ -128,7 +128,8 @@ func listSessions(w io.Writer, chat service.ChatService) error {
 	}
 	fmt.Fprintf(w, "%-24s %-12s %-8s %s\n", "ID", "STATE", "MSGS", "MODIFIED")
 	for _, s := range list {
-		fmt.Fprintf(w, "%-24s %-12s %-8d %s\n", s.ID, s.State, len(s.Messages), s.LastModified.Format("2006-01-02 15:04"))
+		// TotalMessages：列表走索引列时正文缺席，条数要取镜像值而不是 len(Messages)。
+		fmt.Fprintf(w, "%-24s %-12s %-8d %s\n", s.ID, s.State, s.TotalMessages(), s.LastModified.Format("2006-01-02 15:04"))
 	}
 	return nil
 }

@@ -241,7 +241,7 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 			Name:         sessionTitle(sess),
 			State:        sess.State,
 			Model:        sess.Model,
-			MessageCount: len(sess.Messages),
+			MessageCount: sess.TotalMessages(),
 			LastModified: sess.LastModified,
 			Pinned:       sess.Pinned,
 			Token:        s.sessionToken(sess.ID),
@@ -315,27 +315,12 @@ func writeSessionAccessError(w http.ResponseWriter, err error) {
 	writeError(w, http.StatusInternalServerError, err)
 }
 
-// sessionTitle 返回会话列表展示标题（P7.5）：用户显式重命名优先；
-// 仍为自动生成的 "Session <id>" 时回退到首条用户消息意图，再回退"新会话"。
+// sessionTitle 返回会话列表展示标题（P7.5）。P8.6 起判定逻辑搬到
+// session.Session.DisplayTitle：列表走数据库索引列时正文缺席，标题必须能在
+// 「读不到 messages」的情况下仍给出同一个结果，因此放在会话类型上、由写入侧
+// 固化快照，而不是留在 Web 层现算。
 func sessionTitle(sess session.Session) string {
-	if sess.Name != "" && sess.Name != "Session "+sess.ID {
-		return sess.Name
-	}
-	for _, m := range sess.Messages {
-		if m.Role != "user" || m.Type != "text" {
-			continue
-		}
-		line := strings.TrimSpace(strings.SplitN(strings.TrimSpace(m.Content), "\n", 2)[0])
-		if line == "" {
-			continue
-		}
-		runes := []rune(line)
-		if len(runes) > 24 {
-			return string(runes[:24]) + "…"
-		}
-		return line
-	}
-	return "新会话"
+	return sess.DisplayTitle()
 }
 
 // sessionToken 读取会话级 token 用量合计（P2.13）；未装配 Store 或读取失败时返回 nil，

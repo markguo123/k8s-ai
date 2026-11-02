@@ -62,7 +62,8 @@ platform:
     create_bucket: true       # 启动期幂等建桶；无建桶权限的现场置 false 并预先建桶
     presign_ttl: 15m          # 预签名下载链接有效期，≤24h
     max_object_size: 32MiB    # 单对象上限，≤256MiB，超限直接拒绝（不截断）
-    session_data: false       # 会话正文外置开关；只在 driver=dir/s3 时建议开启
+    session_data: false       # 会话正文外置：本期定死不启用（validate 硬拒 true，方案 15 §8.4），
+                              # 单会话体积靠 agent.session_max_bytes 约束
     gc_grace_period: 168h     # GC 宽限期：未引用对象超过该时长才回收
   auth:
     admin_username: "admin"   # 首次初始化内置管理员用户名
@@ -82,6 +83,9 @@ agent:
   audit_dir: "~/.k8s-ai/audit"       # 审计落盘（容器内 e.g. /data/audit）
   audit_file_copy: true              # 会话审计 jsonl 副本：审计事实源是平台库 audit_events，
                                      # 置 false 只写库、不再产生文件副本（P8.0）
+  session_max_bytes: 12582912        # 单会话正文上限（字节，默认 12MiB，P8.6）：达 85% 发可读
+                                     # 预警，超上限拒写本轮会话保存（不静默截断）。会话正文不外置
+                                     # 到对象桶，需要更大会话就调这里或挂 PVC，不要改 platform.blobs.*
 `
 
 // CLITemplate is written by `k8s-ai config init --cli`（终端直用全量引擎键）。

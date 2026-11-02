@@ -3,12 +3,16 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"log/slog"
+
+	"github.com/k8s-ai/k8s-ai/internal/session"
 )
 
 // schemaVersion 是统一的逻辑 schema 版本。SQLite/MySQL 共用该版本号，
 // migrations 按版本逐个应用（P0.3/P1.12/P1.3）。只允许追加，禁止回跳。
-const schemaVersion = 6
+const schemaVersion = 7
 
 // migration 是一条单向升级步骤，通过 dialect 适配两个驱动。
 type migration struct {
@@ -48,6 +52,11 @@ var migrations = []migration{
 		version: 6,
 		name:    "object metadata registry attachments and reports",
 		up:      migrateV6,
+	},
+	{
+		version: 7,
+		name:    "session index columns for body-free listing",
+		up:      migrateV7,
 	},
 }
 
@@ -424,6 +433,17 @@ var schemaV6SessionColumns = []column{
 	{name: "data_size", kind: colInt, def: "0"},
 }
 
+// schemaV7SessionColumns 是第 7 版给 sessions 追加的列表镜像列（P8.6）。
+//
+// 有了它们，列表页才可能完全不碰 data：message_count 顶上「N 条消息」，title 顶上
+// 自动提取的展示标题，pinned 顶上排序位。三列都是 data 的派生值，事实源仍是 data，
+// 因此回填由 migrateV7 从正文算出，不引入第二套真相。
+var schemaV7SessionColumns = []column{
+	{name: "pinned", kind: colBool, def: "0"},
+	{name: "message_count", kind: colInt, def: "0"},
+	{name: "title", kind: colText, def: "''"},
+}
+
 
 func migrateV1(ctx context.Context, tx *sql.Tx, d dialect) error {
 	for _, t := range schemaV1 {
@@ -587,6 +607,76 @@ func migrateV6(ctx context.Context, tx *sql.Tx, d dialect) error {
 		}
 		if _, err := tx.ExecContext(ctx, q); err != nil {
 			return fmt.Errorf("widen column %s.%s: %w", ref.table, ref.col.name, err)
+		}
+	}
+	return nil
+}
+
+// migrateV7 给 sessions 补列表镜像列，并把已有会话的镜像值一次性回填（P8.6）。
+//
+// 回填必须读正文，这是迁移特有的一次性代价：列表路径从此不再碰 data，正是为了让日常
+// 查询永远不必付这笔钱。整个步骤可重复执行——镜像值完全由 data 推导，重跑只是把同样的
+// 值再写一遍；正文解析不了的坏行跳过（并留下 WARN），不能因为一行坏数据卡住整库升级。
+func migrateV7(ctx context.Context, tx *sql.Tx, d dialect) error {
+	for _, c := range schemaV7SessionColumns {
+		if _, err := tx.ExecContext(ctx, d.addColumn("sessions", c)); err != nil {
+			if d.isDuplicateColumnErr(err) {
+				continue
+			}
+			return fmt.Errorf("add column sessions.%s: %w", c.name, err)
+		}
+	}
+	return backfillSessionIndexColumns(ctx, tx)
+}
+
+// backfillSessionIndexColumns 按 data 正文重算 pinned/message_count/title。
+func backfillSessionIndexColumns(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `SELECT id, data FROM sessions`)
+	if err != nil {
+		return fmt.Errorf("backfill session index columns: %w", err)
+	}
+	type patch struct {
+		id      string
+		pinned  int
+		count   int
+		title   string
+		size    int
+	}
+	var patches []patch
+	var skipped int
+	for rows.Next() {
+		var id, data string
+		if err := rows.Scan(&id, &data); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("backfill session index columns: %w", err)
+		}
+		var sess session.Session
+		if err := json.Unmarshal([]byte(data), &sess); err != nil {
+			skipped++
+			continue
+		}
+		sess.ID = id
+		patches = append(patches, patch{
+			id:     id,
+			pinned: boolInt(sess.Pinned),
+			count:  len(sess.Messages),
+			title:  sess.DisplayTitle(),
+			size:   len(data),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("backfill session index columns: %w", err)
+	}
+	rows.Close()
+	if skipped > 0 {
+		slog.Warn("会话索引列回填跳过了无法解析的会话正文", "skipped", skipped)
+	}
+	for _, p := range patches {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE sessions SET pinned=?, message_count=?, title=?, data_size=? WHERE id=?`,
+			p.pinned, p.count, p.title, p.size, p.id); err != nil {
+			return fmt.Errorf("backfill session index columns: %w", err)
 		}
 	}
 	return nil

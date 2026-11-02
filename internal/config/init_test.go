@@ -17,6 +17,7 @@ var serverTemplateKeys = []string{
 	"agent.audit_dir",
 	"agent.audit_file_copy",
 	"agent.session_dir",
+	"agent.session_max_bytes",
 	"platform.auth.admin_username",
 	"platform.auth.session_store",
 	"platform.auth.token_ttl",

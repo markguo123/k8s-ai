@@ -35,6 +35,31 @@ type databaseSessionStore struct {
 	sessions SessionStore
 }
 
+// UpdateSized 实现 session.SizedStore：把容量状况透给会话管理器/Chat 服务（P8.6）。
+//
+// 底层 SessionStore 未必是带闸门的数据库实现（测试里可以塞任意假实现），因此用类型断言
+// 取可选能力：拿不到就退化成普通 Update 加零回报，语义仍然是「更新成功」，不会因为没有
+// 容量信息就报错。
+func (s *databaseSessionStore) UpdateSized(sess *session.Session) (session.SizeReport, error) {
+	if sess == nil || sess.ID == "" {
+		return session.SizeReport{}, fmt.Errorf("session id must not be empty")
+	}
+	ctx, cancel := sessionOpContext()
+	defer cancel()
+	sized, ok := s.sessions.(SessionSizeStore)
+	if !ok {
+		if err := s.sessions.Update(ctx, sess); err != nil {
+			return session.SizeReport{}, sessionStoreErr(err, sess.ID)
+		}
+		return session.SizeReport{}, nil
+	}
+	rep, err := sized.UpdateSized(ctx, sess)
+	if err != nil {
+		return session.SizeReport{Size: rep.Size, Limit: rep.Limit}, sessionStoreErr(err, sess.ID)
+	}
+	return session.SizeReport{Size: rep.Size, Limit: rep.Limit, Warning: rep.Warning}, nil
+}
+
 func (s *databaseSessionStore) Create(sess *session.Session) error {
 	if sess == nil || sess.ID == "" {
 		return fmt.Errorf("session id must not be empty")

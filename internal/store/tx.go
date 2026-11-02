@@ -22,6 +22,9 @@ import (
 // Tx 不提供 ExecContext 之类的逃生口：一旦开了口子，「事务里随便写」就等于没有边界。
 type Tx struct {
 	tx *sql.Tx
+	// sessionMaxBytes 由 dbStore 在开事务时带入：会话正文的容量闸门必须对事务路径同样
+	// 生效，否则 Chat 的主写入（就在 WithTx 回调里）能绕过上限（P8.6）。
+	sessionMaxBytes int64
 }
 
 // WithTx 在一个数据库事务内执行 fn：fn 返回错误即回滚，返回 nil 即提交。
@@ -41,7 +44,7 @@ func (s *dbStore) WithTx(ctx context.Context, fn func(*Tx) error) error {
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
-	t := &Tx{tx: sqlTx}
+	t := &Tx{tx: sqlTx, sessionMaxBytes: s.sessionMaxBytes}
 	if err := fn(t); err != nil {
 		if rbErr := sqlTx.Rollback(); rbErr != nil {
 			return fmt.Errorf("%w (rollback failed: %v)", err, rbErr)
@@ -56,7 +59,8 @@ func (s *dbStore) WithTx(ctx context.Context, fn func(*Tx) error) error {
 
 // UpdateSession 更新会话（与 Sessions().Update 共用 updateSession 这一条语句）。
 func (t *Tx) UpdateSession(ctx context.Context, sess *session.Session) error {
-	return updateSession(ctx, t.tx, sess)
+	_, err := updateSession(ctx, t.tx, sess, t.sessionMaxBytes)
+	return err
 }
 
 // InsertAttachment 插入附件业务行。

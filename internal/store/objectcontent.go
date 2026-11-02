@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"io"
 	"strings"
 	"time"
@@ -19,6 +20,10 @@ import (
 // MEDIUMBLOB（16MiB-1），再大就要改 LONGBLOB，而 db 后端的定位是「兼容/兜底」，不该
 // 承担大对象。SQLite 的 BLOB 没有实际上限，因此这个值是两驱动的公共上界。
 const maxDBPayloadBytes int64 = 1<<24 - 1
+
+// dbPayloadWarnBytes 是 db 内容后端的偏大告警阈值（8MiB）：硬闸门是 maxBytes，这里只是
+// 提醒「该换后端了」。做成变量是为了让测试能把它下调到可构造的体量。
+var dbPayloadWarnBytes int64 = 8 << 20
 
 // ObjectContentLimit 把配置里的 platform.blobs.max_object_size 收敛成 db 后端实际
 // 可用的上限：<=0 取默认 32MiB，超过 MEDIUMBLOB 上限的按 MEDIUMBLOB 收紧。
@@ -120,6 +125,12 @@ func (c *objectContent) Put(ctx context.Context, spec objectstore.Spec, r io.Rea
 	}
 	mediaType := objectstore.ResolveMediaType(spec.MediaType, ext)
 	size := int64(len(payload))
+	// db 后端的定位是「兼容/兜底」：正文进 MySQL 一行，几 MiB 就已经在拖累备份和
+	// binlog。这里不拒写（maxBytes 才是硬闸门），只把「该换 dir/s3 了」说清楚。
+	if size > dbPayloadWarnBytes {
+		slog.Warn("对象正文偏大：db 后端仅作兼容兜底，建议改用 dir（PVC）或 s3 后端",
+			"key", key, "size_bytes", size, "warn_bytes", dbPayloadWarnBytes)
+	}
 
 	row, found, err := c.lookup(ctx, key)
 	if err != nil {

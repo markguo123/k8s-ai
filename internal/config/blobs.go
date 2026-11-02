@@ -75,6 +75,9 @@ type PlatformBlobsConfig struct {
 	// MaxObjectSize 是单对象上限（e.g. 32MiB），上限 256MiB，超限返回 ErrTooLarge。
 	MaxObjectSize string `mapstructure:"max_object_size"`
 	// SessionData 打开会话正文外置；默认关（db 后端下开了等于把大正文换个表塞回 MySQL）。
+	// P8.6 起该开关定死：Validate 一律硬拒 true（方案 15 §8.4 / D-35）——会话正文外置在
+	// 内容寻址下只是把写放大搬进桶，单会话体积改由静态键 agent.session_max_bytes 约束，
+	// 需要更大会话就调上限或挂 PVC。列与开关都保留着，是为了将来真要外置时不必再动 schema。
 	SessionData bool `mapstructure:"session_data"`
 	// GCGracePeriod 是 GC 宽限期：只回收超过该时长未被引用的对象，避开未提交事务竞争。
 	GCGracePeriod time.Duration `mapstructure:"gc_grace_period"`
@@ -129,6 +132,13 @@ func (b PlatformBlobsConfig) Validate() error {
 	prefix := strings.TrimSpace(b.Prefix)
 	if prefix == "" {
 		return fmt.Errorf("platform.blobs.prefix must not be empty")
+	}
+	// 会话正文外置硬拒（P8.6）：这不是性能选型，而是「谁是事实源」的口径问题。放行
+	// true 会让 sessions.data 与桶各持一份正文，删除/迁移/GC 都要再判一次来源。
+	if b.SessionData {
+		return fmt.Errorf("platform.blobs.session_data=true is not supported: session bodies stay in the platform "+
+			"store (sessions.data) as the single source of truth. Raise agent.session_max_bytes (default %s) for larger "+
+			"sessions, or mount a PVC for the session directory", defaultSessionMaxBytesText)
 	}
 	if len(prefix) > maxBlobPrefixLen {
 		return fmt.Errorf("platform.blobs.prefix must be at most %d characters, got %d", maxBlobPrefixLen, len(prefix))
@@ -201,7 +211,8 @@ func ParseByteSize(s string) (int64, error) {
 }
 
 // blobsConfigWarnings 给配置文件里的 blob 段做软告警（Diagnostics 用，不阻断启动）：
-// 凭据明文出现在文件里提示改走 Secret 注入；db 后端开会话外置给出选型提醒。
+// 凭据明文出现在文件里提示改走 Secret 注入。会话外置不在这里——它已由 Validate 硬拒，
+// 用软告警放行等于让「谁是事实源」取决于现场手改的一个布尔值。
 func blobsConfigWarnings(leaves map[string]any) []string {
 	var warnings []string
 	for _, key := range []string{"platform.blobs.access_key", "platform.blobs.secret_key"} {
@@ -210,11 +221,6 @@ func blobsConfigWarnings(leaves map[string]any) []string {
 				"%s 在配置文件里非空：blob 凭据应只经 K8S_AI_PLATFORM_%s / Secret 注入",
 				key, strings.ToUpper(strings.SplitN(key, ".", 3)[2])))
 		}
-	}
-	driver, _ := leaves["platform.blobs.driver"].(string)
-	if sessionData, ok := leaves["platform.blobs.session_data"].(bool); ok && sessionData &&
-		strings.ToLower(strings.TrimSpace(driver)) == BlobDriverDB {
-		warnings = append(warnings, "platform.blobs.session_data=true 但 driver=db：会话正文外置在 db 后端下只是换个表塞回 MySQL，建议 driver=dir 或 s3")
 	}
 	return warnings
 }

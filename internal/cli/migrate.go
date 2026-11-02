@@ -51,7 +51,9 @@ func newMigrateCmd(deps Dependencies) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				st, err = store.OpenSQLite(path)
+				// 导入目标同样按配置的上限判定（P8.6）：超限的历史会话在导入这一步就说清
+				// 拒写原因，比导完之后第一次对话才发现存不回去要好。
+				st, err = store.OpenSQLite(path, store.WithSessionMaxBytes(cfg.Agent.EffectiveSessionMaxBytes()))
 				if err != nil {
 					return fmt.Errorf("open store: %w", err)
 				}

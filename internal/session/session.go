@@ -4,6 +4,7 @@ package session
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/k8s-ai/k8s-ai/internal/approval"
@@ -47,6 +48,14 @@ type Session struct {
 	LastModified   time.Time        `json:"lastModified"`
 	// P7.5 会话置顶：置顶会话始终排最前（置顶集合内部按最近活跃排序）。
 	Pinned bool `json:"pinned,omitempty"`
+	// P8.6 列表索引镜像（方案 15 §8.4）：正文落库时把这两项一并写进 sessions 的
+	// 独立列，列表页从此不必再 SELECT 正文。它们由 AddMessage/ClearMessages 与
+	// store 写入路径维护，读侧只消费。
+	// MessageCount 是消息条数快照。列表不读正文时，正文缺席也要报得出条数。
+	MessageCount int `json:"messageCount,omitempty"`
+	// Title 是 DisplayTitle 的快照。自动标题要扫首条用户消息，列表既然不读正文，
+	// 就只能在上写入时固化。
+	Title string `json:"title,omitempty"`
 }
 
 // AddMessage 追加消息并刷新 LastModified。
@@ -55,13 +64,51 @@ func (s *Session) AddMessage(m Message) {
 		m.Timestamp = time.Now()
 	}
 	s.Messages = append(s.Messages, m)
+	s.MessageCount = len(s.Messages)
 	s.LastModified = time.Now()
 }
 
 // ClearMessages 清空会话消息（元命令 clear）。
 func (s *Session) ClearMessages() {
 	s.Messages = nil
+	s.MessageCount = 0
 	s.LastModified = time.Now()
+}
+
+// TotalMessages 返回消息条数，兼容「正文缺席」的会话：列表走数据库索引列时
+// Messages 为空，条数取自 MessageCount 镜像（P8.6）。
+func (s *Session) TotalMessages() int {
+	if len(s.Messages) > 0 {
+		return len(s.Messages)
+	}
+	return s.MessageCount
+}
+
+// DisplayTitle 返回会话展示标题（P7.5 引入，P8.6 起作为单一事实源）：用户显式
+// 重命名优先，其次取写入时固化的标题快照，最后回退到首条用户消息意图，再回退
+// 「新会话」。列表页在正文缺席时靠快照分支拿到同样的结果。
+func (s *Session) DisplayTitle() string {
+	if s.Name != "" && s.Name != "Session "+s.ID {
+		return s.Name
+	}
+	if s.Title != "" {
+		return s.Title
+	}
+	for _, m := range s.Messages {
+		if m.Role != "user" || m.Type != "text" {
+			continue
+		}
+		line := strings.TrimSpace(strings.SplitN(strings.TrimSpace(m.Content), "\n", 2)[0])
+		if line == "" {
+			continue
+		}
+		runes := []rune(line)
+		if len(runes) > 24 {
+			return string(runes[:24]) + "…"
+		}
+		return line
+	}
+	return "新会话"
 }
 
 // Approved 判断"操作类型+资源"是否已在本次会话授权。

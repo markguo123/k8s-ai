@@ -712,19 +712,95 @@ func (s *chatService) runChat(ctx context.Context, ag *agent.Agent, sess *sessio
 			sink(sse.New(sess.ID, scope.turn(), "", sse.EventSessionCompleted, sse.SessionData{State: sess.State}))
 		}
 	}
-	if err := s.sessions.Update(sess); err != nil {
-		slog.Warn("chat: 保存会话失败", "session", sess.ID, "error", err)
-	}
-	// 会话事实源已是平台库时，上一行就是落库，不再重复写同一行（正文可达 MiB 级）。
-	if s.store != nil && !s.sessionsInStore {
-		if err := s.store.Sessions().Update(ctx, sess); err != nil {
-			slog.Warn("chat: 四期会话保存失败", "session", sess.ID, "error", err)
-		}
-	}
+	// 会话落库 + 容量闸门反馈（P8.6）：预警与超限都必须走到用户眼前。真机上出过 MySQL
+	// 「Data too long」把整轮对话静默吞掉的事故——用户看到的是「回复正常，历史里没有」，
+	// 服务端日志里那行 Warn 没人看得见。
+	capacityWarn, capacityFail := s.persistTurnSession(ctx, sess)
 	events <- ChatEvent{Type: ChatEventAnswer, Text: answer, Usage: &usage}
 	if chatErr != nil {
 		events <- ChatEvent{Type: ChatEventError, Text: chatErr.Error()}
 	}
+	// 容量提示放在答案之后：它不影响本轮回复内容，抢在答案前面会把用户注意力从结果上挪走。
+	if capacityWarn != "" {
+		events <- ChatEvent{Type: ChatEventProgress, Text: capacityWarn}
+	}
+	if capacityFail != "" {
+		events <- ChatEvent{Type: ChatEventError, Text: capacityFail}
+	}
+}
+
+// persistTurnSession 在一轮对话结束时保存会话，并返回两句可读提示：接近上限的预警、
+// 以及超限导致本轮未保存的说明（空串表示没有该问题）。
+//
+// 容量判定本身在持久化层（internal/store 的写入漏斗），这里只负责把它翻译成用户看得懂的
+// 话。session.Store 用可选能力 session.SizedStore 上报容量，文件/内存后端没有闸门，
+// 断言失败就退回普通 Update，行为与改动前一致。
+func (s *chatService) persistTurnSession(ctx context.Context, sess *session.Session) (warning, failure string) {
+	warning, failure = s.saveSession(sess)
+	// 会话事实源已是平台库时，上一步就是落库，不再重复写同一行（正文可达 MiB 级）。
+	if s.store == nil || s.sessionsInStore {
+		return warning, failure
+	}
+	mirrorWarn, mirrorFail := s.saveSessionMirror(ctx, sess)
+	return joinCapacityNotice(warning, mirrorWarn), joinCapacityNotice(failure, mirrorFail)
+}
+
+// saveSession 写会话事实源（session.Store），有容量回报时一并换算成提示。
+func (s *chatService) saveSession(sess *session.Session) (warning, failure string) {
+	rep, err := s.sessions.UpdateSized(sess)
+	return sessionCapacityNotices(rep, err, sess.ID)
+}
+
+// saveSessionMirror 写平台库镜像（会话事实源仍在文件目录的历史形态）。
+func (s *chatService) saveSessionMirror(ctx context.Context, sess *session.Session) (warning, failure string) {
+	if sized, ok := s.store.Sessions().(store.SessionSizeStore); ok {
+		rep, err := sized.UpdateSized(ctx, sess)
+		return sessionCapacityNotices(storeSizeReport(rep), err, sess.ID)
+	}
+	if err := s.store.Sessions().Update(ctx, sess); err != nil {
+		_, failure = sessionCapacityNotices(session.SizeReport{}, err, sess.ID)
+		return "", failure
+	}
+	return "", ""
+}
+
+// joinCapacityNotice 合并事实源与镜像两侧的提示，避免一侧的告警被另一侧覆盖。
+func joinCapacityNotice(a, b string) string {
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	default:
+		return a + " " + b
+	}
+}
+
+// storeSizeReport 把 store 侧的容量回报换成 session 侧同名字段（两包各自定义，避免
+// session 反向依赖 store）。
+func storeSizeReport(rep store.SessionSizeReport) session.SizeReport {
+	return session.SizeReport{Size: rep.Size, Limit: rep.Limit, Warning: rep.Warning}
+}
+
+// sessionCapacityNotices 把一次容量回报换成两句用户可见文案。非容量错误仍只进日志：
+// 数据库抖动不该伪装成「会话太大」，那会把用户引向完全错误的处置方向。
+func sessionCapacityNotices(rep session.SizeReport, err error, id string) (warning, failure string) {
+	if err != nil {
+		slog.Warn("chat: 保存会话失败", "session", id, "error", err)
+		if !errors.Is(err, store.ErrSessionTooLarge) {
+			return "", ""
+		}
+		return "", fmt.Sprintf(
+			"本轮回复没有存进会话：会话正文 %s 已超过上限 %s（配置键 agent.session_max_bytes）。"+
+				"回复内容本身已完成，请新建会话继续，或由管理员调大该上限。",
+			store.FormatBytes(rep.Size), store.FormatBytes(rep.Limit))
+	}
+	if !rep.Warning {
+		return "", ""
+	}
+	return fmt.Sprintf(
+		"会话正文已用到 %s，接近上限 %s：再积累几轮就可能无法继续保存，建议新开会话。",
+		store.FormatBytes(rep.Size), store.FormatBytes(rep.Limit)), ""
 }
 
 // emitMessageDelta 通过 sink 广播统一 message.delta 事件（携带当前 turn/step 作用域）。

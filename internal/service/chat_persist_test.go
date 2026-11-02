@@ -17,9 +17,9 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/tools"
 )
 
-func persistTestStore(t *testing.T) store.Store {
+func persistTestStore(t *testing.T, opts ...store.Option) store.Store {
 	t.Helper()
-	st, err := store.OpenSQLite("file:chat-persist-" + time.Now().Format("150405.000000000") + "?mode=memory&cache=shared")
+	st, err := store.OpenSQLite("file:chat-persist-"+time.Now().Format("150405.000000000")+"?mode=memory&cache=shared", opts...)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

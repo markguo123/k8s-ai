@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/k8s-ai/k8s-ai/internal/session"
@@ -15,14 +16,14 @@ import (
 
 // OpenSQLite 打开或创建 path 处的 SQLite 库并返回 Store。
 // URI 形式（如 ":memory:"、"file:...?...&=shared"）由底层驱动支持。
-func OpenSQLite(path string) (Store, error) {
+func OpenSQLite(path string, opts ...Option) (Store, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite %q: %w", path, err)
 	}
 	// 单连接：串行化写事务，避免 in-memory/文件锁竞争。
 	db.SetMaxOpenConns(1)
-	s := newDBStore(db, sqliteDialect{})
+	s := newDBStore(db, sqliteDialect{}, opts...)
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("ping sqlite %q: %w", path, err)
@@ -206,16 +207,40 @@ func (st *roleStore) Delete(ctx context.Context, id string) error {
 
 type sessionStore struct{ s *dbStore }
 
-// sessionRow 返回会话的落库副本与 data 列：索引列（name 等）与 data 同源，
-// 都取自脱敏副本，避免可检索列绕过脱敏留下明文；只读副本，不修改调用方
-// 内存中的会话。
-func sessionRow(sess *session.Session) (*session.Session, string, error) {
+// sessionListColumns 是会话列表的读取列，刻意不含 data 正文列（P8.6）：列表页只需要
+// id/name/state/model/pinned/message_count/title/last_modified，把 MEDIUMTEXT 整篇捞回
+// 来再 JSON 反序列化，是一次全表正文扫描——会话一多就是平台上最慢的一条查询。
+// 条数与标题来自写入时固化的镜像列，语义见 session.Session.DisplayTitle。
+//
+// session_index_test.go 会逐列断言这里没有 data，改语句时别把正文列加回来。
+const sessionListColumns = `id, user_id, name, cluster_id, namespace, model, state, created_at, last_modified, pinned, message_count, title`
+
+// sessionWrite 是一次会话写入的落库载荷。索引列（name/message_count/title）与 data 一律
+// 取自同一份脱敏副本，避免可检索列绕过脱敏留下明文；副本只读，不改调用方内存中的会话。
+type sessionWrite struct {
+	row  *session.Session
+	data string
+	size int64
+}
+
+// newSessionWrite 组装写入载荷并过容量闸门。Create 与两条 Update 路径共用它，因此
+// 「超限拒写」不可能只在一条路上生效。
+// 超限时载荷照样组装好（便于报错文案引用真实体积），但调用方拿到非 nil 错误就不能落库。
+func newSessionWrite(sess *session.Session, limit int64) (sessionWrite, SessionSizeReport, error) {
 	redacted := redactSessionForStore(sess)
+	count, title := sessionIndexSnapshot(redacted)
+	redacted.MessageCount = count
+	redacted.Title = title
 	data, err := json.Marshal(redacted)
 	if err != nil {
-		return nil, "", fmt.Errorf("marshal session: %w", err)
+		return sessionWrite{}, SessionSizeReport{Limit: limit}, fmt.Errorf("marshal session: %w", err)
 	}
-	return redacted, string(data), nil
+	w := sessionWrite{row: redacted, data: string(data), size: int64(len(data))}
+	rep, err := evaluateSessionSize(w.size, limit)
+	if err != nil {
+		return w, rep, err
+	}
+	return w, rep, nil
 }
 
 func (st *sessionStore) Create(ctx context.Context, sess *session.Session) error {
@@ -226,15 +251,15 @@ func (st *sessionStore) Create(ctx context.Context, sess *session.Session) error
 	if sess.LastModified.IsZero() {
 		sess.LastModified = now
 	}
-	row, data, err := sessionRow(sess)
+	w, _, err := newSessionWrite(sess, st.s.sessionMaxBytes)
 	if err != nil {
 		return err
 	}
 	_, err = st.s.db.ExecContext(ctx, `
-		INSERT INTO sessions (id, user_id, name, cluster_id, namespace, model, state, data, created_at, last_modified)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sess.ID, sess.UserID, row.Name, row.Cluster, row.Namespace, row.Model, row.State,
-		data, sess.CreatedAt, sess.LastModified)
+		INSERT INTO sessions (id, user_id, name, cluster_id, namespace, model, state, data, created_at, last_modified, pinned, message_count, title, data_size)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sess.ID, sess.UserID, w.row.Name, w.row.Cluster, w.row.Namespace, w.row.Model, w.row.State,
+		w.data, sess.CreatedAt, sess.LastModified, boolInt(w.row.Pinned), w.row.MessageCount, w.row.Title, w.size)
 	return mapErr(err, "create session")
 }
 
@@ -252,44 +277,73 @@ func (st *sessionStore) Get(ctx context.Context, id string) (*session.Session, e
 }
 
 func (st *sessionStore) Update(ctx context.Context, sess *session.Session) error {
-	return updateSession(ctx, st.s.db, sess)
+	_, err := updateSession(ctx, st.s.db, sess, st.s.sessionMaxBytes)
+	return err
+}
+
+// UpdateSized 更新会话并回报正文容量（SessionSizeStore）。
+//
+// 判定、预警日志与拒写都在 updateSession 这条唯一漏斗里，这里只把回报透出来；是否把
+// 预警变成用户可见事件由调用方决定（Chat 会额外发一条可读进度，重命名不必）。
+func (st *sessionStore) UpdateSized(ctx context.Context, sess *session.Session) (SessionSizeReport, error) {
+	return updateSession(ctx, st.s.db, sess, st.s.sessionMaxBytes)
 }
 
 // updateSession 是会话 UPDATE 语句的唯一出处：非事务入口（Sessions().Update）与事务
 // 入口（Tx.UpdateSession）共用同一条语句。两处各写一遍，加列时漏改一边就是静默的数据
 // 不一致——列表页读到新值、详情页读到旧值这类问题最难查。
-func updateSession(ctx context.Context, ex execer, sess *session.Session) error {
+//
+// 容量闸门同样挂在这条漏斗上（P8.6）：会话正文有两条写入口（Chat/改名走非事务，将来与
+// 对象引用同事务的写入走 Tx），闸门装在语句层面就两条都过不去，装在任一条路上都等于
+// 留了个把 MySQL 写成 Data too long 的后门。返回值是本次写入的容量状况；超限时上一层
+// 拿到的是包装 ErrSessionTooLarge 的错误，同时得到判定时的 size/limit 便于兜底展示。
+func updateSession(ctx context.Context, ex execer, sess *session.Session, limit int64) (SessionSizeReport, error) {
 	sess.LastModified = time.Now()
-	row, data, err := sessionRow(sess)
+	w, rep, err := newSessionWrite(sess, limit)
 	if err != nil {
-		return err
+		return rep, err
 	}
 	res, err := ex.ExecContext(ctx, `
-		UPDATE sessions SET user_id=?, name=?, cluster_id=?, namespace=?, model=?, state=?, data=?, last_modified=?
+		UPDATE sessions SET user_id=?, name=?, cluster_id=?, namespace=?, model=?, state=?, data=?, last_modified=?, pinned=?, message_count=?, title=?, data_size=?
 		WHERE id=?`,
-		sess.UserID, row.Name, row.Cluster, row.Namespace, row.Model, row.State, data, sess.LastModified, sess.ID)
+		sess.UserID, w.row.Name, w.row.Cluster, w.row.Namespace, w.row.Model, w.row.State,
+		w.data, sess.LastModified, boolInt(w.row.Pinned), w.row.MessageCount, w.row.Title, w.size, sess.ID)
 	if err != nil {
-		return fmt.Errorf("update session: %w", err)
+		return rep, fmt.Errorf("update session: %w", err)
 	}
-	return ensureAffected(res, "update session")
+	if err := ensureAffected(res, "update session"); err != nil {
+		return rep, err
+	}
+	if rep.Warning {
+		slog.Warn("会话正文接近容量上限", "session", sess.ID, "size_bytes", rep.Size,
+			"limit_bytes", rep.Limit, "percent", sessionMemoryWarningPercent)
+	}
+	return rep, nil
 }
 
+// List 只取索引列，不读正文（P8.6）：返回的会话 Messages 为空，条数与标题来自镜像列。
+// 需要正文的调用方必须按 id 走 Get，别把这里当「能拿到完整会话」的入口。
 func (st *sessionStore) List(ctx context.Context) ([]*session.Session, error) {
-	rows, err := st.s.db.QueryContext(ctx, `SELECT data FROM sessions ORDER BY last_modified DESC`)
+	rows, err := st.s.db.QueryContext(ctx, `
+		SELECT `+sessionListColumns+` FROM sessions ORDER BY last_modified DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
 	defer rows.Close()
 	var out []*session.Session
 	for rows.Next() {
-		var data string
-		if err := rows.Scan(&data); err != nil {
+		var (
+			sess         session.Session
+			pinned       int
+			messageCount int
+		)
+		if err := rows.Scan(&sess.ID, &sess.UserID, &sess.Name, &sess.Cluster, &sess.Namespace,
+			&sess.Model, &sess.State, &sess.CreatedAt, &sess.LastModified,
+			&pinned, &messageCount, &sess.Title); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
-		var sess session.Session
-		if err := json.Unmarshal([]byte(data), &sess); err != nil {
-			return nil, fmt.Errorf("parse session: %w", err)
-		}
+		sess.Pinned = pinned != 0
+		sess.MessageCount = messageCount
 		out = append(out, &sess)
 	}
 	return out, rows.Err()

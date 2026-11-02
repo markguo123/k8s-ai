@@ -39,7 +39,9 @@ func newPlatformChatFixture(t *testing.T, fl *scriptedLLM, tweak func(*config.Co
 	}
 	reader := kubernetes.NewClientWithClientset(fake.NewSimpleClientset())
 	wr := &fakeWriteRunner{}
-	st := persistTestStore(t)
+	// 会话正文上限跟着配置走，和装配层（cli.openPlatformStore）一致：容量用例要靠
+	// tweak 调小上限就能真的生效，否则闸门永远按 12MiB 判定。
+	st := persistTestStore(t, store.WithSessionMaxBytes(cfg.Agent.EffectiveSessionMaxBytes()))
 	svc := NewChatWithStore(cfg, func() (scanner.Reader, error) { return reader, nil },
 		func(llm.Options) llm.LLMClient { return fl },
 		func() tools.ScanRunner { return &fakeScanRunner{} },

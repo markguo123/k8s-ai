@@ -99,6 +99,11 @@ type AgentConfig struct {
 	HistoryTurns    int           `mapstructure:"history_turns"`
 	SessionDir      string        `mapstructure:"session_dir"`
 	AuditDir        string        `mapstructure:"audit_dir"`
+	// SessionMaxBytes caps one session body as it is written to the platform store
+	// (P8.6, ADR-046). Session bodies stay in MySQL: externalizing them to the object
+	// store would just move the write amplification into the bucket, so growth is
+	// bounded here instead. Zero or negative falls back to DefaultSessionMaxBytes.
+	SessionMaxBytes int64 `mapstructure:"session_max_bytes"`
 	// AuditFileCopy keeps the per-session audit JSONL file in addition to the
 	// platform audit table (P8.0). The platform DB is the source of truth; the
 	// file is an optional copy. Default true keeps existing deployments intact,
@@ -363,6 +368,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("agent.history_turns", 20)
 	v.SetDefault("agent.session_dir", "~/.k8s-ai/sessions")
 	v.SetDefault("agent.audit_dir", "~/.k8s-ai/audit")
+	v.SetDefault("agent.session_max_bytes", defaultSessionMaxBytes())
 	v.SetDefault("agent.audit_file_copy", true)
 
 	// Phase 3 resource creation (RESOURCE_CREATE_DESIGN.md / DEVELOPMENT_PLAN_三期.md).
@@ -562,6 +568,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Agent.HistoryTurns <= 0 {
 		return fmt.Errorf("agent.history_turns must be > 0")
+	}
+	if c.Agent.SessionMaxBytes < 0 {
+		return fmt.Errorf("agent.session_max_bytes must be > 0 (omit it or set %s to keep the default)", defaultSessionMaxBytesText)
 	}
 	if c.Agent.SessionDir == "" || c.Agent.AuditDir == "" {
 		return fmt.Errorf("agent.session_dir and agent.audit_dir must not be empty")
