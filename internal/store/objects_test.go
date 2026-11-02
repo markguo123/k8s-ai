@@ -257,6 +257,8 @@ func TestListCollectableHonoursGracePeriod(t *testing.T) {
 	fresh := objTestMeta(t, objectstore.CategoryExports, []string{"fresh"}, ".csv", "fresh orphan")
 	justNow := now
 	fresh.State, fresh.DeletedAt = ObjectStateOrphaned, &justNow
+	// orphaned 的语义就是引用已归零（Release 把 state 与 ref_count 一起改），候选条件按此写死。
+	old.RefCount, fresh.RefCount = 0, 0
 	for _, m := range []*ObjectMeta{old, fresh} {
 		if err := s.Objects().Register(ctx, m); err != nil {
 			t.Fatalf("register %s: %v", m.BlobKey, err)
@@ -274,6 +276,17 @@ func TestListCollectableHonoursGracePeriod(t *testing.T) {
 	// 反向确认：放宽到 7 天就两个都在，说明过滤真的来自时间而不是别的原因。
 	if all, err := s.Objects().ListCollectable(ctx, now.Add(24*time.Hour)); err != nil || len(all) != 2 {
 		t.Fatalf("超过宽限期后候选 = %v (%v)，期望 2 条", keysOf(all), err)
+	}
+
+	// 自相矛盾的行（orphaned 却还挂着引用）不当垃圾收：那是待查的数据问题，
+	// 收错了就是删掉还有业务在引用的对象。
+	stuck := objTestMeta(t, objectstore.CategoryExports, []string{"stuck"}, ".csv", "stuck orphan")
+	stuck.State, stuck.DeletedAt, stuck.RefCount = ObjectStateOrphaned, &longAgo, 1
+	if err := s.Objects().Register(ctx, stuck); err != nil {
+		t.Fatalf("register stuck: %v", err)
+	}
+	if all, err := s.Objects().ListCollectable(ctx, now.Add(24*time.Hour)); err != nil || len(all) != 2 {
+		t.Fatalf("带引用的 orphaned 行不应进候选：%v (%v)", keysOf(all), err)
 	}
 }
 

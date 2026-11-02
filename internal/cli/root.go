@@ -33,6 +33,7 @@ func NewRootCmd(deps Dependencies) *cobra.Command {
 	root.AddCommand(newScanCmd(deps))
 	root.AddCommand(newChatCmd(deps))
 	root.AddCommand(newServerCmd(deps))
+	root.AddCommand(newBlobsCmd(deps))
 	return root
 }
 

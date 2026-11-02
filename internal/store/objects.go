@@ -78,10 +78,16 @@ type ObjectStore interface {
 	// ListByCategory 列出某类对象元数据；category 为空列出全部。按 key 排序，
 	// 不按时间排序：objects 上没有时间索引，按 blob_key 走主键序是确定且免排序的。
 	ListByCategory(ctx context.Context, category string) ([]*ObjectMeta, error)
-	// ListCollectable 返回 state=orphaned 且 deleted_at 早于 olderThan 的对象（GC 候选）。
+	// ListCollectable 返回 deleted_at 早于 olderThan 且已无引用的 GC 候选。
+	//
+	// 两种状态都算候选：`orphaned`（引用归零，等宽限期到期物理回收）与 `missing` 且
+	// ref_count=0（内容已确认不在，只剩一行墓碑）。后者必须一起收：`blobs verify` 会把
+	// 读不到内容的行标成 missing，若候选只认 orphaned，这些行就永远收不掉，objects 表
+	// 只会越积越厚。仍被引用的 missing 行不在候选里——那是待修的损坏，不是待清的垃圾。
 	ListCollectable(ctx context.Context, olderThan time.Time) ([]*ObjectMeta, error)
 	// ClaimDeleting 是 GC 的两段式认领：只有 state/ref_count/deleted_at 三个条件全中
-	// 才置 deleting，返回 false 表示本轮跳过。禁止先 SELECT 再 UPDATE——GC 与
+	// 才置 deleting，返回 false 表示本轮跳过。候选状态与 ListCollectable 严格一致，两边
+	// 条件不一样就会出现「扫得到、认领不了」的空转轮次。禁止先 SELECT 再 UPDATE——GC 与
 	// Acquire 并发时那是个真实的丢引用窗口。
 	ClaimDeleting(ctx context.Context, key string, refCount int64, olderThan time.Time) (bool, error)
 	// MarkMissing 把读不到内容的对象标成诊断态（只接受 ready/orphaned 的行）。
@@ -96,7 +102,7 @@ type ObjectStore interface {
 
 // ObjectDriverStat 是单个后端的对象体量聚合（不含正在 GC 的行）。
 type ObjectDriverStat struct {
-	Driver string `json:"driver"`
+	Driver  string `json:"driver"`
 	Objects int64  `json:"objects"`
 	Bytes   int64  `json:"bytes"`
 }
@@ -128,8 +134,10 @@ func (st *objectStore) ListByCategory(ctx context.Context, category string) ([]*
 func (st *objectStore) ListCollectable(ctx context.Context, olderThan time.Time) ([]*ObjectMeta, error) {
 	return listObjects(ctx, st.s.db,
 		`SELECT `+objectColumns+` FROM objects
-		 WHERE state = ? AND deleted_at IS NOT NULL AND deleted_at < ? ORDER BY deleted_at`,
-		[]any{ObjectStateOrphaned, olderThan})
+		 WHERE ref_count = 0 AND deleted_at IS NOT NULL AND deleted_at < ?
+		   AND (state = ? OR (state = ? AND ref_count = 0))
+		 ORDER BY deleted_at`,
+		[]any{olderThan, ObjectStateOrphaned, ObjectStateMissing})
 }
 
 func (st *objectStore) ClaimDeleting(ctx context.Context, key string, refCount int64, olderThan time.Time) (bool, error) {
@@ -138,8 +146,10 @@ func (st *objectStore) ClaimDeleting(ctx context.Context, key string, refCount i
 	}
 	res, err := st.s.db.ExecContext(ctx,
 		`UPDATE objects SET state = ?, updated_at = ?
-		 WHERE blob_key = ? AND state = ? AND ref_count = ? AND deleted_at IS NOT NULL AND deleted_at < ?`,
-		ObjectStateDeleting, time.Now(), key, ObjectStateOrphaned, refCount, olderThan)
+		 WHERE blob_key = ? AND ref_count = ? AND deleted_at IS NOT NULL AND deleted_at < ?
+		   AND (state = ? OR (state = ? AND ref_count = 0))`,
+		ObjectStateDeleting, time.Now(), key, refCount, olderThan,
+		ObjectStateOrphaned, ObjectStateMissing)
 	if err != nil {
 		return false, fmt.Errorf("claim object %s: %w", key, err)
 	}
