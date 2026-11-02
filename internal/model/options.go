@@ -182,6 +182,10 @@ type ScanOptions struct {
 	ReportMode      string
 	WithDoc         bool // P7.7 是否附带规则字段文档（--with-doc，默认为 false 不增加输出）
 
+	// Attribution 是对象存储归档的归属（P8.5，方案 15 §6.6）。CLI 不填即按系统任务处理，
+	// 行为与之前一致；Server 必须在解码后覆盖，不信任请求体。
+	Attribution ReportAttribution
+
 	// Rules 启停（FR-013）。
 	RulesEnabled  []string
 	RulesDisabled []string
@@ -240,6 +244,22 @@ type ReportOptions struct {
 	Directory string
 	Format    string // markdown | json | yaml
 	Mode      string // none（仅终端）| latest（latest.md + latest.json）| daily（追加时间戳文件）
+}
+
+// ReportAttribution 是报告归档的归属信息（方案 15 §6.6）：对象存储里 reports 行的
+// created_by 是「谁能读这份报告」的唯一依据，而扫描任务本身是进程内对象、没有 owner
+// 列可继承，所以归属必须由调用方显式带进来。
+//
+// Actor 为空表示系统任务（定时巡检、CLI 本地扫描），归档时记 objectstore 的系统归属。
+// Server 侧必须在解码请求体之后无条件覆盖这三个字段：它们由登录态与任务 ID 决定，
+// 让请求体里的值漏进来就等于允许调用方伪造报告归属、把报告挂到别人名下。
+type ReportAttribution struct {
+	// Actor 是触发扫描的用户 ID；空 = 系统任务。
+	Actor string
+	// ClusterID 是本次扫描的目标集群 ID；空表示走 kubeconfig 默认目标。
+	ClusterID string
+	// ScanID 是扫描任务 ID（Server 侧即 ScanJob.ID）；空表示无任务标识。
+	ScanID string
 }
 
 // Key 返回资源的稳定内部键（kind/namespace/name），供关联索引与指纹使用。

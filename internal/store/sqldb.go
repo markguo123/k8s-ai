@@ -31,6 +31,7 @@ type dbStore struct {
 	authzGrants *authzGrantStore
 	apiTokens   *apiTokenStore
 	objects     *objectStore
+	reports     *reportStore
 }
 
 // newDBStore 组装通用 Store 并装配各子 Store。
@@ -52,6 +53,7 @@ func newDBStore(db *sql.DB, d dialect) *dbStore {
 	s.authzGrants = &authzGrantStore{s}
 	s.apiTokens = &apiTokenStore{s}
 	s.objects = &objectStore{s}
+	s.reports = &reportStore{s}
 	return s
 }
 
@@ -105,6 +107,9 @@ func (s *dbStore) ApiTokens() ApiTokenStore     { return s.apiTokens }
 
 // Objects 返回对象元数据登记表入口（P8.2）。
 func (s *dbStore) Objects() ObjectStore { return s.objects }
+
+// Reports 返回报告业务行读面（P8.5）。
+func (s *dbStore) Reports() ReportStore { return s.reports }
 
 // ObjectContent 返回 db 内容后端。prefix 在这里过 NormalizePrefix：它是唯一读
 // platform.blobs.prefix 的入口，把非法前缀挡在装配期，而不是等第一次写对象时才报

@@ -40,6 +40,9 @@ type Store interface {
 	// Objects 返回对象元数据登记表（objects 表）入口（P8.2，方案 15 §6.5）。
 	// 引用计数只能经 WithTx 的 Tx 改，这里给的是读面、登记与 GC 生命周期动作。
 	Objects() ObjectStore
+	// Reports 返回报告业务行的读面（P8.5，方案 15 §6.2/§12.3）：可见性判定下推到 SQL，
+	// 写面只在 WithTx 的 Tx.InsertReport。
+	Reports() ReportStore
 	// ObjectContent 返回 driver="db" 的对象内容后端（兼容/兜底后端，正文放
 	// objects.payload，体积上限见 ObjectContentLimit）。对象存储故障不影响基础业务，
 	// 因此它不进 /readyz（方案 15 §11.1），装配层拿 objectstore.Probe 单独上报。
@@ -238,4 +241,5 @@ var (
 	_ AuthzGrantStore = (*authzGrantStore)(nil)
 	_ ApiTokenStore   = (*apiTokenStore)(nil)
 	_ Store           = (*dbStore)(nil)
+	_ ReportStore     = (*reportStore)(nil)
 )

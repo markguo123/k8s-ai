@@ -89,6 +89,16 @@ type ObjectStore interface {
 	// Forget 删除元数据行（只删 state=deleting 的行），返回实际删除数。
 	// 行没了之后内容若还在，由桶扫描差集回收（§9.2）。
 	Forget(ctx context.Context, keys []string) (int, error)
+	// ObjectStats 按 driver 聚合存活对象的个数与字节数（P8.5，方案 15 §10.3/§13.4）：
+	// 启动期用它核对「库里还有没有别的后端的对象」，健康端点用它报体量。
+	ObjectStats(ctx context.Context) ([]ObjectDriverStat, error)
+}
+
+// ObjectDriverStat 是单个后端的对象体量聚合（不含正在 GC 的行）。
+type ObjectDriverStat struct {
+	Driver string `json:"driver"`
+	Objects int64  `json:"objects"`
+	Bytes   int64  `json:"bytes"`
 }
 
 type objectStore struct{ s *dbStore }
@@ -303,6 +313,33 @@ func listObjects(ctx context.Context, ex execer, query string, args []any) ([]*O
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list objects: %w", err)
+	}
+	return out, nil
+}
+
+// ObjectStats 按 driver 分组统计。排除 deleting：那些行已经被 GC 认领、马上要消失，
+// 把它们算进「待迁移对象」会让 blobs migrate 多背一批根本读不到的 key。
+// 按 driver 排序返回，保证日志与健康端点的输出顺序确定（同一条命令两次跑不该换个顺序）。
+func (st *objectStore) ObjectStats(ctx context.Context) ([]ObjectDriverStat, error) {
+	rows, err := st.s.db.QueryContext(ctx,
+		`SELECT driver, COUNT(*), COALESCE(SUM(size), 0) FROM objects
+		 WHERE state <> ? GROUP BY driver ORDER BY driver`,
+		ObjectStateDeleting)
+	if err != nil {
+		return nil, fmt.Errorf("object stats: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make([]ObjectDriverStat, 0, 4)
+	for rows.Next() {
+		var s ObjectDriverStat
+		if err := rows.Scan(&s.Driver, &s.Objects, &s.Bytes); err != nil {
+			return nil, fmt.Errorf("object stats: %w", err)
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("object stats: %w", err)
 	}
 	return out, nil
 }

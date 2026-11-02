@@ -56,6 +56,12 @@ type Server struct {
 	skillsSvc skillsService
 	// authzSvc 是授权面应用服务（P3.11），nil 时 grants/tokens 端点返回 501。
 	authzSvc authzService
+	// reportSvc 是报告读取面（P8.5），nil 时报告端点返回 501。
+	reportSvc reportService
+	// storageSvc 是对象存储观测面（P8.5），nil 时 storage/health 返回 501。
+	// 注意这里只准依赖 service 包的窄接口：本文件定义 handleReadyz，架构门禁禁止
+	// 该文件引用 objectstore（方案 15 §11.1）。
+	storageSvc storageHealthService
 	perms    *permission.Enforcer
 	// ready 是就绪探针回调（P6.1）：由组合根注入 store 连通 + 迁移完成判定。
 	// nil 时按"进程活着即可用"处理，与一期行为一致。
@@ -138,6 +144,28 @@ func (s *Server) WithAuthz(svc authzService) *Server {
 	return s
 }
 
+// WithReports 装配报告读取面（P8.5）。链式可选，不破坏既有构造器签名。
+func (s *Server) WithReports(svc reportService) *Server {
+	// 与 WithClusters 同理：未接对象存储时调用方可能传进一个 typed nil 指针，
+	// 直接存进接口会得到一个"非 nil 但一调就 panic"的值。
+	if isNilService(svc) {
+		s.reportSvc = nil
+		return s
+	}
+	s.reportSvc = svc
+	return s
+}
+
+// WithStorage 装配对象存储观测面（P8.5）。链式可选。
+func (s *Server) WithStorage(svc storageHealthService) *Server {
+	if isNilService(svc) {
+		s.storageSvc = nil
+		return s
+	}
+	s.storageSvc = svc
+	return s
+}
+
 // Handler 返回路由。
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -179,6 +207,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/skills/import-procedural", s.handleImportProceduralDocs)
 	mux.HandleFunc("POST /api/v1/skills/import-zip", s.handleImportProceduralZip)
 	mux.HandleFunc("PATCH /api/v1/skills/{name}/enabled", s.handlePatchSkillEnabled)
+	mux.HandleFunc("GET /api/v1/reports", s.handleListReports)
+	mux.HandleFunc("GET /api/v1/reports/{id}/content", s.handleGetReportContent)
+	mux.HandleFunc("GET /api/v1/storage/health", s.handleStorageHealth)
 	// 未登记的 /api/v1/* 一律回统一 JSON 错误体，不能被 SPA fallback 吞成 index.html
 	// （P6.11：前端拿到 HTML 会比 404 更难排查）。
 	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
@@ -248,6 +279,19 @@ func (s *Server) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 	job := &ScanJob{ID: newID(), Status: StatusPending, CreatedAt: time.Now().UTC()}
 	s.jobs[job.ID] = job
 	s.mu.Unlock()
+
+	// 报告归属只能由服务端决定（P8.5，方案 15 §6.4）：actor 取认证身份、scan_id 取本次
+	// 任务 ID，两者一律覆盖请求体里的值——否则任何登录用户都能靠伪造 body 把报告挂到
+	// 别人名下，或者把产物塞进别人的扫描。cluster_id 是业务参数（扫哪个集群），仍由 body 决定。
+	actor := ""
+	if u := UserFrom(r.Context()); u != nil {
+		actor = u.ID
+	}
+	opts.Attribution = model.ReportAttribution{
+		Actor:     actor,
+		ScanID:    job.ID,
+		ClusterID: opts.Attribution.ClusterID,
+	}
 
 	started := time.Now().UTC()
 	job.Status = StatusRunning

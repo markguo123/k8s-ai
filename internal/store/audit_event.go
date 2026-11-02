@@ -24,6 +24,10 @@ const (
 	AuditEventUserInput  = "USER_INPUT"
 	AuditEventLLMCall    = "LLM_CALL"
 	AuditEventSecretRead = "SECRET_READ"
+	// AuditEventReport 是报告下载类事件（P8.5，方案 15 §12.4）：admin 跨归属读别人的
+	// 报告必须留痕，而 EventTypeForAction 只认 llm./agent. 前缀，不登记就会全归 OTHER，
+	// 审计页面按类型筛选时这批事件等于不存在。
+	AuditEventReport     = "REPORT"
 	AuditEventOther      = "OTHER"
 )
 
@@ -53,6 +57,7 @@ var eventTypeByAction = map[string]string{
 	"auth.password":           AuditEventLogin,
 	"secret.value_requested":  AuditEventSecretRead,
 	"secret.touched":          AuditEventSecretRead,
+	"report.download":         AuditEventReport,
 	"verification.started":    AuditEventResourceMutation,
 	"verification.succeeded":  AuditEventResourceMutation,
 	"verification.failed":     AuditEventResourceMutation,
@@ -68,6 +73,8 @@ const (
 	ActionAuthLogin    = "auth.login"
 	ActionAuthLogout   = "auth.logout"
 	ActionAuthPassword = "auth.password"
+	// ActionReportDownload 是报告下载动作（含 admin 跨归属读取）。
+	ActionReportDownload = "report.download"
 )
 
 // EventTypeForAction 返回三期动作对应的四期事件类型；未知动作归入 OTHER。

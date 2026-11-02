@@ -92,7 +92,11 @@ type Presigner interface {
 	PresignGET(ctx context.Context, key string, ttl time.Duration) (string, error)
 }
 
-// Maintainer 由 db/dir/s3 三后端实现：启动期就绪保障（失败即 fail-fast，§11.2）。
+// Maintainer 由 db/dir/s3 三后端实现：启动期就绪保障。
+//
+// 错误一律原样上抛，由装配层分两段处理（§11.2 两段式启动）：构造期形状非法→拒绝启动；
+// Ensure 失败（桶不可达/不存在且无权创建/凭据被拒/dir 抢不到锁）→记录并降级启动。
+// 本层刻意不做「要不要为此退出进程」的判断——那是部署形态的决定，不是后端的决定。
 //
 // GC 刻意不在本接口里声明：它与 blobs 命令组同批交付（P8.9），提前声明只会得到一个
 // 没有实现的接口方法（AGENTS.md 禁止占位实现）。

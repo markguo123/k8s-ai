@@ -26,6 +26,9 @@ type authzService interface {
 	UpdateTokenStatus(ctx context.Context, userID, id, status string) (*authz.Token, error)
 	DeleteToken(ctx context.Context, userID, id string) error
 	EffectiveScope(ctx context.Context, user *store.User, role *store.Role, clusterID string) (*authz.EffectiveScope, error)
+	// AuthorizedClusterIDs 给出「该用户能读哪些集群的系统巡检报告」（P8.5，方案 15 §12.2）。
+	// 它与 EffectiveScope 共用归属判据但语义更宽（只读产物不要求写权限），所以是两个方法。
+	AuthorizedClusterIDs(ctx context.Context, user *store.User, role *store.Role) (bool, []string, error)
 }
 
 // handleListGrants GET /api/v1/grants：全部授权委派（管理员视图）。

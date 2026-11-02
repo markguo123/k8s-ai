@@ -196,6 +196,52 @@ func containsString(values []string, want string) bool {
 	return false
 }
 
+// AuthorizedClusterIDs 返回该用户「能读到哪些集群的系统巡检报告」（P8.5，方案 15 §12.2）。
+//
+// 它与 EffectiveScope 共用同一套归属判据——角色含 * 即全域、user ID 与 username 都可作
+// principalId、过期授权跳过——但刻意不复制那一条「grant.permissions 必须含 *」：
+// EffectiveScope 回答「能不能在这个集群里写」，这里只回答「能不能看见这个集群的巡检结论」，
+// 巡检报告是只读产物，把写权限判据搬过来会让只读角色一份报告都看不到。
+//
+// 返回 all=true 表示存在一条不限定集群的授权（空 clusterId），调用方据此放开全部集群；
+// 它只放宽系统报告，不放宽他人私有报告——后者只认 created_by 归属。
+func (s *Service) AuthorizedClusterIDs(ctx context.Context, user *store.User, role *store.Role) (bool, []string, error) {
+	if user == nil || role == nil {
+		return false, nil, fmt.Errorf("%w: user and role are required", ErrInvalid)
+	}
+	if permission.HasPermission(role.Permissions, "*") {
+		return true, nil, nil
+	}
+	principals := []string{strings.TrimSpace(user.ID)}
+	if username := strings.TrimSpace(user.Username); username != "" && username != user.ID {
+		principals = append(principals, username)
+	}
+	now := time.Now().UTC()
+	seen := map[string]bool{}
+	var ids []string
+	for _, principal := range principals {
+		grants, err := s.st.AuthzGrants().ListByPrincipal(ctx, "user", principal)
+		if err != nil {
+			return false, nil, fmt.Errorf("authz: list grants for %s: %w", user.Username, err)
+		}
+		for _, raw := range grants {
+			if raw.ExpiresAt != nil && !raw.ExpiresAt.After(now) {
+				continue
+			}
+			clusterID := strings.TrimSpace(raw.ClusterID)
+			if clusterID == "" {
+				return true, nil, nil
+			}
+			if !seen[clusterID] {
+				seen[clusterID] = true
+				ids = append(ids, clusterID)
+			}
+		}
+	}
+	sort.Strings(ids)
+	return false, ids, nil
+}
+
 // ---- AuthzGrant ----
 
 // ListGrants 返回全部授权委派（含已过期项，由前端按需展示/过滤）。

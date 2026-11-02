@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -289,3 +290,104 @@ func TestTargetUserMustExist(t *testing.T) {
 }
 
 func strp(s string) *string { return &s }
+
+// TestAuthorizedClusterIDs 覆盖 P8.5 报告可见性的授权来源（方案 15 §12.2）：
+// 系统巡检报告能看见哪些集群，取决于 AuthzGrant 而不是角色名。这里一旦放宽，
+// 普通用户就能读到全集群的体检结论；收紧过度则只读角色一份系统报告都看不到。
+func TestAuthorizedClusterIDs(t *testing.T) {
+	svc, st, userID := newTestService(t)
+	ctx := context.Background()
+	user, err := st.Users().Get(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	role, err := st.Roles().Get(ctx, user.RoleID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 零授权：不给全部、也不给空串占位（空串会让 store 的 IN 子句退化成匹配空值）。
+	all, ids, err := svc.AuthorizedClusterIDs(ctx, user, role)
+	if err != nil {
+		t.Fatalf("authorized clusters: %v", err)
+	}
+	if all || len(ids) != 0 {
+		t.Fatalf("零授权 = all=%v ids=%v，期望 all=false 且无集群", all, ids)
+	}
+
+	// principalId 允许 username 写法（EffectiveScope 同一套判据），乱序与重复要收敛。
+	// grant 的权限位刻意用 destroy：写权限面要求 grant 含 *，而读系统报告不要求——
+	// 用一把「写不了」的钥匙正好证明这里没有顺手搬来写权限判据。
+	for _, cluster := range []string{"c-prod", "c-test", "c-prod"} {
+		if _, err := svc.CreateGrant(ctx, CreateGrantRequest{
+			PrincipalType: "user", PrincipalID: user.Username,
+			ClusterID: cluster, Namespaces: []string{"app"}, Permissions: []string{"destroy"},
+		}, "admin"); err != nil {
+			t.Fatalf("create grant %s: %v", cluster, err)
+		}
+	}
+	all, ids, err = svc.AuthorizedClusterIDs(ctx, user, role)
+	if err != nil {
+		t.Fatalf("authorized clusters: %v", err)
+	}
+	if all || len(ids) != 2 || ids[0] != "c-prod" || ids[1] != "c-test" {
+		t.Fatalf("授权集群 = all=%v ids=%v，期望 [c-prod c-test] 去重升序", all, ids)
+	}
+
+	// 过期授权不计入。创建侧会直接拒绝过期时间，所以直接写库模拟一条历史遗留行——
+	// 这条路径真实存在：授权放着不动就会变成库里的过期行。
+	past := time.Now().UTC().Add(-time.Hour)
+	now := time.Now().UTC()
+	if err := st.AuthzGrants().Create(ctx, &store.AuthzGrant{
+		ID: "grant-expired", PrincipalType: "user", PrincipalID: user.Username,
+		ClusterID: "c-expired", Namespaces: "[]", Permissions: `["destroy"]`,
+		ExpiresAt: &past, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("insert expired grant: %v", err)
+	}
+	if _, ids, err = svc.AuthorizedClusterIDs(ctx, user, role); err != nil {
+		t.Fatalf("authorized clusters: %v", err)
+	}
+	for _, id := range ids {
+		if id == "c-expired" {
+			t.Fatalf("过期授权仍计入可见集群：%v", ids)
+		}
+	}
+
+	// 一条不限定集群的授权 = 全部系统巡检报告可见（只放宽系统报告，不放宽他人私有报告）。
+	if _, err := svc.CreateGrant(ctx, CreateGrantRequest{
+		PrincipalType: "user", PrincipalID: user.ID,
+		Namespaces: []string{"app"}, Permissions: []string{"destroy"},
+	}, "admin"); err != nil {
+		t.Fatalf("create global grant: %v", err)
+	}
+	all, ids, err = svc.AuthorizedClusterIDs(ctx, user, role)
+	if err != nil {
+		t.Fatalf("authorized clusters: %v", err)
+	}
+	if !all || len(ids) != 0 {
+		t.Fatalf("全域授权 = all=%v ids=%v，期望 all=true 且 ids 为空", all, ids)
+	}
+
+	// 角色含 * 的管理员无需任何 grant。
+	admin, err := st.Users().GetByUsername(ctx, auth.DefaultAdminUsername)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminRole, err := st.Roles().Get(ctx, admin.RoleID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if all, ids, err = svc.AuthorizedClusterIDs(ctx, admin, adminRole); err != nil || !all || len(ids) != 0 {
+		t.Fatalf("admin = all=%v ids=%v err=%v，期望 all=true", all, ids, err)
+	}
+
+	// 缺身份必须报错而不是「返回空集合」：空集合在调用方看起来和「无权限」一样，
+	// 但把 nil 吞掉会让装配 bug 伪装成一次正常的越权拦截。
+	if _, _, err := svc.AuthorizedClusterIDs(ctx, nil, role); !errors.Is(err, ErrInvalid) {
+		t.Errorf("nil user = %v, want ErrInvalid", err)
+	}
+	if _, _, err := svc.AuthorizedClusterIDs(ctx, user, nil); !errors.Is(err, ErrInvalid) {
+		t.Errorf("nil role = %v, want ErrInvalid", err)
+	}
+}

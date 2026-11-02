@@ -102,10 +102,26 @@ func newServerCmd(deps Dependencies) *cobra.Command {
 					return settingsSvc.ChatRuntimeConfig(ctx, cfg)
 				})
 			}
-			platformHandler := server.NewWithPlatform(deps.NewScan(), authSvc, settingsSvc, auditSvc).
+			// P8.5：对象存储按两段式装配（构造期非法拒启 / 就绪期不可达降级启动），
+			// 扫描服务在装配期拿到归档写入器。driver=off 时不注入归档器：归档整体没开，
+			// 让流水线静默走完比每次扫描刷一条 WARN 更诚实。
+			scanSvc := deps.NewScan()
+			blobGW, err := newBlobGateway(cmd.Context(), cfg, st, logger)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = blobGW.Close() }()
+			if cfg.Platform.Blobs.Enabled() {
+				if binder, ok := scanSvc.(service.ReportArchiveBinder); ok {
+					binder.SetReportArchive(service.NewReportArchiveWriter(st, blobGW))
+				}
+			}
+			platformHandler := server.NewWithPlatform(scanSvc, authSvc, settingsSvc, auditSvc).
 				WithClusters(clusterSvc).
 				WithSkills(skillPlat).
 				WithAuthz(authzSvc).
+				WithReports(service.NewReportPlatform(st, blobGW)).
+				WithStorage(blobGW).
 				WithReadiness(func(ctx context.Context) error { return store.IsReady(ctx, st) }).
 				Handler()
 			// admin 跨用户会话操作（读取/改名/置顶/删除/发消息/审批/取消）统一留痕（U-06）。

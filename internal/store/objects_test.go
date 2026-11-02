@@ -382,3 +382,69 @@ func keysOf(metas []*ObjectMeta) []string {
 	}
 	return out
 }
+
+// TestObjectStatsGroupsByDriver 守的是「换过 driver 却没跑 blobs migrate」这条检测链路
+// （方案 15 §10.3）：启动期 ERROR 与 storage/health 的 driverMismatch 计数都来自这里。
+// 统计错一个组，要么历史报告躺在那儿没人知道，要么把在用的对象报成待迁移。
+func TestObjectStatsGroupsByDriver(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	objs := s.Objects()
+
+	// 空库必须先给出「没有分组」而不是报错：启动期每次都要跑这条 SQL，
+	// 一个全新部署不该看到一句 object stats 失败。
+	if empty, err := objs.ObjectStats(ctx); err != nil || len(empty) != 0 {
+		t.Fatalf("空库统计 = %+v (%v)，期望 0 组且无错误", empty, err)
+	}
+
+	// 两个后端各若干行，字节数刻意不同：SUM 与 COUNT 只要有一个串了组就会暴露。
+	dbA := objTestMeta(t, objectstore.CategoryReports, []string{"stat-db-a"}, ".md", "db a")
+	dbB := objTestMeta(t, objectstore.CategoryReports, []string{"stat-db-b"}, ".md", "db bbb")
+	legacy := objTestMeta(t, objectstore.CategoryReports, []string{"stat-s3-a"}, ".json", "legacy s3 payload")
+	legacy.Driver = objectstore.DriverS3
+	for _, m := range []*ObjectMeta{dbA, dbB, legacy} {
+		if err := objs.Register(ctx, m); err != nil {
+			t.Fatalf("register %s: %v", m.BlobKey, err)
+		}
+	}
+
+	// 正在 GC 的行不进统计：它已被 ClaimDeleting 认领，blobs migrate 也读不到它的内容，
+	// 算进去等于让迁移多背一批注定失败的 key。
+	doomed := objTestMeta(t, objectstore.CategoryExports, []string{"stat-doomed"}, ".csv", "doomed content")
+	doomed.State, doomed.RefCount = ObjectStateOrphaned, 0
+	longAgo := time.Now().Add(-72 * time.Hour)
+	doomed.DeletedAt = &longAgo
+	if err := objs.Register(ctx, doomed); err != nil {
+		t.Fatalf("register doomed: %v", err)
+	}
+	if claimed, err := objs.ClaimDeleting(ctx, doomed.BlobKey, 0, time.Now().Add(-time.Hour)); err != nil || !claimed {
+		t.Fatalf("认领 doomed 失败：claimed=%v err=%v", claimed, err)
+	}
+
+	stats, err := objs.ObjectStats(ctx)
+	if err != nil {
+		t.Fatalf("object stats: %v", err)
+	}
+	if len(stats) != 2 {
+		t.Fatalf("统计分组 = %+v，期望 db/s3 两组", stats)
+	}
+	// 顺序确定性：ORDER BY driver，同一条命令两次跑不该换个顺序。
+	if stats[0].Driver != objectstore.DriverDB || stats[1].Driver != objectstore.DriverS3 {
+		t.Fatalf("分组顺序 = %s,%s，期望 db,s3", stats[0].Driver, stats[1].Driver)
+	}
+	if stats[0].Objects != 2 || stats[0].Bytes != int64(len("db a")+len("db bbb")) {
+		t.Fatalf("db 组 = %d 个 %d 字节，期望 2 个 %d 字节",
+			stats[0].Objects, stats[0].Bytes, len("db a")+len("db bbb"))
+	}
+	if stats[1].Objects != 1 || stats[1].Bytes != int64(len("legacy s3 payload")) {
+		t.Fatalf("s3 组 = %d 个 %d 字节，期望 1 个 %d 字节",
+			stats[1].Objects, stats[1].Bytes, len("legacy s3 payload"))
+	}
+	var total int64
+	for _, st := range stats {
+		total += st.Objects
+	}
+	if total != 3 {
+		t.Fatalf("合计 %d 个对象，deleting 行未被排除", total)
+	}
+}

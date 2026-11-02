@@ -36,6 +36,9 @@ type scanService struct {
 	registry  rule.Registry
 	newClient func(model.ScanOptions) (*kubernetes.Client, error)
 	newLLM    func(model.LLMOptions) llm.LLMClient
+	// archive 非 nil 时（平台装配注入，见 ReportArchiveBinder）扫描产物额外归档到对象
+	// 存储。CLI 单跑不设这个字段，行为与三期一致。
+	archive *ReportArchiveWriter
 }
 
 // defaultLLMConcurrency 与 diagnosis.llmConcurrency 保持一致（CONCURRENCY.md）。
@@ -238,6 +241,9 @@ func (s *scanService) Run(ctx context.Context, opts model.ScanOptions) (*model.S
 		result.ReportPaths = paths
 		phaseDone("report", strings.Join(paths, ", "), true, wrStart)
 	}
+	// 归档到对象存储：与上面的 report.directory 落盘互不相干（本地文件只是兼容副本，
+	// 事实源是 objects + reports），失败只记 WARN，不影响本次扫描的返回值。
+	s.archiveReportsIfNeeded(ctx, result, opts, phaseStart, phaseDone)
 	return result, nil
 }
 

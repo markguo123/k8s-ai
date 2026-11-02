@@ -74,6 +74,13 @@ func DefaultAPIPolicy() *permission.Policy {
 		permission.Rule{Method: "POST", Path: "/api/v1/skills/import-zip", Access: permission.AccessPermission, Permission: permission.SkillManage},
 		permission.Rule{Method: "POST", Path: "/api/v1/skills/import", Access: permission.AccessPermission, Permission: permission.SkillManage},
 		permission.Rule{Method: "PATCH", Path: "/api/v1/skills/{name}/enabled", Access: permission.AccessPermission, Permission: permission.SkillManage},
+		// 报告（P8.5）：只登记「必须登录」，可见性由 owner 与集群授权在 handler 里判定。
+		// 这里刻意不加 report.read 权限位——四期没有独立的报告权限域，凭空造一个恒真的
+		// 权限位会让人误以为存在「授予后即可读所有报告」的开关（方案 15 §12.2）。
+		permission.Rule{Method: "GET", Path: "/api/v1/reports", Access: permission.AccessAuthenticated},
+		permission.Rule{Method: "GET", Path: "/api/v1/reports/{id}/content", Access: permission.AccessAuthenticated},
+		// 对象存储健康：权限复用 settings.read（已代表「能看平台运行形态」），不新增权限位。
+		permission.Rule{Method: "GET", Path: "/api/v1/storage/health", Access: permission.AccessPermission, Permission: permission.SettingsRead},
 	)
 }
 
