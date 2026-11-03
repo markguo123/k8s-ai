@@ -558,7 +558,11 @@ read -r -d '' RENDER_AWK <<'AWK_EOF' || true
 { lines[++n] = $0 }
 END {
   base = FILENAME; sub(/^.*\//, "", base)
+  # 会跑 Pod 的三份清单：后端 Deployment、形态 B 的前端 web-deployment、迁移 Job。
+  podfile = (base ~ /deployment\.yaml$/ || base == "db-migrate-job.yaml") ? 1 : 0
   pulled = 0; blobs = 0; npdone = 0
+  # 清单里本来就写了 imagePullSecrets 就别再插一份：同一个 Pod 级键重复会让 apply 报错。
+  for (i = 1; i <= n; i++) if (lines[i] ~ /^[ \t]*imagePullSecrets:/) pulled = 1
   for (i = 1; i <= n; i++) {
     l = lines[i]; skip = 0
 
@@ -606,10 +610,14 @@ END {
       }
     }
 
-    # 锚点 6：私有仓库拉取凭据（清单默认不带这段，给了名字才插入）
-    if (PULLSEC != "" && base == "deployment.yaml" && pulled == 0 && l ~ /^[ \t]*serviceAccountName:/) {
+    # 锚点 6：私有仓库拉取凭据（清单默认不带这段，给了名字才插入）。
+    # 锚点行取 automountServiceAccountToken，不取 serviceAccountName：只有后端 Deployment
+    # 挂了 ServiceAccount，前端 web-deployment 与迁移 Job 都没有这一行，拿它当锚点等于这
+    # 两份永远插不进拉取凭据，私有仓库在未缓存镜像的节点上直接 ImagePullBackOff。
+    # automountServiceAccountToken 四份清单都有，且都在 Pod 级、紧贴 containers 之前。
+    if (PULLSEC != "" && podfile == 1 && pulled == 0 && l ~ /^[ \t]*automountServiceAccountToken:/) {
       pulled = 1
-      p = l; sub(/serviceAccountName:.*$/, "", p)
+      p = l; sub(/automountServiceAccountToken:.*$/, "", p)
       print p "imagePullSecrets:"
       print p "  - name: " PULLSEC
     }
@@ -658,34 +666,38 @@ AWK_EOF
 # 只注入「启动级形态参数」：对象存储后端、首启管理员用户名；业务参数留在配置中心。
 extra_env_block() {
   local indent="            " out=""
+  # 续行缩进必须由 indent 派生，不能写死空格：env 项的 "- name:" 落在 12 列，
+  # value / valueFrom 就必须在 14 列、secretKeyRef 在 16 列。写死 2 空格会渲染出
+  # "- name: X" 紧跟顶格 "value: ..." 的非法 YAML（kubectl 报 did not find expected key）。
+  local vi="${indent}  " si="${indent}    "
   case "$BLOBS_BACKEND" in
     # 四个 driver 一律显式下发 driver：换后端闸门要靠 Deployment env 认出「集群现在跑在哪个后端」，
     # 只读 ConfigMap 会永远拿到模板默认值 db（见 blobs_current_backend）。
-    db) out="${indent}- name: K8S_AI_PLATFORM_BLOBS_DRIVER${NL}  value: \"db\"" ;;
+    db) out="${indent}- name: K8S_AI_PLATFORM_BLOBS_DRIVER${NL}${vi}value: \"db\"" ;;
     off)
-      out+="${indent}- name: K8S_AI_PLATFORM_BLOBS_DRIVER${NL}  value: \"off\"" ;;
+      out+="${indent}- name: K8S_AI_PLATFORM_BLOBS_DRIVER${NL}${vi}value: \"off\"" ;;
     dir)
-      out+="${indent}- name: K8S_AI_PLATFORM_BLOBS_DRIVER${NL}  value: \"dir\""
-      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_DIR${NL}  value: \"/data/blobs\"" ;;
+      out+="${indent}- name: K8S_AI_PLATFORM_BLOBS_DRIVER${NL}${vi}value: \"dir\""
+      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_DIR${NL}${vi}value: \"/data/blobs\"" ;;
     s3)
-      out+="${indent}- name: K8S_AI_PLATFORM_BLOBS_DRIVER${NL}  value: \"s3\""
-      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_ENDPOINT${NL}  value: \"${BLOBS_ENDPOINT}\""
-      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_BUCKET${NL}  value: \"${BLOBS_BUCKET}\""
-      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_REGION${NL}  value: \"${BLOBS_REGION}\""
-      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_USE_TLS${NL}  value: \"${BLOBS_USE_TLS}\""
-      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_PATH_STYLE${NL}  value: \"${BLOBS_PATH_STYLE}\""
-      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_CREATE_BUCKET${NL}  value: \"${BLOBS_CREATE_BUCKET}\""
-      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_TMP_DIR${NL}  value: \"${BLOBS_TMP_DIR:-/tmp/k8s-ai-blobs}\""
-      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_ACCESS_KEY${NL}  valueFrom:${NL}    secretKeyRef: { name: ${SEC_BLOBS}, key: access_key }"
-      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_SECRET_KEY${NL}  valueFrom:${NL}    secretKeyRef: { name: ${SEC_BLOBS}, key: secret_key }" ;;
+      out+="${indent}- name: K8S_AI_PLATFORM_BLOBS_DRIVER${NL}${vi}value: \"s3\""
+      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_ENDPOINT${NL}${vi}value: \"${BLOBS_ENDPOINT}\""
+      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_BUCKET${NL}${vi}value: \"${BLOBS_BUCKET}\""
+      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_REGION${NL}${vi}value: \"${BLOBS_REGION}\""
+      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_USE_TLS${NL}${vi}value: \"${BLOBS_USE_TLS}\""
+      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_PATH_STYLE${NL}${vi}value: \"${BLOBS_PATH_STYLE}\""
+      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_CREATE_BUCKET${NL}${vi}value: \"${BLOBS_CREATE_BUCKET}\""
+      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_TMP_DIR${NL}${vi}value: \"${BLOBS_TMP_DIR:-/tmp/k8s-ai-blobs}\""
+      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_ACCESS_KEY${NL}${vi}valueFrom:${NL}${si}secretKeyRef: { name: ${SEC_BLOBS}, key: access_key }"
+      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_SECRET_KEY${NL}${vi}valueFrom:${NL}${si}secretKeyRef: { name: ${SEC_BLOBS}, key: secret_key }" ;;
   esac
   if [[ -n "$BLOBS_PREFIX" ]]; then
     if [[ -n "$out" ]]; then out+="@@"; fi
-    out+="${indent}- name: K8S_AI_PLATFORM_BLOBS_PREFIX${NL}  value: \"${BLOBS_PREFIX}\""
+    out+="${indent}- name: K8S_AI_PLATFORM_BLOBS_PREFIX${NL}${vi}value: \"${BLOBS_PREFIX}\""
   fi
   if [[ -n "$ADMIN_USERNAME" ]]; then
     if [[ -n "$out" ]]; then out+="@@"; fi
-    out+="${indent}- name: K8S_AI_PLATFORM_AUTH_ADMIN_USERNAME${NL}  value: \"${ADMIN_USERNAME}\""
+    out+="${indent}- name: K8S_AI_PLATFORM_AUTH_ADMIN_USERNAME${NL}${vi}value: \"${ADMIN_USERNAME}\""
   fi
   printf '%s' "$out"
 }
@@ -1023,9 +1035,15 @@ diagnose_rollout() {
 stage_workloads() {
   stage "阶段 6/9 工作负载（形态 ${FORM}）"
   local deps=(k8s-ai-server) d
+  # Service 必须先于工作负载落地：形态 B 的 Nginx 在「读配置」阶段就要把
+  # proxy_pass http://k8s-ai-server:8080 解析成地址，Service 还不存在时 nginx 直接
+  # [emerg] host not found in upstream 退出，Pod 进 CrashLoopBackOff。而本阶段又在等
+  # k8s-ai-web Ready，服务却排在下一阶段才建 —— 前端等 Service、脚本等前端，安装自锁。
+  apply_rendered base/service.yaml
   if [[ "$FORM" == "allinone" ]]; then
     apply_rendered allinone/deployment.yaml
   else
+    apply_rendered separated/web-service.yaml
     apply_rendered separated/deployment.yaml
     apply_rendered separated/web-deployment.yaml
     deps+=(k8s-ai-web)
@@ -1044,8 +1062,7 @@ stage_workloads() {
 # --- 阶段 7：对外暴露 --------------------------------------------------------
 stage_expose() {
   stage "阶段 7/9 对外暴露（${EXPOSE}）"
-  apply_rendered base/service.yaml
-  if [[ "$FORM" == "separated" ]]; then apply_rendered separated/web-service.yaml; fi
+  # 两份 Service 已在阶段 6 建好（Nginx 启动期要解析后端），这里只确认入口并挂 Ingress。
 
   if [[ "$EXPOSE" == "nodeport" ]]; then
     ACTUAL_NODE_PORT="$("$KUBECTL_BIN" -n "$NAMESPACE" get svc "$ENTRY_SERVICE" -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || true)"
@@ -1423,6 +1440,29 @@ stage_preflight() {
     try_kctl get ingressclass "$INGRESS_CLASS" ||
       die "IngressClass ${INGRESS_CLASS} 不存在" "kubectl get ingressclass 看现场类名，用 --INGRESS_CLASS 指定"
     ok "IngressClass ${INGRESS_CLASS} 就绪"
+
+    # 同域名 Ingress 冲突：同一命名空间里另一形态、或上一次安装残留的 Ingress，会和本
+    # 发布抢同一个 host 的同一路径。Ingress 控制器只认其中一个，被抢走的那半会静默 404
+    # （形态 A 的 / 指向后端，形态 B 的 / 指向前端，正好互斥），所以这里先挡住。
+    local own_ingress conflict_ingress ing_name ing_hosts
+    if [[ "$FORM" == "allinone" ]]; then
+      own_ingress=" k8s-ai "
+    else
+      own_ingress=" k8s-ai-api k8s-ai-web "
+    fi
+    conflict_ingress=""
+    while read -r ing_name ing_hosts; do
+      [[ -z "$ing_name" ]] && continue
+      case "${own_ingress}" in *" ${ing_name} "*) continue ;; esac
+      case " ${ing_hosts} " in *" ${INGRESS_HOST} "*) conflict_ingress+="${ing_name} " ;; esac
+    done <<< "$("$KUBECTL_BIN" -n "$NAMESPACE" get ingress \
+      -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.rules[*].host}{"\n"}{end}' 2>/dev/null || true)"
+    conflict_ingress="${conflict_ingress% }"
+    if [[ -n "$conflict_ingress" ]]; then
+      die "命名空间 ${NAMESPACE} 里已有 Ingress 在域名 ${INGRESS_HOST} 上抢路径：${conflict_ingress}" \
+        "那是另一形态或历史残留，先删掉再装：kubectl -n ${NAMESPACE} delete ingress ${conflict_ingress}"
+    fi
+    ok "域名 ${INGRESS_HOST} 上没有与之冲突的 Ingress"
   fi
 
   # 存储类：给了名字就查名字，没给就要求集群有默认存储类
@@ -1445,13 +1485,21 @@ stage_preflight() {
   # 对象存储后端切换闸门（P8.8 / D-32）：换 driver 属于数据搬迁，不是配置改动。
   blobs_gate_backend_switch
 
-  # NodePort 占用
+  # NodePort 占用。先认「这个端口是不是本发布自己的入口 Service 占着」：装到一半失败后
+  # 重跑是常态（幂等重跑是硬要求），此时上一轮建好的入口 Service 就在同一命名空间里，
+  # 把它当成别人占用会让重跑永远过不去，除非手删 Service 或换端口。
   if [[ -n "$NODE_PORT" && "$EXPOSED_SVC" != "__none__" ]]; then
-    used="$("$KUBECTL_BIN" get svc -A -o jsonpath='{range .items[*]}{range .spec.ports[*]}{.nodePort}{"\n"}{end}{end}' 2>/dev/null | tr -d 'null' || true)"
-    if printf '%s\n' "$used" | grep -qx "$NODE_PORT"; then
-      die "NodePort ${NODE_PORT} 已被占用" "换一个端口，或留空由集群随机分配"
+    own_port="$("$KUBECTL_BIN" -n "$NAMESPACE" get svc "$ENTRY_SERVICE" -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || true)"
+    if [[ "$own_port" == "$NODE_PORT" ]]; then
+      ok "NodePort ${NODE_PORT} 由本发布的 ${NAMESPACE}/${ENTRY_SERVICE} 持有，复用（重跑不算占用）"
+    else
+      used="$("$KUBECTL_BIN" get svc -A -o jsonpath='{range .items[*]}{range .spec.ports[*]}{.nodePort}{"\n"}{end}{end}' 2>/dev/null | tr -d 'null' || true)"
+      if printf '%s\n' "$used" | grep -qx "$NODE_PORT"; then
+        die "NodePort ${NODE_PORT} 已被占用（不是本发布的 ${NAMESPACE}/${ENTRY_SERVICE} 持有）" \
+          "kubectl get svc -A | grep :${NODE_PORT} 找出占用者后换端口，或把 NODE_PORT 留空由集群随机分配"
+      fi
+      ok "NodePort ${NODE_PORT} 空闲"
     fi
-    ok "NodePort ${NODE_PORT} 空闲"
   fi
   stage_done
 }

@@ -320,3 +320,79 @@ func snippet(body string, from, to int) string {
 	}
 	return fmt.Sprintf("...%s...", strings.ReplaceAll(body[lo:hi], "\n", " "))
 }
+
+// shellFuncBody 取出一个 bash 函数体（从 "name() {" 到下一个顶格 "}"）。阶段内部的先后
+// 顺序在「有没有出现某个字符串」层面是看不出来的，必须按位置比，所以先切函数体。
+func shellFuncBody(t *testing.T, script, name string) string {
+	t.Helper()
+	start := strings.Index(script, "\n"+name+"() {")
+	if start < 0 {
+		t.Fatalf("install.sh 里找不到函数 %s()", name)
+	}
+	rest := script[start:]
+	end := strings.Index(rest, "\n}\n")
+	if end < 0 {
+		t.Fatalf("函数 %s() 没找到结束的顶格花括号", name)
+	}
+	return rest[:end]
+}
+
+// TestInstallScriptAppliesServicesBeforeWorkloads 锁阶段 6 内部的 apply 顺序：Service 先行。
+// 形态 B 的 Nginx 在读配置阶段就要解析 proxy_pass 的后端 Service，Service 缺席时 nginx 以
+// [emerg] host not found in upstream 退出、Pod 进 CrashLoopBackOff，而 stage_workloads
+// 紧接着就要等 k8s-ai-web Ready —— Service 若还留在 stage_expose，就是「前端等 Service、
+// 脚本等前端」的自锁，安装必挂（现场实测过）。
+func TestInstallScriptAppliesServicesBeforeWorkloads(t *testing.T) {
+	body := readRepoFile(t, "deploy", "install.sh")
+	workloads := shellFuncBody(t, body, "stage_workloads")
+	const webDeployment = "apply_rendered separated/web-deployment.yaml"
+
+	svc := strings.Index(workloads, "apply_rendered base/service.yaml")
+	if svc < 0 {
+		t.Fatal("stage_workloads 必须在 apply 工作负载之前建 base/service.yaml：形态 B 的 Nginx 启动期要解析 k8s-ai-server")
+	}
+	webDep := strings.Index(workloads, webDeployment)
+	if webDep < 0 {
+		t.Fatalf("stage_workloads 里找不到 %q", webDeployment)
+	}
+	if svc > webDep {
+		t.Error("k8s-ai-server 的 Service 必须早于 web Deployment apply，否则前端容器起不来")
+	}
+	if webSvc := strings.Index(workloads, "apply_rendered separated/web-service.yaml"); webSvc < 0 || webSvc > webDep {
+		t.Error("入口 Service（k8s-ai-web）同样要早于 web Deployment apply")
+	}
+	for _, dep := range []string{"apply_rendered separated/deployment.yaml", "apply_rendered allinone/deployment.yaml"} {
+		if at := strings.Index(workloads, dep); at >= 0 && at < svc {
+			t.Errorf("%s 不能早于 Service apply", dep)
+		}
+	}
+	if strings.Contains(shellFuncBody(t, body, "stage_expose"), "apply_rendered base/service.yaml") {
+		t.Error("Service 的 apply 又被挪回 stage_expose 了：阶段 6 等 Ready 时会自锁")
+	}
+}
+
+// TestInstallScriptNodePortPreflightIgnoresOwnRelease 锁幂等重跑。装到一半失败后原地重跑是
+// 常态，此时上一轮建好的入口 Service 正占着同一个 NodePort；自检必须先认出自己，否则重跑
+// 永远卡在「端口被占用」，除非手删 Service 或换端口。
+func TestInstallScriptNodePortPreflightIgnoresOwnRelease(t *testing.T) {
+	preflight := shellFuncBody(t, readRepoFile(t, "deploy", "install.sh"), "stage_preflight")
+	if !strings.Contains(preflight, `get svc "$ENTRY_SERVICE"`) {
+		t.Error("NodePort 占用自检要先读本发布入口 Service 的 nodePort：否则半成品重跑会被自己的 Service 挡住")
+	}
+}
+
+// TestInstallScriptBlocksSameHostIngressConflict 锁阶段 0 的同域名 Ingress 冲突自检。
+// 同一命名空间里形态 A 残留的 k8s-ai（/ → 后端）会挤掉形态 B 的 k8s-ai-web（/ → 前端）：
+// Ingress 控制器对同一 host 的同一路径只认一个，被挤掉的那半静默 404。现场表现为「后端
+// /readyz 正常、页面打不开且返回 API 的 JSON 404」，很难联想到另一个 Ingress。
+func TestInstallScriptBlocksSameHostIngressConflict(t *testing.T) {
+	preflight := shellFuncBody(t, readRepoFile(t, "deploy", "install.sh"), "stage_preflight")
+	if !strings.Contains(preflight, "get ingress") {
+		t.Fatal("stage_preflight 要枚举本命名空间的 Ingress：同域名路径冲突会让前端静默 404")
+	}
+	for _, needle := range []string{"k8s-ai-api k8s-ai-web", "delete ingress"} {
+		if !strings.Contains(preflight, needle) {
+			t.Errorf("同域名 Ingress 冲突自检缺少 %q：要先认出自己这一形态，再给出可复制的删除命令", needle)
+		}
+	}
+}
