@@ -8,7 +8,8 @@ import {
   type PageQuery,
 } from './types'
 
-const API_BASE = '/api/v1'
+/** API 前缀。下载类端点要自己拼 fetch（响应体不是 JSON），因此必须导出。 */
+export const API_BASE = '/api/v1'
 
 export const TOKEN_KEY = 'k8s_ai_token'
 export const USER_KEY = 'k8s_ai_user'
@@ -27,6 +28,11 @@ export interface RequestOptions {
    */
   formData?: FormData
   query?: PageQuery
+  /**
+   * 额外的等值查询参数（如 clusterId / kind / mode），按原名透传；值为 undefined
+   * 或空串时不写入 query string，这样"未选择筛选项"不会变成一个空参数。
+   */
+  filters?: Record<string, string | number | undefined>
   headers?: HeadersInit
   /**
    * 401 时是否清除本地会话并跳转登录页。登录/登出等公开端点传 false，
@@ -74,7 +80,11 @@ export function clearSession(): void {
   localStorage.removeItem(USER_KEY)
 }
 
-function buildUrl(path: string, query?: PageQuery): string {
+function buildUrl(
+  path: string,
+  query?: PageQuery,
+  filters?: Record<string, string | number | undefined>,
+): string {
   const qs = new URLSearchParams()
   if (query?.page !== undefined) {
     qs.set('page', String(query.page))
@@ -82,6 +92,13 @@ function buildUrl(path: string, query?: PageQuery): string {
   const pageSize = query?.page_size ?? query?.pageSize
   if (pageSize !== undefined) {
     qs.set('page_size', String(pageSize))
+  }
+  if (filters) {
+    for (const [key, value] of Object.entries(filters)) {
+      if (value !== undefined && value !== '') {
+        qs.set(key, String(value))
+      }
+    }
   }
   const suffix = qs.size > 0 ? `?${qs.toString()}` : ''
   return `${API_BASE}${path}${suffix}`
@@ -121,6 +138,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<A
     rawBody,
     formData,
     query,
+    filters,
     headers: extraHeaders,
     redirectOnUnauthorized = true,
   } = options
@@ -146,7 +164,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<A
     init.body = JSON.stringify(body)
   }
 
-  const response = await fetch(buildUrl(path, query), init)
+  const response = await fetch(buildUrl(path, query, filters), init)
   const text = await response.text()
   let payload: ApiResponse<T> | null = null
   if (text) {
@@ -158,13 +176,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<A
   }
 
   if (!response.ok || payload?.error) {
-    const status = response.status
-    if (status === 401 && redirectOnUnauthorized) {
-      redirectToLogin()
-    }
-    const code = payload?.error?.code ?? errorCodeForStatus(status)
-    const message = payload?.error?.message ?? `request failed with status ${status}`
-    throw new ApiRequestError(status, code, message)
+    throw apiErrorFrom(response.status, text, redirectOnUnauthorized)
   }
 
   if (!payload) {
@@ -173,8 +185,38 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<A
   return payload
 }
 
-export function apiGet<T>(path: string, query?: PageQuery): Promise<ApiResponse<T>> {
-  return request<T>(path, { method: 'GET', query })
+/**
+ * 把一次失败响应翻译成 ApiRequestError。导出给「响应体不是 JSON 信封」的端点复用
+ * （报告正文下载走二进制流，不能走 request()），错误码推导与 401 登出跳转保持同一套，
+ * 避免两处各写一遍、后续只改一处而悄悄分叉。
+ */
+export function apiErrorFrom(
+  status: number,
+  bodyText: string,
+  redirectOnUnauthorized = true,
+): ApiRequestError {
+  let payload: ApiResponse<unknown> | null = null
+  if (bodyText) {
+    try {
+      payload = JSON.parse(bodyText) as ApiResponse<unknown>
+    } catch {
+      payload = null
+    }
+  }
+  if (status === 401 && redirectOnUnauthorized) {
+    redirectToLogin()
+  }
+  const code = payload?.error?.code ?? errorCodeForStatus(status)
+  const message = payload?.error?.message ?? `request failed with status ${status}`
+  return new ApiRequestError(status, code, message)
+}
+
+export function apiGet<T>(
+  path: string,
+  query?: PageQuery,
+  filters?: Record<string, string | number | undefined>,
+): Promise<ApiResponse<T>> {
+  return request<T>(path, { method: 'GET', query, filters })
 }
 
 export function apiPost<T>(path: string, body?: unknown): Promise<ApiResponse<T>> {

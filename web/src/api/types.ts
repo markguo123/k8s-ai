@@ -51,6 +51,10 @@ export const ErrorCode = {
   unauthorized: 'unauthorized',
   forbidden: 'forbidden',
   internal: 'internal_error',
+  /** 对象存储暂不可达（后端 codeUnavailable，报告下载专用；/readyz 不受其影响）。 */
+  serviceUnavailable: 'service_unavailable',
+  /** 业务行还在但内容已不可恢复（后端 codeGone，410）。 */
+  gone: 'gone',
 } as const
 
 export type ErrorCodeValue = (typeof ErrorCode)[keyof typeof ErrorCode]
@@ -362,4 +366,43 @@ export interface CreateTokenRequest {
 export interface CreateTokenResult {
   apiToken: ApiToken
   token: string
+}
+
+/** 报告对外视图（后端 service.ReportView，P8.5）。
+ * 这里没有对象 key：key 携带集群 ID 与扫描 ID，属内部结构，后端视图类型里就不存在该字段。 */
+export interface ReportView {
+  id: string
+  clusterId?: string
+  scanId?: string
+  kind: string
+  mediaType?: string
+  size: number
+  sha256: string
+  findings: number
+  /** 报告归属人 ID；跨 owner 读取由后端落审计，前端不做安全判定。 */
+  createdBy: string
+  /** false = 业务行还在但内容已不可恢复，下载会回 410。 */
+  available: boolean
+  createdAt: string
+}
+
+/** 对象存储健康（后端 service.BlobHealth，P8.5）。字段刻意不含桶名 / 端点 / 凭据。 */
+export interface StorageHealth {
+  driver: string
+  /** ready=可读写 | degraded=暂不可用（对象类 API 回 503）| disabled=driver=off，未开启。 */
+  status: 'ready' | 'degraded' | 'disabled' | string
+  ready: boolean
+  probeError?: string
+  objects: number
+  bytes: number
+  /** 「内容还留在别的后端」的对象数，按原 driver 分组：非空说明换过 driver 未跑迁移。 */
+  driverMismatch?: Record<string, number>
+  observedAt: string
+}
+
+/** GET /api/v1/reports/{id}/content?mode=presign 的 data。
+ * downloadUrl 是带签名的临时链接：绝不写入日志、SSE、localStorage 或任何 store。 */
+export interface ReportDownloadTicket {
+  report: ReportView
+  downloadUrl: string
 }

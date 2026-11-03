@@ -46,4 +46,15 @@ describe('路由守卫（P2.2 未登录不可访问业务页）', () => {
     expect(await goto('/login')).toContain('/login')
     expect(await goto('/')).toContain('/login')
   })
+
+  it('报告页不设前端权限位：三角色登录后均可进入', async () => {
+    for (const role of ['user', 'operator', 'admin']) {
+      localStorage.setItem(TOKEN_KEY, 'tok-1')
+      localStorage.setItem(USER_KEY, JSON.stringify({ userId: 'u1', username: role, role }))
+      setActivePinia(createPinia())
+      await goto('/app/chat')
+      // 能看到页面 ≠ 能读到别人的报告：可见范围由后端 owner + 集群授权判定（P8.5）。
+      expect(await goto('/app/report')).toBe('/app/report')
+    }
+  })
 })

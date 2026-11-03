@@ -1,0 +1,176 @@
+/**
+ * P8.11 报告与对象存储 API 客户端（与后端 `internal/server/reports.go`、
+ * `internal/server/storage_health.go` 一致）。
+ *
+ * 三条安全约定写在这里，是为了让后端的设计意图在调用点就看得见：
+ *  1. 可见性判定全在后端（owner + AuthzGrant 集群范围 + admin），前端不做任何"这条报告
+ *     你能不能看"的推断，只负责把后端给的东西画出来；越权同形 404，前端也就无从绕过。
+ *  2. 报告正文是二进制流，不能走通用 JSON 信封封装，因此 downloadReport 自己 fetch，
+ *     但错误翻译复用 apiErrorFrom，避免同一套错误码在两边各写一遍。
+ *  3. presign 返回的签名 URL 等同一条临时凭据：只在调用方内存里停留，绝不落
+ *     localStorage / store / 日志 / SSE。
+ */
+import { API_BASE, ApiRequestError, apiErrorFrom, apiGet, readToken } from './request'
+import type { ReportDownloadTicket, ReportView, StorageHealth } from './types'
+
+/** 报告列表查询条件（后端 handleListReports 的 query 参数）。 */
+export interface ReportListOptions {
+  page?: number
+  pageSize?: number
+  clusterId?: string
+  kind?: string
+}
+
+/** 报告列表结果：total 与当页共用后端同一条归属谓词，因此不会把别人的报告算进来。 */
+export interface ReportListResult {
+  items: ReportView[]
+  total: number
+  page: number
+  pageSize: number
+  totalPages: number
+}
+
+/** 列表页只回元数据列，后端刻意不加载对象正文。 */
+export async function listReports(opts: ReportListOptions = {}): Promise<ReportListResult> {
+  const env = await apiGet<ReportView[]>(
+    '/reports',
+    { page: opts.page, pageSize: opts.pageSize },
+    { clusterId: opts.clusterId, kind: opts.kind },
+  )
+  return {
+    items: env.data ?? [],
+    total: env.pagination?.total ?? 0,
+    page: env.pagination?.page ?? opts.page ?? 1,
+    pageSize: env.pagination?.page_size ?? opts.pageSize ?? 0,
+    totalPages: env.pagination?.total_pages ?? 0,
+  }
+}
+
+/** blob: 链接的存活时间。点击之后立刻 revoke 在部分浏览器里会把下载一起取消掉。 */
+const BLOB_URL_TTL_MS = 60_000
+
+/** 从 Content-Disposition 里取文件名。后端只发 RFC 5987 的 filename*，
+ * 但这里同时兼容 filename="..."，回落 report-<id>，宁可名字丑也不要下载失败。 */
+export function filenameFromDisposition(header: string | null, fallbackId: string): string {
+  const fallback = `report-${fallbackId}`
+  if (!header) {
+    return fallback
+  }
+  const extended = /filename\*\s*=\s*([^']*)'[^']*'([^;]+)/i.exec(header)
+  if (extended?.[2]) {
+    return decodeFilename(extended[2].trim(), fallback)
+  }
+  const quoted = /filename\s*=\s*"([^"]+)"/i.exec(header) || /filename\s*=\s*([^;]+)/i.exec(header)
+  const plain = quoted?.[1]?.trim()
+  return plain ? decodeFilename(plain, fallback) : fallback
+}
+
+function decodeFilename(raw: string, fallback: string): string {
+  try {
+    return decodeURIComponent(raw.replace(/^"|"$/g, '')) || fallback
+  } catch {
+    return fallback
+  }
+}
+
+/**
+ * 流式下载报告正文，返回实际保存的文件名（供页面提示）。
+ *
+ * 必须自己拼 fetch：响应体是二进制附件，套进 request() 的 JSON 解析会把内容吃掉。
+ */
+export async function downloadReport(id: string): Promise<string> {
+  const headers = new Headers({ Accept: 'application/octet-stream' })
+  const token = readToken()
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`)
+  }
+  const response = await fetch(`${API_BASE}/reports/${encodeURIComponent(id)}/content?mode=stream`, {
+    headers,
+  })
+  if (!response.ok) {
+    throw apiErrorFrom(response.status, await response.text())
+  }
+  const filename = filenameFromDisposition(response.headers.get('Content-Disposition'), id)
+  const blob = await response.blob()
+  const url = URL.createObjectURL(blob)
+  triggerBrowserDownload(url, filename)
+  window.setTimeout(() => URL.revokeObjectURL(url), BLOB_URL_TTL_MS)
+  return filename
+}
+
+function triggerBrowserDownload(url: string, filename: string): void {
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  anchor.rel = 'noopener'
+  anchor.style.display = 'none'
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+}
+
+/**
+ * 申请一条直连下载链接（仅 s3 后端支持；其余后端回 400，调用方回落 stream）。
+ * 返回值含签名，按文件头第 3 条约定处置。
+ */
+export async function getReportDownloadUrl(id: string): Promise<ReportDownloadTicket> {
+  const env = await apiGet<ReportDownloadTicket>(
+    `/reports/${encodeURIComponent(id)}/content`,
+    undefined,
+    { mode: 'presign' },
+  )
+  if (!env.data?.downloadUrl) {
+    throw new Error('该后端未返回直连链接，请改用流式下载')
+  }
+  return env.data
+}
+
+/**
+ * 对象存储健康。后端恒回 200（degraded 也是 200 + status），这样徽标不会因为
+ * 一次"健康的坏消息"变成请求失败，probeError 那句真正有用的话也就丢掉了。
+ */
+export async function getStorageHealth(): Promise<StorageHealth> {
+  const env = await apiGet<StorageHealth>('/storage/health')
+  if (!env.data) {
+    throw new Error('存储健康数据为空')
+  }
+  return env.data
+}
+
+/** 统一错误文案，供页面直接展示。状态码优先于错误码：它们是后端分档的依据。 */
+export function describeReportError(method: string, error: unknown): string {
+  if (error instanceof ApiRequestError) {
+    switch (error.status) {
+      case 503:
+        return '对象存储暂不可用，报告暂时读不到；聊天、审批、审计不受影响，请稍后重试'
+      case 410:
+        return '该报告的内容已不可恢复（可能已过期清理），请检查对象存储备份'
+      case 409:
+        return '报告内容仍在另一个对象存储后端，需先在服务端执行 blobs migrate 后重试'
+      case 501:
+        return '未开启对象存储归档（platform.blobs.driver=off），平台不会生成报告产物'
+      case 403:
+        return '没有访问该报告的权限'
+      case 404:
+        return '报告不存在，或不在你的可见范围内'
+      default:
+        break
+    }
+    if (error.message) {
+      return error.message
+    }
+  }
+  if (error instanceof Error && error.message) {
+    return error.message
+  }
+  return `${method}失败，请稍后重试`
+}
+
+// 保持 DefaultExport 便于使用方统一 import 默认值。
+export default {
+  listReports,
+  downloadReport,
+  getReportDownloadUrl,
+  getStorageHealth,
+  describeReportError,
+}

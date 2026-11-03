@@ -30,6 +30,14 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '集群' },
       },
       {
+        // 报告路由不带 permission：后端只要求已认证，具体能看见哪几条由 owner/集群授权决定
+        // （P8.5/P8.11）。在这里挂一个权限位反而会让人误以为存在"读所有报告"的开关。
+        path: 'report',
+        name: 'report',
+        component: () => import('@/views/report/ReportsView.vue'),
+        meta: { title: '报告' },
+      },
+      {
         path: 'skill',
         name: 'skill',
         component: () => import('@/views/skill/SkillView.vue'),
