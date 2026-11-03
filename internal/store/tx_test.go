@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -350,5 +351,250 @@ func TestReleaseGuards(t *testing.T) {
 	}
 	if n := refCountOf(t, s, ref.Key); n != 0 {
 		t.Fatalf("下溢后 ref_count = %d, want 0（不得被改成负数）", n)
+	}
+}
+
+// ---- P8.12：AdoptObject（后端归属翻转，方案 15 §10.1）----
+
+// adoptPayload 直接读底层列：翻转的成败全系于「driver 与 payload 是不是同一笔里落下的」，
+// 这件事必须绕开读面来看，否则 db 后端自己的 Stat 会把结论糊过去。
+func adoptPayload(t *testing.T, s Store, key string) []byte {
+	t.Helper()
+	var payload []byte
+	err := rawDB(t, s).QueryRowContext(context.Background(),
+		`SELECT payload FROM objects WHERE blob_key = ?`, key).Scan(&payload)
+	if err != nil {
+		t.Fatalf("read payload of %s: %v", key, err)
+	}
+	return payload
+}
+
+func adoptMeta(t *testing.T, s Store, key string) *ObjectMeta {
+	t.Helper()
+	m, err := s.Objects().Get(context.Background(), key)
+	if err != nil {
+		t.Fatalf("get %s: %v", key, err)
+	}
+	return m
+}
+
+// adoptTo 跑一次真实事务里的翻转。
+func adoptTo(t *testing.T, s Store, key, from, to string, payload []byte, dropSource bool) bool {
+	t.Helper()
+	var flipped bool
+	err := s.WithTx(context.Background(), func(tx *Tx) error {
+		var err error
+		flipped, err = tx.AdoptObject(context.Background(), key, from, to, payload, dropSource)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("adopt %s %s -> %s: %v", key, from, to, err)
+	}
+	return flipped
+}
+
+// TestAdoptObjectWritesPayloadWithDriver 是 §10.1 第 3 步的语义锁：以 db 为目标时，正文与
+// driver 必须同笔提交。分成两笔就存在「driver=db 而 payload 为空」的已提交状态，而它在语义
+// 上等于「内容丢了」。
+func TestAdoptObjectWritesPayloadWithDriver(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	content := []byte("report body moving into the database")
+	ref := objTestRef(t, objectstore.CategoryReports, []string{"c1"}, ".md", string(content))
+
+	// 行先登记在 dir 上：库里没有 payload，读路径此刻也不该认为内容在库里。
+	if err := s.WithTx(ctx, func(tx *Tx) error {
+		return tx.Acquire(ctx, ref, objectstore.DriverDir, "alice")
+	}); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	if got := adoptPayload(t, s, ref.Key); got != nil {
+		t.Fatalf("payload before adopt = %q, want NULL", got)
+	}
+
+	if !adoptTo(t, s, ref.Key, objectstore.DriverDir, objectstore.DriverDB, content, false) {
+		t.Fatal("adopt to db should have flipped the row")
+	}
+	if got := adoptPayload(t, s, ref.Key); string(got) != string(content) {
+		t.Fatalf("payload after adopt = %q, want %q", got, content)
+	}
+	meta := adoptMeta(t, s, ref.Key)
+	if meta.Driver != objectstore.DriverDB {
+		t.Errorf("driver = %q, want db", meta.Driver)
+	}
+	// 翻转只该改 driver/payload/updated_at：引用计数与 state 属于业务与 GC，一动就把
+	// 「搬了个对象」变成「改了引用生命周期」。
+	if meta.RefCount != 1 || meta.State != ObjectStateReady {
+		t.Errorf("ref_count/state = %d/%s, want 1/%s", meta.RefCount, meta.State, ObjectStateReady)
+	}
+
+	// 重放：CAS 未命中必须是「没改」而不是报错——迁移可重跑，第二轮的每个 key 都该安静跳过。
+	if adoptTo(t, s, ref.Key, objectstore.DriverDir, objectstore.DriverDB, content, false) {
+		t.Error("replaying the flip must not match a row already on db")
+	}
+}
+
+// TestAdoptObjectRollbackKeepsDriver 证明翻转可回滚：翻转之后事务里再出错，driver 与 payload
+// 都得回到原样，否则「失败可重试」就是空话。
+func TestAdoptObjectRollbackKeepsDriver(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	ref := objTestRef(t, objectstore.CategoryReports, []string{"c1"}, ".md", "rollback body")
+	if err := s.WithTx(ctx, func(tx *Tx) error {
+		return tx.Acquire(ctx, ref, objectstore.DriverDir, "alice")
+	}); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+
+	boom := errors.New("boom")
+	err := s.WithTx(ctx, func(tx *Tx) error {
+		if _, err := tx.AdoptObject(ctx, ref.Key, objectstore.DriverDir, objectstore.DriverDB, []byte("rollback body"), false); err != nil {
+			return err
+		}
+		return boom
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("tx error = %v, want boom", err)
+	}
+	if meta := adoptMeta(t, s, ref.Key); meta.Driver != objectstore.DriverDir {
+		t.Errorf("driver after rollback = %q, want dir", meta.Driver)
+	}
+	if got := adoptPayload(t, s, ref.Key); got != nil {
+		t.Errorf("payload after rollback = %q, want NULL", got)
+	}
+}
+
+// TestAdoptObjectLeavesGarbageCollectedRows：GC 已认领的行不翻。内容可能已经被删了，
+// 把它翻到新后端就是造一个悬空引用。
+func TestAdoptObjectLeavesGarbageCollectedRows(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	ref := objTestRef(t, objectstore.CategoryReports, []string{"c1"}, ".md", "collecting")
+	if err := s.WithTx(ctx, func(tx *Tx) error {
+		return tx.Acquire(ctx, ref, objectstore.DriverDir, "alice")
+	}); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	if err := s.WithTx(ctx, func(tx *Tx) error { return tx.Release(ctx, ref.Key) }); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	claimed, err := s.Objects().ClaimDeleting(ctx, ref.Key, 0, time.Now().Add(time.Hour))
+	if err != nil || !claimed {
+		t.Fatalf("claim deleting: claimed=%v err=%v", claimed, err)
+	}
+
+	if adoptTo(t, s, ref.Key, objectstore.DriverDir, objectstore.DriverS3, nil, false) {
+		t.Error("a row claimed by gc must not be flipped")
+	}
+	if meta := adoptMeta(t, s, ref.Key); meta.State != ObjectStateDeleting || meta.Driver != objectstore.DriverDir {
+		t.Errorf("state/driver = %s/%q, want deleting/dir", meta.State, meta.Driver)
+	}
+}
+
+// TestAdoptObjectRejectsBadArguments 锁住参数面：off 不是地点、两端不能同名、db 目标必须带
+// 正文、非 db 目标不许带正文。这四条都是「调用方一旦写错就会静默造出坏状态」的形状。
+func TestAdoptObjectRejectsBadArguments(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	ref := objTestRef(t, objectstore.CategoryReports, []string{"c1"}, ".md", "arguments")
+	if err := s.WithTx(ctx, func(tx *Tx) error {
+		return tx.Acquire(ctx, ref, objectstore.DriverDir, "alice")
+	}); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	body := []byte("arguments")
+
+	cases := []struct {
+		name     string
+		key      string
+		from     string
+		to       string
+		payload  []byte
+		drop     bool
+		contains string
+	}{
+		{"off target", ref.Key, objectstore.DriverDir, "off", nil, false, "db, dir or s3"},
+		{"off source", ref.Key, objectstore.DriverOff, objectstore.DriverDB, body, false, "db, dir or s3"},
+		{"same driver", ref.Key, objectstore.DriverDir, objectstore.DriverDir, nil, false, "both"},
+		{"db target without payload", ref.Key, objectstore.DriverDir, objectstore.DriverDB, nil, false, "must carry the payload"},
+		{"dir target with payload", ref.Key, objectstore.DriverDB, objectstore.DriverDir, body, false, "no payload column"},
+		{"drop source on a dir row", ref.Key, objectstore.DriverDir, objectstore.DriverS3, nil, true, "no payload row to drop"},
+		{"bad key", "k8sai/reports/not-a-hash", objectstore.DriverDir, objectstore.DriverDB, body, false, "invalid key"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var called bool
+			err := s.WithTx(ctx, func(tx *Tx) error {
+				called = true
+				_, err := tx.AdoptObject(ctx, tc.key, tc.from, tc.to, tc.payload, tc.drop)
+				return err
+			})
+			if err == nil {
+				t.Fatalf("adopt(%s -> %s) should fail", tc.from, tc.to)
+			}
+			if !strings.Contains(err.Error(), tc.contains) {
+				t.Errorf("error = %q, want it to mention %q", err, tc.contains)
+			}
+			if !called {
+				t.Error("callback never ran")
+			}
+		})
+	}
+	if meta := adoptMeta(t, s, ref.Key); meta.Driver != objectstore.DriverDir {
+		t.Errorf("driver after rejected calls = %q, want dir", meta.Driver)
+	}
+}
+
+// TestAdoptObjectRevivesMissingRow：verify 判过的损坏行，内容补回来后必须回到 ready，
+// 否则一个已经修好的对象会永远带着「缺失」的牌子。
+func TestAdoptObjectRevivesMissingRow(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	content := []byte("healed through migration")
+	ref := objTestRef(t, objectstore.CategoryReports, []string{"c1"}, ".md", string(content))
+	if err := s.WithTx(ctx, func(tx *Tx) error {
+		return tx.Acquire(ctx, ref, objectstore.DriverDir, "alice")
+	}); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	if err := s.Objects().MarkMissing(ctx, []string{ref.Key}); err != nil {
+		t.Fatalf("mark missing: %v", err)
+	}
+
+	if !adoptTo(t, s, ref.Key, objectstore.DriverDir, objectstore.DriverDB, content, false) {
+		t.Fatal("adopt should flip a missing row")
+	}
+	if meta := adoptMeta(t, s, ref.Key); meta.State != ObjectStateReady {
+		t.Errorf("state = %s, want ready", meta.State)
+	}
+}
+
+// TestAdoptObjectDropsSourcePayload 锁 §10.1 的 db 源端清源：driver 翻转与 payload 置空必须
+// 同语句，且 state 不能被顺手打成 missing。否则一次 db -> dir 迁移会在库里留下一行
+// 「state=missing + backend=present」的自相矛盾记录，运维照着它去查备份是白跑一趟。
+func TestAdoptObjectDropsSourcePayload(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	content := []byte("leaving the database behind")
+	ref := objTestRef(t, objectstore.CategoryReports, []string{"c1"}, ".md", string(content))
+	// 正文先正经落在 db 后端上（行 + payload 一起）。
+	backend, err := s.ObjectContent(objectstore.DefaultPrefix, 1<<20)
+	if err != nil {
+		t.Fatalf("db content backend: %v", err)
+	}
+	if _, err := backend.Put(ctx, objectstore.Spec{
+		Category: objectstore.CategoryReports, Scope: []string{"c1"}, Ext: ".md",
+	}, bytes.NewReader(content)); err != nil {
+		t.Fatalf("put into db backend: %v", err)
+	}
+
+	if !adoptTo(t, s, ref.Key, objectstore.DriverDB, objectstore.DriverDir, nil, true) {
+		t.Fatal("adopt db -> dir should have flipped the row")
+	}
+	if got := adoptPayload(t, s, ref.Key); got != nil {
+		t.Errorf("payload after drop = %q, want NULL", got)
+	}
+	if meta := adoptMeta(t, s, ref.Key); meta.State != ObjectStateReady || meta.Driver != objectstore.DriverDir {
+		t.Errorf("state/driver = %s/%q, want ready/%s", meta.State, meta.Driver, objectstore.DriverDir)
 	}
 }

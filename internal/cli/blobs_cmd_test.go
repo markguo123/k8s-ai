@@ -350,3 +350,217 @@ func TestBlobsRefusesUnmigratedPlatformSchema(t *testing.T) {
 		t.Fatalf("must not report inventory from an unmigrated schema:\n%s", out)
 	}
 }
+
+// TestBlobsVerifyGatesTheRestoreRun 锁 `blobs verify` 作为恢复准出门禁的形状：干净态一句话
+// 过；内容真丢时 --strict 必须非零退出并给出 key；后端切了但对象没迁只报待迁移、不报不一致。
+func TestBlobsVerifyGatesTheRestoreRun(t *testing.T) {
+	env := newBlobsEnv(t, config.BlobDriverDir)
+	env.migrate(t)
+	src := writeTempFile(t, "clean.md", "restore gate content\n")
+	out, err := env.run(t, "blobs", "put", src, "--scope", "c1")
+	if err != nil {
+		t.Fatalf("blobs put: %v\n%s", err, out)
+	}
+	key := field(t, out, "key=")
+
+	out, err = env.run(t, "blobs", "verify")
+	if err != nil {
+		t.Fatalf("verify on a clean store must not fail: %v\n%s", err, out)
+	}
+	for _, want := range []string{"driver=dir mode=stat category=all", "checked=1 ok=1", "orphans=0", "consistent"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("verify output missing %q:\n%s", want, out)
+		}
+	}
+
+	out, err = env.run(t, "blobs", "verify", "--deep")
+	if err != nil {
+		t.Fatalf("deep verify: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "mode=deep") || !strings.Contains(out, "deep-verified=1") {
+		t.Fatalf("deep mode must actually recompute the digest:\n%s", out)
+	}
+
+	// 内容被删（恢复点错位 / 桶侧被清理）：--strict 要把这轮变成非零退出。
+	if err := os.Remove(filepath.Join(env.blobs, filepath.FromSlash(key))); err != nil {
+		t.Fatalf("remove content: %v", err)
+	}
+	out, err = env.run(t, "blobs", "verify", "--strict")
+	if err == nil {
+		t.Fatalf("--strict must fail once content is gone:\n%s", out)
+	}
+	if !strings.Contains(out, "INCONSISTENT") || !strings.Contains(out, "missing: "+key) {
+		t.Fatalf("verify must name the dangling key:\n%s", out)
+	}
+	if !strings.Contains(out, "state=missing") {
+		t.Fatalf("verify must record the diagnosis in the registry:\n%s", out)
+	}
+}
+
+// TestBlobsVerifyReportsUnmigratedRowsAsPending 是 §10.1 在对账这一侧的形状：换后端之后
+// 第一轮 verify 绝不能把待迁移对象读成数据丢失，否则运维会照着假结论去翻备份。
+func TestBlobsVerifyReportsUnmigratedRowsAsPending(t *testing.T) {
+	env := newBlobsEnv(t, config.BlobDriverDir)
+	env.migrate(t)
+	src := writeTempFile(t, "pending.md", "written on the old driver\n")
+	out, err := env.run(t, "blobs", "put", src, "--scope", "c1")
+	if err != nil {
+		t.Fatalf("blobs put: %v\n%s", err, out)
+	}
+	key := field(t, out, "key=")
+
+	switched := newBlobsEnvWith(t, env, config.BlobDriverDB)
+	out, err = switched.run(t, "blobs", "verify", "--strict")
+	if err != nil {
+		t.Fatalf("pending migration is not an inconsistency: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "pending:   1 row(s) still on another driver") {
+		t.Fatalf("un-migrated row not reported as pending:\n%s", out)
+	}
+	if !strings.Contains(out, "blobs migrate --to db") {
+		t.Fatalf("verify must name the migration command:\n%s", out)
+	}
+	if strings.Contains(out, "INCONSISTENT") || !strings.Contains(out, "missing=0") {
+		t.Fatalf("objects on another driver must never read as a loss:\n%s", out)
+	}
+	// 对账只读不写：源后端里的字节必须一个都没动。
+	if _, err := os.Stat(filepath.Join(env.blobs, filepath.FromSlash(key))); err != nil {
+		t.Fatalf("verify touched the source object: %v", err)
+	}
+}
+
+// TestBlobsVerifyWithoutABackend 锁 off 态：不假装扫干净，而是说清「没有后端可对」，
+// 并把表里还在等后端的行数报出来（方案 15 §16.2）。
+func TestBlobsVerifyWithoutABackend(t *testing.T) {
+	env := newBlobsEnv(t, config.BlobDriverOff)
+	env.migrate(t)
+
+	out, err := env.run(t, "blobs", "verify")
+	if err != nil {
+		t.Fatalf("verify with driver=off must not fail: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "no content backend to verify against") {
+		t.Fatalf("verify must name the reason:\n%s", out)
+	}
+}
+
+// TestBlobsMigrateRequiresATarget 锁 `blobs migrate` 的入口闸门（方案 15 §10.1）：目标必须由运维
+// 显式给出、必须是真后端、必须与当前后端不同，目标后端构造失败时还要把配置键名说出口。
+// 迁移工具指错目标端比迁不动更危险——它会把对象写到一个没人备份的地方。
+func TestBlobsMigrateRequiresATarget(t *testing.T) {
+	env := newBlobsEnv(t, config.BlobDriverDir)
+	env.migrate(t)
+
+	if out, err := env.run(t, "blobs", "migrate"); err == nil {
+		t.Fatalf("migrate must refuse to guess a target:\n%s", out)
+	} else if !strings.Contains(err.Error(), `required flag(s) "to"`) {
+		t.Fatalf("a missing --to must stay a flag error, got %v", err)
+	}
+
+	// off 不是一个存放地点：迁过去等于把对象扔出系统。
+	if _, err := env.run(t, "blobs", "migrate", "--to", "off"); err == nil ||
+		!strings.Contains(err.Error(), "off is not a place") {
+		t.Fatalf("off must be refused as a target: %v", err)
+	}
+
+	// 目标就是当前后端：这不是错误，是一句「没什么可迁」，别让人以为工具坏了。
+	out, err := env.run(t, "blobs", "migrate", "--to", "dir")
+	if err != nil {
+		t.Fatalf("migrating onto the current driver is a no-op, not a failure: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, `already "dir": nothing to migrate`) {
+		t.Fatalf("the no-op must say so plainly:\n%s", out)
+	}
+
+	// s3 目标缺 endpoint：构造期就拒，并指向配置键。跑到一半才发现配错，代价是半批对象
+	// 落在一个谁都找不到的地方。
+	if _, err := env.run(t, "blobs", "migrate", "--to", "s3"); err == nil ||
+		!strings.Contains(err.Error(), "target backend") ||
+		!strings.Contains(err.Error(), "platform.blobs.endpoint") {
+		t.Fatalf("an unusable s3 target must be refused with its config key: %v", err)
+	}
+
+	// 源端永远是配置里那一个：driver=off 时没有源，不能假装从"无"里搬对象。
+	off := newBlobsEnv(t, config.BlobDriverOff)
+	off.migrate(t)
+	if _, err := off.run(t, "blobs", "migrate", "--to", "db"); err == nil ||
+		!strings.Contains(err.Error(), "driver=off") {
+		t.Fatalf("migrate with driver=off must name the config key: %v", err)
+	}
+}
+
+// TestBlobsMigrateMovesObjectsOutOfTheDatabase 是 §10.1 的 CLI 端到端：db 后端写下的对象靠一条
+// 命令搬到 dir，配置才敢切过去。搬运规则本身在 internal/service/blobmigrate_test.go 锁，这里只锁
+// 「运维按文案操作能不能走通」：dry-run 零改动、真搬之后切配置读得出、对账不再报待迁移。
+func TestBlobsMigrateMovesObjectsOutOfTheDatabase(t *testing.T) {
+	env := newBlobsEnv(t, config.BlobDriverDB)
+	env.migrate(t)
+	src := writeTempFile(t, "settle.md", "written while this deployment kept content in the database\n")
+	out, err := env.run(t, "blobs", "put", src, "--scope", "c1")
+	if err != nil {
+		t.Fatalf("blobs put: %v\n%s", err, out)
+	}
+	key := field(t, out, "key=")
+	object := filepath.Join(env.blobs, filepath.FromSlash(key))
+
+	out, err = env.run(t, "blobs", "migrate", "--to", "dir", "--dry-run")
+	if err != nil {
+		t.Fatalf("dry-run migrate: %v\n%s", err, out)
+	}
+	for _, want := range []string{"db -> dir mode=dry-run", "candidates=1", "flipped=0",
+		"dry-run: no object and no row was touched"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("dry-run output missing %q:\n%s", want, out)
+		}
+	}
+	if _, err := os.Stat(object); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dry run wrote content to the target: %v", err)
+	}
+
+	out, err = env.run(t, "blobs", "migrate", "--to", "dir", "--prune-source")
+	if err != nil {
+		t.Fatalf("migrate: %v\n%s", err, out)
+	}
+	for _, want := range []string{"copied=1", "flipped=1", "pruned=1", `remaining: none on "db"`, "is now safe"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("migrate output missing %q:\n%s", want, out)
+		}
+	}
+	if _, err := os.Stat(object); err != nil {
+		t.Fatalf("the object never reached the target: %v", err)
+	}
+
+	// 配置还没切：旧后端读不到正文，但绝不能报成「登记表里没这一行」——那会把运维送去翻备份，
+	// 而正确答案只是「把 platform.blobs.driver 改成 dir」。
+	if _, err := env.run(t, "blobs", "get", key); err == nil {
+		t.Fatalf("reading a migrated object through the old driver must fail")
+	} else if strings.Contains(err.Error(), "no objects row") {
+		t.Fatalf("the registry row still exists, do not report it gone: %v", err)
+	}
+
+	// 切配置之后：读得出来、对账干净、存量算在对的后端名下。
+	switched := newBlobsEnvWith(t, env, config.BlobDriverDir)
+	out, err = switched.run(t, "blobs", "get", key)
+	if err != nil {
+		t.Fatalf("get after the switch: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "kept content in the database") {
+		t.Fatalf("migrated content unreadable:\n%s", out)
+	}
+
+	out, err = switched.run(t, "blobs", "verify", "--strict")
+	if err != nil {
+		t.Fatalf("verify after a finished migration: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "consistent") || strings.Contains(out, "pending") {
+		t.Fatalf("a finished migration must leave nothing pending:\n%s", out)
+	}
+
+	out, err = switched.run(t, "blobs", "stat")
+	if err != nil {
+		t.Fatalf("stat after the switch: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "driver=dir objects=1") {
+		t.Fatalf("the inventory must count the object on the new driver:\n%s", out)
+	}
+}

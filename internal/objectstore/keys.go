@@ -108,6 +108,35 @@ func CategoryOf(key string) string {
 	return segments[1]
 }
 
+// SHA256OfKey 取 key 里嵌的内容寻址摘要；key 不合法时返回空串（调用方应先 ValidateKey）。
+//
+// 对账要用它做一次「行有没有说谎」的自检：objects.sha256 与 key 里的摘要是同一次 Put
+// 算出来的两个投影，长期不一致就说明这一行不是本包写进去的（手工改库或写路径 bug）。
+func SHA256OfKey(key string) string { return shaOfKey(key) }
+
+// SpecFromKey 把一个既有 key 反解成可原样重写的 Spec，是 BuildKey 的逆运算。
+//
+// 它存在的理由只有一个：后端迁移必须把对象按**同一个 key**落到目标后端，而 key 由 Put
+// 按实际字节摘要组装，迁移方手里只有旧 key。让调用方自己按 "/" 切字符串，key 规则一改
+// 就会静默迁错命名空间；解析因此必须和 BuildKey/ValidateKey 待在同一个文件里。
+//
+// 返回只带 key 里真正含有的信息：category、scope、ext。CreatedBy 刻意留空——它是写入者
+// 属性而不是 key 的一部分，由调用方按自己的身份填（迁移填 system）。MediaType 留空，
+// 由 Put 按 ext 走同一条推断路径。
+func SpecFromKey(key string) (Spec, error) {
+	if err := ValidateKey(key); err != nil {
+		return Spec{}, err
+	}
+	segments := strings.Split(key, "/")
+	scope := append([]string(nil), segments[2:len(segments)-1]...)
+	if len(scope) == 0 {
+		// ValidateKey 的「至少三段」已保证这里不为空；留着是为了规则一旦放宽，
+		// 这里报错而不是交出一个 scope 为空、Put 必然拒绝的 Spec。
+		return Spec{}, fmt.Errorf("%w: %q has no scope segment", ErrKeyInvalid, key)
+	}
+	return Spec{Category: segments[1], Scope: scope, Ext: extOfKey(key)}, nil
+}
+
 // BuildKey 按实际内容摘要组装 key，是唯一允许生成 key 的入口。
 //
 // prefix 为空取 DefaultPrefix。scope 至少要有一段：四类 key 模板都带命名空间，允许空

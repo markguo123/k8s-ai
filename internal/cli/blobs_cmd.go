@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -38,7 +39,10 @@ func newBlobsCmd(deps Dependencies) *cobra.Command {
 		Short: "Object storage operations (inspect, download, garbage collect)",
 		Args:  cobra.NoArgs,
 	}
-	cmd.AddCommand(newBlobsStatCmd(deps), newBlobsGetCmd(deps), newBlobsPutCmd(deps), newBlobsGCCmd(deps))
+	cmd.AddCommand(
+		newBlobsStatCmd(deps), newBlobsGetCmd(deps), newBlobsPutCmd(deps),
+		newBlobsGCCmd(deps), newBlobsVerifyCmd(deps), newBlobsMigrateCmd(deps),
+	)
 	return cmd
 }
 
@@ -50,6 +54,9 @@ type blobOps struct {
 	gc      *service.BlobGC
 	driver  string
 	prefix  string
+	// maxBytes 是 platform.blobs.max_object_size 解析后的体积闸门，迁移要拿它再构造
+	// 第二个后端（两个后端的闸门必须一致，否则同一份内容在一端能写、在另一端超）。
+	maxBytes int64
 	// disabled 记录 driver=off：观察类子命令照常答（表是活的），写入类子命令拒绝。
 	disabled bool
 }
@@ -116,13 +123,43 @@ func openBlobOps(ctx context.Context, cmd *cobra.Command, deps Dependencies) (*b
 			version, expected)
 	}
 	ops := &blobOps{cfg: cfg, st: st, driver: blobs.EffectiveDriver(), prefix: prefix}
+	ops.maxBytes = maxBytes
 	if ops.driver == config.BlobDriverOff {
 		ops.disabled = true
 		return ops, nil
 	}
 
+	backend, err := newBlobBackend(ctx, blobs, ops.driver, maxBytes, st)
+	if err != nil {
+		ops.Close()
+		if errors.Is(err, errBlobBackendUnavailable) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("object storage backend: %w", err)
+	}
+	ops.backend = backend
+	gc, err := service.NewBlobGC(backend, st.Objects())
+	if err != nil {
+		ops.Close()
+		return nil, err
+	}
+	ops.gc = gc
+	return ops, nil
+}
+
+// newBlobBackend 按 platform.blobs.* 构造一个后端，driver 由调用方指定。
+//
+// 它是从 openBlobOps 里抽出来的：配置里只有一个 platform.blobs.driver，而 `blobs migrate`
+// 必须同时握着头尾两个后端（方案 15 §10.1）。两边共用这一个构造函数，是为了让「运维命令看到
+// 的后端」和「server 装配出来的后端」除 driver 一个字段以外完全一致——迁移工具算错目标端的
+// endpoint、prefix 或 bucket，后果比迁不动严重得多。
+//
+// 就绪失败包成 errBlobBackendUnavailable 上抛：运维命令没有降级可言，但文案要说清「只有
+// 这条命令动不了，server 那边基础业务照跑」。构造期错误（形状非法）不包装，原样透出。
+func newBlobBackend(ctx context.Context, blobs config.PlatformBlobsConfig, driver string,
+	maxBytes int64, st store.Store) (objectstore.Store, error) {
 	backend, err := objectstore.New(objectstore.Config{
-		Driver:       ops.driver,
+		Driver:       driver,
 		Prefix:       blobs.Prefix,
 		Dir:          blobs.Dir,
 		TmpDir:       blobs.TmpDir,
@@ -140,25 +177,16 @@ func openBlobOps(ctx context.Context, cmd *cobra.Command, deps Dependencies) (*b
 		return st.ObjectContent(blobs.Prefix, maxBytes)
 	})
 	if err != nil {
-		ops.Close()
-		return nil, fmt.Errorf("object storage backend: %w", err)
+		return nil, err
 	}
 	if m, ok := backend.(objectstore.Maintainer); ok {
 		if err := m.Ensure(ctx); err != nil {
 			_ = backend.Close()
-			_ = st.Close()
-			return nil, fmt.Errorf("%w: %v (the server keeps serving chat/approval/audit without it; this command cannot)",
-				errBlobBackendUnavailable, err)
+			return nil, fmt.Errorf("%w: driver=%s: %v (the server keeps serving chat/approval/audit without it; this command cannot)",
+				errBlobBackendUnavailable, driver, err)
 		}
 	}
-	ops.backend = backend
-	gc, err := service.NewBlobGC(backend, st.Objects())
-	if err != nil {
-		ops.Close()
-		return nil, err
-	}
-	ops.gc = gc
-	return ops, nil
+	return backend, nil
 }
 
 // newBlobsStatCmd 看对象：不带参数报总体存量，带 key 报单行元数据并与后端实存比对。
@@ -310,10 +338,13 @@ func newBlobsGetCmd(deps Dependencies) *cobra.Command {
 //
 // 登记这一步不能省：桶里有内容而表里没有行，下一轮差集就会把它当孤儿删掉。
 //
-// 登记成 state=orphaned + deleted_at=now（而不是 ready）是刻意选的终态：这一行没有任何
-// 业务行引用它，Ready 会让它变成 GC 永远看不见的不死行。orphaned 正对应「先上传、等
-// Acquire 来认领」这条既有路径——认领就复活成 ready，宽限期内没人认领就按正常生命周期
-// 被收走，运维回填失败不会在库里留下永久的垃圾。
+// 终态必须是 orphaned + deleted_at=now：这一行没有任何业务行引用它，ready 会让它变成 GC
+// 永远看不见的不死行。走法也只能是「Acquire 挂上引用、同事务里 Release 放掉」这条真实
+// 引用通道：直接 Register 一个 orphaned 行在 db 后端根本不成立——内容 Put 会抢先把行建成
+// ready，而 Register 的冲突分支刻意不动 state（幂等重放不许重置别人挂着的引用），结果就是
+// 一行 ref_count=0、却永远不进 GC 视野的死人行，命令还告诉运维「宽限期后会被回收」。
+// 走 Acquire/Release 之后两个后端行为一致，顺带白拿一条守卫：state=deleting 的行会被
+// Acquire 拒掉，回填不会去踩正在回收的对象。
 func newBlobsPutCmd(deps Dependencies) *cobra.Command {
 	var category string
 	var scope []string
@@ -353,23 +384,21 @@ func newBlobsPutCmd(deps Dependencies) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("put object: %w", err)
 			}
-			now := time.Now()
 			grace := ops.cfg.Platform.Blobs.GCGracePeriod
-			if err := ops.st.Objects().Register(cmd.Context(), &store.ObjectMeta{
-				BlobKey:   ref.Key,
-				SHA256:    ref.SHA256,
-				Size:      ref.Size,
-				MediaType: ref.MediaType,
-				Category:  category,
-				Driver:    ops.driver,
-				State:     store.ObjectStateOrphaned,
-				DeletedAt: &now,
-				CreatedBy: objectstore.SystemActor,
+			if err := ops.st.WithTx(cmd.Context(), func(tx *store.Tx) error {
+				if err := tx.Acquire(cmd.Context(), ref, ops.driver, objectstore.SystemActor); err != nil {
+					return err
+				}
+				return tx.Release(cmd.Context(), ref.Key)
 			}); err != nil {
 				return fmt.Errorf("register object %s: %w", ref.Key, err)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "put ok: key=%s sha256=%s size=%d driver=%s state=orphaned ref_count=0\n",
-				ref.Key, ref.SHA256, ref.Size, ops.driver)
+			row, err := ops.st.Objects().Get(cmd.Context(), ref.Key)
+			if err != nil {
+				return fmt.Errorf("read back object %s: %w", ref.Key, err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "put ok: key=%s sha256=%s size=%d driver=%s state=%s ref_count=%d\n",
+				ref.Key, ref.SHA256, ref.Size, ops.driver, row.State, row.RefCount)
 			fmt.Fprintf(cmd.OutOrStdout(), "  it stays collectable: acquire it within %s or k8s-ai blobs gc will reclaim it\n", grace)
 			return nil
 		},
@@ -445,4 +474,284 @@ func newBlobsGCCmd(deps Dependencies) *cobra.Command {
 	cmd.Flags().DurationVar(&olderThan, "older-than", 0, "override platform.blobs.gc_grace_period (0 keeps the configured value)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "report what would be collected, change nothing")
 	return cmd
+}
+
+// newBlobsVerifyCmd 做一致性对账（方案 15 §12.2）：默认逐个 Stat 比 size，--deep 下载重算
+// sha256，--strict 把「任一不一致」变成非零退出，供恢复流程当准出门禁。
+func newBlobsVerifyCmd(deps Dependencies) *cobra.Command {
+	var category string
+	var deep bool
+	var strict bool
+	cmd := &cobra.Command{
+		Use:   "verify",
+		Short: "Reconcile the object registry against the content backend",
+		Long: "Checks the invariant behind every download: each ready objects row has content in the\n" +
+			"backend with the same key, size and sha256.\n" +
+			"\n" +
+			"Default mode only stats each object, so a full pass is cheap enough to run any time.\n" +
+			"--deep downloads and recomputes sha256 (silent corruption has the right size); ETags are\n" +
+			"never a substitute because S3 stores an MD5, not our sha256.\n" +
+			"\n" +
+			"A backend that cannot be reached aborts the run instead of marking objects missing -\n" +
+			"one outage must not sentence healthy data to state=missing. Rows whose content lives on\n" +
+			"another driver are reported as pending migration, and rows mid garbage collection are\n" +
+			"skipped; neither counts as inconsistent. Rows are only rewritten after the whole\n" +
+			"forward pass succeeds.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ops, err := openBlobOps(cmd.Context(), cmd, deps)
+			if err != nil {
+				return err
+			}
+			defer ops.Close()
+			w := cmd.OutOrStdout()
+			if ops.disabled {
+				return verifyWithoutBackend(cmd, ops)
+			}
+
+			verifier, err := service.NewBlobVerifier(ops.backend, ops.st.Objects())
+			if err != nil {
+				return err
+			}
+			res, err := verifier.Run(cmd.Context(), service.VerifyOptions{
+				Category: category,
+				Prefix:   ops.prefix,
+				Deep:     deep,
+			})
+			if err != nil {
+				// 中止与不一致是两件事：这句文案必须说清「这轮没结论」，否则运维会以为
+				// 桶里真的少了东西。
+				return fmt.Errorf("verify aborted (no verdict was reached): %w", err)
+			}
+			mode := "stat"
+			if deep {
+				mode = "deep"
+			}
+			scope := "all"
+			if category != "" {
+				scope = category
+			}
+			fmt.Fprintf(w, "blobs verify driver=%s mode=%s category=%s prefix=%s\n",
+				res.Driver, mode, scope, ops.prefix)
+			fmt.Fprintf(w, "  rows:      checked=%d ok=%d size-mismatch=%d missing=%d checksum-mismatch=%d address-mismatch=%d deep-verified=%d\n",
+				res.Rows, res.OK, res.SizeMismatch, res.Missing, res.ChecksumMismatch, res.AddressMismatch, res.DeepChecked)
+			printVerifySamples(w, "  sample", res)
+			if res.RowsMarkedMissing > 0 {
+				fmt.Fprintf(w, "  marked:    %d row(s) -> state=missing (restore the content, then re-put to heal)\n", res.RowsMarkedMissing)
+			}
+			if res.Deleting > 0 {
+				fmt.Fprintf(w, "  garbage collection in flight: %d row(s) skipped (state=deleting)\n", res.Deleting)
+			}
+			if res.ForeignDriver > 0 {
+				fmt.Fprintf(w, "  pending:   %d row(s) still on another driver - not a loss, run: k8s-ai blobs migrate --to %s\n",
+					res.ForeignDriver, res.Driver)
+			}
+			fmt.Fprintf(w, "  bucket:    listed=%d orphans=%d bytes=%s foreign=%d (reverse scan ignores driver)\n",
+				res.BucketKeys, res.Orphans, store.FormatBytes(res.OrphanBytes), res.Foreign)
+			if bad := res.Inconsistent(); bad > 0 {
+				fmt.Fprintf(w, "INCONSISTENT: %d difference(s); registry rows are not trustworthy without the content\n", bad)
+				if strict {
+					return fmt.Errorf("verify found %d inconsistency(-ies) (--strict)", bad)
+				}
+				return nil
+			}
+			fmt.Fprintln(w, "consistent: every checked row has matching content")
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&category, "category", "", "only check one category (default: all)")
+	cmd.Flags().BoolVar(&deep, "deep", false, "download each object and recompute sha256 (full read traffic)")
+	cmd.Flags().BoolVar(&strict, "strict", false, "exit non-zero on any inconsistency (restore gate)")
+	return cmd
+}
+
+// verifyWithoutBackend 回答 driver=off 下的对账：没有内容后端可对，但登记表还是活的，
+// 一句「没开」加一句「表里还有 N 行在等它们的后端」，比假装扫干净了诚实得多。
+func verifyWithoutBackend(cmd *cobra.Command, ops *blobOps) error {
+	w := cmd.OutOrStdout()
+	fmt.Fprintln(w, "platform.blobs.driver=off: no content backend to verify against")
+	stats, err := ops.st.Objects().ObjectStats(cmd.Context())
+	if err != nil {
+		return err
+	}
+	var rows int64
+	var byDriver []string
+	for _, s := range stats {
+		rows += s.Objects
+		byDriver = append(byDriver, fmt.Sprintf("%s=%d", s.Driver, s.Objects))
+	}
+	if rows > 0 {
+		fmt.Fprintf(w, "  registry still holds %d object(s) [%s]: point platform.blobs.driver back at the backend that has them\n",
+			rows, strings.Join(byDriver, " "))
+	}
+	return nil
+}
+
+// printVerifySamples 打问题样本：规模看计数，下一步动作看 key。
+func printVerifySamples(w io.Writer, label string, res service.VerifyResult) {
+	for _, group := range []struct {
+		name string
+		keys []string
+	}{
+		{"size", res.SizeMismatchKeys},
+		{"missing", res.MissingKeys},
+		{"checksum", res.ChecksumMismatchKeys},
+		{"address", res.AddressMismatchKeys},
+	} {
+		if len(group.keys) > 0 {
+			fmt.Fprintf(w, "%s %-8s %s\n", label, group.name+":", strings.Join(group.keys, ", "))
+		}
+	}
+}
+
+// newBlobsMigrateCmd 把对象从当前配置的后端搬到另一个后端（方案 15 §10.1）。
+//
+// 它是「切换 platform.blobs.driver」唯一的前置动作：server 只按配置装配一个后端，改完配置
+// 之后 objects.driver 还写着旧后端的行是读不到的（下载端点回 409，而不是假装对象不存在）。
+// 所以这条命令必须在**改配置之前**跑，文案与退出码都按这个前提写。
+func newBlobsMigrateCmd(deps Dependencies) *cobra.Command {
+	var to string
+	var category string
+	var dryRun bool
+	var pruneSource bool
+	cmd := &cobra.Command{
+		Use:   "migrate",
+		Short: "Move objects onto another backend before switching platform.blobs.driver",
+		Long: "Move objects from the backend named by platform.blobs.driver to the one you are about to\n" +
+			"switch to, then flip platform.blobs.driver once nothing is left behind.\n" +
+			"\n" +
+			"Run this BEFORE changing the configuration. The server wires exactly one content backend,\n" +
+			"so a row whose driver still names the old one is not readable after the config moves - the\n" +
+			"download endpoint answers 409 (pending migration) rather than pretending the object is gone.\n" +
+			"\n" +
+			"Per object the order is fixed: write the content to the target, verify its sha256, flip\n" +
+			"objects.driver in its own transaction, and only then delete the source copy (--prune-source,\n" +
+			"off by default). An interrupted run therefore leaves both copies whole and converges when\n" +
+			"re-run; --dry-run prints the same numbers and changes nothing.\n" +
+			"\n" +
+			"Objects whose row names a third driver are left alone, and the target is never overwritten:\n" +
+			"a size difference under an existing key is reported as a failure, not patched over.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			ops, err := openBlobOps(ctx, cmd, deps)
+			if err != nil {
+				return err
+			}
+			defer ops.Close()
+			w := cmd.OutOrStdout()
+
+			target := strings.ToLower(strings.TrimSpace(to))
+			if !objectstore.ValidDriver(target) {
+				return fmt.Errorf("--to must be one of db|dir|s3, got %q (off is not a place to store content)", to)
+			}
+			if ops.disabled {
+				return fmt.Errorf("%w: platform.blobs.driver=off, so there is no source backend to migrate from "+
+					"(the source is always the configured driver; 方案 15 §10.1)", errBlobBackendUnavailable)
+			}
+			if target == ops.driver {
+				fmt.Fprintf(w, "platform.blobs.driver is already %q: nothing to migrate\n", target)
+				fmt.Fprintf(w, "  if objects still report another driver, run: k8s-ai blobs verify\n")
+				return nil
+			}
+
+			// 同一份配置换个 driver 再构造一次：除 driver 之外 endpoint/bucket/prefix/dir
+			// 完全同源，迁移工具算错目标端比迁不动更糟。
+			dst, err := newBlobBackend(ctx, ops.cfg.Platform.Blobs, target, ops.maxBytes, ops.st)
+			if err != nil {
+				return fmt.Errorf("target backend: %w", err)
+			}
+			defer func() { _ = dst.Close() }()
+
+			migrator, err := service.NewBlobMigrator(ops.backend, dst, ops.st)
+			if err != nil {
+				return err
+			}
+			res, err := migrator.Run(ctx, service.BlobMigrateOptions{
+				Category:    category,
+				MaxBytes:    store.ObjectContentLimit(ops.maxBytes),
+				DryRun:      dryRun,
+				PruneSource: pruneSource,
+			})
+			if err != nil {
+				// 中止不等于失败：这句要说清「已翻的行是好的，环境修好重跑即可」。
+				return fmt.Errorf("migrate aborted after %d flip(s): %w", res.Flipped, err)
+			}
+			printMigrateResult(cmd, ops, res, target, category, dryRun, pruneSource)
+			if res.Failed > 0 {
+				return fmt.Errorf("migrate failed for %d object(s); their source copies were left untouched", res.Failed)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&to, "to", "", "target driver to migrate onto (db|dir|s3)")
+	cmd.Flags().StringVar(&category, "category", "", "only move one category (default: all)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "report what would move, change nothing")
+	cmd.Flags().BoolVar(&pruneSource, "prune-source", false, "delete the source copy of each flipped object")
+	_ = cmd.MarkFlagRequired("to")
+	return cmd
+}
+
+// printMigrateResult 按「内容 / 元数据 / 源端」三段打账目，最后回答运维真正想知道的那句：
+// 现在能不能改配置。
+func printMigrateResult(cmd *cobra.Command, ops *blobOps, res service.BlobMigrateResult,
+	target, category string, dryRun, pruneSource bool) {
+	w := cmd.OutOrStdout()
+	mode := "copy"
+	if dryRun {
+		mode = "dry-run"
+	}
+	scope := "all"
+	if category != "" {
+		scope = category
+	}
+	fmt.Fprintf(w, "blobs migrate %s -> %s mode=%s category=%s prefix=%s\n",
+		res.DriverFrom, res.DriverTo, mode, scope, ops.prefix)
+	fmt.Fprintf(w, "  scanned:   rows=%d candidates=%d other-driver=%d deleting=%d\n",
+		res.Scanned, res.Candidates, res.SkippedOther, res.Deleting)
+	fmt.Fprintf(w, "  content:   copied=%d already-present=%d unreadable=%d\n",
+		res.Copied, res.Present, res.Unreadable)
+	fmt.Fprintf(w, "  metadata:  flipped=%d conflict=%d bytes=%s\n",
+		res.Flipped, res.Conflict, store.FormatBytes(res.Bytes))
+	if pruneSource {
+		fmt.Fprintf(w, "  source:    pruned=%d prune-failed=%d\n", res.Pruned, res.PruneFailed)
+	} else if !dryRun {
+		fmt.Fprintf(w, "  source:    kept (reclaim with --prune-source once the switch is verified)\n")
+	}
+	for _, msg := range res.Failures {
+		fmt.Fprintf(w, "  failed:    %s\n", msg)
+	}
+
+	remaining := migrateRemaining(cmd, ops, res.DriverFrom)
+	if dryRun {
+		fmt.Fprintf(w, "dry-run: no object and no row was touched\n")
+	}
+	if remaining > 0 {
+		fmt.Fprintf(w, "  remaining: %d object(s) still on %q - finish the move before setting platform.blobs.driver=%s\n",
+			remaining, res.DriverFrom, target)
+	} else {
+		fmt.Fprintf(w, "  remaining: none on %q - platform.blobs.driver=%s is now safe, run k8s-ai blobs verify to confirm\n",
+			res.DriverFrom, target)
+	}
+	if res.Unreadable > 0 {
+		fmt.Fprintf(w, "  note:      %d row(s) had no content to move on %q: those are broken rows, not misplaced ones (k8s-ai blobs verify)\n",
+			res.Unreadable, res.DriverFrom)
+	}
+}
+
+// migrateRemaining 报「源后端上还剩几行没接走」。它读的是 objects 表的分组统计而不是本次
+// 计数的余数：迁移被中断、并发写入、别的 driver 都会让「本轮计数」不等于「库里存量」，而运维
+// 换配置前要看的就是库里存量。
+func migrateRemaining(cmd *cobra.Command, ops *blobOps, driver string) int64 {
+	stats, err := ops.st.Objects().ObjectStats(cmd.Context())
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: cannot recount objects on %q: %v\n", driver, err)
+		return 0
+	}
+	for _, s := range stats {
+		if s.Driver == driver {
+			return s.Objects
+		}
+	}
+	return 0
 }

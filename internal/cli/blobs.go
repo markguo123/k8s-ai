@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/k8s-ai/k8s-ai/internal/config"
 	"github.com/k8s-ai/k8s-ai/internal/objectstore"
@@ -79,8 +80,29 @@ func newBlobGateway(ctx context.Context, cfg *config.Config, st store.Store, log
 	}
 
 	reportDriverMismatch(logger, ctx, st, gw.Driver())
+	reportShortGrace(logger, gw.Driver(), blobs.GCGracePeriod)
 	logger.Info("object storage ready", "driver", gw.Driver())
 	return gw, nil
+}
+
+// gcGraceBackupFloor 是「GC 宽限期短到值得警告」的门槛（方案 15 §12.3 推论）。
+//
+// 备份的正确顺序是先 MySQL 后桶，中间隔着一段窗口：窗口里新写入的对象进了库备份、还没进
+// 桶快照。宽限期若短于这个窗口，一个引用被误删的对象可能在下一次桶快照之前就被收走，恢复
+// 出来就是「库里有引用、桶里没内容」——§12.1 里唯一不可修复的那种损坏。默认 168h 远大于
+// 任何现实备份窗口，所以这条只针对被人调小的配置。
+const gcGraceBackupFloor = 24 * time.Hour
+
+// reportShortGrace 提醒「宽限期调得比一天还短」。
+//
+// db 后端不提醒：正文与元数据同库同备份，根本不存在「先库后桶」这个窗口。
+func reportShortGrace(logger *slog.Logger, driver string, grace time.Duration) {
+	if driver == objectstore.DriverDB || driver == objectstore.DriverOff || grace >= gcGraceBackupFloor {
+		return
+	}
+	logger.Warn("object GC grace period is shorter than any realistic backup window",
+		"gc_grace_period", grace.String(), "recommended_min", gcGraceBackupFloor.String(),
+		"hint", "back up MySQL first, then the bucket; gc_grace_period must exceed that window")
 }
 
 // reportDriverMismatch 启动期点名「内容还在别的后端」的对象（方案 15 §10.3）。

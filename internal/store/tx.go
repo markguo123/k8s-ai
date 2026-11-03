@@ -229,6 +229,52 @@ func (t *Tx) Release(ctx context.Context, key string) error {
 		objectstore.ErrState, key)
 }
 
+// AdoptObject 翻转一个对象的后端归属（方案 15 §10.1）。它和 Acquire/Release 一样只能
+// 从 WithTx 拿到，因为「内容已在目标端」到「元数据改口」之间必须有个可回滚的落点。
+//
+// 三条规则：
+//  1. from/to 都必须是能存放内容的后端（db|dir|s3）且互不相同；off 不是地点，两端都不能是它。
+//  2. 目标是 db 时正文必须随语句一起交进来（payload 非 nil），且只允许这一条语句同时写
+//     driver 与 payload：db 后端自己的 Put 对 row.driver != "db" 一律返回 ErrState，
+//     那道守卫是「顺手替别的后端搬内容」的闸门，迁移必须走这里而不是绕开它。
+//  3. CAS 未命中（行不在 from 上、或已被 GC 认领）返回 false 而非报错：迁移是可重跑的，
+//     重跑时上一轮已翻转的 key 必须安静地当成「已完成」。
+//
+// dropSource 只配合规则 2 的反面使用：源后端是 db 时，正文与 driver 同表，要求清源就得在
+// 这条语句里把 payload 置 NULL（源后端是 dir/s3 时清源归调用方，动的是后端里的文件而非这一行）。
+//
+// 调用方责任：先在目标端把内容写妥并核对 sha256，再调本函数；返回 true 之后才可以按
+// --prune-source 删源对象。反过来做就是在制造悬空引用。
+func (t *Tx) AdoptObject(ctx context.Context, key, from, to string, payload []byte, dropSource bool) (bool, error) {
+	if err := objectstore.ValidateKey(key); err != nil {
+		return false, err
+	}
+	if !objectstore.ValidDriver(from) || !objectstore.ValidDriver(to) {
+		return false, fmt.Errorf("%w: adopt object %s %s -> %s: both ends must be db, dir or s3",
+			objectstore.ErrKeyInvalid, key, from, to)
+	}
+	if from == to {
+		return false, fmt.Errorf("%w: adopt object %s: source and target driver are both %q",
+			objectstore.ErrState, key, to)
+	}
+	// payload 用 nil 与非 nil 区分「没带正文」和「带了一份可能为空的正文」：0 字节对象在
+	// db 后端里是 payload IS NOT NULL，用长度判会把它误拒。
+	if to == objectstore.DriverDB && payload == nil {
+		return false, fmt.Errorf("%w: adopting %s into the db backend must carry the payload in the same statement",
+			objectstore.ErrState, key)
+	}
+	if to != objectstore.DriverDB && payload != nil {
+		return false, fmt.Errorf("%w: object %s content cannot travel in a statement for driver %q, it has no payload column",
+			objectstore.ErrState, key, to)
+	}
+	// payload 与 dropSource 天生互斥：前者只可能配 to=db，后者只可能配 from=db，而 from != to。
+	if dropSource && from != objectstore.DriverDB {
+		return false, fmt.Errorf("%w: object %s has no payload row to drop, its content lives on driver %q",
+			objectstore.ErrState, key, from)
+	}
+	return adoptObject(ctx, t.tx, key, from, to, payload, dropSource)
+}
+
 // getAttachment 按唯一索引三列取回附件行（幂等重放分支用）。
 //
 // 附件的列表/下载读面属 P8.7（附件通道延后 v4.2），这里只保留幂等所需的最小读。

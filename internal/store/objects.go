@@ -405,5 +405,56 @@ func markOrphan(ctx context.Context, ex execer, key string) error {
 // errRefUnderflow 是引用计数配对被破坏的错误（方案 15 §6.5：不静默钳零）。
 var errRefUnderflow = errors.New("store: object reference underflow")
 
+// adoptObject 翻转对象的后端归属（方案 15 §10.1 第 3 步）。它是这张表唯一一条会改
+// driver 的 UPDATE，因此 CAS 条件必须写全：key + 原 driver + 不在 deleting。
+//
+// 「内容已经落到目标端」这件事不在本函数的职责里，也正因为不在，它才必须被调用方放在
+// 前面做完——本函数一提交，objects.driver 就是权威读数，读路径立刻按新后端取内容。
+// 先翻元数据再搬内容，中间那段窗口就是 §12.1 说的悬空引用。
+//
+// driver=db 的目标端特殊：正文与元数据同表，所以正文必须和 driver 翻转走在**同一条
+// 语句**里。分成两条语句的话，「driver=db 但 payload 为 NULL」就是一个提交点之间存在
+// 的合法状态，而它在语义上等于「内容丢了」——这正是本函数要避免的那个坏状态。
+//
+// state 只在 missing 时拉回 ready（verify 判过的损坏行，现在内容确实到位了）；
+// orphaned/deleting 是 GC 的地盘，不在此处改写。
+//
+// dropSource 只服务一种组合（from=db）：源后端的正文就在这一行里，运维要求清源时必须在
+// **同一条语句**里把它置 NULL。让调用方翻转之后再喊 db 后端 Delete 一遍，会把 ready 行打成
+// state=missing——那是「行在、内容丢了」的专用标记，而这份内容只是搬到了目标端，牌子挂错
+// 之下一句 `blobs stat` 就自相矛盾（state=missing 却 backend=present）。
+func adoptObject(ctx context.Context, ex execer, key, from, to string, payload []byte, dropSource bool) (bool, error) {
+	now := time.Now()
+	var (
+		res sql.Result
+		err error
+	)
+	if to == objectstore.DriverDB {
+		res, err = ex.ExecContext(ctx,
+			`UPDATE objects SET driver = ?, payload = ?, updated_at = ?,
+			            state = CASE WHEN state = ? THEN ? ELSE state END
+			 WHERE blob_key = ? AND driver = ? AND state <> ?`,
+			to, payload, now, ObjectStateMissing, ObjectStateReady, key, from, ObjectStateDeleting)
+	} else if dropSource {
+		res, err = ex.ExecContext(ctx,
+			`UPDATE objects SET driver = ?, payload = NULL, updated_at = ?
+			 WHERE blob_key = ? AND driver = ? AND state <> ?`,
+			to, now, key, from, ObjectStateDeleting)
+	} else {
+		res, err = ex.ExecContext(ctx,
+			`UPDATE objects SET driver = ?, updated_at = ?
+			 WHERE blob_key = ? AND driver = ? AND state <> ?`,
+			to, now, key, from, ObjectStateDeleting)
+	}
+	if err != nil {
+		return false, fmt.Errorf("adopt object %s (%s -> %s): %w", key, from, to, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("adopt object %s (%s -> %s): %w", key, from, to, err)
+	}
+	return n > 0, nil
+}
+
 // 编译期确认元数据 Store 已装配进 dbStore。
 var _ ObjectStore = (*objectStore)(nil)

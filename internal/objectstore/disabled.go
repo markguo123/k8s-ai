@@ -14,6 +14,16 @@ const (
 	DriverOff = "off"
 )
 
+// ValidDriver 报告取值是否是一个**能存放内容**的后端。off 不在其中：它不是一个地点，
+// 而是「这条通道没开」，迁移的源端与目标端都不能是它（§10.1）。
+func ValidDriver(driver string) bool {
+	switch driver {
+	case DriverDB, DriverDir, DriverS3:
+		return true
+	}
+	return false
+}
+
 // NewDisabled 返回 driver=off 后端：未配置对象存储时装配它。
 //
 // 它实现同一个接口但一律返回 ErrDisabled（含读与删：后端不存在时，声称「对象已删除」
