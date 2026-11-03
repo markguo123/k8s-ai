@@ -30,6 +30,8 @@ const installEnvExamplePath = "deploy/install.env.example"
 var manualPlaceholderTemplates = map[string][]string{
 	"base/secret.example.yaml":          {"REPLACE_ME"},
 	"example/secret-mysql.example.yaml": {"REPLACE_ME"},
+	// 对象存储 patch 示例：端点与桶名由现场填，脚本不下发（见 deploy/example/README.md）。
+	"example/object-storage-s3.yaml": {"REPLACE_WITH_S3_HOST_PORT", "REPLACE_WITH_BUCKET_NAME"},
 	// 扫描 CronJob 的模型接线属 P6.6，独立于 Web 服务的一键安装。
 	"scan/configmap.yaml": {"REPLACE_WITH_LLM_HOST", "REPLACE_WITH_MODEL_NAME"},
 }
@@ -112,11 +114,25 @@ func TestInstallScriptCoversRequiredBehavior(t *testing.T) {
 		{"渲染产物占位残留断言", "assert_rendered_clean"},
 		{"失败三段式提示", "下一步"},
 		{"写权限 RBAC 需显式开启", "rbac-write.example.yaml"},
+		{"s3 上传中转目录下发", "K8S_AI_PLATFORM_BLOBS_TMP_DIR"},
+		{"启动期不建桶（生产桶预建）", "BLOBS_CREATE_BUCKET:=false"},
+		{"dir 后端必须落 PVC", "BLOBS_BACKEND=dir 必须持久化"},
+		{"换对象后端前的迁移闸门", "blobs_gate_backend_switch"},
+		{"迁移闸门的显式绕行开关", "--allow-driver-mismatch)"},
+		// 闸门读「集群现在跑在哪个后端」的两条命门：env 要按变量名取（按容器名过滤永远取不到，
+		// 只会退化去读恒为 db 的 ConfigMap），且四个 driver 都得显式下发 driver（否则 s3 切回 db 读不到旧后端）。
+		{"闸门按 env 变量名读 driver", `containers[*].env[?(@.name=="K8S_AI_PLATFORM_BLOBS_DRIVER")]`},
+		{"db 后端也显式下发 driver", `db) out="${indent}- name: K8S_AI_PLATFORM_BLOBS_DRIVER`},
 	}
 	for _, item := range required {
 		if !strings.Contains(body, item.needle) {
 			t.Errorf("%s 缺少「%s」应有的实现标记 %q", installScriptPath, item.what, item.needle)
 		}
+	}
+	// db 分支早退会让 BLOBS_PREFIX 与 ADMIN_USERNAME 在默认后端下被静默丢弃（它们在 case 之后统一追加）。
+	if strings.Contains(body, "db) return 0 ;;") {
+		t.Errorf("%s 的 extra_env_block 对 db 早退：默认后端下 BLOBS_PREFIX / ADMIN_USERNAME 会被静默忽略，"+
+			"且换后端闸门读不到 Deployment env 里的旧 driver", installScriptPath)
 	}
 }
 
@@ -233,7 +249,8 @@ func TestInstallScriptCarriesNoEnvironmentSpecificValues(t *testing.T) {
 	// 环境专有值（客户内网 IP、内部主机名、公司域名）一律不进仓库，见 AGENTS.md 与手册 §4.10。
 	needles := []string{"10.62.", "172.16.", "172.17.", "192.168.", "gientech", "Gientech", "gitlab", "GitLab"}
 	privateIP := regexp.MustCompile(`(^|[^0-9.])(10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3}|192\.168\.[0-9]{1,3}\.[0-9]{1,3})([^0-9.]|$)`)
-	for _, parts := range [][]string{{"deploy", "install.sh"}, {"deploy", "install.env.example"}} {
+	scan := func(parts ...string) {
+		t.Helper()
 		body := readRepoFile(t, parts...)
 		for _, needle := range needles {
 			if strings.Contains(strings.ToLower(body), strings.ToLower(needle)) {
@@ -243,6 +260,21 @@ func TestInstallScriptCarriesNoEnvironmentSpecificValues(t *testing.T) {
 		if loc := privateIP.FindStringIndex(body); loc != nil {
 			t.Errorf("%v 出现内网 IP 字面量：%s", parts, snippet(body, loc[0], loc[1]))
 		}
+	}
+	for _, parts := range [][]string{{"deploy", "install.sh"}, {"deploy", "install.env.example"}} {
+		scan(parts...)
+	}
+	// 示例与补丁同样会被人整份复制到现场，口径必须和脚本一致：占位可以，真实地址不行。
+	examples := filepath.Join("..", "..", "deploy", "example")
+	entries, err := os.ReadDir(examples)
+	if err != nil {
+		t.Fatalf("读取 %s 失败：%v", examples, err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		scan("deploy", "example", entry.Name())
 	}
 }
 

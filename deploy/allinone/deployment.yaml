@@ -77,8 +77,14 @@ spec:
               mountPath: /etc/k8s-ai
               readOnly: true
             # 可写区：/data 会话与审计落盘、/reports 报告导出。业务数据的权威存储是
-            # MySQL，这几个卷都是临时卷；要持久保留就 apply
-            # deploy/example/deployment-reports-pvc.yaml 换成 PVC。
+            # MySQL，二进制对象落在对象存储后端，这几个卷默认都是临时卷。要不要换 PVC 看三态：
+            #   platform.store.driver=sqlite    → PVC 必需（平台库文件本身就在 /data）
+            #   platform.blobs.driver=dir       → PVC 必需（对象只有 /data/blobs 这一份副本，
+            #                                     Pod 重建即丢内容，登记表只剩 missing 行）
+            #   platform.blobs.driver=s3 / db   → driver=s3 仅报告可选：对象在桶里、db 在库里，
+            #                                     只有 report.directory 的兼容副本值得留卷
+            # 需要跨重启保留就 apply deploy/example/deployment-reports-pvc.yaml 换成 PVC。
+            # /tmp 还兼作 driver=s3 的上传中转目录（platform.blobs.tmp_dir），必须保持可写。
             - name: data
               mountPath: /data
             - name: reports

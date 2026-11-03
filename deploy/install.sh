@@ -76,10 +76,12 @@ key_from_cli() { [[ "$CLI_SET_KEYS" == *" $1 "* ]]; }
 : "${BLOBS_REGION:=us-east-1}"
 : "${BLOBS_PATH_STYLE:=true}"
 : "${BLOBS_USE_TLS:=false}"
-: "${BLOBS_CREATE_BUCKET:=true}"
+: "${BLOBS_CREATE_BUCKET:=false}"
+: "${BLOBS_TMP_DIR:=}"
 : "${BLOBS_PREFIX:=}"
 : "${ENABLE_MINIO:=false}"
 : "${MINIO_STORAGE_SIZE:=20Gi}"
+: "${ALLOW_DRIVER_MISMATCH:=false}"
 : "${ENC_KEY:=}"
 : "${ENC_KEY_BACKUP_DIR:=${HOME}/.k8s-ai/keys}"
 : "${GOPROXY:=}"
@@ -94,7 +96,8 @@ SQLITE_PATH STORAGE_CLASS REPORT_STORAGE_SIZE PERSIST_REPORTS EXPOSE NODE_PORT I
 INGRESS_CLASS ENABLE_WRITE ADMIN_USERNAME ADMIN_PASSWORD LLM_API_KEY IMAGE_PULL_SECRET
 IMAGE_PULL_POLICY BLOBS_BACKEND BLOBS_ENDPOINT BLOBS_BUCKET BLOBS_ACCESS_KEY BLOBS_SECRET_KEY
 BLOBS_REGION BLOBS_PATH_STYLE ENABLE_MINIO MINIO_STORAGE_SIZE ENC_KEY ENC_KEY_BACKUP_DIR
-BLOBS_USE_TLS BLOBS_CREATE_BUCKET BLOBS_PREFIX GOPROXY KUBECTL_VERSION KUBECTL_DOWNLOAD_BASE
+BLOBS_USE_TLS BLOBS_CREATE_BUCKET BLOBS_PREFIX BLOBS_TMP_DIR ALLOW_DRIVER_MISMATCH
+GOPROXY KUBECTL_VERSION KUBECTL_DOWNLOAD_BASE
 WAIT_TIMEOUT"
 
 # 换行展平后的白名单副本：case 匹配要求键两侧是空格，直接用多行原文会漏判行尾键。
@@ -277,12 +280,17 @@ k8s-ai 四期一键安装脚本（P6.4）：构建镜像 + 发布服务，一条
   BLOBS_ACCESS_KEY      s3 必填，只落 Secret/k8s-ai-blobs，不进清单明文
   BLOBS_SECRET_KEY      s3 必填，同上；留空会被 validate 拒绝
   BLOBS_USE_TLS         默认 false（集群内自建 MinIO 常见 http）
-  BLOBS_CREATE_BUCKET   默认 true；无建桶权限的现场置 false 并预建桶
+  BLOBS_CREATE_BUCKET   默认 false：生产桶由平台组预建，运行账号不给建桶权限；确认有建桶
+                        权限的测试环境才置 true。桶不存在时对象类 API 回 503，基础业务不受影响
+  BLOBS_TMP_DIR         s3 上传中转目录，留空用配置默认 /tmp/k8s-ai-blobs；给了值必须是绝对路径
   BLOBS_PREFIX          对象键首段，留空用配置默认 k8sai
   BLOBS_REGION          默认 us-east-1；MinIO 等自建填 us-east-1 即可
   BLOBS_PATH_STYLE      默认 true（MinIO/自建需要路径式寻址）
-  ENABLE_MINIO          默认 false；true 需要 P8.8 的自带 MinIO 清单，当前版本明确拒绝
+  ENABLE_MINIO          默认 false；自带 MinIO 清单未交付（MinIO AGPLv3 法务未确认，方案 15 §23.3），
+                        传 true 一律拒绝，请接现场已有的 S3 兼容桶
   MINIO_STORAGE_SIZE    自带 MinIO 容量，默认 20Gi
+  ALLOW_DRIVER_MISMATCH 默认 false；置 true 才允许「换了对象后端但没先 blobs migrate」时继续
+                        apply（历史对象会读不到，只在确认历史数据可弃时使用）
   ENC_KEY               显式指定 K8S_AI_ENC_KEY（64 位 hex）；缺省复用集群已有值或新生成
   ENC_KEY_BACKUP_DIR    新生成密钥的本地备份目录，默认 ~/.k8s-ai/keys（权限 600）
   GOPROXY               构建用 Go 代理；留空则读 ~/.k8s-ai/goproxy.txt 或用内置默认
@@ -360,6 +368,7 @@ parse_args() {
       --no-build) BUILD=false ;;
       --no-push) PUSH=false ;;
       --rotate) DO_ROTATE=1 ;;
+      --allow-driver-mismatch) ALLOW_DRIVER_MISMATCH=true ;;
       --env-file)
         [[ $# -ge 2 ]] || die "--env-file 缺少取值" "例：--env-file install.env"
         ENV_FILE="$2"; shift ;;
@@ -410,6 +419,7 @@ validate_config() {
   require_bool BUILD; require_bool PUSH; require_bool PERSIST_REPORTS
   require_bool ENABLE_WRITE; require_bool BLOBS_PATH_STYLE; require_bool ENABLE_MINIO
   require_bool BLOBS_USE_TLS; require_bool BLOBS_CREATE_BUCKET
+  require_bool ALLOW_DRIVER_MISMATCH
 
   require_param IMAGE "镜像地址由现场仓库决定，脚本刻意不内置默认仓库。"
   require_param TAG "镜像标签缺失会导致拉到意外版本。"
@@ -455,6 +465,18 @@ validate_config() {
     off|db|dir|s3) ;;
     *) die "BLOBS_BACKEND 只能是 off/db/dir/s3，当前值：${BLOBS_BACKEND}" "默认 db 与旧版行为完全一致，不确定就别传" ;;
   esac
+  # dir 后端的对象只有 /data/blobs 一份副本：卷不落 PVC 时 Pod 重建即丢内容，登记表只剩
+  # missing 墓碑，所以它和 SQLite 一样必须持久化。
+  if [[ "$BLOBS_BACKEND" == "dir" ]] && ! is_true "$PERSIST_REPORTS"; then
+    die "BLOBS_BACKEND=dir 必须持久化：对象只有 /data/blobs 这一份副本，不挂 PVC 时 Pod 重建即丢内容" \
+      "去掉 --PERSIST_REPORTS=false，或改用 --BLOBS_BACKEND=db（对象进 MySQL）/ --BLOBS_BACKEND=s3（对象进桶）"
+  fi
+  if [[ -n "$BLOBS_TMP_DIR" ]]; then
+    case "$BLOBS_TMP_DIR" in
+      /*) ;;
+      *) die "BLOBS_TMP_DIR 必须是绝对路径，当前值：${BLOBS_TMP_DIR}" "镜像根文件系统只读，只能落在可写卷挂载点下，例 /tmp/k8s-ai-blobs；留空则用配置默认" ;;
+    esac
+  fi
   if [[ "$BLOBS_BACKEND" == "s3" ]]; then
     require_param BLOBS_ENDPOINT "driver=s3 必须有 endpoint，格式 host:port 不带 scheme，例 minio.storage:9000"
     require_param BLOBS_BUCKET "driver=s3 必须有 bucket 名"
@@ -467,11 +489,11 @@ validate_config() {
     esac
   fi
   if is_true "$ENABLE_MINIO"; then
-    # 手册 §4.10 的两道互斥校验：自带 MinIO 隐含 s3；清单本身随 P8.8 交付。
+    # 手册 §4.10 的两道互斥校验：自带 MinIO 隐含 s3；清单本身因法务口径未定而不交付。
     [[ "$BLOBS_BACKEND" == "s3" ]] ||
       die "ENABLE_MINIO=true 隐含要求 BLOBS_BACKEND=s3（自带 MinIO 就是给对象存储用的）" \
         "加 --BLOBS_BACKEND=s3 并补齐 BLOBS_* 四项，或保持 --ENABLE_MINIO=false"
-    die "ENABLE_MINIO=true 需要的自带 MinIO 清单（deploy/base/minio.yaml）随开发计划 P8.8 交付，当前版本尚未落地" \
+    die "ENABLE_MINIO=true 需要的自带 MinIO 清单（deploy/base/minio.yaml）不交付：MinIO Server 的 AGPLv3 法务口径未确认（方案 15 §23.3）" \
       "先接现场已有的 S3 兼容桶（--BLOBS_BACKEND=s3 指向它），或 --ENABLE_MINIO=false 用 db/dir 后端"
   fi
 
@@ -637,7 +659,9 @@ AWK_EOF
 extra_env_block() {
   local indent="            " out=""
   case "$BLOBS_BACKEND" in
-    db) return 0 ;;
+    # 四个 driver 一律显式下发 driver：换后端闸门要靠 Deployment env 认出「集群现在跑在哪个后端」，
+    # 只读 ConfigMap 会永远拿到模板默认值 db（见 blobs_current_backend）。
+    db) out="${indent}- name: K8S_AI_PLATFORM_BLOBS_DRIVER${NL}  value: \"db\"" ;;
     off)
       out+="${indent}- name: K8S_AI_PLATFORM_BLOBS_DRIVER${NL}  value: \"off\"" ;;
     dir)
@@ -651,6 +675,7 @@ extra_env_block() {
       out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_USE_TLS${NL}  value: \"${BLOBS_USE_TLS}\""
       out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_PATH_STYLE${NL}  value: \"${BLOBS_PATH_STYLE}\""
       out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_CREATE_BUCKET${NL}  value: \"${BLOBS_CREATE_BUCKET}\""
+      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_TMP_DIR${NL}  value: \"${BLOBS_TMP_DIR:-/tmp/k8s-ai-blobs}\""
       out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_ACCESS_KEY${NL}  valueFrom:${NL}    secretKeyRef: { name: ${SEC_BLOBS}, key: access_key }"
       out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_SECRET_KEY${NL}  valueFrom:${NL}    secretKeyRef: { name: ${SEC_BLOBS}, key: secret_key }" ;;
   esac
@@ -1187,6 +1212,8 @@ compute_derived() {
 
   DATA_ON_PVC=false
   if [[ "$STORE_DRIVER" == "sqlite" ]]; then DATA_ON_PVC=true; fi
+  # dir 后端的对象副本同样在 /data，和 SQLite 一样钉死在 PVC 上。
+  if [[ "$BLOBS_BACKEND" == "dir" ]]; then DATA_ON_PVC=true; fi
 
   EXPOSED_SVC="__none__"
   ENTRY_SERVICE="k8s-ai-server"
@@ -1286,6 +1313,65 @@ can_i() { # $1=verb $2=resource $3=extra(如 -n ns)
   if [[ -n "$3" ]]; then try_kctl auth can-i "$1" "$2" $3; else try_kctl auth can-i "$1" "$2"; fi
 }
 
+# blobs_current_backend 输出集群里当前生效的对象存储 driver。
+# 先看后端 Deployment 的 env（install.sh 对四个 driver 都下发 driver，手工 patch 也落在这里，
+# env 优先级最高；db 也不例外，否则从 s3 切回 db 时闸门读不到旧后端），
+# 再看 ConfigMap 里 platform.blobs.driver。取不到（首次安装/组件被删）就输出空串。
+# 注意不能直接取 config.yaml 里第一个 driver——那是 platform.store.driver。
+blobs_current_backend() {
+  local out="" cm=""
+  out="$("$KUBECTL_BIN" -n "$NAMESPACE" get deploy k8s-ai-server \
+    -o jsonpath='{.spec.template.spec.containers[*].env[?(@.name=="K8S_AI_PLATFORM_BLOBS_DRIVER")].value}' 2>/dev/null || true)"
+  out="${out//[[:space:]]/}"
+  if [[ -n "$out" ]]; then printf '%s' "$out"; return 0; fi
+  cm="$("$KUBECTL_BIN" -n "$NAMESPACE" get configmap k8s-ai-config \
+    -o jsonpath='{.data.config\.yaml}' 2>/dev/null || true)"
+  if [[ -n "$cm" ]]; then
+    printf '%s\n' "$cm" | awk '
+      BEGIN { ind = -1 }
+      /^[ \t]*$/ { next }
+      {
+        if (ind < 0) {
+          if ($0 ~ /^[ \t]*blobs:[ \t]*(#.*)?$/) ind = match($0, /[^ \t]/) - 1
+          next
+        }
+        if ($0 ~ /^[ \t]*#/) next
+        if (match($0, /[^ \t]/) - 1 <= ind) exit
+        if ($0 ~ /^[ \t]*driver:[ \t]/) {
+          v = $0
+          sub(/^[ \t]*driver:[ \t]*/, "", v)
+          sub(/[ \t]*#.*$/, "", v)
+          print v
+          exit
+        }
+      }' || true
+  fi
+  return 0
+}
+
+# blobs_gate_backend_switch 挡住「换了对象后端但历史对象没迁」：server 只按配置装配一个内容
+# 后端，driver 一改，objects 表里仍写着旧 driver 的对象就取不到内容（历史报告下载报待迁移）。
+# 正确顺序是先 blobs migrate --to <新> 再 blobs verify --strict，确认历史对象可弃才绕行。
+blobs_gate_backend_switch() {
+  local cur
+  cur="$(blobs_current_backend)"
+  cur="${cur//[[:space:]]/}"
+  if [[ -z "$cur" ]]; then
+    detail "集群里没有既有对象存储配置：按首次安装处理，不做迁移闸门"
+    return 0
+  fi
+  if [[ "$cur" == "$BLOBS_BACKEND" ]]; then
+    ok "对象存储后端沿用 ${BLOBS_BACKEND}（未切换）"
+    return 0
+  fi
+  if is_true "$ALLOW_DRIVER_MISMATCH"; then
+    warn "对象存储后端从 ${cur} 切到 ${BLOBS_BACKEND}：已按要求跳过迁移闸门，objects 表里写着 ${cur} 的历史对象将读不到"
+    return 0
+  fi
+  die "对象存储后端要从 ${cur} 换成 ${BLOBS_BACKEND}，但历史对象还没迁移" \
+    "先 k8s-ai blobs migrate --to ${BLOBS_BACKEND} --dry-run 看清单，再去掉 --dry-run 真迁，最后 k8s-ai blobs verify --strict 退出码 0 才重跑本脚本；确认 ${cur} 里的历史对象可弃，就加 --allow-driver-mismatch 重跑"
+}
+
 stage_preflight() {
   stage "阶段 1/9 前置检查"
   command -v "$KUBECTL_BIN" >/dev/null 2>&1 ||
@@ -1355,6 +1441,9 @@ stage_preflight() {
       ok "使用集群默认存储类：${def}"
     fi
   fi
+
+  # 对象存储后端切换闸门（P8.8 / D-32）：换 driver 属于数据搬迁，不是配置改动。
+  blobs_gate_backend_switch
 
   # NodePort 占用
   if [[ -n "$NODE_PORT" && "$EXPOSED_SVC" != "__none__" ]]; then

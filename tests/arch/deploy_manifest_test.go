@@ -247,6 +247,95 @@ func TestDeployFormsDifferOnlyByStaticSwitch(t *testing.T) {
 	}
 }
 
+// TestDeployObjectStorageBackendWiring 锁住 P8.8 接对象存储的口径：清单默认不在启动期建桶、
+// s3 上传中转目录有明确落点、示例 patch 把 s3 需要的 env 列全且密钥只走 Secret，
+// 两种形态的 Deployment 都把「什么时候必须挂 PVC」写在挂载点旁边。
+// 这些是运维接 S3 那天唯一能查的地方，漂了就会当场踩坑（启动建桶、对象丢在 emptyDir 里）。
+func TestDeployObjectStorageBackendWiring(t *testing.T) {
+	cm := readRepoFile(t, "deploy", "base", "configmap.yaml")
+	for _, needle := range []string{"tmp_dir:", "create_bucket: false"} {
+		if !strings.Contains(cm, needle) {
+			t.Errorf("deploy/base/configmap.yaml 缺少 %q：启动期不建桶与中转目录的默认口径必须由清单表达", needle)
+		}
+	}
+
+	for _, rel := range [][]string{
+		{"deploy", "allinone", "deployment.yaml"},
+		{"deploy", "separated", "deployment.yaml"},
+	} {
+		body := readRepoFile(t, rel...)
+		for _, needle := range []string{"driver=sqlite", "driver=dir", "driver=s3 仅报告可选", "tmp_dir"} {
+			if !strings.Contains(body, needle) {
+				t.Errorf("%v 缺少挂载口径说明 %q", rel, needle)
+			}
+		}
+	}
+
+	rel := []string{"deploy", "example", "object-storage-s3.yaml"}
+	patch := readManifestDoc(t, rel...)
+	if _, has := patch["apiVersion"]; has {
+		t.Errorf("%v 带了 apiVersion：它是 strategic merge patch，写成清单会让 kubectl apply -R -f deploy/ 报错", rel)
+	}
+	want := []string{
+		"K8S_AI_PLATFORM_BLOBS_DRIVER", "K8S_AI_PLATFORM_BLOBS_ENDPOINT",
+		"K8S_AI_PLATFORM_BLOBS_BUCKET", "K8S_AI_PLATFORM_BLOBS_REGION",
+		"K8S_AI_PLATFORM_BLOBS_USE_TLS", "K8S_AI_PLATFORM_BLOBS_PATH_STYLE",
+		"K8S_AI_PLATFORM_BLOBS_CREATE_BUCKET", "K8S_AI_PLATFORM_BLOBS_TMP_DIR",
+		"K8S_AI_PLATFORM_BLOBS_ACCESS_KEY", "K8S_AI_PLATFORM_BLOBS_SECRET_KEY",
+	}
+	for _, key := range want {
+		if _, found := envVarValue(t, patch, key); !found {
+			t.Errorf("%v 缺少环境变量 %s：接 s3 需要一次性给全，缺一个就会在启动期报配置非法", rel, key)
+		}
+	}
+	if v, _ := envVarValue(t, patch, "K8S_AI_PLATFORM_BLOBS_DRIVER"); v != "s3" {
+		t.Errorf("%v 的 DRIVER 应为 s3，当前 %q", rel, v)
+	}
+	// 生产口径：桶预建。启动期建桶会把「桶名写错/没权限」放大成整个服务起不来。
+	if v, _ := envVarValue(t, patch, "K8S_AI_PLATFORM_BLOBS_CREATE_BUCKET"); v != "false" {
+		t.Errorf("%v 的 CREATE_BUCKET 必须是 \"false\"，当前 %q", rel, v)
+	}
+	// 镜像根文件系统只读，中转目录必须是可写卷上的绝对路径。
+	tmp, _ := envVarValue(t, patch, "K8S_AI_PLATFORM_BLOBS_TMP_DIR")
+	if !strings.HasPrefix(tmp, "/") {
+		t.Errorf("%v 的 TMP_DIR 必须是绝对路径，当前 %q", rel, tmp)
+	}
+	for _, key := range []string{"K8S_AI_PLATFORM_BLOBS_ACCESS_KEY", "K8S_AI_PLATFORM_BLOBS_SECRET_KEY"} {
+		if v, found := envVarValue(t, patch, key); found && v != "" {
+			t.Errorf("%v 的 %s 出现了明文值：AK/SK 只能经 secretKeyRef 注入", rel, key)
+		}
+		if name := secretRefName(t, patch, key); name != "k8s-ai-blobs" {
+			t.Errorf("%v 的 %s 应引用 Secret k8s-ai-blobs，当前 %q", rel, key, name)
+		}
+	}
+	// 换后端必须先迁对象，这条顺序是历史报告能否读到的关键，必须写在示例里。
+	body := readRepoFile(t, rel...)
+	for _, needle := range []string{"blobs migrate --to s3 --dry-run", "blobs verify --strict"} {
+		if !strings.Contains(body, needle) {
+			t.Errorf("%v 缺少迁移顺序说明 %q：直接改 driver 会让历史报告读不到", rel, needle)
+		}
+	}
+}
+
+// secretRefName 取某个 env 项引用的 Secret 名；没走 secretKeyRef 时返回空串。
+func secretRefName(t *testing.T, doc map[string]any, key string) string {
+	t.Helper()
+	for _, item := range containerEnv(t, doc) {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if name, _ := entry["name"].(string); name != key {
+			continue
+		}
+		from, _ := entry["valueFrom"].(map[string]any)
+		ref, _ := from["secretKeyRef"].(map[string]any)
+		refName, _ := ref["name"].(string)
+		return refName
+	}
+	return ""
+}
+
 // readManifestDoc 把清单读成通用文档，用于「两份清单是否等价」这类结构比对。
 func readManifestDoc(t *testing.T, rel ...string) map[string]any {
 	t.Helper()

@@ -43,7 +43,11 @@ data:
         bucket: k8s-ai            # driver=s3 必填
         access_key: ""            # 只经 K8S_AI_PLATFORM_BLOBS_ACCESS_KEY（Secret）注入
         secret_key: ""            # 只经 K8S_AI_PLATFORM_BLOBS_SECRET_KEY（Secret）注入
-        create_bucket: true       # 无建桶权限的现场置 false 并预先建桶
+        tmp_dir: "/tmp/k8s-ai-blobs"  # driver=s3 的上传中转目录（P8.4）：先落盘算 sha256 再上传，
+                                      # 镜像根文件系统只读，该目录必须在可写卷挂载点之下；留空回落 os.TempDir()。
+        create_bucket: false      # 默认不在启动期建桶（P8.8）：生产桶由平台组预建并配好生命周期，
+                                  # 运行账号只给对象读写权限。桶不存在时对象类 API 回 503、基础业务不受影响；
+                                  # 确认凭据有建桶权限的测试环境才置 true。
         presign_ttl: 15m          # 预签名下载链接有效期，≤24h
         max_object_size: 32MiB    # 单对象上限，≤256MiB
         session_data: false       # 会话正文外置；仅 driver=dir/s3 时建议开启
