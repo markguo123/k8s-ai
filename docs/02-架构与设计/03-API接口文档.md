@@ -1,7 +1,7 @@
 # k8s-ai API 接口契约设计
 
 - 版本：v4.0.0（企业平台）
-- 日期：2026-10-23
+- 日期：2026-10-23（初版）/ 2026-11-03（发起巡检契约收窄与报告三面登记，见 17-方案）
 - 状态：四期企业平台落地中
 - 范围：本文档统一描述四期企业平台的 Go 应用服务契约与 HTTP API，包括认证、会话与 SSE、
   扫描、集群、Skill、配置、用户/角色、授权、审批、审计与 Memory。所有产品 API 统一归属
@@ -192,8 +192,8 @@ POST /api/v1/auth/login
 POST /api/v1/auth/logout
 GET  /api/v1/auth/me
 GET  /api/v1/auth/scope      // 当前用户有效 namespace / 集群级资源范围
-POST /api/v1/scans          // body: ScanOptions；返回 202 {scanId}；已有任务时 409
-GET  /api/v1/scans/{id}     // 状态: pending/running/succeeded/failed + result
+POST /api/v1/scans          // 发起巡检：body 为白名单 DTO（scope/namespace/pod/preset/clusterId）；202 {scanId}；已有任务 409；需 scan.execute
+GET  /api/v1/scans/{id}     // 状态: pending/running/succeeded/failed + result；仅任务发起人本人或 admin
 GET  /api/v1/settings/{group}   // 配置中心（P1.10）：目录默认值与已存值合并；需 settings.read
 PATCH /api/v1/settings/{group}  // body 为扁平 {key: value}，任一非法整批 400；需 settings.write
 GET  /api/v1/users            // 用户列表（PasswordHash/口令永不回读）；需 user.manage（P3.11）
@@ -201,9 +201,25 @@ POST /api/v1/users            // 创建用户 {username,password(>=8),roleId,dis
 PATCH /api/v1/users/{id}      // 部分更新 {displayName?,password?,roleId?,status?}；需 user.manage；禁止停用/降级自己
 DELETE /api/v1/users/{id}     // 删除用户；需 user.manage；内置 admin 不可删，禁止删除自己
 GET  /api/v1/roles            // 角色列表（user/operator/admin 及权限视图）；需 user.manage
+GET  /api/v1/reports            // 报告中心分页列表（cluster/kind/时间过滤，不返回对象 key）；需登录，可见性由后端三层归属判定下推 SQL
+GET  /api/v1/reports/{id}/content // 报告正文流式下载或 presign 直连；越权与 id 不存在同形 404；available=false 返回 410；后端不匹配 409
+GET  /api/v1/storage/health     // 对象存储健康唯一可观测入口；需 settings.read；driver=off 返回 200 带 status=disabled
 ```
 
 `roleId` 必须指向 `user / operator / admin` 之一；创建表单默认选择 `user`。
+
+**发起巡检与报告读取（2026-11-03 契约冻结；报告三面 P8.5/P8.11 已实现，巡检发起面 P8.13 待实现）**：
+`POST /api/v1/scans` 的请求体是**白名单 DTO**，只接受 `scope`（`cluster`/`namespace`/`pod`）、`namespace`、`pod`、
+`preset`（`quick`/`standard`/`deep`）、`clusterId` 五个字段，未知字段与连接类字段（`kubeconfig`、`context`、`inCluster`、
+`reportDirectory`、`concurrency`、`qps`、`timeout`、`reportMode`）一律 400 拒绝；权限位为新增的 `scan.execute`
+（admin 持 `*` 天然通过、operator 角色种子含、user 默认不含）；`scope=cluster` 仅 admin，`namespace` 与 `pod`
+在非 admin 时目标 namespace 必须落在调用者的有效 AuthzGrant 内，越界 403 且点名是哪个 ns，绝不静默裁剪成授权子集；
+`clusterId` 由服务端解析后覆盖归属，不接受请求体值。`GET /api/v1/scans/{id}` 只对任务发起人本人与 admin 开放，
+任何持 `cluster.read` 的用户凭 job id 读他人任务结果属越权（结果含他人命名空间的问题清单）。
+报告三面的权限与错误映射在 `15-方案` §13.1 与 §18 定稿（三层归属判定、越权与 id 不存在同形 404、
+对象后端与配置不符返回 409 + 迁移指引）；巡检三维度、三档预设与授权闸门在 `17-方案` §3 至 §8。
+**当前代码**：`POST` 仍挂 `chat.write`、`GET` 仍挂 `cluster.read`、请求体仍直通内部 `model.ScanOptions`，
+本节写的是契约目标态，这三条差异是 P8.13 的实现项。
 
 `GET /api/v1/auth/scope` 返回：
 
