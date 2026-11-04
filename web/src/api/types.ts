@@ -381,9 +381,59 @@ export interface ReportView {
   findings: number
   /** 报告归属人 ID；跨 owner 读取由后端落审计，前端不做安全判定。 */
   createdBy: string
+  /**
+   * 巡检维度（P8.13）：cluster | namespace | pod。空串 = 这条记录早于范围留痕，
+   * 页面显示「未记录」，不参与任何安全判定。
+   */
+  scopeKind?: string
+  /** 范围取值：cluster 为空，namespace 为 ns，pod 为 ns/pod。 */
+  scopeValue?: string
   /** false = 业务行还在但内容已不可恢复，下载会回 410。 */
   available: boolean
   createdAt: string
+}
+
+/** 页面巡检任务（后端 server.ScanJob，P8.13）。POST 回 202 时即为 pending。 */
+export interface ScanJob {
+  id: string
+  status: 'pending' | 'running' | 'succeeded' | 'failed' | string
+  error?: string
+  createdAt: string
+  startedAt?: string
+  endedAt?: string
+  /** 发起人用户 ID；GET 只回本人任务与 admin 看到的他人任务。 */
+  owner?: string
+  scopeKind?: string
+  scopeValue?: string
+  result?: ScanJobResult
+}
+
+/**
+ * 巡检结果里页面会用到的一小块（后端 model.ScanResult 的裁剪视图）。
+ * 完整结果在对象存储的 latest.json 里，这里只够画完成态的一行摘要。
+ */
+export interface ScanJobResult {
+  meta?: { cluster?: string; namespace?: string; pod?: string; duration?: string }
+  summary?: Record<string, number>
+  findings?: unknown[]
+  healthScore?: { score?: number; max?: number }
+}
+
+/** 批量清理里一个没删掉的 id 及原因（后端 service.CleanupSkip）。 */
+export interface ReportCleanupSkip {
+  id: string
+  reason: string
+}
+
+/**
+ * 报告清理结果（单条 DELETE 与批量 cleanup 共用同一响应形状）。
+ *
+ * skipped 两种形态都要容忍：批量端点回 `{id,reason}` 对象数组（前端要能说出「这条没删掉
+ * 是因为不存在/没权限」还是「库里出了岔子」），单条 DELETE 恒回空数组。
+ */
+export interface ReportCleanupResult {
+  deleted: string[]
+  skipped: Array<string | ReportCleanupSkip>
 }
 
 /** 对象存储健康（后端 service.BlobHealth，P8.5）。字段刻意不含桶名 / 端点 / 凭据。 */

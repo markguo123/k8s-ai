@@ -10,8 +10,16 @@
  *  3. presign 返回的签名 URL 等同一条临时凭据：只在调用方内存里停留，绝不落
  *     localStorage / store / 日志 / SSE。
  */
-import { API_BASE, ApiRequestError, apiErrorFrom, apiGet, readToken } from './request'
-import type { ReportDownloadTicket, ReportView, StorageHealth } from './types'
+import {
+  API_BASE,
+  ApiRequestError,
+  apiErrorFrom,
+  apiDelete,
+  apiGet,
+  apiPost,
+  readToken,
+} from './request'
+import type { ReportCleanupResult, ReportDownloadTicket, ReportView, StorageHealth } from './types'
 
 /** 报告列表查询条件（后端 handleListReports 的 query 参数）。 */
 export interface ReportListOptions {
@@ -19,6 +27,8 @@ export interface ReportListOptions {
   pageSize?: number
   clusterId?: string
   kind?: string
+  /** 只看某次巡检产出的产物；这是筛选条件，不是授权条件，越权判定仍由后端做。 */
+  scanId?: string
 }
 
 /** 报告列表结果：total 与当页共用后端同一条归属谓词，因此不会把别人的报告算进来。 */
@@ -35,7 +45,7 @@ export async function listReports(opts: ReportListOptions = {}): Promise<ReportL
   const env = await apiGet<ReportView[]>(
     '/reports',
     { page: opts.page, pageSize: opts.pageSize },
-    { clusterId: opts.clusterId, kind: opts.kind },
+    { clusterId: opts.clusterId, kind: opts.kind, scanId: opts.scanId },
   )
   return {
     items: env.data ?? [],
@@ -137,6 +147,31 @@ export async function getStorageHealth(): Promise<StorageHealth> {
   return env.data
 }
 
+/**
+ * 删除一条报告的业务引用（P8.14）。删的是「平台认为这份报告存在」，正文由
+ * `blobs gc` 在宽限期后回收：请求路径上永不出现对象存储的 Delete，因为 blob_key
+ * 是内容寻址、可能被多份报告共享。
+ *
+ * 越权同形 404：别人的报告 id 与不存在的 id 回一样的东西，猜 id 探不到任何东西。
+ */
+export async function deleteReport(id: string): Promise<ReportCleanupResult> {
+  const env = await apiDelete<ReportCleanupResult>(`/reports/${encodeURIComponent(id)}`)
+  return normalizeCleanup(env.data)
+}
+
+/**
+ * 批量清理（P8.14）。后端逐条判归属、逐条独立事务，混进来的他人 id 只会变成一条
+ * skipped，不会让整批失败，也不会顺手删掉别人的东西。
+ */
+export async function cleanupReports(ids: string[]): Promise<ReportCleanupResult> {
+  const env = await apiPost<ReportCleanupResult>('/reports/cleanup', { ids })
+  return normalizeCleanup(env.data)
+}
+
+function normalizeCleanup(data?: ReportCleanupResult): ReportCleanupResult {
+  return { deleted: data?.deleted ?? [], skipped: data?.skipped ?? [] }
+}
+
 /** 统一错误文案，供页面直接展示。状态码优先于错误码：它们是后端分档的依据。 */
 export function describeReportError(method: string, error: unknown): string {
   if (error instanceof ApiRequestError) {
@@ -172,5 +207,7 @@ export default {
   downloadReport,
   getReportDownloadUrl,
   getStorageHealth,
+  deleteReport,
+  cleanupReports,
   describeReportError,
 }

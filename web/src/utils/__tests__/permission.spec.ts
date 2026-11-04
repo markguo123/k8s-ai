@@ -27,11 +27,14 @@ describe('hasPermission', () => {
 })
 
 describe('角色权限口径', () => {
-  it('admin 全量，user/operator 平台权限为零', () => {
+  it('admin 全量，user 平台权限为零，operator 只多一个发起巡检权', () => {
     expect(hasPermission(permissionsOf('admin'), PERM.userManage)).toBe(true)
-    expect(permissionsOf('operator')).toEqual([])
+    // 与后端 auth.defaultRoles() 同口径：多给的每一位都要能说出理由。
+    expect(permissionsOf('operator')).toEqual([PERM.scanExecute])
     expect(permissionsOf('user')).toEqual([])
     expect(hasPermission(permissionsOf('operator'), PERM.chatWrite)).toBe(false)
+    expect(hasPermission(permissionsOf('user'), PERM.scanExecute)).toBe(false)
+    expect(hasPermission(permissionsOf('operator'), PERM.skillManage)).toBe(false)
     expect(hasPermission(permissionsOf('user'), PERM.settingsRead)).toBe(false)
   })
 

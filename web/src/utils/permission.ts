@@ -22,15 +22,20 @@ export const PERM = {
   skillRead: 'skill.read',
   skillManage: 'skill.manage',
   userManage: 'user.manage',
+  scanExecute: 'scan.execute',
 } as const
 
 /**
- * 角色默认平台权限，对齐后端 `auth.defaultRoles()`。user/operator 的平台
- * 权限为零，集群能力由 admin 授予的 namespace AuthzGrant 决定；admin 为全量。
+ * 角色默认平台权限，对齐后端 `auth.defaultRoles()`。user 的平台权限为零，
+ * operator 只多一个 scan.execute（页面发起巡检），两者的集群可见范围都由
+ * admin 授予的 namespace AuthzGrant 决定；admin 为全量。
+ *
+ * 注意 scan.execute 不扩大可见范围：它能触发的读能力仍逐次过 namespace 授权闸门，
+ * 这一位只决定「发起巡检」按钮是否出现（隐藏按钮不是安全机制，后端照样判）。
  */
 export const ROLE_PERMISSIONS: Record<Role, string[]> = {
   admin: ['*'],
-  operator: [],
+  operator: ['scan.execute'],
   user: [],
 }
 

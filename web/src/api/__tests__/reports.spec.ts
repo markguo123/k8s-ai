@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  cleanupReports,
+  deleteReport,
   describeReportError,
   downloadReport,
   filenameFromDisposition,
@@ -187,5 +189,53 @@ describe('reports API（P8.11）', () => {
     expect(filenameFromDisposition('attachment; filename="plain.json"', 'r1')).toBe('plain.json')
     expect(filenameFromDisposition(null, 'r1')).toBe('report-r1')
     expect(filenameFromDisposition('attachment', 'r1')).toBe('report-r1')
+  })
+})
+
+describe('报告清理 API（P8.14）', () => {
+  it('listReports 把 scanId 带进 query，用于只看本次巡检产物', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(envelopeResponse(200, [sampleReport()], { total: 1 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await listReports({ page: 1, pageSize: 20, scanId: 'scan-1' })
+
+    expect(urlOf(fetchMock)).toBe('/api/v1/reports?page=1&page_size=20&scanId=scan-1')
+  })
+
+  it('deleteReport 走 DELETE，返回值补齐成 deleted/skipped 两个数组', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(envelopeResponse(200, { deleted: ['r1'] }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await deleteReport('r1')
+
+    expect(urlOf(fetchMock)).toBe('/api/v1/reports/r1')
+    const [, init] = fetchMock.mock.calls[0]
+    expect((init as RequestInit).method).toBe('DELETE')
+    // 后端只回 deleted 时也要能安全遍历：否则页面收尾得到处写 data.skipped || []。
+    expect(result).toEqual({ deleted: ['r1'], skipped: [] })
+  })
+
+  it('cleanupReports 提交 ids 数组，skipped 连原因一起带回界面', async () => {
+    const skipped = [{ id: 'r9', reason: 'not_found' }]
+    const fetchMock = vi.fn().mockResolvedValue(envelopeResponse(200, { deleted: ['r1'], skipped }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await cleanupReports(['r1', 'r9'])
+
+    expect(urlOf(fetchMock)).toBe('/api/v1/reports/cleanup')
+    expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))).toEqual({
+      ids: ['r1', 'r9'],
+    })
+    // r9 是别人的或不存在的 id：它必须留在 skipped 里，界面不能报「清理了 2 条」。
+    expect(result.deleted).toEqual(['r1'])
+    expect(result.skipped).toEqual(skipped)
+  })
+
+  it('后端把空 skipped 编成 null 时不会让界面在 length 上炸掉', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(envelopeResponse(200, { deleted: ['r1'] })))
+
+    const result = await cleanupReports(['r1'])
+
+    expect(result).toEqual({ deleted: ['r1'], skipped: [] })
   })
 })
