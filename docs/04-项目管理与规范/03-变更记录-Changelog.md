@@ -15,6 +15,87 @@ P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会�
 与授权架构修订（见
 `docs/02-架构与设计/13-方案-企业级身份权限与审批中心.md`，计划回写 v1.12/v1.13）。
 
+### Fixed（2026-11-04，体检真机复验修正）
+
+- 登录页样式越界：`web/src/styles/login-tech.css` 的变量与元素规则泄漏到全局，登录后所有页面的底色与
+  卡片尺寸被带偏；全部规则收进登录页作用域，新增 `web/src/styles/__tests__/loginTechScope.spec.ts` 锁边界
+  （真机核对 `:root` 的 `--bg` 回到应用色板）。该文件同时按仓库 `npm run format` 口径做了 prettier 重排。
+- 「开始体检」弹窗在 1280x620 下表单被截断且滚不到底：表单主体内部滚动、footer 常驻可见。
+- 版本号重复前缀渲染成 `vv1.28.13`：前缀统一由 `serverVersionLabel()`（`internal/service/stages.go`）判定，
+  阶段账与 Markdown 正文同为 `v1.28.13`。
+- 阶段标题在窄容器里被截断：`.stage-title` 允许换行，真机核对无一条溢出。
+- 刷新页面丢进度：进行中的体检 id 与档位写入 `sessionStorage`（`k8s-ai.activeScan`），重进页面自动重挂横幅
+  与阶段清单，且不会重复发起。
+- 阶段清单缺首末三步：`stageSpec` 只登记架构图里的分析阶段，`connect` / `write` / `archive` 靠插入序兜底，
+  导致「连接集群」排到第 11 步；补齐 spec 首末并保留未登记阶段的兜底追加。**阶段账口径由「十阶段」修正为
+  13 项**（前置「连接集群」，末尾「写入报告文件」「归档报告到对象存储」）。
+- 从未 start 过的跳过阶段直接露英文 id（`evidence` / `llm` / `write`）：`skip()` 改走 `stageTitle()` 查 spec 取名。
+- 跳过证据采集的说明写死「快速档」，标准档也显示同样的话：改为只陈述 `collect_logs=false` 这一事实。
+- 验证：`go vet ./...` 干净、`go test ./...` 全绿；`web` 侧 `npm run test` 30 文件 201 用例全绿、
+  `npm run build` 通过；`bin/k8s-ai.exe` 按 Makefile 的 `-s -w` 口径重编，运行体与代码一致。
+
+### Added（2026-11-04，四期 P9.10–P9.13 页面体检体验：术语收口、格式单选、停止体检、实时进度）
+
+- 术语与文案（口径定在 `18-方案-体检诊断体系升级-四期.md` §15，同日二次收口）：导航「体检」、页面大标题保留「智能诊断中心」、发起入口「开始体检」；
+  报告行大字标题**「体检报告」**（格式退为 mono 小字 `JSON` / `Markdown`）；类别与范围拆成两枚徽标
+  （`集群体检` / `业务体检` / `范围未记录` 与 `全集群` / `命名空间 <ns>` / `单 Pod <pod>`）；归属改**「发起人：…」**，
+  自动任务落「发起人：系统自动」；取消「平台集群」占位，没有绑定登记集群就不显示集群徽标；
+  **`系统体检` 定为预留词**（指 K8s 系统服务与节点的体检，本期无实现，页面与文档均不提前占用）。
+- `POST /api/v1/scans` 新增 `format`（`json` / `markdown`，空=`json`，非法值 400 且校验**先于**授权判定），
+  一次体检**只归档选中的那一份**产物；CLI `report.directory` 的双产物口径零变化。
+- 新增 `GET /api/v1/reports/{id}/export`：Markdown 归档原样返回 200，JSON 归档用同一份数据按需渲染，
+  不写回对象存储；授权与 `/content` 同一套判定，越权与不存在同形 404。
+- 新增 `POST /api/v1/scans/{id}/cancel`（`internal/server/scan_cancel.go`）：`StatusCancelled` 独立终态、
+  running 阶段冻结为 failed「已停止」、`scan.cancel` 审计、owner 判定与 `GET /scans/{id}` 同形 404、已结束 409。
+- `GET /scans/{id}` 返回 `stages` 十阶段账；页面在发起后即时渲染阶段清单与 `N / M 阶段`（不报百分比）并给出「停止体检」，
+  修掉「点发起没过程、报告结尾才有过程」。
+- 新增 `GET /api/v1/reports/summary`（`total/cluster/business/other/markdown/json/available`）+ `store.ReportStats`
+  + `ReportQuery.ScopeCategory`，列表页用五张总览卡替掉「当前页」计数；列表补 `createdByName`（`withAuthorNames` 整表读用户一次，失败降级空串）。
+- 验证：`go build` / `go vet` 干净、`go test ./...` 全绿（新增 `internal/server/scan_cancel_test.go` 锁停止契约）；
+  `web` 侧 `npm run test` 29 文件 196 用例全绿、`npm run build` 通过。
+  **真机复验（2026-11-04，真集群 v1.28.13 端到端）**：阶段进度实时渲染与刷新后重挂、停止体检真停
+  （二次确认 -> `已由发起人停止` -> 立即释放发起锁可再发起）、单产物归档、JSON 报告按需导出 Markdown
+  全部通过；「集群体检仅 admin 可发起」由授权单测覆盖。复验中发现并修掉的缺陷见上方 Fixed。
+
+### Added（2026-11-04，四期 P9 巡检诊断体系升级：关系图 → 故障聚合 → 确定性诊断 → LLM 增强 → 结构化报告）
+
+- 口径与文档：新立 `docs/02-架构与设计/18-方案-体检诊断体系升级-四期.md` v1.0（十段流水线与代码逐段映射、关系与因果边模型、降级矩阵、九区块报告与健康分封顶、质量体系）；
+  `01-系统架构与技术方案.md` 新增 §6.1 正式架构图与 5 条读图口径、§6.2 分层与包映射，§7 数据流按十段流水线重画；`07-采集与扫描流程.md` 升 v2.0（§1 九段流水线 + mermaid、
+  §7 采集完整性三条定死规则与 60 / 85 / 满分-1 封顶、§8 整段替换为「确定性诊断、LLM 增强与结果校验」）；`03-API接口文档.md` 登记结构化报告端点与契约；
+  `09-测试方案.md` 新增 §3.4 质量测试体系与六指标。
+- **正式架构图**：`docs/assets/images/k8s-ai Kubernetes 体检诊断总体架构图.png` 定为项目官方总体架构图，嵌入方案 18 §1 与系统架构 §6.1。
+- 关系与故障层：`internal/relations`（OwnerReferences / EndpointSlice / Ingress 后端 / PVC-PV-StorageClass / Pod-Node 调度 / ConfigMap·Secret·ServiceAccount 引用，
+  全走只读门面，Secret 仅键名）；`internal/incident/causal.go`（散点 Finding 沿关系边聚成 Incident、生成 CausalEdge，输出 impactChain / evidenceGaps / alternativeCauses，根因唯一）。
+- 确定性诊断：`internal/deterministic` 24 个诊断器覆盖 Pod 7 / 工作负载 6 / 节点 2 / 存储 4 / 网络 4 / 平台 1，输出根因、置信度依据、证据链与调查、处置、验证建议，
+  **不含 LLM 也能在故障第一分钟给出结论**。
+- LLM 增强与结果校验：`internal/diagnosis/enhance.go` + `validation.go`，LLM 只在确定性结论之上补充，schema 校验与证据一致性校验（规则 `p9-evidence-consistency-v1`）
+  不通过即回落确定性结论并标 `validation.downgraded`，伪造证据与臆造资源必被拦下。
+- 采集完整性：`internal/scanner/quality.go` 计划 / 执行 / 部分三本账 + 完整性 full / partial / insufficient + 健康分封顶与 `capReason` 累积。
+- 报告模型与 API：`internal/model/inspection.go` + `internal/report/inspection.go` 九区块统一模型与结论四级；`GET /api/v1/reports/{id}/report` 返回
+  `{report, schemaVersion, legacy, inspection}`（非结构化 415、超预算 413、未命中 404，读鉴权与审计复用报告面既有闸门）；巡检阶段账十阶段 `StageRecord`（按设计不报百分比）。
+- Web：报告详情页 `web/src/views/report/ReportDetailView.vue`（九区块 + 巡检过程 + 原始数据，区块顺序同方案 18 §9）+ 路由 `report/:id` + `api/reports.getStructuredReport` + 报告清单「详情」入口。
+
+### Fixed（2026-11-04，P9 复核修 8 处缺陷）
+
+- `incident.CausalEdge` 零值 `RelationType` 使因果链关系名缺失：`relationPath()` 补兜底。
+- `PendingPod` 场景缺 `ConfigRefNotFound` 因，配置引用缺失时根因跑偏。
+- 采集计划调用记账把集群级 list 失败误读为 partial，健康分封顶算错。
+- 未注册的巡检阶段被静默丢弃：改为落 `other:<op>`。
+- `report.BuildConclusion` 在异常全部落在 incident 内部时误报「健康」：改为按 `rootIDs` 计入故障根因。
+- `splitEvidenceRefs` 把提示词强制要求的 `<findingID>#E-ID` 成员级证据引用剥掉导致校验误判：`buildDiagnosis(f,out,universe)` + `incidentEvidenceUniverse()` 保留成员引用。
+- `KeptDeterministic` 以 `RootCause != ""` 为准，把 LLM 改写误记为确定性结论：改为仅 `deterministicOf()` 命中时计数。
+- 前端巡检阶段行只绑 tone 类而 CSS 认 `.stage.done` / `.failed` / `.running` / `.skipped`，圆点颜色与 skipped 降噪全部失效。
+- 顺带清掉两个未被引用的标识符（`web/src/api/scans.ts` 的 `apiErrorFrom`、`web/src/api/__tests__/scans.spec.ts` 的 `errorResponse`），它们会让 `npm run lint` 失败。
+
+### Tests（2026-11-04，四期 P9 巡检诊断质量夹具矩阵）
+
+- `internal/deterministic` 五套夹具（pod / node / workload / storage / network）× 场景矩阵：CrashLoop ← Pending PVC 链、节点压力驱逐链、Service 无端点链等，
+  逐条断言根因、因果边与证据引用；`chain_test.go` 断言跨资源故障链根因唯一。
+- `internal/relations`、`internal/incident`、`internal/scanner` 质量账、`internal/diagnosis` 校验、`internal/report` 结论、`internal/service` 阶段账与报告合并各补单测；
+  `go build ./...` 与 `go vet ./...` 干净、`go test ./...` **41 包全绿**。
+- Web 新增 `web/src/views/report/__tests__/reportDetailView.spec.ts` 7 例（结论与封顶、根因与牵连异常及 `F-2#E1`、采集失败与证据缺口原文、skipped 阶段不画成执行中、
+  415 空态、legacy 不伪造质量账、410 文案），`npm run test` **29 文件 179 用例全绿**，`typecheck` / `lint` / `build` 干净。
+
 ### Changed（2026-10-29，容器执行通道口径翻转 ADR-044 v1.1 / D-33 改写）
 
 - 默认交付镜像运行阶段由 `gcr.io/distroless/static-debian12:nonroot` 改 `debian:bookworm-slim`，内置

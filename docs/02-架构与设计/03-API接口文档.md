@@ -1,7 +1,7 @@
 # k8s-ai API 接口契约设计
 
 - 版本：v4.0.0（企业平台）
-- 日期：2026-10-23（初版）/ 2026-11-03（发起巡检契约收窄与报告三面登记，见 17-方案） / 2026-11-04（报告清单清理两面登记，见方案 15 v1.12）
+- 日期：2026-10-23（初版）/ 2026-11-03（发起体检契约收窄与报告三面登记，见 17-方案） / 2026-11-04（报告清单清理两面登记，见方案 15 v1.12；同日补体检发起面 v1.1：format 单选、阶段账、停止体检、报告总览、按需导出 Markdown）
 - 状态：四期企业平台落地中
 - 范围：本文档统一描述四期企业平台的 Go 应用服务契约与 HTTP API，包括认证、会话与 SSE、
   扫描、集群、Skill、配置、用户/角色、授权、审批、审计与 Memory。所有产品 API 统一归属
@@ -192,8 +192,9 @@ POST /api/v1/auth/login
 POST /api/v1/auth/logout
 GET  /api/v1/auth/me
 GET  /api/v1/auth/scope      // 当前用户有效 namespace / 集群级资源范围
-POST /api/v1/scans          // 发起巡检：body 为白名单 DTO（scope/namespace/pod/preset/clusterId）；202 {scanId}；已有任务 409；需 scan.execute
-GET  /api/v1/scans/{id}     // 状态: pending/running/succeeded/failed + result；仅任务发起人本人或 admin
+POST /api/v1/scans          // 开始体检：body 为白名单 DTO（scope/namespace/pod/preset/clusterId/format）；format=json|markdown 单选，一次只归档选中的那一种；202 {scanId}；已有任务 409；需 scan.execute
+GET  /api/v1/scans/{id}     // 状态: pending/running/succeeded/failed/cancelled + result + stages（十段阶段账：状态/耗时/子步骤）；仅任务发起人本人或 admin
+POST /api/v1/scans/{id}/cancel // 停止体检（P9.11）：发起人本人或 admin；状态立即写 cancelled、running 阶段冻结为 failed「已停止」；已结束 409；停他人任务与不存在同形 404；落 scan.cancel 审计
 GET  /api/v1/settings/{group}   // 配置中心（P1.10）：目录默认值与已存值合并；需 settings.read
 PATCH /api/v1/settings/{group}  // body 为扁平 {key: value}，任一非法整批 400；需 settings.write
 GET  /api/v1/users            // 用户列表（PasswordHash/口令永不回读）；需 user.manage（P3.11）
@@ -201,8 +202,11 @@ POST /api/v1/users            // 创建用户 {username,password(>=8),roleId,dis
 PATCH /api/v1/users/{id}      // 部分更新 {displayName?,password?,roleId?,status?}；需 user.manage；禁止停用/降级自己
 DELETE /api/v1/users/{id}     // 删除用户；需 user.manage；内置 admin 不可删，禁止删除自己
 GET  /api/v1/roles            // 角色列表（user/operator/admin 及权限视图）；需 user.manage
-GET  /api/v1/reports            // 报告中心分页列表（cluster/kind/scanId/时间过滤，不返回对象 key、不加载正文）；需登录，可见性由后端三层归属判定下推 SQL
+GET  /api/v1/reports            // 报告中心分页列表（cluster/kind/scanId/scopeCategory/时间过滤，不返回对象 key、不加载正文；每行附 createdByName 即发起人）；需登录，可见性由后端三层归属判定下推 SQL
 GET  /api/v1/reports/{id}/content // 报告正文流式下载或 presign 直连；越权与 id 不存在同形 404；available=false 返回 410；后端不匹配 409
+GET  /api/v1/reports/{id}/report  // 结构化体检报告详情（P9）：普通 JSON 响应，供 Web 报告详情页渲染；授权与 /content 同一套 scope 判定；415=无结构化形态、413=正文超 8MiB
+GET  /api/v1/reports/summary      // 报告列表顶部的类别总览（P9.13）：{total,cluster,business,other,markdown,json,available}；过滤条件与列表同源，统计全部可见行而非当页；需登录
+GET  /api/v1/reports/{id}/export   // 按需导出一份 Markdown（P9.13）：用同一份归档数据当场渲染，不写回对象存储；附件下载 filename*=UTF-8''；授权与 /content 同一套判定
 DELETE /api/v1/reports/{id}     // 清理单条报告业务引用（P8.14）：同事务删 reports 行 + Release，正文由 blobs gc 在宽限期后回收，请求路径不删对象；越权与 id 不存在同形 404；每条删除落 report.delete 审计
 POST   /api/v1/reports/cleanup  // 批量清理 {"ids":[...]}（单次上限 200）：逐 id 独立事务与归属判定，返回 {"deleted":[...],"skipped":[{"id":..,"reason":"not_found"|"internal"}]}；批量不放宽任何判定；需登录
 GET  /api/v1/storage/health     // 对象存储健康唯一可观测入口；需 settings.read；driver=off 返回 200 带 status=disabled
@@ -210,25 +214,61 @@ GET  /api/v1/storage/health     // 对象存储健康唯一可观测入口；需
 
 `roleId` 必须指向 `user / operator / admin` 之一；创建表单默认选择 `user`。
 
-**发起巡检与报告读取（2026-11-03 契约冻结；报告三面 P8.5/P8.11 已实现，巡检发起面 P8.13 已实现，2026-11-05 按代码回写）**：
+**发起体检与报告读取（2026-11-03 契约冻结；报告三面 P8.5/P8.11 已实现，体检发起面 P8.13 已实现，2026-11-05 按代码回写）**：
 `POST /api/v1/scans` 的请求体是**白名单 DTO**，只接受 `scope`（`cluster`/`namespace`/`pod`）、`namespace`、`pod`、
-`preset`（`quick`/`standard`/`deep`）、`clusterId` 五个字段，未知字段与连接类字段（`kubeconfig`、`context`、`inCluster`、
+`preset`（`quick`/`standard`/`deep`）、`clusterId`、`format`（`json`/`markdown`，空按 `json`）六个字段，未知字段与连接类字段（`kubeconfig`、`context`、`inCluster`、
 `reportDirectory`、`concurrency`、`qps`、`timeout`、`reportMode`）一律 400 拒绝；权限位为新增的 `scan.execute`
 （admin 持 `*` 天然通过、operator 角色种子含、user 默认不含）；`scope=cluster` 仅 admin，`namespace` 与 `pod`
 在非 admin 时目标 namespace 必须落在调用者的有效 AuthzGrant 内，越界 403 且点名是哪个 ns，绝不静默裁剪成授权子集；
 `clusterId` 由服务端解析后覆盖归属，不接受请求体值。`GET /api/v1/scans/{id}` 只对任务发起人本人与 admin 开放，
 任何持 `cluster.read` 的用户凭 job id 读他人任务结果属越权（结果含他人命名空间的问题清单）。
 报告三面的权限与错误映射在 `15-方案` §13.1 与 §18 定稿（三层归属判定、越权与 id 不存在同形 404、
-对象后端与配置不符返回 409 + 迁移指引）；巡检三维度、三档预设与授权闸门在 `17-方案` §3 至 §8。
+对象后端与配置不符返回 409 + 迁移指引）；体检三维度、三档预设与授权闸门在 `17-方案` §3 至 §8。
 **已落地**：`POST /scans` 挂新增权限位 `scan.execute`、`GET /scans/{id}` 改 `AccessAuthenticated` 并在 handler 内判归属，
 非发起人且非 admin 读他人任务返回与「不存在」**同形的 404**（job id 同样是随机串，403 等于确认它存在）；请求体已收窄为上文的白名单 DTO，`clusterId` 非空一律 400。
 
 **报告清单清理（2026-11-04 契约冻结；P8.14 已实现，2026-11-05 按代码回写）**：`DELETE /api/v1/reports/{id}` 与 `POST /api/v1/reports/cleanup` 均登记为
-`AccessAuthenticated`，**不新增权限位**，归属在 handler 内判定（owner 删自己的、`system` 巡检报告按 cluster 授权、admin 跨 owner 可删）。
+`AccessAuthenticated`，**不新增权限位**，归属在 handler 内判定（owner 删自己的、`system` 体检报告按 cluster 授权、admin 跨 owner 可删）。
 删除动作只删 `reports` 业务引用并在同一事务内 `Release`，**请求路径不删后端对象**，正文由 `k8s-ai blobs gc` 在宽限期后回收；
 `available=false`（已返回 410）的报告**仍然可删**，删除侧不复用下载侧的可用性闸门。每一条删除落 `report.delete` 审计，
 越权与 id 不存在同形 404。批量端点不构成第二条授权通道：它逐 id 复用同一套归属判定与同一条事务契约。
 口径见 `15-方案` **v1.13** §0 与 §13.1/§15/§18。
+
+**结构化报告详情（2026-11-04 契约冻结；P9 已实现）**：`GET /api/v1/reports/{id}/report` 与
+`/content` 是两种用途，不能互相顶替——`/content` 是「下载原文」，强制附件下载、禁 MIME 嗅探，
+浏览器里永远拿不到内容；`/report` 是「在页面里渲染报告详情页」，走普通 JSON 信封。
+授权完全复用 `reportScopeFor`，两个端点的可见集合天然一致，详情页不构成第二条越权读取通道；
+跨 owner 打开详情页同样计一次 `report.download` 审计。
+
+响应体 `{report, schemaVersion, legacy, inspection}`：`report` 是用户点开的这一行（复用
+`service.ReportView`，不含 blob key / 对象存储布局），`inspection` 是统一 `InspectionReport`
+（`model.ScanResult`）本体，`schemaVersion` 对 v1 老报告归一化为 1，`legacy=true` 表示缺
+结论/采集质量/诊断账等区块，前端按此降级渲染。
+
+实现要点：一次扫描归档成 `latest-md` 与 `latest-json` 两行，页面点开的是 Markdown 行，
+因此服务端顺着 `reports.scan_id` 找同一轮的 JSON 产物，不要求前端猜 kind；找不到时返回
+**415 `unsupported_media_type`**（诚实提示改走原文下载），而不是拿 Markdown 硬凑一个结构化对象；
+同一轮 JSON 行本身读不出来时原样上抛，映射成 410/503，让运维去找存储而不是找渲染。
+正文读取上限 8 MiB，超出返回 **413 `payload_too_large`**。口径见 `18-方案` §9.2、§11.2。
+
+**体检发起面 v1.1（2026-11-04 契约冻结；P9.11/P9.12/P9.13 已实现）**：
+
+- `format` 只决定**归档哪一种产物**：`json` 供报告详情页按区块渲染结论与证据，`markdown` 是一份可读正文。
+  一次体检只归档选中的那一种，`latest-md` 与 `latest-json` 不再成对出现；取值非法 400，留空按 `json`。
+- `GET /api/v1/scans/{id}` 的 `stages` 与报告里的 `StageRecord` 同源同结构（`name`/`title`/`status`/`elapsed`/
+  `progress`/`detail`，`status` ∈ `running`|`done`|`failed`|`skipped`），因此页面上的实时阶段进度与报告末尾的
+  阶段账不可能长得不一样；无阶段时字段省略，老客户端不受影响。没有百分比字段，也就不会有编造的预估进度。
+- `POST /api/v1/scans/{id}/cancel` 只停得动 `pending`/`running` 的任务，终态任务回 409。取消经 context 向上传播，
+  不强杀 goroutine；`s.running` 要等任务真正退出才放开，所以「停止」不会顺手放行第二次并发体检
+  （两个采集器同时打同一个 API Server 比不允许多跑更糟）。挂在 `running` 的阶段冻结为 `failed` + 「已停止」。
+- `GET /api/v1/reports/summary` 与列表复用同一套三层归属判定与同一组过滤参数（`clusterId`/`kind`/`scanId`/
+  `scopeCategory`），**分页参数不参与统计**：总览回答的是「我看得见的报告里各类有多少」，翻页时它必须不变。
+- `GET /api/v1/reports/{id}/export` 是 `/report` 的按需产物：读同一份 JSON 归档、走同一个授权判定、当场渲染
+  一份 Markdown 附件，**不写回对象存储**，归档里始终只有一个事实源。归档本来就是 Markdown 的行原样返回（幂等，不做二次渲染），页面上因此只在 JSON 行给这个入口。
+- 报告类别口径：`scopeCategory=cluster`（集群体检）/ `business`（业务体检，namespace 与 pod）/
+  `other`（范围未记录的早期存量与命令行产物）。`系统体检` 是**预留类别**，本期不实现、不接受该取值。
+
+口径见 `18-方案` §10.1、§10.2、§11.1、§15。
 
 `GET /api/v1/auth/scope` 返回：
 
