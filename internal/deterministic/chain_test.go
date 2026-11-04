@@ -1,6 +1,7 @@
 package deterministic_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/k8s-ai/k8s-ai/internal/deterministic"
@@ -59,7 +60,7 @@ func checkIncidentInvariants(t *testing.T, c *chain, inc *model.Incident) {
 		if e.Mechanism == "" {
 			t.Errorf("因果边 %s->%s 缺少传导机制说明", e.SourceFinding, e.TargetFinding)
 		}
-		if e.Confidence != model.RootCauseProbable {
+		if e.Method == "correlation" && e.Confidence != model.RootCauseProbable {
 			t.Errorf("因果边 %s->%s 置信度 = %s，关联层不得自行升格为 %s",
 				e.SourceFinding, e.TargetFinding, e.Confidence, model.RootCauseConfirmed)
 		}
@@ -230,5 +231,27 @@ func TestStorageFailurePropagatesToWorkload(t *testing.T) {
 	}
 	if !c.hasDiagnoser("STORAGE_CLASS_INVALID") {
 		t.Error("同一条链上的 StorageClass 根因没有参与诊断")
+	}
+}
+
+func TestProbeDiagnosisUsesCapturedProbeConfiguration(t *testing.T) {
+	s := newSnapshot()
+	nodeOK(s)
+	addPod(s, "prod", "web-1", func(p *model.PodInfo) {
+		p.NodeName = "node-1"
+		p.Containers = []model.ContainerInfo{{
+			Name: "web", State: "Running", Ready: false,
+			Probes: []model.ProbeInfo{{
+				Kind: "readiness", Action: "HTTP GET", Path: "/ready", Port: "80",
+			}},
+		}}
+	})
+	addEvent(s, s.Pods[0].Ref, "Warning", "Unhealthy",
+		"Readiness probe failed: HTTP probe failed with statuscode: 404")
+
+	c := runChain(t, s)
+	diag, _ := c.requireDiagnoser(t, "Unhealthy", "POD_PROBE_FAILING")
+	if !strings.Contains(diag.RootCause, "/ready") || !strings.Contains(diag.RootCause, "404") {
+		t.Fatalf("根因必须带出已采集的探针路径与失败状态：%s", diag.RootCause)
 	}
 }

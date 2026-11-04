@@ -134,3 +134,105 @@ func TestConclusionHealthy(t *testing.T) {
 		t.Fatalf("无异常且采集完整时应判健康：%s / %s", c.Level, c.Headline)
 	}
 }
+
+func TestConclusionSeparatesBusinessFaultFromSuggestionAndUsesDetailedCause(t *testing.T) {
+	business := model.Finding{
+		ID: "f-business", Rule: "Unhealthy", Severity: model.SeverityMedium,
+		Title: "容器探针失败", Resource: model.ResourceRef{Kind: "Pod", Namespace: "app", Name: "api-0"},
+	}
+	suggestion := model.Finding{
+		ID: "f-policy", Rule: "NetworkPolicyNoDefaultDeny", Severity: model.SeverityLow,
+		Title: "缺少默认拒绝策略", Resource: model.ResourceRef{Kind: "Namespace", Name: "app"},
+		Suggestion: true,
+	}
+	r := &model.ScanResult{
+		Findings: []model.Finding{business, suggestion},
+		Incidents: []model.Incident{
+			{ID: business.ID, Title: business.Title, Severity: business.Severity, Root: model.FindingRef{ID: business.ID, Rule: business.Rule, Title: business.Title, Resource: business.Resource}},
+			{ID: suggestion.ID, Title: suggestion.Title, Severity: suggestion.Severity, Root: model.FindingRef{ID: suggestion.ID, Rule: suggestion.Rule, Title: suggestion.Title, Resource: suggestion.Resource}, Independent: true},
+		},
+		Diagnoses: []model.Diagnosis{{
+			FindingID: business.ID, IncidentID: business.ID,
+			RootCause: "探针请求 /ready 返回 404，容器无法进入 Ready 状态",
+			Summary:   "探针路径与镜像内容不匹配",
+		}},
+		HealthScore: model.HealthScore{Score: 94, Max: 100},
+	}
+	c := BuildConclusion(r)
+	if strings.Contains(c.Headline, "2 项") {
+		t.Fatalf("治理建议不应与业务故障合并计数：%s", c.Headline)
+	}
+	if !strings.Contains(c.Summary, "业务故障链 1") || !strings.Contains(c.Summary, "治理建议 1") {
+		t.Fatalf("摘要必须分开业务故障与治理建议：%s", c.Summary)
+	}
+	if len(c.TopRisks) == 0 || !strings.Contains(c.TopRisks[0], "/ready 返回 404") {
+		t.Fatalf("首要风险必须使用后端已给出的详细诊断根因：%v", c.TopRisks)
+	}
+}
+
+func TestDomainHealthIncludesRBACResourcesAndBindingFindings(t *testing.T) {
+	r := &model.ScanResult{
+		Summary: model.ClusterSummary{
+			Namespaces:          2,
+			Roles:               3,
+			RoleBindings:        4,
+			ClusterRoles:        5,
+			ClusterRoleBindings: 6,
+		},
+		Findings: []model.Finding{{
+			ID:       "rbac-1",
+			Kind:     "ClusterRoleBinding",
+			Severity: model.SeverityHigh,
+			Title:    "全通配 ClusterRole 被绑定",
+		}},
+	}
+
+	var permission *model.DomainHealth
+	for _, row := range DomainHealthList(r) {
+		if row.Domain == "权限与治理" {
+			permission = &row
+			break
+		}
+	}
+	if permission == nil {
+		t.Fatal("RBAC 资源存在时必须输出权限与治理域")
+	}
+	if permission.Total != 20 {
+		t.Fatalf("权限与治理资源总数 = %d, want 20", permission.Total)
+	}
+	if permission.Unhealthy != 1 || permission.Critical != 1 {
+		t.Fatalf("Binding Finding 应计入异常和高风险：%+v", *permission)
+	}
+}
+
+func TestRemediationItemsKeepNarrativeAndCommandFormat(t *testing.T) {
+	r := &model.ScanResult{
+		Incidents: []model.Incident{{
+			ID: "I-1", Severity: model.SeverityHigh,
+			Root: model.FindingRef{ID: "F-1", Resource: model.ResourceRef{Kind: "Pod", Namespace: "app", Name: "api-0"}},
+		}},
+		Diagnoses: []model.Diagnosis{{
+			IncidentID:           "I-1",
+			RemediationText:      "**目标**：恢复业务。\n\n1. 确认外部依赖。\n2. 修复后验证 Ready。",
+			RemediationDirection: "当前无法确认精确写入参数，不生成写命令。",
+			Investigation: []model.Command{{
+				Category: model.CmdInvestigation,
+				Text:     "kubectl -n app logs api-0 --tail=50",
+				Risk:     model.RiskSafe,
+			}},
+		}},
+	}
+	items := RemediationItems(r)
+	if len(items) < 3 {
+		t.Fatalf("文字方案、前置条件、排查命令都不得丢失: %+v", items)
+	}
+	if items[0].Format != "text" || !strings.Contains(items[0].Text, "恢复业务") {
+		t.Fatalf("完整修复方案必须是第一个文字项: %+v", items[0])
+	}
+	if items[1].Format != "text" || !strings.Contains(items[1].Text, "不生成写命令") {
+		t.Fatalf("执行边界必须保留为文字项: %+v", items[1])
+	}
+	if items[2].Format != "command" || items[2].Risk != "SAFE" {
+		t.Fatalf("可复制命令必须显式标记格式与风险: %+v", items[2])
+	}
+}

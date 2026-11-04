@@ -15,6 +15,93 @@ P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会�
 与授权架构修订（见
 `docs/02-架构与设计/13-方案-企业级身份权限与审批中心.md`，计划回写 v1.12/v1.13）。
 
+### Added（2026-11-04，体检 RBAC 采集与权限分析闭环）
+
+- 体检采集补齐 `Role`、`RoleBinding`、`ClusterRole`、`ClusterRoleBinding` 四类只读元数据，统一落到
+  `ClusterSnapshot`，并进入报告资源汇总；`Role` / `RoleBinding` 随命名空间采集，两个 Cluster 级资源保持全集群口径。
+- `RbacOverPrivileged` 规则改为按实际绑定关系判定：CRB 全通配为 High、局部通配为 Medium；
+  RB 全通配为 Medium、局部通配为 Low；仅存在全通配定义且绑定列表完整时降为 Low。
+  Finding 落在实际 Binding 上，Evidence 固定包含 `roleRef` / `binding` / `subjects` / `scope` / 命中规则，
+  不再把“角色定义了通配”误报成“主体已经获得全集群权限”。
+- 采集质量账把四次 RBAC list 合并为「RBAC 权限」一组：任意一次失败只标记 partial 并点名缺口，不再因单次失败误判整组不可用。
+- 报告汇总补齐四类 RBAC 资源计数；「权限与治理」域总数纳入
+  `Namespaces + Roles + RoleBindings + ClusterRoles + ClusterRoleBindings`，避免出现“有绑定 Finding、资源总数却为 0”，
+  Markdown 集群资源汇总同步展示。
+- 部署默认只读 RBAC 修正 PV/PVC 的 Core API group、Storage 组仅保留
+  `storageclasses` / `volumeattachments`，并补齐 HPA、PDB、RBAC 只读权限与默认 `ClusterRoleBinding` 校验；
+  Dockerfile 架构测试补 CRLF 归一化，兼容 Windows 检出。
+- 新增 `internal/scanner/collection_contract.go`：Collector 固定任务集合、RBAC 部署 YAML 与采集权限需求
+  共用一份 operation / API Group / Resource / Verb 契约，新增采集项漏授权时直接失败。
+- 回归门禁新增 RBAC Binding 风险分级、局部通配、`resourceNames`、绑定采集失败、作用域隔离、
+  报告汇总计数、采集质量 partial 与部署 RBAC 资源归属用例。
+- 验证：`go test ./...`、`go vet ./...` 全绿；`web` 侧 `npm run test` 与 `npm run build` 全绿。
+
+### Fixed（2026-11-04，P9.14 语义复核与报告分层收口）
+
+- RBAC 通配风险只认三维同时为 `*` 会漏掉 `verbs=*` 的单资源全动作、`resources=*` 的宽读权限和
+  `nonResourceURLs=*`：改为全通配 / 局部通配分级，单维通配不再逃逸；`resourceNames` 参与判断，
+  避免把对象名受限的规则描述成全集群全对象权限。
+- `list_role_bindings` / `list_cluster_role_bindings` 失败时，空切片曾被解释成“没有绑定”，
+  可能把 `cluster-admin` 从 High 降成 Low：现在绑定采集缺失时禁止输出未绑定结论。
+- 命名空间体检曾分析全局 ClusterRoleBinding、单 Pod 体检也保留全局 RBAC Finding：现在按扫描作用域隔离；
+  业务报告 `ClusterSummary` 不再把集群级资源计数冒充可见汇总。
+- Web 报告故障链证据函数只遍历 `Incident.members`，而后端 `members` 按定义不含根 Finding，
+  导致根因证据消失；现同时遍历 root + members，并让“被牵连异常”即使只有一个也正常展示。
+- 处置建议汇总补“必须处理”标记；RBAC 四类资源进入 Web 汇总标签。
+- Markdown 曾先平铺 Finding、后放故障链，和“根因优先”相反：现按“故障链 → 未归组异常 →
+  默认折叠的完整 Finding / Evidence”输出，并补根 Finding 与派生症状的证据值。
+- 真机 `test-complex` 报告复核发现：事件与日志其实已明确 `/ready`、`/healthz` 返回 404，
+  但 Web 根因区只读规则层 `Incident.RootCause`，把更具体的 `Diagnosis.RootCause` 藏在后面；
+  现根因区、结论和 Markdown 均优先使用最终诊断根因，并显示摘要与未确认边界。
+- 业务故障与治理建议混在同一“故障链”列表，页首出现“2 条故障链”但其中一条只是 default-deny
+  建议；现按 root Finding 的 `Suggestion` 分离“业务故障链 / 治理建议”，结论摘要也分开计数。
+- 传播路径、被牵连异常、证据与待排除项默认折叠；关键证据按诊断 `evidenceChain` 收敛；排查、
+  修复、验证建议与修复说明合并为一个处置框，正文走 Markdown，命令走代码块。
+- Pod 采集补 readiness/liveness/startup 探针配置（HTTP path/port、TCP、Exec、gRPC 与时序），
+  Unhealthy Finding 与确定性诊断可直接引用探针配置，不再只靠事件让模型猜测检查了哪个端点。
+- 修复区从“命令优先”改为“LLM 文字方案优先、命令可选”：`remediationText` 支持完整 Markdown，
+  `remediationDirection` 单独展示前置条件/外部操作/安全边界；`investigation` 与 `verification`
+  命令强制标注 `SAFE`。
+- 移除工具侧“必须有写命令”的规则兜底。LLM 明确表示目标值未确认时，不再追加通用
+  `rollout restart` / `scale` / 占位符 `patch`；被过滤命令的数量与类别写入
+  `DiagnosisValidation.CommandIssues`，页面和 Markdown 都明确展示。
+- `RemediationItem` 增加 `format=text|command`，顶层处置汇总也保留完整文字方案；Markdown 使用正文，
+  命令使用代码块。`remediationText/remediationDirection` 同步纳入报告脱敏边界。
+- 证据编号原先只在 Finding 内唯一（`E1`、`E2`），进入 Incident / Diagnosis 后发生跨 Finding 碰撞：
+  现统一为 `<findingID>#<evidenceID>`，校验、LLM 上下文、报告和 Web 定位共用同一引用；旧裸 E-ID 仅做输入兼容。
+- 根因同时存在于 Incident 与 Diagnosis 会产生双重事实源：现以最终合并后的 `Diagnosis` 为唯一权威，
+  服务层再投影回 Incident；确定性诊断、LLM 增强与报告不再各说一套根因。
+- Incident 内因果边曾按合法 cause/effect 两两组合生成，容易变成密集关系网：现改为从根 Finding 生长的故障树，
+  每个症状最多保留一条入边；关联层边固定 `method=correlation` + `probable`，确定性诊断器可覆盖为更具体的
+  `method=deterministic`，关联层不得自行升格 `confirmed`。
+- Finding 增加 `role=anchor/symptom/impact/advisory/independent`，由聚合层统一注入；报告不再靠标题猜
+  “主信号、派生影响、治理建议”，业务故障与建议可以稳定分离。
+- 诊断上下文预算仍按旧 `- E1` 前缀裁剪证据行，而证据已改成 `- <findingID>#E1`，导致超预算时无法裁掉证据：
+  现按 canonical 证据行识别，并在单条证据仍超预算时做最终硬收口。
+- `HighRestartCount` 曾只采重启次数、当前状态和上次原因，未采 `lastState.exitCode` 与 Pod `restartPolicy`；
+  对“Running/Completed、退出码 0、重启 36 次”会误写成异常崩溃，并可能建议无意义的 `rollout restart`。
+  现在明确区分“正常结束后被拉起”和“异常退出”；退出原因未确认时降为 `probable`，列出 previous logs /
+  启动命令 / restartPolicy 证据缺口，且不生成修复写命令。
+
+### Docs（2026-11-05，P9.14 全仓口径统一）
+
+- 架构与流程：`01-系统架构与技术方案.md`、`07-采集与扫描流程.md`、`18-方案-体检诊断体系升级-四期.md`
+  统一为“最终 Diagnosis 是根因唯一事实源，Incident 是投影”；删除“根因只由确定性层判定”与
+  “Incident.RootCause 可独立演进”的旧说法。
+- 证据与测试：`02-数据模型与数据字典.md`、`03-API接口文档.md`、`09-测试方案.md` 统一使用
+  `FindingID#EID`；测试方案补 Finding 角色、故障树单入边、canonical 预算裁剪与退出码 0 回归。
+- 采集口径：`07-采集与扫描流程.md`、`06-性能设计.md`、`08-安全设计.md`、部署手册与技术手册同步
+  当前 Namespaces + 24 类资源 list + Events；补 HPA/PDB、RBAC 四类、ConfigMap 元数据与 Secret
+  键级元数据，明确 ConfigMap data / Secret 内容值不采集。
+- 产品与操作：`05-巡检功能优化.md` 补最终根因模型、报告处置框、Markdown/命令渲染、canonical 证据
+  与退出码 0 场景；技术手册将当前规则数更新为 35、资源口径更新为 24 类 list + Namespaces + Events。
+- 原始建议文档：`k8s-ai 巡检报告渲染优化建议.md` 与
+  `k8s-ai 巡检采集能力与 RBAC 权限优化指导方案.md` 顶部增加实施状态，明确其“现有缺陷”段落是
+  实施前分析，当前权威口径以方案 18 为准。
+- 开发计划升 v1.77；P9.14 任务数与工时不变。本轮不新增功能，只消除同实现不同文档口径。
+- 新增 **ADR-047**，正式记录“保留 Scanner、证据引用全局化、最终 Diagnosis 单一事实源、
+  Finding 角色、故障树单入边”的架构决策。
+
 ### Fixed（2026-11-04，体检真机复验修正）
 
 - 登录页样式越界：`web/src/styles/login-tech.css` 的变量与元素规则泄漏到全局，登录后所有页面的底色与
@@ -47,7 +134,7 @@ P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会�
   不写回对象存储；授权与 `/content` 同一套判定，越权与不存在同形 404。
 - 新增 `POST /api/v1/scans/{id}/cancel`（`internal/server/scan_cancel.go`）：`StatusCancelled` 独立终态、
   running 阶段冻结为 failed「已停止」、`scan.cancel` 审计、owner 判定与 `GET /scans/{id}` 同形 404、已结束 409。
-- `GET /scans/{id}` 返回 `stages` 十阶段账；页面在发起后即时渲染阶段清单与 `N / M 阶段`（不报百分比）并给出「停止体检」，
+- `GET /scans/{id}` 返回 `stages` 13 项阶段账；页面在发起后即时渲染阶段清单与 `N / M 阶段`（不报百分比）并给出「停止体检」，
   修掉「点发起没过程、报告结尾才有过程」。
 - 新增 `GET /api/v1/reports/summary`（`total/cluster/business/other/markdown/json/available`）+ `store.ReportStats`
   + `ReportQuery.ScopeCategory`，列表页用五张总览卡替掉「当前页」计数；列表补 `createdByName`（`withAuthorNames` 整表读用户一次，失败降级空串）。
@@ -72,7 +159,7 @@ P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会�
   不通过即回落确定性结论并标 `validation.downgraded`，伪造证据与臆造资源必被拦下。
 - 采集完整性：`internal/scanner/quality.go` 计划 / 执行 / 部分三本账 + 完整性 full / partial / insufficient + 健康分封顶与 `capReason` 累积。
 - 报告模型与 API：`internal/model/inspection.go` + `internal/report/inspection.go` 九区块统一模型与结论四级；`GET /api/v1/reports/{id}/report` 返回
-  `{report, schemaVersion, legacy, inspection}`（非结构化 415、超预算 413、未命中 404，读鉴权与审计复用报告面既有闸门）；巡检阶段账十阶段 `StageRecord`（按设计不报百分比）。
+  `{report, schemaVersion, legacy, inspection}`（非结构化 415、超预算 413、未命中 404，读鉴权与审计复用报告面既有闸门）；巡检阶段账 13 项 `StageRecord`（按设计不报百分比）。
 - Web：报告详情页 `web/src/views/report/ReportDetailView.vue`（九区块 + 巡检过程 + 原始数据，区块顺序同方案 18 §9）+ 路由 `report/:id` + `api/reports.getStructuredReport` + 报告清单「详情」入口。
 
 ### Fixed（2026-11-04，P9 复核修 8 处缺陷）

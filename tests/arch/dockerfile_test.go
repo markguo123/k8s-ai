@@ -34,6 +34,7 @@ func readRepoFile(t *testing.T, rel ...string) string {
 // buildBlock 取出 BEGIN/END 之间的构建阶段（含标记行本身，顺带断言标记成对出现）。
 func buildBlock(t *testing.T, content, name string) string {
 	t.Helper()
+	content = strings.ReplaceAll(content, "\r\n", "\n")
 	i := strings.Index(content, buildBlockBegin)
 	j := strings.Index(content, buildBlockEnd)
 	if i < 0 || j < 0 || j < i {

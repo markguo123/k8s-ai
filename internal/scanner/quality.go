@@ -42,7 +42,9 @@ var collectionKindGroups = []struct {
 	{"networkpolicies", "NetworkPolicy", []string{"list_network_policies"}},
 	{"autoscaling", "HPA", []string{"list_hpa"}},
 	{"poddisruption", "PDB", []string{"list_pdb"}},
-	{"rbac", "ClusterRole", []string{"list_cluster_roles"}},
+	{"rbac", "RBAC 权限", []string{
+		"list_roles", "list_role_bindings", "list_cluster_roles", "list_cluster_role_bindings",
+	}},
 	{"config", "ConfigMap", []string{"list_config_maps"}},
 	{"secrets", "Secret 元数据", []string{"list_secret_meta"}},
 	{"events", "Events", []string{"list_events"}},

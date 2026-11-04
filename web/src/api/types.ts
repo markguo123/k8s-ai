@@ -535,6 +535,8 @@ export interface Finding {
   category?: string
   kind?: string
   suggestion?: boolean
+  /** anchor | symptom | impact | advisory | independent */
+  role?: string
 }
 
 /** 故障链里的一条因果关系（谁把故障传给了谁，凭什么）。 */
@@ -548,6 +550,7 @@ export interface CausalEdge {
   rule?: string
   evidenceRefs?: string[]
   confidence: string
+  method?: string
 }
 
 /** 故障成员的精简引用（Incident.members / HistoryDiff 复用）。 */
@@ -596,6 +599,7 @@ export interface DiagnosisValidation {
   issues?: string[]
   fabricatedEvidence?: string[]
   unknownResources?: string[]
+  commandIssues?: string[]
   downgraded?: boolean
 }
 
@@ -726,6 +730,8 @@ export interface DomainHealth {
 export interface RemediationItem {
   /** investigation | remediation | verification。 */
   kind: string
+  /** text | command；旧报告为空时按文本前缀兼容判断。 */
+  format?: string
   text: string
   risk?: string
   target?: string

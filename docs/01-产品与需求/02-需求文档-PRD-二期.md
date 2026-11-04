@@ -1070,7 +1070,9 @@ P6 收尾（审计、MCP 接口、RBAC、文档、全量测试）
 
 ## 28.2 规则补全清单（按成本分级）
 
-> 依据：采集器（internal/scanner/collector.go）目前采集 16 类资源 + Events = 17 类，
+> 依据：二期基线时采集器（internal/scanner/collector.go）采集 16 类资源 + Events = 17 类；
+> 四期 P9 当前已扩展为 Namespaces + 24 类资源 list + Events（含 HPA/PDB、RBAC 四类只读元数据、
+> ConfigMap 元数据与 Secret 键级元数据，明细见 `07-采集与扫描流程.md` v2.1），
 > 已含 Pods/Nodes/Deployments/ReplicaSets/StatefulSets/DaemonSets/Jobs/CronJobs/PVC/PV/StorageClass/VolumeAttachment/Ingress/NetworkPolicy/Service/EndpointSlice。
 
 ### 28.2.1 A 级：复用现有采集（成本最低）

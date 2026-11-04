@@ -130,47 +130,7 @@ func Relate(findings []model.Finding, incs []model.Incident, g *relations.Graph,
 		}
 		inc.Independent = len(inc.Members) == 0
 
-		var edges []model.CausalEdge
-		for _, e := range members { // target：症状
-			ef, ok := byID[e.ID]
-			if !ok {
-				continue
-			}
-			causes := causalCauses[ef.Rule]
-			if len(causes) == 0 {
-				continue
-			}
-			for _, c := range members { // source：疑似成因
-				if c.ID == ef.ID {
-					continue
-				}
-				if !containsString(causes, c.Rule) {
-					continue
-				}
-				cf, ok := byID[c.ID]
-				if !ok {
-					continue
-				}
-				edge, ok := connect(g, cf.Resource, ef.Resource)
-				if !ok {
-					continue
-				}
-				edge.SourceFinding = cf.ID
-				edge.TargetFinding = ef.ID
-				edge.SourceResource = cf.Resource
-				edge.TargetResource = ef.Resource
-				edge.Rule = cf.Rule + "->" + ef.Rule
-				edge.Confidence = model.RootCauseProbable
-				edge.EvidenceRefs = mergeIDs(evidenceIDs(cf), evidenceIDs(ef))
-				edges = append(edges, edge)
-			}
-		}
-		sort.SliceStable(edges, func(a, b int) bool {
-			if edges[a].TargetFinding != edges[b].TargetFinding {
-				return edges[a].TargetFinding < edges[b].TargetFinding
-			}
-			return edges[a].SourceFinding < edges[b].SourceFinding
-		})
+		edges := growCausalTree(inc, members, byID, g)
 		inc.CausalEdges = mergeEdges(inc.CausalEdges, edges)
 		inc.EvidenceRefs = mergeIDs(inc.EvidenceRefs, incidentEvidence(inc, byID))
 		inc.ImpactChain = impactChain(inc)
@@ -183,6 +143,97 @@ func Relate(findings []model.Finding, incs []model.Incident, g *relations.Graph,
 			inc.EvidenceGaps = append(inc.EvidenceGaps, "未构建资源关系图：本故障链的因果边未经资源关系校验")
 		}
 	}
+}
+
+// growCausalTree 从根信号生长一棵候选故障树。
+// 每个症状只保留一条最能解释它的入边，避免同一 Incident 内所有合法
+// cause/effect 两两组合造成边爆炸。更具体的确定性诊断边会通过 mergeEdges 优先保留。
+func growCausalTree(inc *model.Incident, members []model.FindingRef, byID map[string]model.Finding, g *relations.Graph) []model.CausalEdge {
+	seen := map[string]bool{inc.Root.ID: true}
+	for _, edge := range inc.CausalEdges {
+		seen[edge.SourceFinding] = true
+		seen[edge.TargetFinding] = true
+	}
+	order := make(map[string]int, len(members))
+	for i, member := range members {
+		order[member.ID] = i
+	}
+	var out []model.CausalEdge
+	for {
+		progress := false
+		for _, targetRef := range members {
+			if seen[targetRef.ID] {
+				continue
+			}
+			target, ok := byID[targetRef.ID]
+			if !ok {
+				continue
+			}
+			causes := causalCauses[target.Rule]
+			if len(causes) == 0 {
+				continue
+			}
+			bestCause := -1
+			bestOrder := len(members) + 1
+			var best model.CausalEdge
+			for _, sourceRef := range members {
+				if !seen[sourceRef.ID] || sourceRef.ID == targetRef.ID {
+					continue
+				}
+				causeIndex := indexString(causes, sourceRef.Rule)
+				if causeIndex < 0 {
+					continue
+				}
+				source, ok := byID[sourceRef.ID]
+				if !ok {
+					continue
+				}
+				edge, ok := connect(g, source.Resource, target.Resource)
+				if !ok {
+					continue
+				}
+				sourceOrder := order[sourceRef.ID]
+				if bestCause < 0 || causeIndex < bestCause ||
+					(causeIndex == bestCause && sourceOrder < bestOrder) {
+					edge.SourceFinding = source.ID
+					edge.TargetFinding = target.ID
+					edge.SourceResource = source.Resource
+					edge.TargetResource = target.Resource
+					edge.Rule = source.Rule + "->" + target.Rule
+					edge.Confidence = model.RootCauseProbable
+					edge.Method = "correlation"
+					edge.EvidenceRefs = mergeIDs(evidenceIDs(source), evidenceIDs(target))
+					best = edge
+					bestCause = causeIndex
+					bestOrder = sourceOrder
+				}
+			}
+			if bestCause >= 0 {
+				out = append(out, best)
+				seen[targetRef.ID] = true
+				progress = true
+			}
+		}
+		if !progress {
+			break
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].TargetFinding != out[j].TargetFinding {
+			return out[i].TargetFinding < out[j].TargetFinding
+		}
+		return out[i].SourceFinding < out[j].SourceFinding
+	})
+	return out
+}
+
+func indexString(items []string, want string) int {
+	for i, item := range items {
+		if item == want {
+			return i
+		}
+	}
+	return -1
 }
 
 // connect 在资源关系图上寻找一条 ≤maxCausalHops 跳的真实关系路径。
@@ -314,7 +365,7 @@ func evidenceIDs(f model.Finding) []string {
 	ids := make([]string, 0, len(f.Evidence))
 	for _, ev := range f.Evidence {
 		if ev.ID != "" {
-			ids = append(ids, ev.ID)
+			ids = append(ids, model.GlobalEvidenceRef(f.ID, ev.ID))
 		}
 	}
 	return ids

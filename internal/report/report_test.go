@@ -86,6 +86,8 @@ func TestRenderRedaction(t *testing.T) {
 	r := testResult()
 	r.Findings[0].Evidence = append(r.Findings[0].Evidence,
 		model.Evidence{ID: "E2", Kind: model.EvLog, Key: "logs/current", Value: "error token=abc-secret-123"})
+	r.Diagnoses[0].RemediationText = "修复时不要泄露 token=abc-secret-123"
+	r.Diagnoses[0].RemediationDirection = "密码 token=abc-secret-123 只能人工输入"
 	out, err := JSONRenderer{}.Render(r)
 	if err != nil {
 		t.Fatal(err)
@@ -293,7 +295,7 @@ func TestRenderIncidents(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(md)
-	for _, want := range []string{"关联问题（派生影响）", "副本不足", "无 Endpoint"} {
+	for _, want := range []string{"故障链与根因分析", "派生症状", "副本不足", "无 Endpoint"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("markdown 缺少 %q", want)
 		}
@@ -307,6 +309,77 @@ func TestRenderIncidents(t *testing.T) {
 	term := RenderTerminal(r)
 	if !strings.Contains(term, "**关联（派生）**") || !strings.Contains(term, "- 副本不足") || !strings.Contains(term, "- 无 Endpoint") {
 		t.Fatalf("终端缺少派生折叠: %q", term)
+	}
+}
+
+func TestMarkdownPrioritizesIncidentLayerAndFoldsCompleteFindings(t *testing.T) {
+	rootID := "root-1"
+	memberID := "pod-1"
+	independentID := "hpa-1"
+	r := &model.ScanResult{
+		Meta:          model.ScanMeta{ServerVersion: "v1.28.13"},
+		SchemaVersion: model.ReportSchemaVersion,
+		Findings: []model.Finding{
+			{
+				ID: rootID, Rule: "PVCPending", Kind: "PVC", Severity: model.SeverityHigh,
+				Title:    "PVC 一直 Pending",
+				Resource: model.ResourceRef{Kind: "PVC", Namespace: "prod", Name: "data"},
+				Evidence: []model.Evidence{{ID: "E1", Key: "status.phase", Value: "Pending"}},
+			},
+			{
+				ID: memberID, Rule: "CrashLoopBackOff", Kind: "Pod", Severity: model.SeverityCritical,
+				Title:    "Pod 反复崩溃",
+				Resource: model.ResourceRef{Kind: "Pod", Namespace: "prod", Name: "web-0"},
+				Evidence: []model.Evidence{{ID: "E1", Kind: model.EvLog, Key: "logs/current", Value: "panic: database unavailable"}},
+			},
+			{
+				ID: independentID, Rule: "HpaReplicasMismatch", Kind: "HPA", Severity: model.SeverityMedium,
+				Title:    "HPA 当前副本与期望不一致",
+				Resource: model.ResourceRef{Kind: "HPA", Namespace: "ops", Name: "worker"},
+				Evidence: []model.Evidence{{ID: "E1", Key: "desiredReplicas", Value: "4"}},
+			},
+		},
+		Incidents: []model.Incident{{
+			ID:              rootID,
+			Title:           "存储未就绪导致 Pod 崩溃",
+			Severity:        model.SeverityCritical,
+			Root:            model.FindingRef{ID: rootID, Rule: "PVCPending", Severity: model.SeverityHigh, Title: "PVC 一直 Pending", Resource: model.ResourceRef{Kind: "PVC", Namespace: "prod", Name: "data"}},
+			Members:         []model.FindingRef{{ID: memberID, Rule: "CrashLoopBackOff", Severity: model.SeverityCritical, Title: "Pod 反复崩溃", Resource: model.ResourceRef{Kind: "Pod", Namespace: "prod", Name: "web-0"}}},
+			RootCauseStatus: model.RootCauseProbable,
+			RootCause:       "Pod 异常退出，具体原因待确认",
+			EvidenceRefs:    []string{"E1"},
+		}},
+		Diagnoses: []model.Diagnosis{{
+			FindingID: rootID, IncidentID: rootID, RootCause: "PVC 未绑定导致卷挂载失败",
+			Confidence: 0.7, EvidenceChain: []string{"E1"}, LLMUsed: false,
+			Investigation: []model.Command{{Category: model.CmdInvestigation, Text: "kubectl -n prod describe pvc data", Risk: model.RiskSafe}},
+		}},
+	}
+
+	out, err := MarkdownRenderer{}.Render(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	incidentAt := strings.Index(s, "故障链与根因分析")
+	otherAt := strings.Index(s, "其他异常")
+	detailsAt := strings.Index(s, "完整异常与证据")
+	if incidentAt < 0 || otherAt < 0 || detailsAt < 0 || !(incidentAt < otherAt && otherAt < detailsAt) {
+		t.Fatalf("Markdown 必须按“故障链 → 其他异常 → 完整数据”排序：\n%s", s)
+	}
+	if !strings.Contains(s, "root-1#E1") || !strings.Contains(s, "status.phase") {
+		t.Fatalf("故障链段落必须带根因证据值与引用号：\n%s", s)
+	}
+	diagnosisAt := strings.Index(s, "PVC 未绑定导致卷挂载失败")
+	evidenceAt := strings.Index(s, "展开故障链证据")
+	if diagnosisAt < 0 || evidenceAt < 0 || diagnosisAt > evidenceAt {
+		t.Fatalf("故障链应先展示后端诊断根因，再进入折叠证据：\n%s", s)
+	}
+	if !strings.Contains(s, "HPA 当前副本与期望不一致") {
+		t.Fatalf("独立异常不能丢：\n%s", s)
+	}
+	if !strings.Contains(s, "<details>") || !strings.Contains(s, "panic: database unavailable") {
+		t.Fatalf("完整 Finding 与 Evidence 应默认折叠但保留数据：\n%s", s)
 	}
 }
 

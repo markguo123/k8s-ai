@@ -62,5 +62,6 @@ type DiagnosisValidation struct {
 	Issues             []string `json:"issues,omitempty"`
 	FabricatedEvidence []string `json:"fabricatedEvidence,omitempty"` // LLM 引用了不存在的证据 ID
 	UnknownResources   []string `json:"unknownResources,omitempty"`   // LLM 提到快照里不存在的资源
+	CommandIssues      []string `json:"commandIssues,omitempty"`      // LLM 命令因目标/参数不完整被过滤的摘要
 	Downgraded         bool     `json:"downgraded,omitempty"`         // 因证据不足下调了置信度
 }

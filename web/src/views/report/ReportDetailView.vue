@@ -52,6 +52,7 @@ import type {
   ReportView,
   StructuredReportEnvelope,
 } from '@/api/types'
+import MarkdownView from '@/components/chat/MarkdownView.vue'
 import TechEmptyState from '@/components/TechEmptyState.vue'
 
 const route = useRoute()
@@ -97,7 +98,14 @@ const diagnosisByIncident = computed(() => {
 })
 
 /** 一次体检里「谁被判成了根因」：故障链之外的独立异常也要能一眼认出。 */
-const incidentCount = computed(() => insp.value?.incidents?.length ?? 0)
+const operationalIncidents = computed(() =>
+  (insp.value?.incidents ?? []).filter((incident) => !findingsById.value.get(incident.root.id)?.suggestion),
+)
+const advisoryIncidents = computed(() =>
+  (insp.value?.incidents ?? []).filter((incident) => findingsById.value.get(incident.root.id)?.suggestion),
+)
+const incidentCount = computed(() => operationalIncidents.value.length)
+const advisoryCount = computed(() => advisoryIncidents.value.length)
 const findingCount = computed(() => insp.value?.findings?.length ?? 0)
 const severityCounts = computed(() => {
   const counts: Record<string, number> = {}
@@ -191,6 +199,14 @@ const RISK_META: Record<string, { label: string; tone: string }> = {
   CRITICAL: { label: '高危', tone: 'err' },
 }
 
+const FINDING_ROLE_LABELS: Record<string, string> = {
+  anchor: '主信号',
+  symptom: '关联症状',
+  impact: '业务影响',
+  advisory: '治理建议',
+  independent: '独立异常',
+}
+
 const SUMMARY_LABELS: Record<string, string> = {
   namespaces: '命名空间',
   nodes: '节点',
@@ -201,6 +217,10 @@ const SUMMARY_LABELS: Record<string, string> = {
   storage: '存储对象',
   ingresses: 'Ingress',
   networkPolicies: 'NetworkPolicy',
+  roles: 'Role',
+  roleBindings: 'RoleBinding',
+  clusterRoles: 'ClusterRole',
+  clusterRoleBindings: 'ClusterRoleBinding',
   components: '关键组件',
   events: '事件',
 }
@@ -249,14 +269,50 @@ function riskMeta(risk: string | undefined): { label: string; tone: string } {
   return metaOf(RISK_META, risk, risk || '未标注风险')
 }
 
+function findingRoleLabel(role: string | undefined): string {
+  return role ? (FINDING_ROLE_LABELS[role] ?? role) : ''
+}
+
 const conclusion = computed<Conclusion | null>(() => insp.value?.conclusion ?? null)
 const conclusionMeta = computed(() =>
   metaOf(CONCLUSION_META, conclusion.value?.level, '结论未记录'),
 )
-const conclusionHeadline = computed(
-  () => conclusion.value?.headline || '这份报告没有总体结论区块（四期之前的报告结构）',
+const primaryIncident = computed(() => operationalIncidents.value[0])
+const primaryDiagnosis = computed(() =>
+  primaryIncident.value ? diagnosisByIncident.value.get(primaryIncident.value.id) : undefined,
 )
-const conclusionSummary = computed(() => conclusion.value?.summary ?? '')
+const primaryRootCause = computed(() =>
+  primaryIncident.value ? incidentRootCause(primaryIncident.value) : '',
+)
+const primaryBusinessImpact = computed(() => {
+  const incident = primaryIncident.value
+  if (!incident) {
+    return ''
+  }
+  const impact = incidentImpactLabels(incident)
+  return impact.length ? impact.join('；') : incident.title
+})
+const conclusionHeadline = computed(() => {
+  if (primaryIncident.value) {
+    return `${resourceText(primaryIncident.value.root.resource)}：${primaryBusinessImpact.value}`
+  }
+  return conclusion.value?.headline || '这份报告没有总体结论区块（四期之前的报告结构）'
+})
+const conclusionSummary = computed(() => {
+  if (!insp.value || !primaryIncident.value) {
+    return conclusion.value?.summary ?? ''
+  }
+  const reportScore = insp.value.healthScore
+  const parts = [
+    `健康评分 ${reportScore?.score ?? '—'}/${reportScore?.max ?? 100}`,
+    `业务故障链 ${incidentCount.value} 条`,
+    `治理建议 ${advisoryCount.value} 项`,
+  ]
+  if (insp.value.collection?.integrity) {
+    parts.push(`采集完整性 ${insp.value.collection.integrity}`)
+  }
+  return `${parts.join('；')}。`
+})
 const topRisks = computed(() => conclusion.value?.topRisks ?? [])
 const priorities = computed(() => conclusion.value?.priorities ?? [])
 const dataCaveats = computed(() => conclusion.value?.dataCaveats ?? [])
@@ -334,6 +390,7 @@ const clusterLabel = computed(() => {
     return fromScan
   }
   // 页面体检不绑定已登记集群：没有集群身份就留空，编一个「平台集群」只会让人以为真有这么个集群。
+  return ''
 })
 
 const summaryChips = computed(() => {
@@ -373,7 +430,7 @@ async function load(): Promise<void> {
     envelope.value = data
     loadError.value = ''
     // 第一条故障链默认展开：进来第一眼就该看到「最要紧的那个原因」。
-    const first = data.inspection?.incidents?.[0]
+    const first = operationalIncidents.value[0]
     if (first && openIncidents.value.length === 0) {
       openIncidents.value = [first.id]
     }
@@ -476,7 +533,7 @@ function toggleFinding(id: string): void {
 }
 
 function expandAllIncidents(): void {
-  const all = insp.value?.incidents?.map((item) => item.id) ?? []
+  const all = operationalIncidents.value.map((item) => item.id)
   openIncidents.value = openIncidents.value.length === all.length ? [] : all
 }
 
@@ -501,27 +558,71 @@ function isLongEvidence(value: string): boolean {
 }
 
 /**
- * 一条故障链的证据 = 链上每个成员异常的证据并集。
- *
- * 后端在 Incident.evidenceRefs 里给的是「成员 id#证据 id」形式（诊断提示词要求模型
- * 这么引用），这里同样按这个形式标注，读者才能把根因里的每条 evidenceChain 引用
- * 落到一块具体证据上。
+ * 故障链默认只展示诊断实际引用的关键证据，不再把所有成员的全部事件和日志铺满首屏。
+ * 未给证据链时回退到根 Finding 的前几条证据；完整证据仍在“完整异常清单”里。
  */
 function incidentEvidence(incident: Incident): Array<{ ref: string; evidence: Evidence; owner: string }> {
   const out: Array<{ ref: string; evidence: Evidence; owner: string }> = []
   const seen = new Set<string>()
-  for (const member of incident.members ?? []) {
-    const finding = findingsById.value.get(member.id)
-    for (const evidence of finding?.evidence ?? []) {
-      const ref = `${member.id}#${evidence.id}`
-      if (seen.has(ref)) {
-        continue
-      }
+  const rootFinding = findingsById.value.get(incident.root.id)
+  const memberFindings = (incident.members ?? [])
+    .map((member) => findingsById.value.get(member.id))
+    .filter((finding): finding is Finding => finding !== undefined)
+  const refs = diagnosisByIncident.value.get(incident.id)?.evidenceChain ?? []
+
+  const add = (finding: Finding | undefined, evidenceID: string) => {
+    const evidence = finding?.evidence?.find((item) => item.id === evidenceID)
+    if (!finding || !evidence) {
+      return
+    }
+    const ref = `${finding.id}#${evidence.id}`
+    if (!seen.has(ref)) {
       seen.add(ref)
-      out.push({ ref, evidence, owner: member.id })
+      out.push({ ref, evidence, owner: finding.id })
+    }
+  }
+
+  for (const rawRef of refs) {
+    const [owner, evidenceID] = rawRef.includes('#')
+      ? rawRef.split('#', 2)
+      : ['', rawRef]
+    if (owner) {
+      add(findingsById.value.get(owner), evidenceID)
+      continue
+    }
+    const finding =
+      rootFinding?.evidence?.some((evidence) => evidence.id === evidenceID)
+        ? rootFinding
+        : memberFindings.find((candidate) =>
+            candidate.evidence?.some((evidence) => evidence.id === evidenceID),
+          )
+    add(finding, evidenceID)
+  }
+
+  if (!out.length) {
+    for (const evidence of (rootFinding?.evidence ?? []).slice(0, 6)) {
+      add(rootFinding, evidence.id)
     }
   }
   return out
+}
+
+function incidentDiagnosis(incident: Incident): Diagnosis | undefined {
+  return diagnosisByIncident.value.get(incident.id)
+}
+
+function incidentMethod(incident: Incident): string {
+  return incidentDiagnosis(incident)?.source || incident.rootCauseMethod || ''
+}
+
+function incidentRootCause(incident: Incident): string {
+  return incidentDiagnosis(incident)?.rootCause || incident.rootCause || '未定位到根因'
+}
+
+function incidentImpactLabels(incident: Incident): string[] {
+  return (incident.members ?? [])
+    .filter((member) => ['DeploymentReplica', 'StatefulSetReplica', 'ServiceNoEndpoint'].includes(member.rule))
+    .map((member) => member.title)
 }
 
 const INCIDENT_EVIDENCE_SCOPE = 'incident'
@@ -567,8 +668,23 @@ function commandsOf(diagnosis: Diagnosis | undefined, kind: string): DiagnosisCo
   return diagnosis.verification ?? []
 }
 
+function commandRiskMeta(command: DiagnosisCommand, kind: string): { label: string; tone: string } {
+  const risk = command.risk || (kind === 'investigation' || kind === 'verification' ? 'SAFE' : '')
+  return riskMeta(risk)
+}
+
 function remediationOfKind(kind: string): RemediationItem[] {
   return remediation.value.filter((item) => item.kind === kind)
+}
+
+function isRemediationCommand(item: RemediationItem): boolean {
+  if (item.format === 'command') {
+    return true
+  }
+  if (item.format === 'text') {
+    return false
+  }
+  return /^(kubectl|helm|crictl|journalctl|systemctl|curl|openssl|df|ls)\b/.test(item.text.trim())
 }
 
 onMounted(load)
@@ -643,6 +759,13 @@ defineExpose({
             <span class="faint">总体结论由程序从规则与诊断结果推导，未经大模型改写</span>
           </div>
           <h3 class="headline">{{ conclusionHeadline }}</h3>
+          <div v-if="primaryIncident && primaryRootCause" class="primary-cause">
+            <span class="sub-title">直接根因</span>
+            <MarkdownView :text="primaryRootCause" />
+            <p v-if="primaryDiagnosis?.uncertainty" class="primary-uncertainty faint">
+              未确认边界：{{ primaryDiagnosis.uncertainty }}
+            </p>
+          </div>
           <p v-if="conclusionSummary" class="summary">{{ conclusionSummary }}</p>
           <div v-if="topRisks.length" class="list-block">
             <span class="sub-title">主要风险</span>
@@ -677,9 +800,9 @@ defineExpose({
       <!-- 2 概览：规模、等级分布、诊断账 -->
       <div class="stat-grid">
         <div class="card stat">
-          <div class="l">异常总数</div>
-          <div class="v mono">{{ findingCount }}</div>
-          <span class="u">{{ incidentCount }} 条故障链</span>
+          <div class="l">业务故障链</div>
+          <div class="v mono">{{ incidentCount }}</div>
+          <span class="u">{{ findingCount }} 条完整异常 · {{ advisoryCount }} 项治理建议</span>
         </div>
         <div class="card stat">
           <div class="l">确定性诊断</div>
@@ -723,11 +846,11 @@ defineExpose({
         <span class="pill mute">{{ llmModeText }}</span>
       </div>
 
-      <!-- 3 故障链：根因 / 因果边 / 影响链 / 证据 / 处置 -->
+      <!-- 3 业务故障链：只放真实业务异常；治理建议单独成区 -->
       <section class="block">
         <div class="block-head">
-          <h3 class="block-title">故障链 <span class="mono faint">{{ incidentCount }}</span></h3>
-          <span class="block-hint faint">按根因聚合：一条链上的多个异常往往只需要修一处</span>
+          <h3 class="block-title">业务故障链 <span class="mono faint">{{ incidentCount }}</span></h3>
+          <span class="block-hint faint">优先回答“业务为什么不可用”，根因结论来自后端诊断</span>
           <el-button
             v-if="incidentCount > 1"
             class="block-action"
@@ -739,9 +862,9 @@ defineExpose({
           </el-button>
         </div>
 
-        <div v-if="incidentCount" class="card list-card">
+        <div v-if="incidentCount" class="card list-card fault-chain-list">
           <article
-            v-for="incident in insp?.incidents ?? []"
+            v-for="incident in operationalIncidents"
             :key="incident.id"
             class="item"
             :class="{ open: openIncidents.includes(incident.id) }"
@@ -757,6 +880,14 @@ defineExpose({
               <span class="t ellipsis strong">{{ incident.title }}</span>
               <span class="mono faint ellipsis" :title="resourceText(incident.root.resource)">
                 {{ resourceText(incident.root.resource) }}
+              </span>
+              <span
+                v-for="impact in incidentImpactLabels(incident)"
+                :key="impact"
+                class="pill err impact-pill"
+                :title="impact"
+              >
+                {{ impact }}
               </span>
               <span
                 v-if="incident.independent"
@@ -776,8 +907,8 @@ defineExpose({
                   <span class="pill" :class="metaOf(ROOT_STATUS_META, incident.rootCauseStatus, '根因未记录').tone">
                     {{ metaOf(ROOT_STATUS_META, incident.rootCauseStatus, '根因未记录').label }}
                   </span>
-                  <span v-if="incident.rootCauseMethod" class="pill info">
-                    {{ METHOD_LABELS[incident.rootCauseMethod] ?? incident.rootCauseMethod }}
+                  <span v-if="incidentMethod(incident)" class="pill info">
+                    {{ METHOD_LABELS[incidentMethod(incident)] ?? incidentMethod(incident) }}
                   </span>
                   <span v-if="incident.rootCauseRule" class="pill mute mono" title="命中的诊断器 ID">
                     {{ incident.rootCauseRule }}
@@ -790,14 +921,22 @@ defineExpose({
                     置信 {{ Math.round(incident.confidence * 100) }}%
                   </span>
                 </div>
-                <p class="root-text">{{ incident.rootCause || '未定位到根因，下方证据与缺口即为本次排查结论的边界' }}</p>
+                <div class="root-text">
+                  <MarkdownView :text="incidentRootCause(incident)" />
+                </div>
                 <p v-if="incident.confidenceBasis" class="root-basis faint">
                   可信度依据：{{ incident.confidenceBasis }}
                 </p>
+                <p v-if="incidentDiagnosis(incident)?.summary" class="root-summary">
+                  {{ incidentDiagnosis(incident)?.summary }}
+                </p>
+                <p v-if="incidentDiagnosis(incident)?.uncertainty" class="root-basis faint">
+                  未确认边界：{{ incidentDiagnosis(incident)?.uncertainty }}
+                </p>
               </div>
 
-              <div v-if="incident.causalEdges?.length" class="sub-block">
-                <span class="sub-title">因果边</span>
+              <details v-if="incident.causalEdges?.length" class="sub-block causal-panel">
+                <summary>展开传播路径（{{ incident.causalEdges.length }} 条因果边）</summary>
                 <ul class="edge-list">
                   <li v-for="(edge, index) in incident.causalEdges" :key="`edge-${index}`">
                     <span class="mono">{{ resourceText(edge.sourceResource) }}</span>
@@ -812,7 +951,7 @@ defineExpose({
                     <p class="edge-mechanism faint">{{ edge.mechanism }}</p>
                   </li>
                 </ul>
-              </div>
+              </details>
 
               <div v-if="incident.impactChain?.length" class="sub-block">
                 <span class="sub-title">影响链</span>
@@ -821,8 +960,8 @@ defineExpose({
                 </ol>
               </div>
 
-              <div v-if="(incident.members ?? []).length > 1" class="sub-block">
-                <span class="sub-title">被牵连的异常</span>
+              <details v-if="(incident.members ?? []).length > 0" class="sub-block member-panel">
+                <summary>展开被牵连的异常（{{ incident.members.length }} 个）</summary>
                 <ul class="member-list">
                   <li v-for="member in incident.members" :key="member.id">
                     <span class="pill" :class="severityTone(member.severity)">
@@ -834,106 +973,136 @@ defineExpose({
                     <span class="mono faint ellipsis">{{ resourceText(member.resource) }}</span>
                   </li>
                 </ul>
-              </div>
+              </details>
 
-              <div v-if="incidentEvidence(incident).length" class="sub-block">
-                <span class="sub-title">证据链</span>
-                <div
-                  v-for="entry in incidentEvidence(incident)"
-                  :key="entry.ref"
-                  class="evidence"
-                >
-                  <div class="evidence-head">
-                    <span class="ev-id mono" :title="`诊断结论引用号 ${entry.ref}`">{{ entry.ref }}</span>
-                    <span class="pill mute">{{ entry.evidence.kind }}</span>
-                    <span class="mono faint ellipsis">{{ entry.evidence.key }}</span>
-                    <span v-if="entry.evidence.redacted" class="pill warn">含脱敏字段</span>
-                    <button class="copy-btn" type="button" title="复制该条证据" @click="copyText(entry.evidence.value, '证据')">
-                      <el-icon><CopyDocument /></el-icon>
-                    </button>
-                  </div>
-                  <pre
-                    class="ev-value mono"
-                    :class="{ collapsed: isLongEvidence(entry.evidence.value) && !isEvidenceOpen(INCIDENT_EVIDENCE_SCOPE + incident.id, entry.evidence.id) }"
-                    @click="isLongEvidence(entry.evidence.value) ? toggleEvidence(INCIDENT_EVIDENCE_SCOPE + incident.id, entry.evidence.id) : undefined"
-                  >{{ entry.evidence.value }}</pre>
-                  <button
-                    v-if="isLongEvidence(entry.evidence.value)"
-                    class="fold-btn faint"
-                    type="button"
-                    @click="toggleEvidence(INCIDENT_EVIDENCE_SCOPE + incident.id, entry.evidence.id)"
+              <details v-if="incidentEvidence(incident).length" class="sub-block evidence-panel">
+                <summary>关键证据（{{ incidentEvidence(incident).length }} 条，点击展开）</summary>
+                <div class="evidence-list">
+                  <div
+                    v-for="entry in incidentEvidence(incident)"
+                    :key="entry.ref"
+                    class="evidence"
                   >
-                    {{
-                      isEvidenceOpen(INCIDENT_EVIDENCE_SCOPE + incident.id, entry.evidence.id)
-                        ? '收起'
-                        : `展开${entry.evidence.truncated ? '（后端已截断，完整内容见原文）' : ''}`
-                    }}
-                  </button>
-                </div>
-              </div>
-
-              <div v-if="incident.evidenceGaps?.length" class="sub-block">
-                <span class="sub-title warn-title">证据缺口</span>
-                <ul class="dot-list warn">
-                  <li v-for="(gap, index) in incident.evidenceGaps" :key="`gap-${index}`">{{ gap }}</li>
-                </ul>
-              </div>
-
-              <div v-if="incident.alternativeCauses?.length" class="sub-block">
-                <span class="sub-title">其他可能原因</span>
-                <ul class="dot-list">
-                  <li v-for="(item, index) in incident.alternativeCauses" :key="`alt-${index}`">{{ item }}</li>
-                </ul>
-              </div>
-
-              <div
-                v-for="kind in ['investigation', 'remediation', 'verification']"
-                :key="kind"
-                class="sub-block"
-              >
-                <template v-if="commandsOf(diagnosisByIncident.get(incident.id), kind).length">
-                  <span class="sub-title">{{ COMMAND_KIND_LABELS[kind] ?? kind }}建议</span>
-                  <ul class="cmd-list">
-                    <li v-for="(cmd, index) in commandsOf(diagnosisByIncident.get(incident.id), kind)" :key="`cmd-${kind}-${index}`">
-                      <code class="cmd mono">{{ cmd.text }}</code>
-                      <span class="pill" :class="riskMeta(cmd.risk).tone">{{ riskMeta(cmd.risk).label }}</span>
-                      <button class="copy-btn" type="button" title="复制命令" @click="copyText(cmd.text, '命令')">
+                    <div class="evidence-head">
+                      <span class="ev-id mono" :title="`诊断结论引用号 ${entry.ref}`">{{ entry.ref }}</span>
+                      <span class="pill mute">{{ entry.evidence.kind }}</span>
+                      <span class="mono faint ellipsis">{{ entry.evidence.key }}</span>
+                      <span v-if="entry.evidence.redacted" class="pill warn">含脱敏字段</span>
+                      <button class="copy-btn" type="button" title="复制该条证据" @click="copyText(entry.evidence.value, '证据')">
                         <el-icon><CopyDocument /></el-icon>
                       </button>
-                    </li>
+                    </div>
+                    <pre
+                      class="ev-value mono"
+                      :class="{ collapsed: isLongEvidence(entry.evidence.value) && !isEvidenceOpen(INCIDENT_EVIDENCE_SCOPE + incident.id, entry.evidence.id) }"
+                      @click="isLongEvidence(entry.evidence.value) ? toggleEvidence(INCIDENT_EVIDENCE_SCOPE + incident.id, entry.evidence.id) : undefined"
+                    >{{ entry.evidence.value }}</pre>
+                    <button
+                      v-if="isLongEvidence(entry.evidence.value)"
+                      class="fold-btn faint"
+                      type="button"
+                      @click="toggleEvidence(INCIDENT_EVIDENCE_SCOPE + incident.id, entry.evidence.id)"
+                    >
+                      {{
+                        isEvidenceOpen(INCIDENT_EVIDENCE_SCOPE + incident.id, entry.evidence.id)
+                          ? '收起'
+                          : `展开${entry.evidence.truncated ? '（后端已截断，完整内容见原文）' : ''}`
+                      }}
+                    </button>
+                  </div>
+                </div>
+              </details>
+
+              <details
+                v-if="incident.evidenceGaps?.length || incident.alternativeCauses?.length"
+                class="sub-block diagnosis-notes"
+              >
+                <summary>根因判断边界与待排除项</summary>
+                <div v-if="incident.evidenceGaps?.length" class="sub-block">
+                  <span class="sub-title warn-title">证据缺口</span>
+                  <ul class="dot-list warn">
+                    <li v-for="(gap, index) in incident.evidenceGaps" :key="`gap-${index}`">{{ gap }}</li>
                   </ul>
-                </template>
-              </div>
+                </div>
+                <div v-if="incident.alternativeCauses?.length" class="sub-block">
+                  <span class="sub-title">其他可能原因</span>
+                  <ul class="dot-list">
+                    <li v-for="(item, index) in incident.alternativeCauses" :key="`alt-${index}`">{{ item }}</li>
+                  </ul>
+                </div>
+              </details>
 
-              <div
-                v-if="diagnosisByIncident.get(incident.id)?.remediationText || diagnosisByIncident.get(incident.id)?.remediationDirection"
-                class="sub-block"
-              >
-                <span class="sub-title">修复说明</span>
-                <p class="plain-text">{{ diagnosisByIncident.get(incident.id)?.remediationText || diagnosisByIncident.get(incident.id)?.remediationDirection }}</p>
-              </div>
-
-              <div
-                v-if="diagnosisByIncident.get(incident.id)?.validation"
-                class="sub-block"
-              >
-                <span class="sub-title" :class="{ 'warn-title': !diagnosisByIncident.get(incident.id)?.validation?.passed }">
-                  大模型诊断校验
-                </span>
-                <p class="plain-text">
-                  {{
-                    diagnosisByIncident.get(incident.id)?.validation?.passed
-                      ? '通过：引用的证据 ID 与提到的资源都在本次快照里存在'
-                      : '未通过：该结论已退回确定性诊断，下方列出不成立的部分'
-                  }}
-                  <span v-if="diagnosisByIncident.get(incident.id)?.validation?.downgraded" class="faint">
-                    （置信度已按证据不足下调）
+              <div v-if="incidentDiagnosis(incident)" class="action-panel">
+                <div class="action-head">
+                  <span class="action-title">处置方案</span>
+                  <span
+                    v-if="incidentDiagnosis(incident)?.validation?.commandIssues?.length"
+                    class="pill warn"
+                  >
+                    部分命令未收录
                   </span>
-                </p>
-                <ul v-if="diagnosisByIncident.get(incident.id)?.validation?.issues?.length" class="dot-list warn">
+                  <span
+                    v-else-if="incidentDiagnosis(incident)?.validation?.passed"
+                    class="pill ok"
+                    title="诊断引用的证据与资源均存在"
+                  >
+                    诊断校验通过
+                  </span>
+                  <span
+                    v-else-if="incidentDiagnosis(incident)?.validation"
+                    class="pill warn"
+                  >
+                    诊断已降级
+                  </span>
+                </div>
+
+                <div v-if="incidentDiagnosis(incident)?.remediationText" class="action-section">
+                  <span class="sub-title">修复说明</span>
+                  <MarkdownView :text="incidentDiagnosis(incident)?.remediationText || ''" />
+                </div>
+
+                <div v-if="incidentDiagnosis(incident)?.remediationDirection" class="action-section">
+                  <span class="sub-title">执行前置条件与边界</span>
+                  <MarkdownView :text="incidentDiagnosis(incident)?.remediationDirection || ''" />
+                </div>
+
+                <div
+                  v-for="kind in ['investigation', 'remediation', 'verification']"
+                  :key="kind"
+                  class="action-section"
+                >
+                  <template v-if="commandsOf(incidentDiagnosis(incident), kind).length">
+                    <span class="sub-title">{{ COMMAND_KIND_LABELS[kind] ?? kind }}建议</span>
+                    <ul class="cmd-list">
+                      <li v-for="(cmd, index) in commandsOf(incidentDiagnosis(incident), kind)" :key="`cmd-${kind}-${index}`">
+                        <pre class="cmd mono"><code>{{ cmd.text }}</code></pre>
+                        <span class="pill" :class="commandRiskMeta(cmd, kind).tone">{{ commandRiskMeta(cmd, kind).label }}</span>
+                        <button class="copy-btn" type="button" title="复制命令" @click="copyText(cmd.text, '命令')">
+                          <el-icon><CopyDocument /></el-icon>
+                        </button>
+                      </li>
+                    </ul>
+                  </template>
+                </div>
+
+                <ul
+                  v-if="incidentDiagnosis(incident)?.validation?.issues?.length"
+                  class="dot-list warn validation-issues"
+                >
                   <li
-                    v-for="(issue, index) in diagnosisByIncident.get(incident.id)?.validation?.issues ?? []"
+                    v-for="(issue, index) in incidentDiagnosis(incident)?.validation?.issues ?? []"
                     :key="`issue-${index}`"
+                  >
+                    {{ issue }}
+                  </li>
+                </ul>
+                <ul
+                  v-if="incidentDiagnosis(incident)?.validation?.commandIssues?.length"
+                  class="dot-list warn validation-issues"
+                >
+                  <li
+                    v-for="(issue, index) in incidentDiagnosis(incident)?.validation?.commandIssues ?? []"
+                    :key="`cmd-issue-${index}`"
                   >
                     {{ issue }}
                   </li>
@@ -949,11 +1118,40 @@ defineExpose({
         </div>
       </section>
 
-      <!-- 4 异常清单 -->
+      <!-- 4 治理建议：安全/基线类建议不混入业务故障链 -->
+      <section v-if="advisoryCount" class="block">
+        <div class="block-head">
+          <h3 class="block-title">治理建议 <span class="mono faint">{{ advisoryCount }}</span></h3>
+          <span class="block-hint faint">安全基线建议，不代表当前业务故障</span>
+        </div>
+        <div class="card list-card advisory-list">
+          <details v-for="incident in advisoryIncidents" :key="incident.id" class="advisory-item">
+            <summary>
+              <span class="pill" :class="severityTone(incident.severity)">{{ severityText(incident.severity) }}</span>
+              <span class="t">{{ incident.title }}</span>
+              <span class="mono faint">{{ resourceText(incident.root.resource) }}</span>
+            </summary>
+            <div class="advisory-body">
+              <MarkdownView :text="incidentRootCause(incident)" />
+              <p v-if="incidentDiagnosis(incident)?.uncertainty" class="plain-text faint">
+                未确认边界：{{ incidentDiagnosis(incident)?.uncertainty }}
+              </p>
+              <p
+                v-if="incidentDiagnosis(incident)?.remediationText || incidentDiagnosis(incident)?.remediationDirection"
+                class="plain-text"
+              >
+                {{ incidentDiagnosis(incident)?.remediationText || incidentDiagnosis(incident)?.remediationDirection }}
+              </p>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <!-- 5 完整异常清单：核心结论已在故障链，此处保留全部事实并按需展开 -->
       <section class="block">
         <div class="block-head">
-          <h3 class="block-title">异常清单 <span class="mono faint">{{ findingCount }}</span></h3>
-          <span class="block-hint faint">规则引擎逐条产出；已归入故障链的会标出所属链</span>
+          <h3 class="block-title">完整异常清单 <span class="mono faint">{{ findingCount }}</span></h3>
+          <span class="block-hint faint">规则引擎逐条产出，默认折叠；重点结论以上方故障链为准</span>
         </div>
         <div v-if="findingCount" class="card list-card">
           <div
@@ -975,7 +1173,8 @@ defineExpose({
                 {{ resourceText(finding.resource) }}
               </span>
               <span v-if="finding.correlated" class="pill info" title="已归入某条故障链">已关联</span>
-              <span v-if="finding.suggestion" class="pill mute">建议项</span>
+              <span v-if="finding.role" class="pill mute">{{ findingRoleLabel(finding.role) }}</span>
+              <span v-if="finding.suggestion && !finding.role" class="pill mute">建议项</span>
               <span class="pill mute mono">{{ finding.rule }}</span>
             </div>
             <template v-if="openFindings.includes(finding.id)">
@@ -1056,12 +1255,22 @@ defineExpose({
               <span class="sub-title">{{ COMMAND_KIND_LABELS[kind] ?? kind }}</span>
               <ul class="cmd-list">
                 <li v-for="(item, index) in remediationOfKind(kind)" :key="`remedy-${kind}-${index}`">
-                  <code class="cmd mono">{{ item.text }}</code>
-                  <span v-if="item.target" class="pill mute mono ellipsis" :title="item.target">{{ item.target }}</span>
-                  <span v-if="item.risk" class="pill" :class="riskMeta(item.risk).tone">{{ riskMeta(item.risk).label }}</span>
-                  <button class="copy-btn" type="button" title="复制" @click="copyText(item.text, '建议')">
-                    <el-icon><CopyDocument /></el-icon>
-                  </button>
+                  <template v-if="isRemediationCommand(item)">
+                    <pre class="cmd mono"><code>{{ item.text }}</code></pre>
+                    <span v-if="item.target" class="pill mute mono ellipsis" :title="item.target">{{ item.target }}</span>
+                    <span
+                      v-if="item.risk || kind === 'investigation' || kind === 'verification'"
+                      class="pill"
+                      :class="riskMeta(item.risk || 'SAFE').tone"
+                    >
+                      {{ riskMeta(item.risk || 'SAFE').label }}
+                    </span>
+                    <span v-if="item.required" class="pill err">必须处理</span>
+                    <button class="copy-btn" type="button" title="复制" @click="copyText(item.text, '建议')">
+                      <el-icon><CopyDocument /></el-icon>
+                    </button>
+                  </template>
+                  <MarkdownView v-else :text="item.text" />
                 </li>
               </ul>
             </template>
@@ -1325,6 +1534,30 @@ defineExpose({
   line-height: 1.7;
 }
 
+.primary-cause {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--app-danger);
+  border-radius: 0 var(--app-radius-sm) var(--app-radius-sm) 0;
+  background: var(--app-danger-soft);
+  font-size: 12.5px;
+  color: var(--app-text);
+}
+
+.primary-cause :deep(.md-body p) {
+  margin: 0;
+  font-weight: 600;
+  line-height: 1.65;
+}
+
+.primary-uncertainty {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
 .list-block {
   display: flex;
   flex-direction: column;
@@ -1532,6 +1765,7 @@ defineExpose({
   align-items: center;
   gap: 8px;
   min-width: 0;
+  flex-wrap: wrap;
 }
 
 .item-row.quiet {
@@ -1562,6 +1796,13 @@ defineExpose({
 
 .expander:hover {
   color: var(--app-accent);
+}
+
+.impact-pill {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 根因用强调块，症状用缩进清单：一眼能认出先去修哪个 */
@@ -1606,11 +1847,25 @@ defineExpose({
 }
 
 .root-text {
-  margin: 0;
   font-size: 13px;
   font-weight: 600;
   color: var(--app-strong);
   line-height: 1.6;
+}
+
+.root-text :deep(.md-body p) {
+  margin: 0;
+}
+
+.root-summary {
+  margin: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-sm);
+  background: var(--app-surface);
+  color: var(--app-text);
+  font-size: 12px;
+  line-height: 1.65;
 }
 
 .root-basis {
@@ -1634,6 +1889,109 @@ defineExpose({
   color: var(--app-text);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.evidence-panel,
+.diagnosis-notes,
+.causal-panel,
+.member-panel {
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-sm);
+  background: var(--app-surface);
+  padding: 0;
+  overflow: hidden;
+}
+
+.evidence-panel > summary,
+.diagnosis-notes > summary,
+.causal-panel > summary,
+.member-panel > summary,
+.advisory-item > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  cursor: pointer;
+  color: var(--app-text);
+  font-size: 12px;
+  font-weight: 600;
+  list-style: none;
+}
+
+.evidence-panel > summary::-webkit-details-marker,
+.diagnosis-notes > summary::-webkit-details-marker,
+.causal-panel > summary::-webkit-details-marker,
+.member-panel > summary::-webkit-details-marker,
+.advisory-item > summary::-webkit-details-marker {
+  display: none;
+}
+
+.evidence-panel > summary::before,
+.diagnosis-notes > summary::before,
+.causal-panel > summary::before,
+.member-panel > summary::before,
+.advisory-item > summary::before {
+  content: '›';
+  color: var(--app-accent);
+  font-size: 16px;
+  line-height: 1;
+  transition: transform 0.15s ease;
+}
+
+.evidence-panel[open] > summary::before,
+.diagnosis-notes[open] > summary::before,
+.causal-panel[open] > summary::before,
+.member-panel[open] > summary::before,
+.advisory-item[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.evidence-list,
+.diagnosis-notes > .sub-block,
+.causal-panel > .edge-list,
+.member-panel > .member-list {
+  padding: 0 12px 10px;
+}
+
+.action-panel {
+  margin-top: 12px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: var(--app-surface);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.action-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.action-title {
+  color: var(--app-strong);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.action-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--app-border);
+}
+
+.action-section:first-of-type {
+  padding-top: 0;
+  border-top: none;
+}
+
+.validation-issues {
+  margin-top: 2px;
 }
 
 .edge-list,
@@ -1697,6 +2055,7 @@ defineExpose({
 .cmd {
   flex: 1;
   min-width: 0;
+  margin: 0;
   padding: 5px 8px;
   background: var(--app-surface);
   border: 1px solid var(--app-border);
@@ -1705,6 +2064,13 @@ defineExpose({
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-all;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.cmd code {
+  font: inherit;
+  color: inherit;
 }
 
 .copy-btn {
@@ -1887,6 +2253,28 @@ defineExpose({
 
 .recovered-card {
   padding: 6px 0;
+}
+
+.advisory-item {
+  border-bottom: 1px solid var(--app-border);
+  padding: 0 14px;
+}
+
+.advisory-item:last-child {
+  border-bottom: none;
+}
+
+.advisory-item > summary .t {
+  flex: 1;
+  min-width: 0;
+}
+
+.advisory-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 6px 12px 20px;
+  font-size: 12px;
 }
 
 /* --------------------------------------------------------- 阶段账 */

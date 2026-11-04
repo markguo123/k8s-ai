@@ -1,8 +1,8 @@
 # Agent 总体架构（二期/三期已落地）
 
-- 版本：v3.0.0
-- 日期：2026-10-08
-- 状态：已封版（二期 Agent / 三期创建闭环，v3.0.0 基线）
+- 版本：v3.1.0
+- 日期：2026-10-08（2026-11-05 按四期 P9 体检诊断链路修订 Agent 消费口径）
+- 状态：二期 Agent / 三期创建闭环已封版；四期 P9 诊断接入口径已同步
 
 > 范围说明：本文档定义 Agent 的稳定职责边界——Agent、Tools、Scanner/Rule、
 > Approval/Executor、Agent Loop 如何协作。对应能力已在二期/三期实现并随 v3.0.0 封版；
@@ -39,8 +39,10 @@
 
 - `internal/scanner` 负责两阶段只读采集：Phase1 轻量 list，Phase2 对异常 Pod 取日志，单个采集失败进入 `CollectionErrors` 不中断扫描。
 - `internal/rule` 基于采集快照产出 `model.Finding`，包含 `Severity / Category / Kind / Doc / Correlated` 等字段。
-- `internal/incident` 基于 `CorrelationIndex` 将因果相关 Finding 聚合成 `Incident`，根因选择由 `pickRoot` 的规则优先级完成。
-- `internal/service` 编排 Scan → Rule → Phase2 → Incident → LLM Diagnosis；同一条故障链只送诊一次。
+- `internal/incident` 基于真实资源关系与 `CorrelationIndex` 将相关 Finding 聚合成 `Incident`，生成故障树候选边；关联层不宣布根因。
+- `internal/deterministic` 先基于 Incident 证据给出根因、影响链与证据缺口；LLM 只做可选增强。
+- `internal/service` 按 Scan → Rule → 按需证据 → Relations → Correlation → Incident → Deterministic →
+  可选 LLM → Validate → Report 编排；最终 `Diagnosis` 是根因唯一事实源，Incident 根因字段是投影。
 - 结论：Scanner/Rule/Incident/Diagnosis 已有清晰分层，属于一期核心能力；二期 Agent 主要消费这些结果，而不是替代它们。
 
 ### 1.2 现状判断
@@ -228,16 +230,19 @@ TARGET 只是减少 prompt 上的重复安全措辞，不改变 Code Guard 位�
 
 ### 3.6 Scanner / Rule Engine 如何向 Agent 提供 Finding
 
-- 保持 CURRENT：Scanner 提供 ClusterSnapshot，Rule 引擎产出 `Finding`，`internal/incident` 聚合出 `Incident`，`internal/diagnosis` 将 Incident 根因送 LLM。
-- TARGET：在 `Finding`/`Diagnosis` 上增加显式字段表达证据角色和时间信息，让 Agent 更容易把“多个 Finding”合成为根因、派生症状、影响。
+- CURRENT（四期 P9）：Scanner 提供 ClusterSnapshot，Rule 引擎产出 `Finding`，Incident 聚合后由确定性诊断先出结论，
+  LLM 只在预算内增强；Finding 已有 `role`，跨 Finding 证据使用 `FindingID#EID`。
+- TARGET：继续补证据采集时间与冲突证据表达，让后续 Chat 主动取证时能在已有事实基础上增量验证。
 
 ### 3.7 Agent 如何从多个 Finding 形成 Incident
 
-- CURRENT：`internal/incident.Build` 用 CorrelationIndex 做故障链聚合，`pickRoot` 用规则优先级选根因。
-- TARGET：保留该确定性聚合，但在 Feed 给 LLM 前附加：
+- CURRENT（四期 P9）：`internal/incident.Build` 做故障聚合，`Relate` 生成候选故障树；
+  `internal/deterministic` 产出最终候选根因，服务层合并校验后的 `Diagnosis` 再投影回 Incident。
+- 已落地：Feed 给 LLM 前附加：
   - Root Finding 证据链。
   - 派生成员摘要（作为影响范围）。
-  - 聚合时保留 `CollectionErrors`、时间信息、冲突证据。
+  - `CollectionErrors`、证据缺口与 alternative causes。
+- TARGET：补时间序列与冲突证据的主动取证能力。
 - Agent 不重写聚合逻辑，只消费聚合结果做诊断解释。
 
 ### 3.8 Prompt 如何与这些组件协作

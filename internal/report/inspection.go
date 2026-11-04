@@ -65,7 +65,13 @@ func BuildConclusion(r *model.ScanResult) *model.Conclusion {
 	}
 	memberIDs := map[string]bool{}
 	rootIDs := map[string]bool{}
+	findingByID := make(map[string]model.Finding, len(r.Findings))
+	for _, finding := range r.Findings {
+		findingByID[finding.ID] = finding
+	}
+	incidentByRoot := make(map[string]model.Incident, len(r.Incidents))
 	for _, inc := range r.Incidents {
+		incidentByRoot[inc.Root.ID] = inc
 		for _, m := range inc.Members {
 			memberIDs[m.ID] = true
 		}
@@ -73,7 +79,8 @@ func BuildConclusion(r *model.ScanResult) *model.Conclusion {
 			rootIDs[inc.Root.ID] = true
 		}
 	}
-	var roots []model.Finding
+	var businessRoots []model.Finding
+	var suggestionRoots []model.Finding
 	for _, f := range r.Findings {
 		if f.Correlated {
 			continue
@@ -83,10 +90,14 @@ func BuildConclusion(r *model.ScanResult) *model.Conclusion {
 		if memberIDs[f.ID] && !rootIDs[f.ID] {
 			continue
 		}
-		roots = append(roots, f)
+		if f.Suggestion {
+			suggestionRoots = append(suggestionRoots, f)
+		} else {
+			businessRoots = append(businessRoots, f)
+		}
 	}
 	bySev := map[model.Severity]int{}
-	for _, f := range roots {
+	for _, f := range businessRoots {
 		bySev[f.Severity]++
 	}
 
@@ -98,16 +109,19 @@ func BuildConclusion(r *model.ScanResult) *model.Conclusion {
 	switch {
 	case bySev[model.SeverityCritical] > 0:
 		c.Level = "critical"
-		c.Headline = fmt.Sprintf("检测到 %d 个严重问题，服务可用性已受影响", bySev[model.SeverityCritical])
+		c.Headline = fmt.Sprintf("检测到 %d 条严重业务故障，服务可用性已受影响", bySev[model.SeverityCritical])
 	case bySev[model.SeverityHigh] > 0:
 		c.Level = "attention"
-		c.Headline = fmt.Sprintf("检测到 %d 个高风险问题，需尽快处理", bySev[model.SeverityHigh])
-	case len(roots) > 0:
+		c.Headline = fmt.Sprintf("检测到 %d 条高风险业务故障，需尽快处理", bySev[model.SeverityHigh])
+	case len(businessRoots) > 0:
 		c.Level = "attention"
-		c.Headline = fmt.Sprintf("未发现严重故障，存在 %d 项需关注问题", len(roots))
+		c.Headline = fmt.Sprintf("检测到 %d 项业务异常，需优先排查", len(businessRoots))
 	case integrity == model.IntegrityInsufficient:
 		c.Level = "unknown"
 		c.Headline = "关键数据采集不完整，无法判定集群是否健康"
+	case len(suggestionRoots) > 0:
+		c.Level = "attention"
+		c.Headline = fmt.Sprintf("未发现业务故障，存在 %d 项治理建议", len(suggestionRoots))
 	default:
 		c.Level = "healthy"
 		c.Headline = "本次体检未发现异常"
@@ -118,9 +132,16 @@ func BuildConclusion(r *model.ScanResult) *model.Conclusion {
 	if r.HealthScore.Capped {
 		parts = append(parts, "评分已因数据完整性封顶（"+r.HealthScore.CapReason+"）")
 	}
+	operationalIncidents := 0
+	advisoryIncidents := 0
 	if len(r.Incidents) > 0 {
 		conf, prob, unk := 0, 0, 0
 		for _, inc := range r.Incidents {
+			if findingByID[inc.Root.ID].Suggestion {
+				advisoryIncidents++
+				continue
+			}
+			operationalIncidents++
 			switch inc.RootCauseStatus {
 			case model.RootCauseConfirmed:
 				conf++
@@ -130,8 +151,11 @@ func BuildConclusion(r *model.ScanResult) *model.Conclusion {
 				unk++
 			}
 		}
-		parts = append(parts, fmt.Sprintf("故障链 %d 条：根因确认 %d、疑似 %d、未能定位 %d",
-			len(r.Incidents), conf, prob, unk))
+		parts = append(parts, fmt.Sprintf("业务故障链 %d 条：根因确认 %d、疑似 %d、未能定位 %d",
+			operationalIncidents, conf, prob, unk))
+		if advisoryIncidents > 0 {
+			parts = append(parts, fmt.Sprintf("治理建议 %d 项", advisoryIncidents))
+		}
 	}
 	if r.DiagnosisSummary != nil {
 		parts = append(parts, "诊断口径："+diagnosisModeText(r.DiagnosisSummary.Mode))
@@ -141,9 +165,22 @@ func BuildConclusion(r *model.ScanResult) *model.Conclusion {
 	}
 	c.Summary = strings.Join(parts, "；") + "。"
 
-	for _, f := range sortRoots(roots)[:minInt(len(roots), 5)] {
+	diagnosesByIncident := make(map[string]model.Diagnosis, len(r.Diagnoses))
+	for _, diagnosis := range r.Diagnoses {
+		if diagnosis.IncidentID != "" {
+			diagnosesByIncident[diagnosis.IncidentID] = diagnosis
+		}
+	}
+	orderedRoots := append(sortRoots(businessRoots), sortRoots(suggestionRoots)...)
+	for _, f := range orderedRoots[:minInt(len(orderedRoots), 5)] {
+		detail := f.Title
+		if inc, ok := incidentByRoot[f.ID]; ok {
+			if diagnosis := diagnosesByIncident[inc.ID]; strings.TrimSpace(diagnosis.RootCause) != "" {
+				detail = strings.TrimSpace(diagnosis.RootCause)
+			}
+		}
 		c.TopRisks = append(c.TopRisks, fmt.Sprintf("[%s] %s/%s %s：%s",
-			f.Severity, f.Resource.Namespace, f.Resource.Name, f.Rule, f.Title))
+			f.Severity, f.Resource.Namespace, f.Resource.Name, f.Rule, detail))
 	}
 	c.Priorities = priorityList(r)
 	c.DataCaveats = dataCaveats(r)
@@ -253,7 +290,9 @@ var domainMapping = map[string]string{
 	"Service": "网络", "EndpointSlice": "网络", "Ingress": "网络", "NetworkPolicy": "网络",
 	"PVC": "存储", "PV": "存储", "StorageClass": "存储", "VolumeAttachment": "存储",
 	"ConfigMap": "配置与密钥", "Secret": "配置与密钥",
-	"ClusterRole": "权限与治理", "Namespace": "权限与治理", "PDB": "权限与治理",
+	"Role": "权限与治理", "RoleBinding": "权限与治理",
+	"ClusterRole": "权限与治理", "ClusterRoleBinding": "权限与治理",
+	"Namespace": "权限与治理", "PDB": "权限与治理",
 }
 
 // domainTotals 返回各域的可见资源总数（来自报告 Summary，采不到的不算总数）。
@@ -261,8 +300,9 @@ func domainTotals(r *model.ScanResult) map[string]int {
 	s := r.Summary
 	return map[string]int{
 		"计算": s.Pods, "节点": s.Nodes, "工作负载与弹性": s.Workloads,
-		"网络": s.Services + s.EndpointSlices + s.Ingresses + s.NetworkPolicies,
-		"存储": s.Storage,
+		"网络":    s.Services + s.EndpointSlices + s.Ingresses + s.NetworkPolicies,
+		"存储":    s.Storage,
+		"权限与治理": s.Namespaces + s.Roles + s.RoleBindings + s.ClusterRoles + s.ClusterRoleBindings,
 	}
 }
 
@@ -344,7 +384,7 @@ func RemediationItems(r *model.ScanResult) []model.RemediationItem {
 			return
 		}
 		out = append(out, model.RemediationItem{
-			Kind: kind, Text: text, Risk: string(cmd.Risk), Target: target, Required: required,
+			Kind: kind, Format: "command", Text: text, Risk: string(cmd.Risk), Target: target, Required: required,
 		})
 	}
 	for _, d := range r.Diagnoses {
@@ -353,14 +393,20 @@ func RemediationItems(r *model.ScanResult) []model.RemediationItem {
 			target = ""
 		}
 		required := model.SeverityRank(incSeverity[d.IncidentID]) >= model.SeverityRank(model.SeverityCritical)
+		planText := strings.TrimSpace(d.RemediationText)
+		if planText != "" {
+			out = append(out, model.RemediationItem{
+				Kind: "remediation", Format: "text", Text: planText, Target: target,
+			})
+		}
+		direction := strings.TrimSpace(d.RemediationDirection)
+		if direction != "" && direction != planText {
+			out = append(out, model.RemediationItem{
+				Kind: "remediation", Format: "text", Text: direction, Target: target,
+			})
+		}
 		for _, cmd := range d.Investigation {
 			add(string(model.CmdInvestigation), cmd, target, false)
-		}
-		if text := strings.TrimSpace(d.RemediationDirection); text != "" {
-			out = append(out, model.RemediationItem{
-				Kind: string(model.CmdRemediation), Text: text, Risk: string(model.RiskMedium),
-				Target: target, Required: required,
-			})
 		}
 		for _, cmd := range d.Remediation {
 			add(string(model.CmdRemediation), cmd, target, required)

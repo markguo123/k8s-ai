@@ -14,7 +14,7 @@ metadata:
     app.kubernetes.io/component: identity
 rules:
   - apiGroups: [""]
-    resources: [namespaces, pods, nodes, services, endpoints, events, configmaps]
+    resources: [namespaces, pods, nodes, services, endpoints, events, configmaps, persistentvolumes, persistentvolumeclaims]
     verbs: [get, list, watch]
   - apiGroups: [""]
     # secrets 仅用于元数据/键级读取（ListSecretMeta），内容值永不出采集边界
@@ -30,7 +30,16 @@ rules:
     resources: [jobs, cronjobs]
     verbs: [get, list, watch]
   - apiGroups: [storage.k8s.io]
-    resources: [persistentvolumes, persistentvolumeclaims, storageclasses, volumeattachments]
+    resources: [storageclasses, volumeattachments]
+    verbs: [get, list, watch]
+  - apiGroups: [autoscaling]
+    resources: [horizontalpodautoscalers]
+    verbs: [get, list, watch]
+  - apiGroups: [policy]
+    resources: [poddisruptionbudgets]
+    verbs: [get, list, watch]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [roles, rolebindings, clusterroles, clusterrolebindings]
     verbs: [get, list, watch]
   - apiGroups: [discovery.k8s.io]
     resources: [endpointslices]

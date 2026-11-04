@@ -181,7 +181,7 @@ func (c *chain) evidenceUniverse(inc *model.Incident) map[string]bool {
 				continue
 			}
 			for _, e := range f.Evidence {
-				out[e.ID] = true
+				out[model.GlobalEvidenceRef(f.ID, e.ID)] = true
 			}
 		}
 	}

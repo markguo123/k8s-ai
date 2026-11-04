@@ -280,7 +280,7 @@ func TestIncidentDiagnosisRejectsFabricatedEvidence(t *testing.T) {
 	}
 	v := got.Validation
 	if v == nil || v.Passed || v.Rule != validationRule || len(v.FabricatedEvidence) != 1 ||
-		v.FabricatedEvidence[0] != "E99" {
+		v.FabricatedEvidence[0] != "f1#E99" {
 		t.Errorf("校验结果异常: %+v", v)
 	}
 	if summary.Rejected != 1 || summary.Validated != 0 {
@@ -362,7 +362,7 @@ func TestFindingPathStillDropsForeignEvidenceRef(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ds) != 1 || len(ds[0].EvidenceChain) != 1 || ds[0].EvidenceChain[0] != "E1" {
+	if len(ds) != 1 || len(ds[0].EvidenceChain) != 1 || ds[0].EvidenceChain[0] != "f1#E1" {
 		t.Fatalf("evidenceChain = %v", ds[0].EvidenceChain)
 	}
 }

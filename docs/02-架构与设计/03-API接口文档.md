@@ -1,7 +1,7 @@
 # k8s-ai API 接口契约设计
 
 - 版本：v4.0.0（企业平台）
-- 日期：2026-10-23（初版）/ 2026-11-03（发起体检契约收窄与报告三面登记，见 17-方案） / 2026-11-04（报告清单清理两面登记，见方案 15 v1.12；同日补体检发起面 v1.1：format 单选、阶段账、停止体检、报告总览、按需导出 Markdown）
+- 日期：2026-10-23（初版）/ 2026-11-03（发起体检契约收窄与报告三面登记，见 17-方案） / 2026-11-04（报告清单清理两面登记，见方案 15 v1.12；补体检发起面 v1.1：format 单选、阶段账、停止体检、报告总览、按需导出 Markdown）/ 2026-11-05（补结构化报告的 canonical 证据与诊断投影契约）
 - 状态：四期企业平台落地中
 - 范围：本文档统一描述四期企业平台的 Go 应用服务契约与 HTTP API，包括认证、会话与 SSE、
   扫描、集群、Skill、配置、用户/角色、授权、审批、审计与 Memory。所有产品 API 统一归属
@@ -245,6 +245,16 @@ GET  /api/v1/storage/health     // 对象存储健康唯一可观测入口；需
 （`model.ScanResult`）本体，`schemaVersion` 对 v1 老报告归一化为 1，`legacy=true` 表示缺
 结论/采集质量/诊断账等区块，前端按此降级渲染。
 
+`inspection` 的关键字段契约：
+
+- `findings[].role`：`anchor|symptom|impact|advisory|independent`，由后端在 Incident 聚合后注入；
+  前端只负责展示，不得按标题重新推断角色。
+- `diagnoses[].evidenceChain[]`、`incidents[].evidenceRefs[]`、`causalEdges[].evidenceRefs[]`：
+  新数据统一使用 `FindingID#EID`；历史报告中的裸 `EID` 仅供读取兼容。
+- `incidents[].rootCause*` / `confidence*` / `evidenceGaps[]` 是最终 Diagnosis 的报告投影；
+  `diagnoses[]` 才是根因唯一事实源，前端不得在两者不一致时自行挑一套。
+- `causalEdges[].method`：`correlation|deterministic|llm`；关联层边固定 `probable`。
+
 实现要点：一次扫描归档成 `latest-md` 与 `latest-json` 两行，页面点开的是 Markdown 行，
 因此服务端顺着 `reports.scan_id` 找同一轮的 JSON 产物，不要求前端猜 kind；找不到时返回
 **415 `unsupported_media_type`**（诚实提示改走原文下载），而不是拿 Markdown 硬凑一个结构化对象；
@@ -255,7 +265,7 @@ GET  /api/v1/storage/health     // 对象存储健康唯一可观测入口；需
 
 - `format` 只决定**归档哪一种产物**：`json` 供报告详情页按区块渲染结论与证据，`markdown` 是一份可读正文。
   一次体检只归档选中的那一种，`latest-md` 与 `latest-json` 不再成对出现；取值非法 400，留空按 `json`。
-- `GET /api/v1/scans/{id}` 的 `stages` 与报告里的 `StageRecord` 同源同结构（`name`/`title`/`status`/`elapsed`/
+- `GET /api/v1/scans/{id}` 的 13 项 `stages` 与报告里的 `StageRecord` 同源同结构（`name`/`title`/`status`/`elapsed`/
   `progress`/`detail`，`status` ∈ `running`|`done`|`failed`|`skipped`），因此页面上的实时阶段进度与报告末尾的
   阶段账不可能长得不一样；无阶段时字段省略，老客户端不受影响。没有百分比字段，也就不会有编造的预估进度。
 - `POST /api/v1/scans/{id}/cancel` 只停得动 `pending`/`running` 的任务，终态任务回 409。取消经 context 向上传播，

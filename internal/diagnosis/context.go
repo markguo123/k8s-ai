@@ -55,8 +55,16 @@ func buildContexts(findings []model.Finding, opts model.LLMOptions) []findingCon
 		text := buildContextText(f)
 		est := estimateTokens(text)
 		// 超出单 Finding 预算：丢弃最低优先级证据直到满足（只保留摘要兜底）。
-		for est > perFinding && strings.Count(text, "\n- E") > 1 {
-			text = dropLastEvidence(text)
+		for est > perFinding {
+			next := dropLastEvidence(text)
+			if next == text {
+				break
+			}
+			text = next
+			est = estimateTokens(text)
+		}
+		if est > perFinding {
+			text = capText(text, perFinding)
 			est = estimateTokens(text)
 		}
 		if used+est > total && len(out) > 0 {
@@ -80,7 +88,7 @@ func buildContextText(f model.Finding) string {
 		if e.Kind == model.EvLog {
 			v = tailText(e.Value, 1500) // 日志保留尾部：panic/错误通常在最后
 		}
-		fmt.Fprintf(&b, "- %s %s: %s\n", e.ID, e.Key, v)
+		fmt.Fprintf(&b, "- %s %s: %s\n", model.GlobalEvidenceRef(f.ID, e.ID), e.Key, v)
 	}
 	if len(f.Related) > 0 {
 		b.WriteString("Related:\n")
@@ -91,15 +99,25 @@ func buildContextText(f model.Finding) string {
 	return b.String()
 }
 
-// dropLastEvidence 移除文本中最后一条证据行（预算裁剪用）。
+// dropLastEvidence 移除文本中最后一条 canonical 证据行（预算裁剪用）。
+// Evidence ID 在 Finding 内是 E-ID，进入诊断上下文后统一为 FindingID#E-ID；
+// 不能再按旧的 "- E" 前缀识别，否则预算闸门会失效。
 func dropLastEvidence(text string) string {
 	lines := strings.Split(text, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
-		if strings.HasPrefix(lines[i], "- E") {
+		if isContextEvidenceLine(lines[i]) {
 			return strings.Join(append(lines[:i], lines[i+1:]...), "\n")
 		}
 	}
 	return text
+}
+
+func isContextEvidenceLine(line string) bool {
+	if !strings.HasPrefix(line, "- ") {
+		return false
+	}
+	ref, _, ok := strings.Cut(strings.TrimPrefix(line, "- "), " ")
+	return ok && strings.Contains(ref, "#E")
 }
 
 // estimateTokens 保守估算 token 数（约 4 字节/词元）。

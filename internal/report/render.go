@@ -40,8 +40,6 @@ func (MarkdownRenderer) Format() string { return "markdown" }
 
 func (MarkdownRenderer) Render(r *model.ScanResult) ([]byte, error) {
 	r = redactResult(r) // 渲染边界字段级脱敏（ADR-006）
-	rootIdx := rootInc(r)
-	memberIdx := memberInc(r)
 	var b strings.Builder
 	// 标题与范围：全集群是"集群体检"，指定 namespace/Pod 是"业务体检"——报告标题、报告
 	// 列表、筛选器三处用同一套类别词，用户在页面上看到的分类名和下载下来的文件名对得上。
@@ -113,64 +111,24 @@ func (MarkdownRenderer) Render(r *model.ScanResult) ([]byte, error) {
 		renderHistoryRefs(&b, "持续", r.History.Continued)
 		renderHistoryRefs(&b, "恢复", r.History.Recovered)
 	}
-	for _, sev := range severityOrder {
-		issues := findBySeverity(r.Findings, sev)
-		// 派生告警（Deployment 副本不足、Service 无 Endpoint 等）不独立显示，
-		// 只并入根因问题的"关联问题（派生影响）"影响范围字段。
-		var roots []model.Finding
-		for _, f := range issues {
-			if _, ok := memberIdx[f.ID]; ok {
-				continue
-			}
-			roots = append(roots, f)
-		}
-		if len(roots) == 0 {
-			continue
-		}
-		fmt.Fprintf(&b, "## %d. %s Issues\n\n", section, sev)
-		section++
-		for _, f := range roots {
-			fmt.Fprintf(&b, "### %s %s/%s：%s（%s）\n\n", severityIcon(f.Severity), f.Resource.Namespace, f.Resource.Name, f.Title, f.Severity)
-			fmt.Fprintf(&b, "- Severity: %s\n- Rule: %s\n- Finding ID: %s\n", f.Severity, f.Rule, f.ID)
-			if f.Correlated {
-				b.WriteString("- 状态：相关异常（不重复扣分）\n")
-			}
-			b.WriteString("\n#### Evidence\n\n")
-			for _, e := range f.Evidence {
-				val := e.Value
-				if e.Kind == model.EvLog {
-					val = summarizeLog(e.Value, 8) // 日志只留前 8 行 + 统计，防止倾倒
-				} else if len(val) > 200 {
-					val = val[:200] + "…"
-				}
-				fmt.Fprintf(&b, "- %s `%s`: %s\n", e.ID, e.Key, val)
-			}
-			if len(f.Related) > 0 {
-				b.WriteString("\n#### Related\n\n")
-				for _, ref := range f.Related {
-					fmt.Fprintf(&b, "- %s/%s (%s)\n", ref.Namespace, ref.Name, ref.Kind)
-				}
-			}
-			if diag, ok := diagnosesByID(r)[f.ID]; ok {
-				renderDiagnosis(&b, diag)
-			}
-			if inc, ok := rootIdx[f.ID]; ok && len(inc.Members) > 0 {
-				b.WriteString("\n#### 关联问题（派生影响）\n\n")
-				for _, m := range inc.Members {
-					fmt.Fprintf(&b, "- %s %s/%s：%s\n", severityIcon(m.Severity), m.Resource.Namespace, m.Resource.Name, m.Title)
-				}
-				b.WriteString("\n")
-			}
-			b.WriteString("\n")
-		}
-	}
-
-	// v2 区块：故障链与根因 → 资源健康 → 处置清单 → 执行阶段。
-	if len(r.Incidents) > 0 && hasRootCauseLayer(r) {
+	if len(r.Incidents) > 0 {
 		fmt.Fprintf(&b, "## %d. 故障链与根因分析\n\n", section)
 		section++
 		renderIncidents(&b, r)
 	}
+	otherFindings := findingsOutsideIncidents(r)
+	if len(otherFindings) > 0 {
+		fmt.Fprintf(&b, "## %d. 其他异常\n\n", section)
+		section++
+		renderOtherFindings(&b, otherFindings)
+	}
+	if len(r.Findings) > 0 {
+		fmt.Fprintf(&b, "## %d. 完整异常与证据\n\n", section)
+		section++
+		renderCompleteFindings(&b, r)
+	}
+
+	// v2 区块：资源健康 → 处置清单 → 执行阶段。
 	if len(r.Statistics) > 0 {
 		fmt.Fprintf(&b, "## %d. 资源健康\n\n", section)
 		section++
@@ -195,7 +153,9 @@ func (MarkdownRenderer) Render(r *model.ScanResult) ([]byte, error) {
 			}
 			fmt.Fprintf(&b, "### %s\n\n", remediationKindTitle(kind))
 			for _, it := range items {
-				if isCommandText(it.Text) {
+				if it.Format == "text" {
+					fmt.Fprintf(&b, "%s\n\n", it.Text)
+				} else if isCommandText(it.Text) {
 					fmt.Fprintf(&b, "- `%s`", it.Text)
 				} else {
 					fmt.Fprintf(&b, "- %s", it.Text)
@@ -238,10 +198,12 @@ func (MarkdownRenderer) Render(r *model.ScanResult) ([]byte, error) {
 		fmt.Fprintf(&b, "- Namespaces: 1（%s）\n", r.Meta.Namespace)
 		fmt.Fprintf(&b, "- Pods: %d\n- Services: %d\n- EndpointSlices: %d\n", s.Pods, s.Services, s.EndpointSlices)
 		fmt.Fprintf(&b, "- Workloads: %d\n- Ingresses: %d\n- NetworkPolicies: %d\n- Events: %d\n", s.Workloads, s.Ingresses, s.NetworkPolicies, s.Events)
-		fmt.Fprintf(&b, "- Nodes / Storage（PV/StorageClass/VolumeAttachment）：集群级资源，不随 namespace 过滤，未纳入本报告汇总\n\n")
+		fmt.Fprintf(&b, "- Roles: %d\n- RoleBindings: %d\n", s.Roles, s.RoleBindings)
+		fmt.Fprintf(&b, "- Nodes / Storage（PV/StorageClass/VolumeAttachment）/ ClusterRoles / ClusterRoleBindings：集群级资源，不随 namespace 过滤，未纳入本报告汇总\n\n")
 	default:
 		fmt.Fprintf(&b, "- Namespaces: %d\n- Pods: %d\n- Nodes: %d\n- Services: %d\n- EndpointSlices: %d\n", s.Namespaces, s.Pods, s.Nodes, s.Services, s.EndpointSlices)
-		fmt.Fprintf(&b, "- Workloads: %d\n- Storage: %d\n- Ingresses: %d\n- NetworkPolicies: %d\n- Events: %d\n\n", s.Workloads, s.Storage, s.Ingresses, s.NetworkPolicies, s.Events)
+		fmt.Fprintf(&b, "- Workloads: %d\n- Storage: %d\n- Ingresses: %d\n- NetworkPolicies: %d\n- Events: %d\n", s.Workloads, s.Storage, s.Ingresses, s.NetworkPolicies, s.Events)
+		fmt.Fprintf(&b, "- Roles: %d\n- RoleBindings: %d\n- ClusterRoles: %d\n- ClusterRoleBindings: %d\n\n", s.Roles, s.RoleBindings, s.ClusterRoles, s.ClusterRoleBindings)
 	}
 
 	if len(r.Components) > 0 {
@@ -285,16 +247,6 @@ func countBySeverity(findings []model.Finding, sev model.Severity) int {
 		}
 	}
 	return n
-}
-
-func findBySeverity(findings []model.Finding, sev model.Severity) []model.Finding {
-	var out []model.Finding
-	for _, f := range findings {
-		if f.Severity == sev {
-			out = append(out, f)
-		}
-	}
-	return out
 }
 
 func orDash(s string) string {
@@ -344,6 +296,8 @@ func redactResult(r *model.ScanResult) *model.ScanResult {
 		d.Summary = redactor.Redact(d.Summary)
 		d.RootCause = redactor.Redact(d.RootCause)
 		d.Impact = redactor.Redact(d.Impact)
+		d.RemediationText = redactor.Redact(d.RemediationText)
+		d.RemediationDirection = redactor.Redact(d.RemediationDirection)
 		d.PossibleCauses = make([]string, len(src.PossibleCauses))
 		for j, c := range src.PossibleCauses {
 			d.PossibleCauses[j] = redactor.Redact(c)
@@ -446,25 +400,6 @@ func renderHistoryRefs(b *strings.Builder, label string, refs []model.FindingRef
 		fmt.Fprintf(b, "- %s %s/%s：%s（%s，rule=%s）\n", severityIcon(r.Severity), r.Resource.Namespace, r.Resource.Name, r.Title, r.Severity, r.Rule)
 	}
 	b.WriteString("\n")
-}
-
-// rootInc / memberInc 建立 FindingID → Incident 索引（渲染聚合用）。
-func rootInc(r *model.ScanResult) map[string]model.Incident {
-	m := map[string]model.Incident{}
-	for _, inc := range r.Incidents {
-		m[inc.Root.ID] = inc
-	}
-	return m
-}
-
-func memberInc(r *model.ScanResult) map[string]model.Incident {
-	m := map[string]model.Incident{}
-	for _, inc := range r.Incidents {
-		for _, mem := range inc.Members {
-			m[mem.ID] = inc
-		}
-	}
-	return m
 }
 
 // ---- v2 报告区块渲染（需求 §7 / 方案 18）----
@@ -572,14 +507,157 @@ func renderDiagnosisSummary(b *strings.Builder, d *model.DiagnosisSummary, statu
 	}
 }
 
-// hasRootCauseLayer 判断报告是否带四期 P9 的根因层（v1 报告没有，整段跳过）。
-func hasRootCauseLayer(r *model.ScanResult) bool {
+// findingsOutsideIncidents 返回尚未归入任何故障链的 Finding。
+// Incident 的 root 与 members 都算已归组，不能只在“其他异常”里再次平铺。
+func findingsOutsideIncidents(r *model.ScanResult) []model.Finding {
+	grouped := make(map[string]bool)
 	for _, inc := range r.Incidents {
-		if inc.RootCauseStatus != "" || len(inc.CausalEdges) > 0 || len(inc.ImpactChain) > 0 {
-			return true
+		grouped[inc.Root.ID] = true
+		for _, member := range inc.Members {
+			grouped[member.ID] = true
 		}
 	}
-	return false
+	var out []model.Finding
+	for _, finding := range r.Findings {
+		if !grouped[finding.ID] {
+			out = append(out, finding)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		ri, rj := model.SeverityRank(out[i].Severity), model.SeverityRank(out[j].Severity)
+		if ri != rj {
+			return ri > rj
+		}
+		if out[i].Resource.Namespace != out[j].Resource.Namespace {
+			return out[i].Resource.Namespace < out[j].Resource.Namespace
+		}
+		if out[i].Resource.Name != out[j].Resource.Name {
+			return out[i].Resource.Name < out[j].Resource.Name
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
+func renderOtherFindings(b *strings.Builder, findings []model.Finding) {
+	b.WriteString("| 严重程度 | 资源 | 异常 | 规则 | 说明 |\n|---|---|---|---|---|\n")
+	for _, finding := range findings {
+		class := "独立异常"
+		if finding.Correlated {
+			class = "未形成独立因果链"
+		}
+		fmt.Fprintf(b, "| %s | `%s/%s` | %s | `%s` | %s |\n",
+			finding.Severity,
+			orDash(finding.Resource.Namespace),
+			finding.Resource.Name,
+			escapeTable(finding.Title),
+			finding.Rule,
+			class,
+		)
+	}
+	b.WriteString("\n未归入故障链表示本次没有足够关系证据把它与某个根因连起来，不代表问题一定轻微。\n\n")
+}
+
+func renderCompleteFindings(b *strings.Builder, r *model.ScanResult) {
+	fmt.Fprintf(b, "<details>\n<summary>展开完整 Finding 与 Evidence（%d 条，默认折叠）</summary>\n\n", len(r.Findings))
+	diags := diagnosesByID(r)
+	for _, finding := range r.Findings {
+		renderFindingDetail(b, finding, diags[finding.ID])
+	}
+	b.WriteString("</details>\n\n")
+}
+
+func renderFindingDetail(b *strings.Builder, f model.Finding, diag model.Diagnosis) {
+	fmt.Fprintf(b, "#### %s `%s/%s`：%s（%s）\n\n",
+		severityIcon(f.Severity), orDash(f.Resource.Namespace), f.Resource.Name, f.Title, f.Severity)
+	fmt.Fprintf(b, "- Rule: `%s`\n- Finding ID: `%s`", f.Rule, f.ID)
+	if f.Role != "" {
+		fmt.Fprintf(b, "\n- Role: `%s`", f.Role)
+	}
+	b.WriteString("\n")
+	if f.Correlated {
+		b.WriteString("- 状态：相关异常（不重复扣分）\n")
+	}
+	if len(f.Evidence) > 0 {
+		b.WriteString("\n**Evidence**\n\n")
+		for _, e := range f.Evidence {
+			fmt.Fprintf(b, "- %s#%s `%s`: %s\n", f.ID, e.ID, e.Key, evidenceDisplayValue(e))
+		}
+	}
+	if len(f.Related) > 0 {
+		b.WriteString("\n**Related**\n\n")
+		for _, ref := range f.Related {
+			fmt.Fprintf(b, "- %s/%s（%s）\n", orDash(ref.Namespace), ref.Name, ref.Kind)
+		}
+	}
+	if diag.FindingID != "" {
+		renderDiagnosis(b, diag)
+	}
+	b.WriteString("\n")
+}
+
+func evidenceDisplayValue(e model.Evidence) string {
+	value := e.Value
+	if e.Kind == model.EvLog {
+		return summarizeLog(value, 8)
+	}
+	if len(value) > 800 {
+		return value[:800] + "…"
+	}
+	return value
+}
+
+func escapeTable(s string) string {
+	s = strings.ReplaceAll(s, "|", "\\|")
+	s = strings.ReplaceAll(s, "\n", " ")
+	return s
+}
+
+type incidentEvidenceItem struct {
+	ref      string
+	finding  string
+	evidence model.Evidence
+}
+
+func incidentEvidenceItems(r *model.ScanResult, inc model.Incident) []incidentEvidenceItem {
+	byID := make(map[string]model.Finding, len(r.Findings))
+	for _, finding := range r.Findings {
+		byID[finding.ID] = finding
+	}
+	refSet := make(map[string]bool, len(inc.EvidenceRefs))
+	for _, ref := range inc.EvidenceRefs {
+		refSet[ref] = true
+	}
+	memberIDs := append([]string{inc.Root.ID}, findingRefIDs(inc.Members)...)
+	var out []incidentEvidenceItem
+	seen := map[string]bool{}
+	for _, findingID := range memberIDs {
+		finding, ok := byID[findingID]
+		if !ok {
+			continue
+		}
+		for _, evidence := range finding.Evidence {
+			ref := finding.ID + "#" + evidence.ID
+			// 兼容早期 Incident.EvidenceRefs 只存 E-ID 的报告。
+			if len(refSet) > 0 && !refSet[ref] && !refSet[evidence.ID] {
+				continue
+			}
+			if seen[ref] {
+				continue
+			}
+			seen[ref] = true
+			out = append(out, incidentEvidenceItem{ref: ref, finding: finding.ID, evidence: evidence})
+		}
+	}
+	return out
+}
+
+func findingRefIDs(refs []model.FindingRef) []string {
+	out := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, ref.ID)
+	}
+	return out
 }
 
 func renderIncidents(b *strings.Builder, r *model.ScanResult) {
@@ -588,10 +666,6 @@ func renderIncidents(b *strings.Builder, r *model.ScanResult) {
 		if d.IncidentID != "" {
 			diagByIncident[d.IncidentID] = d
 		}
-	}
-	byID := map[string]model.Finding{}
-	for _, f := range r.Findings {
-		byID[f.ID] = f
 	}
 	for i, inc := range r.Incidents {
 		fmt.Fprintf(b, "### 故障链 %d：%s（%s）\n\n", i+1, orDash(inc.Title), inc.Severity)
@@ -606,8 +680,19 @@ func renderIncidents(b *strings.Builder, r *model.ScanResult) {
 			fmt.Fprintf(b, "　置信度 %.2f", inc.Confidence)
 		}
 		b.WriteString("\n")
-		if inc.RootCause != "" {
-			fmt.Fprintf(b, "- 根因：%s\n", inc.RootCause)
+		rootCause := inc.RootCause
+		diag, hasDiag := diagByIncident[inc.ID]
+		if hasDiag && strings.TrimSpace(diag.RootCause) != "" {
+			rootCause = strings.TrimSpace(diag.RootCause)
+		}
+		if rootCause != "" {
+			fmt.Fprintf(b, "- 根因：%s\n", rootCause)
+		}
+		if hasDiag && strings.TrimSpace(diag.Summary) != "" {
+			fmt.Fprintf(b, "- 诊断摘要：%s\n", strings.TrimSpace(diag.Summary))
+		}
+		if hasDiag && strings.TrimSpace(diag.Uncertainty) != "" {
+			fmt.Fprintf(b, "- 未确认边界：%s\n", strings.TrimSpace(diag.Uncertainty))
 		}
 		if inc.ConfidenceBasis != "" {
 			fmt.Fprintf(b, "- 可信度依据：%s\n", inc.ConfidenceBasis)
@@ -616,11 +701,18 @@ func renderIncidents(b *strings.Builder, r *model.ScanResult) {
 		if len(inc.ImpactChain) > 0 {
 			fmt.Fprintf(b, "- 影响链：%s\n", strings.Join(inc.ImpactChain, " → "))
 		}
-		if len(inc.EvidenceRefs) > 0 {
+		evidence := incidentEvidenceItems(r, inc)
+		if len(evidence) > 0 {
+			fmt.Fprintf(b, "\n<details>\n<summary>展开故障链证据（%d 条）</summary>\n\n", len(evidence))
+			for _, item := range evidence {
+				fmt.Fprintf(b, "- `%s` `%s`: %s\n", item.ref, item.evidence.Key, evidenceDisplayValue(item.evidence))
+			}
+			b.WriteString("\n</details>\n\n")
+		} else if len(inc.EvidenceRefs) > 0 {
 			fmt.Fprintf(b, "- 证据引用：%s\n", strings.Join(inc.EvidenceRefs, " "))
 		}
 		if len(inc.CausalEdges) > 0 {
-			b.WriteString("\n因果边（均有资源关系出处）：\n\n")
+			fmt.Fprintf(b, "\n<details>\n<summary>展开因果传播路径（%d 条，均有资源关系出处）</summary>\n\n", len(inc.CausalEdges))
 			for _, e := range inc.CausalEdges {
 				fmt.Fprintf(b, "- `%s` → `%s`　`%s`　%s（%s）\n",
 					e.SourceFinding, e.TargetFinding, e.RelationType, e.Mechanism, e.Confidence)
@@ -628,7 +720,7 @@ func renderIncidents(b *strings.Builder, r *model.ScanResult) {
 					fmt.Fprintf(b, "  - 依据证据：%s\n", strings.Join(e.EvidenceRefs, " "))
 				}
 			}
-			b.WriteString("\n")
+			b.WriteString("\n</details>\n\n")
 		}
 		if len(inc.Members) > 0 {
 			b.WriteString("派生症状：\n\n")
@@ -660,9 +752,15 @@ func renderIncidents(b *strings.Builder, r *model.ScanResult) {
 				}
 				b.WriteString("\n")
 			}
+			if d.Validation != nil && len(d.Validation.CommandIssues) > 0 {
+				b.WriteString("- 部分命令未收录（不会伪造替代写命令）：\n\n")
+				for _, s := range d.Validation.CommandIssues {
+					fmt.Fprintf(b, "  - %s\n", s)
+				}
+				b.WriteString("\n")
+			}
 			renderDiagnosis(b, d)
 		}
-		_ = byID
 	}
 }
 

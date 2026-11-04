@@ -10,6 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
@@ -18,7 +19,7 @@ import (
 )
 
 const (
-	resourceTypes = 22 // Phase1 的资源类型 list 任务数（不含 events，含 Secret 元数据）
+	resourceTypes = 25 // Phase1 的资源类型 list 任务数（不含 events，含 Secret 元数据）
 	nsCount       = 50
 	podsPerNS     = 20
 )
@@ -154,10 +155,21 @@ func TestNormalizePod(t *testing.T) {
 			OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "web-rs", UID: "rs-uid"}},
 		},
 		Spec: corev1.PodSpec{
-			NodeName: "node-1",
+			NodeName:      "node-1",
+			RestartPolicy: corev1.RestartPolicyAlways,
 			Containers: []corev1.Container{{
 				Name:  "web",
 				Image: "nginx:1.25",
+				ReadinessProbe: &corev1.Probe{
+					ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
+						Path: "/ready",
+						Port: intstr.FromInt32(8080),
+					}},
+					InitialDelaySeconds: 5,
+					PeriodSeconds:       10,
+					TimeoutSeconds:      2,
+					FailureThreshold:    3,
+				},
 				Resources: corev1.ResourceRequirements{
 					Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")},
 					Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("256Mi")},
@@ -181,12 +193,25 @@ func TestNormalizePod(t *testing.T) {
 	if info.Phase != "Running" || info.NodeName != "node-1" {
 		t.Fatalf("unexpected pod info: %+v", info)
 	}
+	if info.RestartPolicy != "Always" {
+		t.Fatalf("restartPolicy = %q, want Always", info.RestartPolicy)
+	}
 	c := info.Containers[0]
 	if c.State != "Waiting" || c.Reason != "CrashLoopBackOff" {
 		t.Fatalf("state = %s/%s", c.State, c.Reason)
 	}
 	if c.RestartCount != 3 || c.LastReason != "OOMKilled" || c.LastExitCode != 137 {
 		t.Fatalf("restart/last state = %d/%s/%d", c.RestartCount, c.LastReason, c.LastExitCode)
+	}
+	if len(c.Probes) != 1 {
+		t.Fatalf("probes = %+v", c.Probes)
+	}
+	probe := c.Probes[0]
+	if probe.Kind != "readiness" || probe.Action != "HTTP GET" || probe.Path != "/ready" || probe.Port != "8080" {
+		t.Fatalf("probe = %+v", probe)
+	}
+	if probe.InitialDelaySeconds != 5 || probe.PeriodSeconds != 10 || probe.TimeoutSeconds != 2 || probe.FailureThreshold != 3 {
+		t.Fatalf("probe timing = %+v", probe)
 	}
 	if c.Requests["cpu"] != "100m" || c.Limits["memory"] != "256Mi" {
 		t.Fatalf("resources = %v/%v", c.Requests, c.Limits)
@@ -225,5 +250,35 @@ func TestComponentDetection(t *testing.T) {
 	}
 	if byName["metrics-server"].Present {
 		t.Fatal("metrics-server 未部署时不应被检测为 present")
+	}
+}
+
+func TestResourceTasksMatchCollectionContract(t *testing.T) {
+	c := &collector{}
+	collect := &snapCollector{snap: &model.ClusterSnapshot{}}
+	tasks := c.resourceTasks(collect, model.ScanOptions{})
+
+	got := make(map[string]bool, len(tasks))
+	for _, task := range tasks {
+		if got[task.operation] {
+			t.Fatalf("采集 operation 重复：%s", task.operation)
+		}
+		got[task.operation] = true
+	}
+	want := make(map[string]bool)
+	for _, requirement := range Phase1CollectionRequirements() {
+		if requirement.ResourceTask {
+			want[requirement.Operation] = true
+		}
+	}
+	for operation := range want {
+		if !got[operation] {
+			t.Errorf("采集契约声明了 %s，但 resourceTasks 未调度", operation)
+		}
+	}
+	for operation := range got {
+		if !want[operation] {
+			t.Errorf("resourceTasks 新增了 %s，但采集契约未登记 API 权限需求", operation)
+		}
 	}
 }

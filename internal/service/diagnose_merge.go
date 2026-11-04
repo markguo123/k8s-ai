@@ -73,6 +73,36 @@ func mergeDiagnoses(incs []model.Incident, det map[string]model.Diagnosis,
 	return out, ds
 }
 
+// applyDiagnosesToIncidents 把最终诊断结果投影回 Incident。
+// Incident 上的根因字段是报告兼容层，不再是第二个事实源；LLM/确定性合并后的
+// Diagnosis 才是权威结论。这样 JSON 报告、Web 和 Markdown 不会各说一套根因。
+func applyDiagnosesToIncidents(incs []model.Incident, diagnoses []model.Diagnosis) {
+	byIncident := make(map[string]model.Diagnosis, len(diagnoses))
+	for _, diagnosis := range diagnoses {
+		if diagnosis.IncidentID != "" {
+			byIncident[diagnosis.IncidentID] = diagnosis
+		}
+	}
+	for i := range incs {
+		diagnosis, ok := byIncident[incs[i].ID]
+		if !ok {
+			continue
+		}
+		incs[i].RootCause = diagnosis.RootCause
+		incs[i].RootCauseStatus = diagnosis.RootCauseStatus
+		incs[i].RootCauseRule = diagnosis.Diagnoser
+		incs[i].RootCauseMethod = diagnosis.Source
+		incs[i].Confidence = diagnosis.Confidence
+		incs[i].ConfidenceBasis = diagnosis.ConfidenceBasis
+		incs[i].EvidenceRefs = append([]string(nil), diagnosis.EvidenceChain...)
+		incs[i].EvidenceGaps = append([]string(nil), diagnosis.EvidenceGaps...)
+		incs[i].AlternativeCauses = append([]string(nil), diagnosis.AlternativeCauses...)
+		if len(diagnosis.ImpactChain) > 0 {
+			incs[i].ImpactChain = append([]string(nil), diagnosis.ImpactChain...)
+		}
+	}
+}
+
 // mergeHybrid 以 LLM 叙述为主体，把确定性诊断的事实并进去。
 //
 // 关键在方向：模型的话是「解释」，程序的字段是「事实」。已确认的根因状态、
@@ -106,6 +136,20 @@ func mergeHybrid(d model.Diagnosis, det model.Diagnosis, hasDet bool) model.Diag
 
 // enforceDiagnosisInvariants 是「结果校验」阶段的程序侧底线：结论必须自洽。
 func enforceDiagnosisInvariants(d *model.Diagnosis) {
+	for i := range d.Investigation {
+		d.Investigation[i].Risk = model.RiskSafe
+	}
+	for i := range d.Verification {
+		d.Verification[i].Risk = model.RiskSafe
+	}
+	for i := range d.Remediation {
+		if d.Remediation[i].Risk == "" {
+			d.Remediation[i].Risk = model.RiskMedium
+		}
+	}
+	if d.RemediationText == "" {
+		d.RemediationText = d.RemediationDirection
+	}
 	if d.RootCauseStatus == "" {
 		if len(d.EvidenceChain) > 0 && d.Confidence >= 0.3 {
 			d.RootCauseStatus = model.RootCauseProbable

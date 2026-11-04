@@ -332,8 +332,14 @@ func TestUnhealthyRule(t *testing.T) {
 	snap := &model.ClusterSnapshot{
 		Namespaces: []model.NamespaceInfo{{Ref: model.ResourceRef{Kind: "Namespace", Name: "prod"}}},
 		Pods: []model.PodInfo{{
-			Ref:        model.ResourceRef{Kind: "Pod", Namespace: "prod", Name: "web-0", UID: "u-1"},
-			Containers: []model.ContainerInfo{{Name: "web", State: "Running", Ready: false}},
+			Ref: model.ResourceRef{Kind: "Pod", Namespace: "prod", Name: "web-0", UID: "u-1"},
+			Containers: []model.ContainerInfo{{
+				Name: "web", State: "Running", Ready: false,
+				Probes: []model.ProbeInfo{{
+					Kind: "readiness", Action: "HTTP GET", Path: "/ready", Port: "80",
+					InitialDelaySeconds: 5, PeriodSeconds: 10, TimeoutSeconds: 2, FailureThreshold: 3,
+				}},
+			}},
 		}},
 		EventsIndex: map[string][]model.EventInfo{
 			"u-1": {{Reason: "Unhealthy", Type: "Warning", Message: "Readiness probe failed", InvolvedObject: model.ResourceRef{Kind: "Pod", Namespace: "prod", Name: "web-0", UID: "u-1"}}},
@@ -342,6 +348,15 @@ func TestUnhealthyRule(t *testing.T) {
 	fs := (UnhealthyRule{}).Evaluate(ctxFor(snap))
 	if len(fs) != 1 {
 		t.Fatalf("Unhealthy findings = %d, want 1", len(fs))
+	}
+	foundProbe := false
+	for _, ev := range fs[0].Evidence {
+		if ev.Key == "readinessProbe" && strings.Contains(ev.Value, "/ready") && strings.Contains(ev.Value, "80") {
+			foundProbe = true
+		}
+	}
+	if !foundProbe {
+		t.Fatalf("探针配置必须进入证据：%+v", fs[0].Evidence)
 	}
 }
 

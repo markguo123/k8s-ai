@@ -132,6 +132,32 @@ func TestCollectionQualityGroupedKindPartial(t *testing.T) {
 	}
 }
 
+// RBAC 采集由 Role/RoleBinding/ClusterRole/ClusterRoleBinding 四次 list 组成；
+// 任意一次失败只能说明 RBAC 数据部分缺失，不能把整组误判为完全失败。
+func TestCollectionQualityRBACPartial(t *testing.T) {
+	snap := qualSnapshot("prod")
+	snap.CollectionErrors = []model.CollectionError{
+		collectErr("list_role_bindings", "RoleBinding", ""),
+	}
+	q := CollectionQuality(snap, qualOpts(), nil)
+
+	if plannedCalls["rbac"] != 4 {
+		t.Fatalf("RBAC 应按 4 次 list 调用计量，实际 %d", plannedCalls["rbac"])
+	}
+	if q.Integrity != model.IntegrityPartial {
+		t.Fatalf("单次 RBAC list 失败应为 partial，实际 %s", q.Integrity)
+	}
+	if !hasKind(q.FailedKinds, "rbac") {
+		t.Fatalf("失败采集项应包含 rbac，实际 %v", q.FailedKinds)
+	}
+	if len(q.CriticalGaps) != 0 {
+		t.Fatalf("RBAC 不是关键采集项，不应产生关键缺口：%v", q.CriticalGaps)
+	}
+	if !strings.Contains(joined(q.MissingData), "RBAC 权限") {
+		t.Fatalf("缺口清单必须指出 RBAC 权限数据缺失，实际 %v", q.MissingData)
+	}
+}
+
 // 主动跳过（档位关闭）不等于采集失败：判级仍是 complete，但必须在清单里说清楚缺了什么。
 func TestCollectionQualitySkippedIsNotFailed(t *testing.T) {
 	q := CollectionQuality(qualSnapshot("prod"), model.ScanOptions{}, nil)

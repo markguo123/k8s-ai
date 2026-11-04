@@ -136,7 +136,8 @@ type DomainHealth struct {
 
 // RemediationItem 是一条可复制的处置建议（排查 / 修复 / 验证三类）。
 type RemediationItem struct {
-	Kind     string `json:"kind"` // investigation | remediation | verification
+	Kind     string `json:"kind"`             // investigation | remediation | verification
+	Format   string `json:"format,omitempty"` // text | command
 	Text     string `json:"text"`
 	Risk     string `json:"risk,omitempty"`
 	Target   string `json:"target,omitempty"`

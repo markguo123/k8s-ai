@@ -176,6 +176,7 @@ func (s *scanService) Run(ctx context.Context, opts model.ScanOptions) (*model.S
 	findingsV := derefFindings(findings)
 	incs := incident.Build(findingsV, idx)
 	incident.Relate(findingsV, incs, graph, idx)
+	incident.AssignRoles(findings, incs)
 	phaseDone(stageIncident, fmt.Sprintf("incidents=%d 因果边=%d", len(incs), countCausalEdges(incs)), true, incStart)
 
 	// 采集质量账：放在深度采集之后统计，日志目标的成败一起算进来。
@@ -197,7 +198,7 @@ func (s *scanService) Run(ctx context.Context, opts model.ScanOptions) (*model.S
 			Namespace:     opts.Namespace,
 			Pod:           opts.PodTarget,
 		},
-		Summary:          summaryFromSnapshot(snap),
+		Summary:          summaryFromSnapshot(snap, opts),
 		Findings:         derefFindings(findings),
 		HealthScore:      report.ComputeHealthScoreWithQuality(rootOnlyFindings(findingsV, incs), collection),
 		Incidents:        incs,
@@ -264,7 +265,9 @@ func (s *scanService) Run(ctx context.Context, opts model.ScanOptions) (*model.S
 	// 放在报告之前——报告只允许写校验后的结论。
 	valStart := phaseStart(stageValidate, "结果校验：结论一致性 + 诊断账")
 	merged, diagSummary := mergeDiagnoses(incs, detByIncident, llmDiags, llmSummary, opts.LLM.Enabled)
+	applyDiagnosesToIncidents(incs, merged)
 	result.Diagnoses = merged
+	diagSummary.RuleFindings = len(result.Findings)
 	result.DiagnosisSummary = &diagSummary
 	result.LLMSummary.Mode = diagSummary.Mode
 	phaseDone(stageValidate, diagnosisAccountLine(diagSummary), true, valStart)
@@ -386,25 +389,52 @@ func (s *scanService) Validate(ctx context.Context, opts model.ScanOptions) (str
 	return serverVersion, nil
 }
 
-// summaryFromSnapshot 汇总集群资源计数，供控制台摘要与报告"资源汇总"节使用。
-func summaryFromSnapshot(snap *model.ClusterSnapshot) model.ClusterSummary {
+// summaryFromSnapshot 按扫描作用域汇总资源计数，供控制台摘要与报告"资源汇总"节使用。
+// 命名空间/Pod 体检不能把 Collector 顺带采到的集群级对象冒充成报告可见范围。
+func summaryFromSnapshot(snap *model.ClusterSnapshot, opts model.ScanOptions) model.ClusterSummary {
 	events := 0
 	for _, list := range snap.EventsIndex {
 		events += len(list)
 	}
-	return model.ClusterSummary{
-		Namespaces:      len(snap.Namespaces),
-		Pods:            len(snap.Pods),
-		Nodes:           len(snap.Nodes),
-		Services:        len(snap.Services),
-		EndpointSlices:  len(snap.EndpointSlices),
-		Workloads:       len(snap.Workloads),
-		Storage:         len(snap.Storage),
-		Ingresses:       len(snap.Ingresses),
-		NetworkPolicies: len(snap.NetworkPolicies),
-		Components:      len(snap.Components),
-		Events:          events,
+	summary := model.ClusterSummary{
+		Namespaces:          len(snap.Namespaces),
+		Pods:                len(snap.Pods),
+		Nodes:               len(snap.Nodes),
+		Services:            len(snap.Services),
+		EndpointSlices:      len(snap.EndpointSlices),
+		Workloads:           len(snap.Workloads),
+		Storage:             len(snap.Storage),
+		Ingresses:           len(snap.Ingresses),
+		NetworkPolicies:     len(snap.NetworkPolicies),
+		Roles:               len(snap.Roles),
+		RoleBindings:        len(snap.RoleBindings),
+		ClusterRoles:        len(snap.ClusterRoles),
+		ClusterRoleBindings: len(snap.ClusterRoleBindings),
+		Components:          len(snap.Components),
+		Events:              events,
 	}
+	if opts.Namespace != "" {
+		summary.Namespaces = 1
+		summary.Nodes = 0
+		summary.Storage = countStorageKind(snap.Storage, "PVC")
+		summary.ClusterRoles = 0
+		summary.ClusterRoleBindings = 0
+		summary.Components = 0
+	}
+	if opts.PodTarget != "" {
+		summary.Pods = 1
+	}
+	return summary
+}
+
+func countStorageKind(items []model.StorageInfo, kind string) int {
+	count := 0
+	for i := range items {
+		if items[i].Ref.Kind == kind {
+			count++
+		}
+	}
+	return count
 }
 
 // clientOptions 把 ScanOptions 转换为 kubernetes 客户端参数。

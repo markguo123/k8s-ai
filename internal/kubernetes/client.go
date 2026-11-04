@@ -325,10 +325,34 @@ func (c *Client) ListPDB(ctx context.Context, namespace string) ([]policyv1.PodD
 	return list.Items, nil
 }
 
+func (c *Client) ListRoles(ctx context.Context, namespace string) ([]rbacv1.Role, error) {
+	list, err := c.clientset.RbacV1().Roles(allOrNs(namespace)).List(ctx, listOpts())
+	if err != nil {
+		return nil, fmt.Errorf("list roles: %w", err)
+	}
+	return list.Items, nil
+}
+
+func (c *Client) ListRoleBindings(ctx context.Context, namespace string) ([]rbacv1.RoleBinding, error) {
+	list, err := c.clientset.RbacV1().RoleBindings(allOrNs(namespace)).List(ctx, listOpts())
+	if err != nil {
+		return nil, fmt.Errorf("list role bindings: %w", err)
+	}
+	return list.Items, nil
+}
+
 func (c *Client) ListClusterRoles(ctx context.Context) ([]rbacv1.ClusterRole, error) {
 	list, err := c.clientset.RbacV1().ClusterRoles().List(ctx, listOpts())
 	if err != nil {
 		return nil, fmt.Errorf("list cluster roles: %w", err)
+	}
+	return list.Items, nil
+}
+
+func (c *Client) ListClusterRoleBindings(ctx context.Context) ([]rbacv1.ClusterRoleBinding, error) {
+	list, err := c.clientset.RbacV1().ClusterRoleBindings().List(ctx, listOpts())
+	if err != nil {
+		return nil, fmt.Errorf("list cluster role bindings: %w", err)
 	}
 	return list.Items, nil
 }

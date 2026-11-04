@@ -211,11 +211,35 @@ func (s *snapCollector) addPdbs(items []policyv1.PodDisruptionBudget) {
 	}
 }
 
+func (s *snapCollector) addRoles(items []rbacv1.Role) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range items {
+		s.snap.Roles = append(s.snap.Roles, normalizeRole(items[i]))
+	}
+}
+
+func (s *snapCollector) addRoleBindings(items []rbacv1.RoleBinding) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range items {
+		s.snap.RoleBindings = append(s.snap.RoleBindings, normalizeRoleBinding(items[i]))
+	}
+}
+
 func (s *snapCollector) addClusterRoles(items []rbacv1.ClusterRole) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range items {
 		s.snap.ClusterRoles = append(s.snap.ClusterRoles, normalizeClusterRole(items[i]))
+	}
+}
+
+func (s *snapCollector) addClusterRoleBindings(items []rbacv1.ClusterRoleBinding) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range items {
+		s.snap.ClusterRoleBindings = append(s.snap.ClusterRoleBindings, normalizeClusterRoleBinding(items[i]))
 	}
 }
 
@@ -269,7 +293,7 @@ func (c *collector) Phase1(ctx context.Context, opts model.ScanOptions) (*model.
 		collect.addNamespaces(namespaces)
 	}
 
-	// 2. 组装 16 类资源 list 任务 + 每 namespace 一次 events 任务。
+	// 2. 组装 25 类资源 list 任务 + 每 namespace 一次 events 任务。
 	tasks := c.resourceTasks(collect, opts)
 	if opts.CollectEvents {
 		for _, ns := range eventNamespaces(snap.Namespaces, opts.Namespace) {
@@ -329,7 +353,7 @@ func (c *collector) Phase1(ctx context.Context, opts model.ScanOptions) (*model.
 	return snap, nil
 }
 
-// resourceTasks 返回 21 类资源的 list 任务（不含 events，含 Secret 元数据）。
+// resourceTasks 返回 25 类资源的 list 任务（不含 events，含 Secret 元数据）。
 func (c *collector) resourceTasks(collect *snapCollector, opts model.ScanOptions) []phase1Task {
 	ns := opts.Namespace
 	return []phase1Task{
@@ -477,12 +501,36 @@ func (c *collector) resourceTasks(collect *snapCollector, opts model.ScanOptions
 			collect.addPdbs(items)
 			return nil
 		}},
+		{operation: "list_roles", kind: "Role", fn: func(ctx context.Context) error {
+			items, err := c.reader.ListRoles(ctx, ns)
+			if err != nil {
+				return err
+			}
+			collect.addRoles(items)
+			return nil
+		}},
+		{operation: "list_role_bindings", kind: "RoleBinding", fn: func(ctx context.Context) error {
+			items, err := c.reader.ListRoleBindings(ctx, ns)
+			if err != nil {
+				return err
+			}
+			collect.addRoleBindings(items)
+			return nil
+		}},
 		{operation: "list_cluster_roles", kind: "ClusterRole", fn: func(ctx context.Context) error {
 			items, err := c.reader.ListClusterRoles(ctx)
 			if err != nil {
 				return err
 			}
 			collect.addClusterRoles(items)
+			return nil
+		}},
+		{operation: "list_cluster_role_bindings", kind: "ClusterRoleBinding", fn: func(ctx context.Context) error {
+			items, err := c.reader.ListClusterRoleBindings(ctx)
+			if err != nil {
+				return err
+			}
+			collect.addClusterRoleBindings(items)
 			return nil
 		}},
 		{operation: "list_config_maps", kind: "ConfigMap", fn: func(ctx context.Context) error {

@@ -25,6 +25,7 @@ const POD_FINDING = {
   title: 'Pod 反复崩溃重启',
   summary: '容器在 30 秒内退出 7 次，等待原因 CrashLoopBackOff',
   resource: { kind: 'Pod', namespace: 'arc', name: 'api-7d9' },
+  role: 'symptom',
   evidence: [
     { id: 'E1', kind: 'state', source: 'pod.status', key: 'containerStatuses[0].state.waiting.reason', value: 'CrashLoopBackOff' },
     {
@@ -78,7 +79,7 @@ function fullReport(): Record<string, unknown> {
         duration: '42s',
         namespace: 'arc',
       },
-      summary: { namespaces: 1, pods: 12, nodes: 3 },
+      summary: { namespaces: 1, pods: 12, nodes: 3, roles: 2, roleBindings: 1 },
       findings: [POD_FINDING, PVC_FINDING],
       diagnoses: [
         {
@@ -106,7 +107,6 @@ function fullReport(): Record<string, unknown> {
           severity: 'CRITICAL',
           root: { id: 'F-2', rule: 'STORAGE_PVC_PENDING', severity: 'HIGH', title: PVC_FINDING.title, resource: PVC_FINDING.resource },
           members: [
-            { id: 'F-2', rule: 'STORAGE_PVC_PENDING', severity: 'HIGH', title: PVC_FINDING.title, resource: PVC_FINDING.resource },
             { id: 'F-1', rule: 'POD_CRASHLOOP', severity: 'CRITICAL', title: POD_FINDING.title, resource: POD_FINDING.resource },
           ],
           rootCauseStatus: 'confirmed',
@@ -199,7 +199,13 @@ function fullReport(): Record<string, unknown> {
       ],
       statistics: [{ domain: 'pod', total: 12, unhealthy: 1, critical: 1, detail: '1 个 Pod 未就绪' }],
       remediation: [
-        { kind: 'investigation', text: 'kubectl describe pvc data-api-0 -n arc', risk: 'SAFE', target: 'arc/data-api-0' },
+        {
+          kind: 'remediation',
+          text: 'kubectl patch pvc data-api-0 -n arc --type merge -p ...',
+          risk: 'MEDIUM',
+          target: 'arc/data-api-0',
+          required: true,
+        },
       ],
     },
   }
@@ -299,7 +305,7 @@ describe('ReportDetailView（P9 报告详情页）', () => {
     const wrapper = await mountDetail()
 
     expect(wrapper.text()).toContain('存在严重风险')
-    expect(wrapper.text()).toContain('1 条严重故障链：存储未就绪导致业务 Pod 反复崩溃')
+    expect(wrapper.text()).toContain('PersistentVolumeClaim arc/data-api-0：arc/api-7d9 因存储未就绪反复崩溃')
     expect(wrapper.find('.score-v').text()).toBe('58')
     expect(wrapper.text()).toContain('受数据完整性封顶')
     expect(wrapper.text()).toContain('部分资源采集失败，健康评分上限 85')
@@ -315,7 +321,7 @@ describe('ReportDetailView（P9 报告详情页）', () => {
     expect(root.exists()).toBe(true)
     expect(root.text()).toContain('根因')
     expect(root.text()).toContain('根因已确认')
-    expect(root.text()).toContain('StorageClass fast-ssd 没有可绑定的 PV')
+    expect(root.text()).toContain('StorageClass fast-ssd 未绑定任何可用 PV')
 
     const members = wrapper.find('.member-list')
     expect(members.exists()).toBe(true)
@@ -329,7 +335,8 @@ describe('ReportDetailView（P9 报告详情页）', () => {
     // 证据引用号形如「异常 id#证据 id」：诊断结论里的 evidenceChain 才能落到具体证据上。
     const evidenceIds = wrapper.findAll('.ev-id').map((node) => node.text())
     expect(evidenceIds).toContain('F-2#E1')
-    expect(evidenceIds).toContain('F-1#E2')
+    expect(evidenceIds).not.toContain('F-1#E2')
+    expect(members.text()).not.toContain('F-2')
   })
 
   it('采集失败与证据缺口原文展示，不折叠成统计数字', async () => {
@@ -347,6 +354,24 @@ describe('ReportDetailView（P9 报告详情页）', () => {
     // 降级原因要说清「这次到底是哪种失败」，且保留确定性结论这件事要标出来。
     expect(quality.text()).toContain('未配置模型')
     expect(quality.text()).toContain('已保留确定性结论')
+  })
+
+  it('处置建议突出必须处理项，不只给命令', async () => {
+    installFetch(fullReport())
+    const wrapper = await mountDetail()
+
+    const remedy = wrapper.find('.remedy-card')
+    expect(remedy.text()).toContain('必须处理')
+    expect(remedy.text()).toContain('arc/data-api-0')
+    expect(remedy.text()).toContain('中风险')
+  })
+
+  it('汇总标签展示 RBAC 资源计数', async () => {
+    installFetch(fullReport())
+    const wrapper = await mountDetail()
+
+    expect(wrapper.text()).toContain('Role 2')
+    expect(wrapper.text()).toContain('RoleBinding 1')
   })
 
   it('未执行的阶段画成未执行，不画成执行中', async () => {
@@ -413,6 +438,15 @@ describe('ReportDetailView（P9 报告详情页）', () => {
     expect(wrapper.findAll('.stage')).toHaveLength(0)
   })
 
+  it('完整异常清单展示后端给出的 Finding 角色', async () => {
+    installFetch(fullReport())
+    const wrapper = await mountDetail()
+
+    const section = wrapper.findAll('section.block').find((item) => item.text().includes('完整异常清单'))
+    const finding = section?.findAll('.item').find((item) => item.text().includes('Pod 反复崩溃重启'))
+    expect(finding?.text()).toContain('关联症状')
+  })
+
   it('正文读不出来时给重试与返回，不静默留白', async () => {
     installFetch(errorResponse(410, 'report_unavailable', '报告内容已被回收'))
     const wrapper = await mountDetail()
@@ -422,5 +456,122 @@ describe('ReportDetailView（P9 报告详情页）', () => {
     // 已知错误码走统一翻译（410 = 内容已不可恢复），不是把后端原文糊在页面上。
     expect(wrapper.text()).toContain('该报告的内容已不可恢复')
     expect(wrapper.findAll('button').length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('业务故障优先展示诊断根因，并把治理建议从故障链中拆出', async () => {
+    const payload = fullReport() as {
+      inspection: {
+        findings: Array<Record<string, unknown>>
+        incidents: Array<Record<string, unknown>>
+        diagnoses: Array<Record<string, unknown>>
+        remediation: Array<Record<string, unknown>>
+      }
+    }
+    payload.inspection.incidents[0].rootCause = '容器反复退出，具体原因待确认'
+    payload.inspection.diagnoses[0].rootCause =
+      '探针路径与镜像实际内容不匹配：**/ready、/healthz 返回 404**，就绪探针永不通过'
+    payload.inspection.diagnoses[0].remediation = [
+      {
+        category: 'remediation',
+        text: "kubectl -n arc patch deployment app-backend --type=merge -p '{}'",
+        risk: 'MEDIUM',
+      },
+    ]
+    payload.inspection.diagnoses[0].remediationText =
+      '先确认 **/ready、/healthz 返回 404** 是探针配置错误，再修改探针路径。'
+    payload.inspection.diagnoses[0].verification = [
+      { category: 'verification', text: 'kubectl -n arc get endpoints app-service', risk: '' },
+    ]
+    ;(payload.inspection.diagnoses[0].investigation as Array<Record<string, unknown>>)[0].risk = ''
+    payload.inspection.diagnoses[0].validation = {
+      passed: true,
+      commandIssues: ['1 条修复命令因缺少确定字段值未收录'],
+    }
+    payload.inspection.remediation = [
+      { kind: 'remediation', format: 'text', text: '**修复目标**：恢复 app-backend 业务。' },
+      {
+        kind: 'investigation',
+        format: 'command',
+        text: 'kubectl -n arc logs api-0 --tail=50',
+        risk: 'SAFE',
+        target: 'arc/api-0',
+      },
+    ]
+    payload.inspection.findings.push({
+      id: 'F-3',
+      rule: 'NetworkPolicyNoDefaultDeny',
+      severity: 'LOW',
+      title: '命名空间缺少默认拒绝 NetworkPolicy',
+      summary: '治理建议',
+      suggestion: true,
+      resource: { kind: 'Namespace', name: 'arc' },
+      evidence: [],
+    })
+    payload.inspection.findings.push({
+      id: 'F-DEP',
+      rule: 'DeploymentReplica',
+      severity: 'MEDIUM',
+      title: '副本数不匹配：0/2 ready',
+      summary: '业务不可用',
+      resource: { kind: 'Deployment', namespace: 'arc', name: 'app-backend' },
+      evidence: [],
+    })
+    ;(payload.inspection.incidents[0].members as Array<Record<string, unknown>>).push({
+      id: 'F-DEP',
+      rule: 'DeploymentReplica',
+      severity: 'MEDIUM',
+      title: '副本数不匹配：0/2 ready',
+      resource: { kind: 'Deployment', namespace: 'arc', name: 'app-backend' },
+    })
+    payload.inspection.incidents.push({
+      id: 'F-3',
+      title: '命名空间缺少默认拒绝 NetworkPolicy',
+      severity: 'LOW',
+      root: {
+        id: 'F-3',
+        rule: 'NetworkPolicyNoDefaultDeny',
+        severity: 'LOW',
+        title: '命名空间缺少默认拒绝 NetworkPolicy',
+        resource: { kind: 'Namespace', name: 'arc' },
+      },
+      members: [],
+      rootCauseStatus: 'probable',
+      rootCause: '未配置 default-deny',
+      independent: true,
+    })
+
+    installFetch(payload)
+    const wrapper = await mountDetail()
+
+    expect(wrapper.find('.root-text').text()).toContain('/ready、/healthz 返回 404')
+    expect(wrapper.find('.fault-chain-list .impact-pill').text()).toContain('0/2 ready')
+    expect(wrapper.find('.summary').text()).toContain('业务故障链 1 条')
+    expect(wrapper.find('.summary').text()).toContain('治理建议 1 项')
+    expect(wrapper.find('.fault-chain-list').text()).not.toContain('缺少默认拒绝')
+    expect(wrapper.find('.advisory-list').text()).toContain('缺少默认拒绝')
+
+    const evidence = wrapper.find('details.evidence-panel')
+    expect(evidence.exists()).toBe(true)
+    expect(evidence.attributes('open')).toBeUndefined()
+    expect(evidence.text()).toContain('F-2#E1')
+    expect(evidence.text()).not.toContain('F-1#E2')
+    expect(wrapper.find('details.causal-panel').attributes('open')).toBeUndefined()
+    expect(wrapper.find('details.member-panel').attributes('open')).toBeUndefined()
+
+    const actions = wrapper.find('.action-panel')
+    expect(actions.exists()).toBe(true)
+    for (const heading of ['排查建议', '修复建议', '验证建议', '修复说明']) {
+      expect(actions.text()).toContain(heading)
+    }
+    expect(actions.text()).toContain('恢复存储供给')
+    expect(actions.text()).toContain('1 条修复命令因缺少确定字段值未收录')
+    expect(actions.findAll('.pill').some((node) => node.text() === '只读')).toBe(true)
+    expect(actions.text()).not.toContain('未标注风险')
+    expect(actions.find('strong').text()).toContain('/ready、/healthz 返回 404')
+    expect(actions.text()).toContain('kubectl -n arc get endpoints app-service')
+
+    const remedy = wrapper.find('.remedy-card')
+    expect(remedy.find('.md strong').text()).toContain('修复目标')
+    expect(remedy.find('pre.cmd').text()).toContain('kubectl -n arc logs api-0')
   })
 })

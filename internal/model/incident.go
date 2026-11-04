@@ -61,5 +61,6 @@ type CausalEdge struct {
 	Mechanism      string      `json:"mechanism"`    // 故障如何从 source 传到 target
 	Rule           string      `json:"rule,omitempty"`
 	EvidenceRefs   []string    `json:"evidenceRefs,omitempty"`
-	Confidence     string      `json:"confidence"` // confirmed|probable
+	Confidence     string      `json:"confidence"`       // confirmed|probable
+	Method         string      `json:"method,omitempty"` // correlation|deterministic|llm
 }

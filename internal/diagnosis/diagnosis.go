@@ -185,10 +185,10 @@ func tally(counters *summaryCounters, diag model.Diagnosis, incID string) {
 		status = model.LLMStatusDegraded
 	}
 	counters.record(status, false, &model.LLMDegradation{
-		IncidentID:        incID,
-		FindingID:         diag.FindingID,
-		Status:            status,
-		Reason:            diag.Error,
+		IncidentID: incID,
+		FindingID:  diag.FindingID,
+		Status:     status,
+		Reason:     diag.Error,
 		// 按 Finding 送诊时没有确定性诊断层参与：规则标题不是「确定性结论」，
 		// 这里声称保留了确定性结论，报告就会把规则判定说成引擎判定。
 	})
@@ -332,12 +332,15 @@ func (d *diagnoser) diagnosisMaxTokens() int {
 
 // outputSchemaHint 显式告知模型必须输出的 JSON 结构（多数网关不支持
 // response_format，只能靠 prompt 约束；此前模型自由发挥导致解析失败）。
-const outputSchemaHint = `请只输出一个 JSON 对象，不要输出任何其他内容。保持简洁：summary/rootCause 各 1-2 句，可能原因最多 2 条，命令每条一行不要解释。
+const outputSchemaHint = `请只输出一个 JSON 对象，不要输出任何其他内容。summary/rootCause 各 1-2 句，可能原因最多 3 条。
 本次输入可能包含"根因 Finding + 关联派生问题"：诊断必须围绕根因（Incident）展开；派生问题只用于影响评估，不单独给修复命令。
-禁止输出无明确修改目标的 kubectl edit；修复命令必须直接针对根因。如果当前证据不足以确定精确修改内容：
-- remediationText 必须用 1-2 句说明修复内容：做什么、为什么（对应根因）、预期结果；文字是主体，命令只是辅助，禁止为空；
-- remediation 至少一条可执行命令（含 -n/资源名/完整参数）；无法确定精确修改时放只读确认命令；remediationDirection 作为命令注释/方向；
-- investigation 给只读确认命令。
+修复方案以 remediationText 为文字主体，面向不会描述故障的运维/应用人员，必须让他们不看命令也能理解：
+- 推荐使用简短 Markdown，写清“修复目标、按序步骤、预期结果、失败时如何回退”；
+- remediationDirection 写执行前置条件、不能自动完成的控制台/外部系统操作和边界；
+- investigation 放只读确认命令，verification 放只读验证命令；
+- remediation 只放“资源名、命名空间、字段名和目标值都已经被证据确认”的非交互写命令；允许为空数组；
+- 禁止在 remediation 中输出 <占位符>、待确认值、编辑器/交互式命令或猜测的写操作；这类信息只能写在 remediationText/remediationDirection 中，并明确“不可直接执行”；
+- 不得为了满足“必须有写命令”而追加 rollout/scale/patch。
 字段如下：
 {
   "summary": "Incident 问题摘要",
@@ -345,14 +348,14 @@ const outputSchemaHint = `请只输出一个 JSON 对象，不要输出任何其
   "confidence": 0.0到1.0之间的数字,
   "confidenceLevel": "CONFIRMED|HIGH_CONFIDENCE|POSSIBLE|UNKNOWN",
   "causalChain": "因果链解释（根因→直接症状→派生影响）",
-  "evidenceChain": ["E1", "E2"],
+  "evidenceChain": ["<findingID>#E1", "<findingID>#E2"],
   "impact": "影响范围（区分直接影响与派生影响）",
   "possibleCauses": ["可能原因1", "可能原因2"],
   "investigation": ["kubectl 只读确认命令"],
-  "remediation": ["可执行 kubectl 命令序列（每条含 -n/资源名/完整参数；必须直接针对根因；无法确定精确修改时放只读确认命令如 kubectl get pvc ...；禁止空数组；命令只是文字说明的配套）"],
-  "remediationText": "修复文字说明（1-2 句：做什么、为什么、预期结果；禁止为空；用户先读这段再执行命令）",
-  "remediationDirection": "修复方向与前置条件（remediation 为空时必须给出，如：确认 PVC 是否应存在、检查 Deployment claimName 引用，人工确认后重建或修正；不要编造具体 YAML）",
-  "verification": ["kubectl 验证命令"],
+  "remediation": ["仅包含可直接执行的写命令；目标参数未完全确认时返回空数组"],
+  "remediationText": "Markdown 文字方案（目标 / 按序步骤 / 预期结果 / 回退方式；禁止为空）",
+  "remediationDirection": "前置条件、外部系统操作、不可直接执行的命令示例与安全边界",
+  "verification": ["kubectl 只读验证命令"],
   "risk": "SAFE|LOW|MEDIUM|HIGH|CRITICAL",
   "uncertainty": "不确定性说明（没有则留空字符串）"
 }`
@@ -656,8 +659,16 @@ func buildIncidentContexts(incidents []model.Incident, findingByID map[string]mo
 			text = dropMemberSection(text)
 			est = estimateTokens(text)
 		}
-		for est > per && strings.Count(text, "\n- E") > 1 {
-			text = dropLastEvidence(text)
+		for est > per {
+			next := dropLastEvidence(text)
+			if next == text {
+				break
+			}
+			text = next
+			est = estimateTokens(text)
+		}
+		if est > per {
+			text = capText(text, per)
 			est = estimateTokens(text)
 		}
 		out = append(out, incidentContext{inc: inc, root: root, text: text, tokens: est})
@@ -709,12 +720,9 @@ func dropMemberSection(text string) string {
 	return text[:i]
 }
 
-// ensureRemediation 保证修复方案"文字 + 命令"永不缺失（系统提示词 §三十五）：
-// remediationText 非空（LLM 漏写时用修复方向兜底），remediation 至少一条
-// 真正的写入命令（create/patch/apply/delete/set/scale/rollout 等）；若 LLM 只给了
-// 只读命令（get/describe 作确认），用规则级兜底写入命令补上，始终满足 §三十五
-// "至少一条写入操作命令"的硬性要求（即使 validateCommand 过滤掉 edit 等交互写法，
-// 也会在这里补上，避免 remediation 退化为纯只读）。
+// ensureRemediation 保证修复方案有可读的文字主体。
+// 不在工具侧补写命令：命令必须来自 LLM 或确定性诊断器对已确认目标的表达，
+// 参数未确认时伪造 rollout/scale/patch 会覆盖模型明确给出的安全边界。
 func ensureRemediation(d *model.Diagnosis, f model.Finding) {
 	if d.RemediationDirection == "" {
 		d.RemediationDirection = remediationDirection(f.Rule)
@@ -722,199 +730,4 @@ func ensureRemediation(d *model.Diagnosis, f model.Finding) {
 	if strings.TrimSpace(d.RemediationText) == "" {
 		d.RemediationText = d.RemediationDirection
 	}
-	// 判断 remediation 是否已经包含写入动词（写命令）。
-	writePresent := false
-	for _, c := range d.Remediation {
-		if commandHasWriteVerb(c.Text) {
-			writePresent = true
-			break
-		}
-	}
-	if !writePresent {
-		if extra := fallbackWriteCommands(f); len(extra) > 0 {
-			// 兜底写入命令放在只读确认命令之后，保持"先确认 → 再执行"的习惯顺序。
-			d.Remediation = append(d.Remediation, extra...)
-		} else if len(d.Remediation) == 0 && len(d.Investigation) > 0 {
-			// 规则级也拿不到写入兜底的情况，至少给一条 investigation 作占位，
-			// 避免 remediation 空列表。
-			first := d.Investigation[0]
-			first.Category = model.CmdRemediation
-			first.Risk = model.RiskSafe
-			d.Remediation = append(d.Remediation, first)
-		}
-	}
-}
-
-// commandHasWriteVerb 判断 kubectl 命令是否属于写入类动词（用于 ensureRemediation
-// 兜底判定）。与 commands.go writeVerbs 保持语义一致，但避免跨包共享内部 map。
-func commandHasWriteVerb(text string) bool {
-	fields := strings.Fields(strings.TrimSpace(text))
-	if len(fields) < 2 || fields[0] != "kubectl" {
-		return false
-	}
-	verb, _, _ := extractVerb(fields[1:])
-	switch verb {
-	case "create", "patch", "apply", "delete", "set", "scale", "rollout",
-		"annotate", "label", "replace", "expose", "autoscale", "taint", "drain",
-		"uncordon", "cordon", "cp": // cp 也算写（向容器复制文件），常见修复手段
-		return true
-	}
-	return false
-}
-
-// fallbackWriteCommands 给不同 Finding 类型的规则级写入命令兜底。
-// 这些命令"不读 Secret 数据、不执行任何 API 写操作"，只作为输出展示（ADR-014）。
-// 对依赖应用侧具体值的字段用 `<待确认>` 明确占位，提示人工确认后执行。
-func fallbackWriteCommands(f model.Finding) []model.Command {
-	ns := f.Resource.Namespace
-	name := f.Resource.Name
-	switch f.Rule {
-	case "CrashLoopBackOff":
-		// CrashLoopBackOff 根因多样（配置错误/资源不足/依赖缺失/代码 bug），
-		// 一期无法精确定位具体根因，只给 rollout restart 作为"修复后重启生效"的
-		// 通用步骤；不硬塞 set resources 等具体写法，避免误导（如配置错误时
-		// set resources 完全不相关）。具体修复值留待二期 chat 交互确认。
-		if owner, wlKind, wlName := detectWorkloadOwner(f); owner {
-			return []model.Command{{
-				Category: model.CmdRemediation,
-				Risk:     model.RiskLow,
-				Text:     fmt.Sprintf("kubectl -n %s rollout restart %s %s", ns, wlKind, wlName),
-			}}
-		}
-		// 无 Workload owner（裸 Pod 或 Job）：直接用 delete 重建（一般由上层控制器再拉起）。
-		return []model.Command{{
-			Category: model.CmdRemediation,
-			Risk:     model.RiskLow,
-			Text:     fmt.Sprintf("kubectl -n %s delete pod %s", ns, name),
-		}}
-	case "ImagePullBackOff":
-		if owner, wlKind, wlName := detectWorkloadOwner(f); owner {
-			return []model.Command{{
-				Category: model.CmdRemediation,
-				Risk:     model.RiskMedium,
-				Text:     fmt.Sprintf("kubectl -n %s set image %s %s <容器名>=<正确镜像:tag>", ns, wlKind, wlName),
-			}}
-		}
-	case "ContainerCreateError":
-		// 多为 ConfigMap/Secret 缺失：给出创建占位 + Pod 重建。
-		out := []model.Command{
-			{
-				Category: model.CmdRemediation,
-				Risk:     model.RiskMedium,
-				Text:     fmt.Sprintf("kubectl -n %s create configmap <缺失的ConfigMap名> --from-literal=<key>=<待确认的值> -o yaml --dry-run=client | kubectl apply -f -", ns),
-			},
-		}
-		if owner, wlKind, wlName := detectWorkloadOwner(f); owner {
-			out = append(out, model.Command{
-				Category: model.CmdRemediation,
-				Risk:     model.RiskLow,
-				Text:     fmt.Sprintf("kubectl -n %s rollout restart %s %s", ns, wlKind, wlName),
-			})
-		}
-		return out
-	case "FailedMount":
-		out := []model.Command{
-			{
-				Category: model.CmdRemediation,
-				Risk:     model.RiskMedium,
-				Text:     fmt.Sprintf("kubectl -n %s create -f - <<'EOF'\napiVersion: v1\nkind: PersistentVolumeClaim\nmetadata:\n  name: <待确认的PVC名>\n  namespace: %s\nspec:\n  accessModes: [\"ReadWriteOnce\"]\n  resources:\n    requests:\n      storage: <待补容量，如 1Gi>\n  storageClassName: <待补StorageClass名>\nEOF", ns, ns),
-			},
-		}
-		if owner, wlKind, wlName := detectWorkloadOwner(f); owner {
-			out = append(out, model.Command{
-				Category: model.CmdRemediation,
-				Risk:     model.RiskMedium,
-				Text:     fmt.Sprintf("kubectl -n %s patch %s %s --type=merge -p '{\"spec\":{\"volumes\":[{\"name\":\"<卷名>\",\"persistentVolumeClaim\":{\"claimName\":\"<正确的PVC名>\"}}]}}'", ns, wlKind, wlName),
-			})
-		}
-		return out
-	case "Unhealthy":
-		if owner, wlKind, wlName := detectWorkloadOwner(f); owner {
-			return []model.Command{{
-				Category: model.CmdRemediation,
-				Risk:     model.RiskMedium,
-				Text:     fmt.Sprintf("kubectl -n %s patch %s %s --type=merge -p '{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"<容器名>\",\"livenessProbe\":{\"httpGet\":{\"path\":\"<待确认路径>\",\"port\":<待确认端口>},\"initialDelaySeconds\":5,\"periodSeconds\":10}}]}}}}'", ns, wlKind, wlName),
-			}}
-		}
-	case "ServiceNoEndpoint":
-		return []model.Command{{
-			Category: model.CmdRemediation,
-			Risk:     model.RiskLow,
-			Text:     fmt.Sprintf("kubectl -n %s patch service %s --type=merge -p '{\"spec\":{\"selector\":{\"<正确标签>\":\"<值>\"}}}'", ns, name),
-		}}
-	case "DeploymentReplica", "StatefulSetReplica":
-		wlKind := strings.ToLower(strings.TrimSuffix(f.Rule, "Replica"))
-		if wlKind == "deployment" || wlKind == "statefulset" {
-			return []model.Command{{
-				Category: model.CmdRemediation,
-				Risk:     model.RiskMedium,
-				Text:     fmt.Sprintf("kubectl -n %s scale %s %s --replicas=<预期副本数>", ns, wlKind, name),
-			}}
-		}
-	case "IngressBackend":
-		return []model.Command{{
-			Category: model.CmdRemediation,
-			Risk:     model.RiskLow,
-			Text:     fmt.Sprintf("kubectl -n %s patch ingress %s --type=json -p='[{\"op\":\"replace\",\"path\":\"/spec/rules/0/http/paths/0/backend/service/name\",\"value\":\"<正确的Service名>\"}]'", ns, name),
-		}}
-	case "PendingPod":
-		if owner, wlKind, wlName := detectWorkloadOwner(f); owner {
-			return []model.Command{{
-				Category: model.CmdRemediation,
-				Risk:     model.RiskMedium,
-				Text:     fmt.Sprintf("kubectl -n %s set resources %s %s --containers=<容器名> --requests=cpu=<待确认>,memory=<待确认> --limits=cpu=<待确认>,memory=<待确认>", ns, wlKind, wlName),
-			}}
-		}
-	}
-	// 默认：能识别到 Workload owner 就给 rollout restart（修改配置后最通用的重启生效手段）。
-	if owner, wlKind, wlName := detectWorkloadOwner(f); owner {
-		return []model.Command{{
-			Category: model.CmdRemediation,
-			Risk:     model.RiskLow,
-			Text:     fmt.Sprintf("kubectl -n %s rollout restart %s %s", ns, wlKind, wlName),
-		}}
-	}
-	return nil
-}
-
-// detectWorkloadOwner 在 Finding 资源为 Pod 时，按 Pod 命名规律识别其 Workload
-// 拥有者（Deployment/StatefulSet），便于生成"改 Workload 而非 Pod"的修复命令；
-// 识别不了时返回 (false, "", "")，调用方退化为"重建 Pod"或仅给排查命令。
-// 注意：Finding 目前不携带集群侧 owner 元信息（correlation index 有，但未回写到
-// Finding），因此这里只用命名启发式；两段式 Pod 名（DaemonSet/ReplicaSet/Job）
-// 无法仅凭名称可靠区分，不猜测，避免生成错误的 rollout/scale 目标。
-func detectWorkloadOwner(f model.Finding) (has bool, kind, name string) {
-	// 先按资源 Kind 直接返回 Workload 级。
-	switch f.Resource.Kind {
-	case "Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job", "CronJob":
-		return true, strings.ToLower(f.Resource.Kind), f.Resource.Name
-	}
-	if f.Resource.Kind != "Pod" {
-		return false, "", ""
-	}
-	parts := strings.Split(f.Resource.Name, "-")
-	n := len(parts)
-	// StatefulSet Pod：<sts>-<序号>（如 web-0），序号为纯数字。
-	if n >= 2 && allDigits(parts[n-1]) {
-		return true, "statefulset", strings.Join(parts[:n-1], "-")
-	}
-	// Deployment Pod：<deploy>-<replicaset hash>-<pod hash>（三段及以上），
-	// 去掉最后两段哈希即可逼近 Deployment 名；若与实际不符，命令中名称可人工修正。
-	if n >= 3 {
-		return true, "deployment", strings.Join(parts[:n-2], "-")
-	}
-	return false, "", ""
-}
-
-// allDigits 判断字符串是否全为数字（StatefulSet Pod 序号特征）。
-func allDigits(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
 }

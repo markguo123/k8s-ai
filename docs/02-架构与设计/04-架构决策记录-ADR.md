@@ -699,6 +699,19 @@
   5. 与对象存储的边界：本 ADR 只解决「谁说了算」，不解决大正文落点；正文容量闸门与外置取舍属 ADR-043（其 v1.1 明确四期不做整篇外置）。
 - **后果**：平台模式的会话生命周期第一次真正受 MySQL 事务与容量约束，`sessions.data` 的 `MEDIUMTEXT` 上限变成需要显式管理的闸门（`agent.session_max_bytes`，ADR-043 v1.1 第 11 条）；`/data` PVC 从「会话必需」降级为「只服务 SQLite 兜底」，P6.4 的 PVC 口径与部署手册需同步（方案 15 §19 三态裁决）；测试面新增「重启不丢会话」「删除后库内无正文残留」「重命名/置顶持久化」三条硬断言；工时 1.5 人日，是 P8 从 7.5 人日升到 11.5 人日的主要来源。
 - **落实状态**：**代码已落地（P8.0，开发计划 v1.61）**。① `internal/store/sessionsync.go` 提供 `NewDatabaseSessionStore`（同步无 ctx 的 `session.Store` 适配带 ctx 的 `store.SessionStore`，单次操作 30s 超时；`ErrNotFound` → `session.ErrNotFound`、`ErrExists` → 普通「已存在」错误；落库前走 `redactSessionForStore`，脱敏面比文件副本更宽）；② `newChat` 按是否装配平台库分流后端，聊天主流程去掉对同一会话行的第二次写，`Delete/Clear/Rename/Pin` 经同一后端自动落库；③ `sessionStore.Delete` 同事务级联清 `steps`/`turns`（表间无外键；只删 `sessions` 行时已删会话正文仍可按 `session_id` 读回），`audit_events` 刻意保留；④ `agent.audit_file_copy` + `audit.NopRecorder`；⑤ `migrate --platform/--force` 一次性导入；⑥ 平台模式启动 INFO 点名残留会话文件。测试覆盖四后端语义等价、错误口径负向、落库脱敏、副本两态、CLI 文件布局不变、删除级联与审计保留。**仍待后续任务**：列表不读正文列与 `agent.session_max_bytes` 闸门属 P8.6，删除时解除对象引用属 P8.2/P8.5。方案见 `15-方案-存储边界与对象存储-四期.md` v1.4 §1、§20、§22。
+
+## ADR-047 体检证据引用全局化与最终 Diagnosis 单一事实源
+
+- **状态**：已接受并落地（2026-11-04）；文档口径于 2026-11-05 全仓统一
+- **背景**：体检链路的 Scanner/Reader、两阶段采集和错误隔离本身合理，不需要推倒重写。真正产生歧义的是下游契约：`Evidence.ID` 只在 Finding 内稳定，进入 Incident/Diagnosis 后裸 `E1` 会跨 Finding 碰撞；根因同时存在于 Incident 与 Diagnosis，可能让 LLM/报告/Web 各说一套；Incident 因果边按所有合法 cause/effect 两两组合，会形成边爆炸；Finding 没有语义角色，业务故障与治理建议难区分。
+- **决策**：
+  1. 保留 Scanner → Rule → Evidence → Relations → Incident → Deterministic → LLM → Validate → Report 分层与现有两阶段采集。跨 Finding 证据引用统一 `<findingID>#<evidenceID>`，旧裸 `EID` 只在入口按根 Finding 归一化。
+  2. 最终合并与校验后的 `Diagnosis` 是根因唯一事实源；Incident 的根因、置信度、证据、缺口与影响链字段是报告兼容投影，由服务层统一回写。
+  3. Finding 增加 `anchor/symptom/impact/advisory/independent` 角色；Incident 内生成从根生长的故障树，每个症状最多一条入边。关联层只能写 `probable`，确定性诊断器可写更具体的 `deterministic` 边并在证据充分时 `confirmed`。
+  4. 采集质量只表示计划内 API 调用是否成功，不冒充证据充分度；每个诊断仍用 `EvidenceRefs` + `EvidenceGaps` 自证。正常退出码 0 的高重启容器不得描述为崩溃，未确认原因前不得盲推 `rollout restart`。
+- **后果**：报告/API/Web 的证据 ID 可稳定定位，根因口径唯一，故障链由关系网收敛为树；旧裸 E-ID 报告仍可读但新结果统一 canonical 格式。Scanner 不做重写，降低引入采集回归的风险。
+- **落实状态**：代码与测试已落地；权威细节见 `18-方案-体检诊断体系升级-四期.md` v1.4 §4、§6、§16–§17，数据字段见 `02-数据模型与数据字典.md`，流程见 `07-采集与扫描流程.md` v2.1。
+
 ## 待决策事项（需在编码前确认）
 
 | # | 问题 | 建议 | 影响 |

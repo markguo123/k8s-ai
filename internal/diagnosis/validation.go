@@ -103,14 +103,13 @@ func rootCauseStatusFromConfidence(conf float64) string {
 	return model.RootCauseUnknown
 }
 
-// incidentEvidenceUniverse 返回本故障链真实可用的证据引用集合：
-// 根因 Finding 用 `E3`，派生症状用 `<findingID>#E3`。
+// incidentEvidenceUniverse 返回本故障链真实可用的 canonical 证据引用集合：
+// 统一使用 `<findingID>#<evidenceID>`。
 func incidentEvidenceUniverse(inc model.Incident, findingByID map[string]model.Finding) map[string]bool {
 	out := map[string]bool{}
 	if f, ok := findingByID[inc.Root.ID]; ok {
 		for _, e := range f.Evidence {
-			out[e.ID] = true
-			out[inc.Root.ID+"#"+e.ID] = true
+			out[model.GlobalEvidenceRef(inc.Root.ID, e.ID)] = true
 		}
 	}
 	for _, m := range inc.Members {
@@ -119,7 +118,7 @@ func incidentEvidenceUniverse(inc model.Incident, findingByID map[string]model.F
 			continue
 		}
 		for _, e := range f.Evidence {
-			out[m.ID+"#"+e.ID] = true
+			out[model.GlobalEvidenceRef(m.ID, e.ID)] = true
 		}
 	}
 	return out

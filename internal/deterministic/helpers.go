@@ -98,7 +98,7 @@ func evIDs(fs ...*model.Finding) []string {
 		}
 		for _, ev := range f.Evidence {
 			if ev.ID != "" {
-				out = append(out, ev.ID)
+				out = append(out, model.GlobalEvidenceRef(f.ID, ev.ID))
 			}
 		}
 	}
@@ -114,7 +114,7 @@ func evOfKind(f *model.Finding, kinds ...model.EvidenceKind) []string {
 	for _, ev := range f.Evidence {
 		for _, k := range kinds {
 			if ev.Kind == k && ev.ID != "" {
-				out = append(out, ev.ID)
+				out = append(out, model.GlobalEvidenceRef(f.ID, ev.ID))
 			}
 		}
 	}

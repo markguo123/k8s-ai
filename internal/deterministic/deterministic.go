@@ -298,6 +298,7 @@ func (c *Case) CausalEdge(src, dst *model.Finding, mechanism string) (model.Caus
 		Rule:           src.Rule + "->" + dst.Rule,
 		EvidenceRefs:   dedupe(append(evIDs(src), evIDs(dst)...)),
 		Confidence:     model.RootCauseProbable,
+		Method:         "deterministic",
 	}, true
 }
 
@@ -473,7 +474,7 @@ func knownEvidence(c *Case) map[string]bool {
 	out := map[string]bool{}
 	for _, f := range c.Items {
 		for _, ev := range f.Evidence {
-			out[ev.ID] = true
+			out[model.GlobalEvidenceRef(f.ID, ev.ID)] = true
 		}
 	}
 	return out
@@ -505,19 +506,38 @@ func applyToIncident(inc *model.Incident, results []Result) {
 }
 
 func mergeEdges(base, add []model.CausalEdge) []model.CausalEdge {
-	seen := map[string]bool{}
-	var out []model.CausalEdge
+	byTarget := map[string]model.CausalEdge{}
 	for _, group := range [][]model.CausalEdge{base, add} {
 		for _, e := range group {
-			key := e.SourceFinding + ">" + e.TargetFinding + ">" + e.RelationType
-			if seen[key] {
+			old, exists := byTarget[e.TargetFinding]
+			if exists && edgeConfidenceRank(old.Confidence) >= edgeConfidenceRank(e.Confidence) {
 				continue
 			}
-			seen[key] = true
-			out = append(out, e)
+			byTarget[e.TargetFinding] = e
 		}
 	}
+	out := make([]model.CausalEdge, 0, len(byTarget))
+	for _, e := range byTarget {
+		out = append(out, e)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].TargetFinding != out[j].TargetFinding {
+			return out[i].TargetFinding < out[j].TargetFinding
+		}
+		return out[i].SourceFinding < out[j].SourceFinding
+	})
 	return out
+}
+
+func edgeConfidenceRank(confidence string) int {
+	switch confidence {
+	case model.RootCauseConfirmed:
+		return 2
+	case model.RootCauseProbable:
+		return 1
+	default:
+		return 0
+	}
 }
 
 // diagnosis 把确定性结论转成报告里的 Diagnosis 条目（Source=deterministic，LLMUsed=false）。

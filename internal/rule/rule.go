@@ -162,6 +162,7 @@ func (e *engine) Evaluate(ctx context.Context, snapshot *model.ClusterSnapshot, 
 		Index:    index,
 		Severity: DefaultSeverityPolicy(),
 		Now:      time.Now(),
+		Options:  opts,
 	}
 	var findings []*model.Finding
 	for _, r := range e.registry.Filtered(opts.RulesEnabled, opts.RulesDisabled) {
@@ -186,7 +187,9 @@ func (e *engine) Evaluate(ctx context.Context, snapshot *model.ClusterSnapshot, 
 			continue
 		}
 		f.Category = m.Category
-		f.Kind = m.Kind
+		if f.Kind == "" {
+			f.Kind = m.Kind
+		}
 		f.Suggestion = m.RuleType == RuleTypeSuggestion
 		if opts.WithDoc && m.DocRef != "" {
 			if d, ok := e.docs.Lookup(m.DocRef); ok {
@@ -203,6 +206,7 @@ type RuleContext struct {
 	Index    *model.CorrelationIndex
 	Severity SeverityPolicy
 	Now      time.Time
+	Options  model.ScanOptions
 }
 
 // SeverityPolicy 控制严重级调整（FR-011）。
@@ -330,6 +334,7 @@ func newFinding(ctx *RuleContext, r Rule, ref model.ResourceRef, title string, b
 		Title:    title,
 		Summary:  fmt.Sprintf("%s/%s：%s", ref.Namespace, ref.Name, title),
 		Resource: ref,
+		Kind:     ref.Kind,
 		Evidence: evs,
 		Related:  relatedRefs(ctx, ref),
 	}
@@ -354,7 +359,7 @@ func Fingerprint(index *model.CorrelationIndex, f model.Finding) string {
 	return hex.EncodeToString(sum[:16])
 }
 
-// evidenceSignature 取排序后前 3 条非日志证据的 key:value 作为指纹签名。
+// evidenceSignature 取规则产出顺序中的前 3 条非日志证据 key:value 作为指纹签名。
 func evidenceSignature(evs []model.Evidence) string {
 	var parts []string
 	seen := 0

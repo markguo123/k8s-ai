@@ -14,17 +14,21 @@ type ScanMeta struct {
 
 // ClusterSummary 是报告"集群资源汇总"节的数据（M1 垂直切片即可见）。
 type ClusterSummary struct {
-	Namespaces      int `json:"namespaces"`
-	Pods            int `json:"pods"`
-	Nodes           int `json:"nodes"`
-	Services        int `json:"services"`
-	EndpointSlices  int `json:"endpointSlices"`
-	Workloads       int `json:"workloads"`
-	Storage         int `json:"storage"`
-	Ingresses       int `json:"ingresses"`
-	NetworkPolicies int `json:"networkPolicies"`
-	Components      int `json:"components"`
-	Events          int `json:"events"`
+	Namespaces          int `json:"namespaces"`
+	Pods                int `json:"pods"`
+	Nodes               int `json:"nodes"`
+	Services            int `json:"services"`
+	EndpointSlices      int `json:"endpointSlices"`
+	Workloads           int `json:"workloads"`
+	Storage             int `json:"storage"`
+	Ingresses           int `json:"ingresses"`
+	NetworkPolicies     int `json:"networkPolicies"`
+	Roles               int `json:"roles"`
+	RoleBindings        int `json:"roleBindings"`
+	ClusterRoles        int `json:"clusterRoles"`
+	ClusterRoleBindings int `json:"clusterRoleBindings"`
+	Components          int `json:"components"`
+	Events              int `json:"events"`
 }
 
 // LLMSummary 记录一次扫描中 LLM 阶段的行为。

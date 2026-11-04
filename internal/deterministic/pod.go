@@ -67,9 +67,14 @@ func (crashLoopDiagnoser) Diagnose(c *Case) Result {
 		lastReason = ctr.Reason
 	}
 	hint := exitCodeHints[exit]
+	cleanExit := exit == 0
 
 	detail := fmt.Sprintf("容器 %s 反复异常退出（当前状态 %s/%s，上次终止原因 %s，退出码 %d，已重启 %d 次）",
 		ctr.Name, orDash(ctr.State), orDash(ctr.Reason), orDash(lastReason), exit, ctr.RestartCount)
+	if cleanExit {
+		detail = fmt.Sprintf("容器 %s 以退出码 0 正常结束，但 Pod 的 restartPolicy=%s 会继续拉起该容器（上次终止原因 %s，当前状态 %s/%s，已重启 %d 次）",
+			ctr.Name, orDash(p.RestartPolicy), orDash(lastReason), orDash(ctr.State), orDash(ctr.Reason), ctr.RestartCount)
+	}
 	if hint != "" {
 		detail += "：" + hint
 	}
@@ -89,6 +94,15 @@ func (crashLoopDiagnoser) Diagnose(c *Case) Result {
 		Verification: []model.Command{
 			ver(fmt.Sprintf("kubectl %sget pod %s -w", nsArg(p.Ref.Namespace), p.Ref.Name)),
 		},
+	}
+	if cleanExit {
+		r.Mechanism = "主容器进程正常结束并返回 0；当 restartPolicy=Always 时，kubelet 仍会把它视作需要保持运行的容器并再次拉起。它可能是本应常驻的应用主动退出，也可能是误把一次性脚本放进了 Deployment/StatefulSet。"
+		r.Investigation = append(r.Investigation,
+			inv(fmt.Sprintf("kubectl %sget pod %s -o jsonpath='{.spec.restartPolicy}{\"\\n\"}{.spec.containers[*].command}{\"\\n\"}{.spec.containers[*].args}'", nsArg(p.Ref.Namespace), p.Ref.Name)))
+		r.AlternativeCauses = append([]string{
+			"容器入口命令是一次性脚本或任务，正常完成后退出，但工作负载期望它长期运行",
+			"应用收到退出信号或主动执行了正常退出流程",
+		}, r.AlternativeCauses...)
 	}
 
 	// 日志是唯一能证明「应用侧到底报了什么」的证据；没采到日志就只能 probable。
@@ -110,6 +124,13 @@ func (crashLoopDiagnoser) Diagnose(c *Case) Result {
 		r.Confidence = ConfInferred
 		r.ConfidenceBasis = "依据规则命中的容器状态，缺少日志与事件佐证"
 	}
+	if cleanExit {
+		r.Status = model.RootCauseProbable
+		r.Confidence = ConfObjectStatus
+		r.ConfidenceBasis = "容器状态字段证明上次进程以退出码 0 结束；但该字段不能解释进程为何结束，需 previous logs 与容器启动命令确认"
+		r.EvidenceGaps = append(r.EvidenceGaps,
+			"退出码 0 只说明进程正常结束，不能说明它为什么结束；需要 previous logs 与容器 command/args 才能确认是一次性任务还是应用主动退出")
+	}
 	if !hasLogs(p) {
 		r.EvidenceGaps = append(r.EvidenceGaps,
 			"未采集容器日志（quick/standard 档位不采集日志），无法确认应用抛出的具体异常")
@@ -130,7 +151,12 @@ func (crashLoopDiagnoser) Diagnose(c *Case) Result {
 	r.RemediationDirection = "先看到上一次退出的真实日志再动手：确认是应用异常、配置错误还是依赖不可用，最后才考虑调整探针或资源限制"
 	r.RemediationText = "修复动作取决于日志里的真实异常。确认是配置/环境变量错误时改配置后滚动重启；确认是依赖不可用时先恢复依赖；" +
 		"确认是启动慢则调大 startupProbe 的 failureThreshold。不要在没看到崩溃原因前直接放大副本或反复重启。"
-	if wl := topWorkload(c, p); wl != nil {
+	if cleanExit {
+		r.RemediationDirection = "先确认该容器是否应该长期运行，再决定改工作负载类型还是修复应用退出逻辑；重复重启不能解决正常退出后的再次拉起"
+		r.RemediationText = "查看上一轮容器日志与启动命令，确认进程为何正常结束。如果它本来就是一次性任务，应迁移到 Job/CronJob 或改成常驻进程；" +
+			"如果应用应长期运行，应修复主动退出/脚本提前结束的问题。不要在原因未确认时反复执行 rollout restart。"
+	}
+	if wl := topWorkload(c, p); wl != nil && !cleanExit {
 		r.Remediation = []model.Command{
 			rem(fmt.Sprintf("kubectl %srollout restart %s/%s", nsArg(wl.Ref.Namespace), strings.ToLower(wl.Ref.Kind), wl.Ref.Name), model.RiskMedium),
 		}
@@ -652,19 +678,28 @@ func (probeFailingDiagnoser) Diagnose(c *Case) Result {
 	}
 	msg := ev.Message
 	_, evtRefused := c.EventWith(ref, "connection refused")
+	probeConfig := probeConfigurationText(p)
 	switch {
+	case hasEv && matchAny(msg, "statuscode: 404", "status code 404", " 404"):
+		r.Status = model.RootCauseProbable
+		r.Confidence = ConfObjectAndEvent
+		r.ConfidenceBasis = "已采集的探针配置与 Unhealthy 事件互相印证：配置的检查端点返回 404，但镜像内正确健康路径仍需确认"
+		r.RootCause = fmt.Sprintf("探针端点返回 404：%s；事件原文：%s", probeConfig, clip(msg, 220))
+		r.EvidenceGaps = append(r.EvidenceGaps,
+			"已确认当前探针端点返回 404，但尚未确认镜像内应由哪个路径/端口提供健康检查")
+		r.RemediationDirection = "先核对镜像实际提供健康检查的路径与端口，再把探针指向有效端点；确认前不要直接删除探针"
 	case evtRefused:
 		r.Status = model.RootCauseProbable
 		r.Confidence = ConfEventMessage
 		r.ConfidenceBasis = "探针失败事件写明 connection refused，说明容器内该端口没有监听；但端口为何没起来仍需日志确认"
-		r.RootCause = fmt.Sprintf("探针连不上容器端口（connection refused）：%s", clip(msg, 220))
+		r.RootCause = fmt.Sprintf("探针 %s 连不上容器端口（connection refused）：%s", probeConfig, clip(msg, 220))
 		r.EvidenceGaps = append(r.EvidenceGaps, "未确认容器内服务进程是否启动、监听端口与探针端口是否一致")
 		r.RemediationDirection = "对齐探针端口/路径与容器实际监听：先 exec 进容器手工访问探针地址，再决定改探针配置还是修应用"
 	case hasEv && matchAny(msg, "timeout", "deadline exceeded", "context deadline"):
 		r.Status = model.RootCauseProbable
 		r.Confidence = ConfEventMessage
 		r.ConfidenceBasis = "探针超时类事件；超时上游原因（慢依赖/慢启动/GC）无法从只读采集判定"
-		r.RootCause = fmt.Sprintf("探针请求超时：%s", clip(msg, 220))
+		r.RootCause = fmt.Sprintf("探针 %s 请求超时：%s", probeConfig, clip(msg, 220))
 		r.EvidenceGaps = append(r.EvidenceGaps, "缺少应用响应耗时与依赖状态证据，无法确认慢在哪一层")
 		r.RemediationDirection = "先确认是应用真慢还是探针阈值太紧：真慢就修依赖/加超时，阈值太紧则调整 timeoutSeconds 与 failureThreshold"
 	case hasEv:
@@ -683,6 +718,32 @@ func (probeFailingDiagnoser) Diagnose(c *Case) Result {
 	r.RemediationText = "修复动作要么改探针配置使其匹配应用真实健康检查方式，要么修应用让探针路径恢复；" +
 		"livenessProbe 在依赖抖动时会放大故障，必要时先只保留 readinessProbe。"
 	return r
+}
+
+func probeConfigurationText(p *model.PodInfo) string {
+	if p == nil {
+		return "配置未采集"
+	}
+	var out []string
+	for _, container := range containersOf(p) {
+		for _, probe := range container.Probes {
+			target := probe.Action
+			if probe.Path != "" {
+				target += " " + probe.Path
+			}
+			if probe.Command != "" {
+				target += " " + probe.Command
+			}
+			if probe.Port != "" {
+				target += ":" + probe.Port
+			}
+			out = append(out, fmt.Sprintf("%s.%s=%s", container.Name, probe.Kind+"Probe", target))
+		}
+	}
+	if len(out) == 0 {
+		return "配置未采集"
+	}
+	return strings.Join(out, ", ")
 }
 
 // configRefMissingDiagnoser 处理 Pod 引用了不存在的 ConfigMap/Secret。

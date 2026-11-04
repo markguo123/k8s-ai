@@ -6,8 +6,7 @@
 //
 // 一条硬规矩：边只能来自 Kubernetes 对象里的真实字段（ownerReferences / UID /
 // label selector / spec 中的引用字段 / status 中的关联信息）。禁止用名称前缀相似
-// 推断关系——那是 detectWorkloadOwner 那种"给命令找个大概目标"的启发式，
-// 用来判因果会稳定地产出假故障链。
+// 推断关系——名称前缀启发式只能用于不确定的展示辅助，用来判因果会稳定地产出假故障链。
 package relations
 
 import (
