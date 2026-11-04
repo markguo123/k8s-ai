@@ -1,7 +1,7 @@
 # k8s-ai API 接口契约设计
 
 - 版本：v4.0.0（企业平台）
-- 日期：2026-10-23（初版）/ 2026-11-03（发起巡检契约收窄与报告三面登记，见 17-方案）
+- 日期：2026-10-23（初版）/ 2026-11-03（发起巡检契约收窄与报告三面登记，见 17-方案） / 2026-11-04（报告清单清理两面登记，见方案 15 v1.12）
 - 状态：四期企业平台落地中
 - 范围：本文档统一描述四期企业平台的 Go 应用服务契约与 HTTP API，包括认证、会话与 SSE、
   扫描、集群、Skill、配置、用户/角色、授权、审批、审计与 Memory。所有产品 API 统一归属
@@ -203,6 +203,8 @@ DELETE /api/v1/users/{id}     // 删除用户；需 user.manage；内置 admin �
 GET  /api/v1/roles            // 角色列表（user/operator/admin 及权限视图）；需 user.manage
 GET  /api/v1/reports            // 报告中心分页列表（cluster/kind/时间过滤，不返回对象 key）；需登录，可见性由后端三层归属判定下推 SQL
 GET  /api/v1/reports/{id}/content // 报告正文流式下载或 presign 直连；越权与 id 不存在同形 404；available=false 返回 410；后端不匹配 409
+DELETE /api/v1/reports/{id}     // 清理单条报告业务引用（P8.14）：同事务删 reports 行 + Release，正文由 blobs gc 在宽限期后回收，请求路径不删对象；越权与 id 不存在同形 404；每条删除落 report.delete 审计
+POST   /api/v1/reports/cleanup  // 批量清理 {"ids":[...]}（单次上限 200）：逐 id 独立事务与归属判定，返回 {"deleted":[...],"skipped":[{"id":..,"reason":..}]}；批量不放宽任何判定；需登录
 GET  /api/v1/storage/health     // 对象存储健康唯一可观测入口；需 settings.read；driver=off 返回 200 带 status=disabled
 ```
 
@@ -220,6 +222,13 @@ GET  /api/v1/storage/health     // 对象存储健康唯一可观测入口；需
 对象后端与配置不符返回 409 + 迁移指引）；巡检三维度、三档预设与授权闸门在 `17-方案` §3 至 §8。
 **当前代码**：`POST` 仍挂 `chat.write`、`GET` 仍挂 `cluster.read`、请求体仍直通内部 `model.ScanOptions`，
 本节写的是契约目标态，这三条差异是 P8.13 的实现项。
+
+**报告清单清理（2026-11-04 契约冻结；P8.14 待实现）**：`DELETE /api/v1/reports/{id}` 与 `POST /api/v1/reports/cleanup` 均登记为
+`AccessAuthenticated`，**不新增权限位**，归属在 handler 内判定（owner 删自己的、`system` 巡检报告按 cluster 授权、admin 跨 owner 可删）。
+删除动作只删 `reports` 业务引用并在同一事务内 `Release`，**请求路径不删后端对象**，正文由 `k8s-ai blobs gc` 在宽限期后回收；
+`available=false`（已返回 410）的报告**仍然可删**，删除侧不复用下载侧的可用性闸门。每一条删除落 `report.delete` 审计，
+越权与 id 不存在同形 404。批量端点不构成第二条授权通道：它逐 id 复用同一套归属判定与同一条事务契约。
+口径见 `15-方案` **v1.12** §0 与 §13.1/§15/§18。
 
 `GET /api/v1/auth/scope` 返回：
 
