@@ -201,16 +201,16 @@ POST /api/v1/users            // 创建用户 {username,password(>=8),roleId,dis
 PATCH /api/v1/users/{id}      // 部分更新 {displayName?,password?,roleId?,status?}；需 user.manage；禁止停用/降级自己
 DELETE /api/v1/users/{id}     // 删除用户；需 user.manage；内置 admin 不可删，禁止删除自己
 GET  /api/v1/roles            // 角色列表（user/operator/admin 及权限视图）；需 user.manage
-GET  /api/v1/reports            // 报告中心分页列表（cluster/kind/时间过滤，不返回对象 key）；需登录，可见性由后端三层归属判定下推 SQL
+GET  /api/v1/reports            // 报告中心分页列表（cluster/kind/scanId/时间过滤，不返回对象 key、不加载正文）；需登录，可见性由后端三层归属判定下推 SQL
 GET  /api/v1/reports/{id}/content // 报告正文流式下载或 presign 直连；越权与 id 不存在同形 404；available=false 返回 410；后端不匹配 409
 DELETE /api/v1/reports/{id}     // 清理单条报告业务引用（P8.14）：同事务删 reports 行 + Release，正文由 blobs gc 在宽限期后回收，请求路径不删对象；越权与 id 不存在同形 404；每条删除落 report.delete 审计
-POST   /api/v1/reports/cleanup  // 批量清理 {"ids":[...]}（单次上限 200）：逐 id 独立事务与归属判定，返回 {"deleted":[...],"skipped":[{"id":..,"reason":..}]}；批量不放宽任何判定；需登录
+POST   /api/v1/reports/cleanup  // 批量清理 {"ids":[...]}（单次上限 200）：逐 id 独立事务与归属判定，返回 {"deleted":[...],"skipped":[{"id":..,"reason":"not_found"|"internal"}]}；批量不放宽任何判定；需登录
 GET  /api/v1/storage/health     // 对象存储健康唯一可观测入口；需 settings.read；driver=off 返回 200 带 status=disabled
 ```
 
 `roleId` 必须指向 `user / operator / admin` 之一；创建表单默认选择 `user`。
 
-**发起巡检与报告读取（2026-11-03 契约冻结；报告三面 P8.5/P8.11 已实现，巡检发起面 P8.13 待实现）**：
+**发起巡检与报告读取（2026-11-03 契约冻结；报告三面 P8.5/P8.11 已实现，巡检发起面 P8.13 已实现，2026-11-05 按代码回写）**：
 `POST /api/v1/scans` 的请求体是**白名单 DTO**，只接受 `scope`（`cluster`/`namespace`/`pod`）、`namespace`、`pod`、
 `preset`（`quick`/`standard`/`deep`）、`clusterId` 五个字段，未知字段与连接类字段（`kubeconfig`、`context`、`inCluster`、
 `reportDirectory`、`concurrency`、`qps`、`timeout`、`reportMode`）一律 400 拒绝；权限位为新增的 `scan.execute`
@@ -220,15 +220,15 @@ GET  /api/v1/storage/health     // 对象存储健康唯一可观测入口；需
 任何持 `cluster.read` 的用户凭 job id 读他人任务结果属越权（结果含他人命名空间的问题清单）。
 报告三面的权限与错误映射在 `15-方案` §13.1 与 §18 定稿（三层归属判定、越权与 id 不存在同形 404、
 对象后端与配置不符返回 409 + 迁移指引）；巡检三维度、三档预设与授权闸门在 `17-方案` §3 至 §8。
-**当前代码**：`POST` 仍挂 `chat.write`、`GET` 仍挂 `cluster.read`、请求体仍直通内部 `model.ScanOptions`，
-本节写的是契约目标态，这三条差异是 P8.13 的实现项。
+**已落地**：`POST /scans` 挂新增权限位 `scan.execute`、`GET /scans/{id}` 改 `AccessAuthenticated` 并在 handler 内判归属，
+非发起人且非 admin 读他人任务返回与「不存在」**同形的 404**（job id 同样是随机串，403 等于确认它存在）；请求体已收窄为上文的白名单 DTO，`clusterId` 非空一律 400。
 
-**报告清单清理（2026-11-04 契约冻结；P8.14 待实现）**：`DELETE /api/v1/reports/{id}` 与 `POST /api/v1/reports/cleanup` 均登记为
+**报告清单清理（2026-11-04 契约冻结；P8.14 已实现，2026-11-05 按代码回写）**：`DELETE /api/v1/reports/{id}` 与 `POST /api/v1/reports/cleanup` 均登记为
 `AccessAuthenticated`，**不新增权限位**，归属在 handler 内判定（owner 删自己的、`system` 巡检报告按 cluster 授权、admin 跨 owner 可删）。
 删除动作只删 `reports` 业务引用并在同一事务内 `Release`，**请求路径不删后端对象**，正文由 `k8s-ai blobs gc` 在宽限期后回收；
 `available=false`（已返回 410）的报告**仍然可删**，删除侧不复用下载侧的可用性闸门。每一条删除落 `report.delete` 审计，
 越权与 id 不存在同形 404。批量端点不构成第二条授权通道：它逐 id 复用同一套归属判定与同一条事务契约。
-口径见 `15-方案` **v1.12** §0 与 §13.1/§15/§18。
+口径见 `15-方案` **v1.13** §0 与 §13.1/§15/§18。
 
 `GET /api/v1/auth/scope` 返回：
 
