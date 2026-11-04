@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -40,6 +39,12 @@ type ScanJob struct {
 	CreatedAt time.Time         `json:"createdAt"`
 	StartedAt *time.Time        `json:"startedAt,omitempty"`
 	EndedAt   *time.Time        `json:"endedAt,omitempty"`
+	// Owner 是发起人的用户 ID（P8.13）。任务结果含被扫命名空间的问题清单，
+	// 没有 owner 就没法判「谁的任务」，GET 只能对全体登录用户开放。
+	Owner string `json:"owner,omitempty"`
+	// ScopeKind / ScopeValue 是本次巡检范围，与 reports 的 scope 两列同源。
+	ScopeKind  string `json:"scopeKind,omitempty"`
+	ScopeValue string `json:"scopeValue,omitempty"`
 }
 
 // Server 最小化 HTTP 服务。
@@ -66,6 +71,9 @@ type Server struct {
 	// ready 是就绪探针回调（P6.1）：由组合根注入 store 连通 + 迁移完成判定。
 	// nil 时按"进程活着即可用"处理，与一期行为一致。
 	ready   ReadinessCheck
+	// scanBaseline 提供巡检的连接类参数基线（P8.13）：请求体不再携带 kubeconfig /
+	// reportDirectory 一类的内部参数，这些只能来自服务端配置。
+	scanBaseline scanBaselineFunc
 	mu      sync.Mutex
 	jobs    map[string]*ScanJob
 	running bool
@@ -209,6 +217,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/v1/skills/{name}/enabled", s.handlePatchSkillEnabled)
 	mux.HandleFunc("GET /api/v1/reports", s.handleListReports)
 	mux.HandleFunc("GET /api/v1/reports/{id}/content", s.handleGetReportContent)
+	mux.HandleFunc("DELETE /api/v1/reports/{id}", s.handleDeleteReport)
+	mux.HandleFunc("POST /api/v1/reports/cleanup", s.handleCleanupReports)
 	mux.HandleFunc("GET /api/v1/storage/health", s.handleStorageHealth)
 	// 未登记的 /api/v1/* 一律回统一 JSON 错误体，不能被 SPA fallback 吞成 index.html
 	// （P6.11：前端拿到 HTML 会比 404 更难排查）。
@@ -260,80 +270,6 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 		"commit":  version.Commit,
 		"date":    version.Date,
 	})
-}
-
-// handleCreateScan 创建异步扫描任务；单次扫描并发限制，已有任务运行时返回 409。
-func (s *Server) handleCreateScan(w http.ResponseWriter, r *http.Request) {
-	var opts model.ScanOptions
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&opts); err != nil {
-		writeError(w, r, http.StatusBadRequest, codeInvalidArgument, "invalid body: "+err.Error())
-		return
-	}
-	s.mu.Lock()
-	if s.running {
-		s.mu.Unlock()
-		writeError(w, r, http.StatusConflict, codeConflict, "a scan is already running")
-		return
-	}
-	s.running = true
-	job := &ScanJob{ID: newID(), Status: StatusPending, CreatedAt: time.Now().UTC()}
-	s.jobs[job.ID] = job
-	s.mu.Unlock()
-
-	// 报告归属只能由服务端决定（P8.5，方案 15 §6.4）：actor 取认证身份、scan_id 取本次
-	// 任务 ID，两者一律覆盖请求体里的值——否则任何登录用户都能靠伪造 body 把报告挂到
-	// 别人名下，或者把产物塞进别人的扫描。cluster_id 是业务参数（扫哪个集群），仍由 body 决定。
-	actor := ""
-	if u := UserFrom(r.Context()); u != nil {
-		actor = u.ID
-	}
-	opts.Attribution = model.ReportAttribution{
-		Actor:     actor,
-		ScanID:    job.ID,
-		ClusterID: opts.Attribution.ClusterID,
-	}
-
-	started := time.Now().UTC()
-	job.Status = StatusRunning
-	job.StartedAt = &started
-	go s.runJob(job, opts)
-
-	writeOK(w, r, http.StatusAccepted, job)
-}
-
-// runJob 后台执行扫描（ctx 带 opts.Timeout 预算）。
-func (s *Server) runJob(job *ScanJob, opts model.ScanOptions) {
-	ctx := context.Background()
-	if opts.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, opts.Timeout)
-		defer cancel()
-	}
-	result, err := s.svc.Run(ctx, opts)
-	ended := time.Now().UTC()
-	s.mu.Lock()
-	job.EndedAt = &ended
-	s.running = false
-	if err != nil {
-		job.Status = StatusFailed
-		job.Error = err.Error()
-	} else {
-		job.Status = StatusSucceeded
-		job.Result = result
-	}
-	s.mu.Unlock()
-}
-
-func (s *Server) handleGetScan(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	s.mu.Lock()
-	job, ok := s.jobs[id]
-	s.mu.Unlock()
-	if !ok {
-		writeError(w, r, http.StatusNotFound, codeNotFound, "scan not found")
-		return
-	}
-	writeOK(w, r, http.StatusOK, job)
 }
 
 func newID() string {

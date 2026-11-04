@@ -16,6 +16,7 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/authz"
 	"github.com/k8s-ai/k8s-ai/internal/cluster"
 	"github.com/k8s-ai/k8s-ai/internal/config"
+	"github.com/k8s-ai/k8s-ai/internal/model"
 	"github.com/k8s-ai/k8s-ai/internal/server"
 	"github.com/k8s-ai/k8s-ai/internal/service"
 	"github.com/k8s-ai/k8s-ai/internal/sessionapi"
@@ -122,6 +123,18 @@ func newServerCmd(deps Dependencies) *cobra.Command {
 				WithAuthz(authzSvc).
 				WithReports(service.NewReportPlatform(st, blobGW)).
 				WithStorage(blobGW).
+				// P8.13：页面发起巡检的连接/模型基线。配置中心是动态键的权威源（D-29，
+				// 口径里 scan 与 chat 同源），解析失败回退静态文件并记 WARN——巡检的
+				// 规则结论不依赖模型，不该因为模型配置读不出来就整次发起失败。
+				WithScanBaseline(func(ctx context.Context) model.ScanOptions {
+					base := cfg
+					if eff, err := settingsSvc.LoadRuntimeConfig(ctx, cfg); err == nil && eff != nil {
+						base = eff
+					} else if err != nil {
+						logger.Warn("scan baseline: runtime config unavailable, falling back to static config file", "error", err)
+					}
+					return scanOptionsFromConfig(base)
+				}).
 				WithReadiness(func(ctx context.Context) error { return store.IsReady(ctx, st) }).
 				Handler()
 			// admin 跨用户会话操作（读取/改名/置顶/删除/发消息/审批/取消）统一留痕（U-06）。

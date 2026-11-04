@@ -69,6 +69,7 @@ func (w *ReportArchiveWriter) Archive(ctx context.Context, result *model.ScanRes
 		actor = objectstore.SystemActor
 	}
 	scope := archiveScope(attr.ClusterID, attr.ScanID)
+	scopeKind, scopeValue := archiveScopeLabel(attr.ScopeKind, attr.ScopeValue)
 
 	targets := []struct {
 		kind      string
@@ -119,6 +120,11 @@ func (w *ReportArchiveWriter) Archive(ctx context.Context, result *model.ScanRes
 			CreatedBy: actor,
 			Available: true,
 			CreatedAt: time.Now().UTC(),
+			// 巡检范围与业务行同事务落库（P8.13）：它只回答「扫的是什么」，不参与 key 与鉴权。
+			// 非法值一律降级成空串而不是拒掉整次归档——范围是展示信息，为一个展示字段丢一份
+			// 已经写进桶的报告本末倒置；降级会留 WARN，不会变成一个没人知道的分支。
+			ScopeKind:  scopeKind,
+			ScopeValue: scopeValue,
 		}
 		// 业务行与引用必须同事务：行提交了而引用没加，对象会被 GC 当成孤儿删掉；
 		// 引用加了而行回滚，ref_count 永远减不掉。回调内只用 Tx（SQLite 单连接下
@@ -160,6 +166,21 @@ func archiveScope(clusterID, scanID string) []string {
 
 // archiveScanPhase 是归档阶段的进度名（Web 端阶段列表按它显示）。
 const archiveScanPhase = "archive"
+
+// archiveScopeLabel 校验巡检范围两列的取值（P8.13，方案 17 §7.1）。
+//
+// 值域外一律清空并记 WARN：范围只用于展示与过滤，为一个展示字段丢掉一份已经写进桶的报告
+// 本末倒置；但也不能把调用方传来的野值原样落库——那会让页面的「巡检范围」列长出无法枚举的
+// 取值。清空 + WARN 是唯一一种既不断链、又留得下线索的收尾。
+func archiveScopeLabel(kind, value string) (string, string) {
+	kind = strings.TrimSpace(kind)
+	value = strings.TrimSpace(value)
+	if model.ValidReportScope(kind, value) {
+		return kind, value
+	}
+	slog.Warn("archive report: 忽略非法的巡检范围取值", "scope_kind", kind, "scope_value", value)
+	return "", ""
+}
 
 // archiveReportsIfNeeded 在 Run 的末尾归档报告：未注入写入器时直接返回，注入了则任何
 // 失败都只记 WARN 并标该阶段降级——扫描结果本身已经算完，绝不能因为桶不可达让整次巡检

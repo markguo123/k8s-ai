@@ -12,7 +12,7 @@ import (
 
 // schemaVersion 是统一的逻辑 schema 版本。SQLite/MySQL 共用该版本号，
 // migrations 按版本逐个应用（P0.3/P1.12/P1.3）。只允许追加，禁止回跳。
-const schemaVersion = 7
+const schemaVersion = 8
 
 // migration 是一条单向升级步骤，通过 dialect 适配两个驱动。
 type migration struct {
@@ -57,6 +57,11 @@ var migrations = []migration{
 		version: 7,
 		name:    "session index columns for body-free listing",
 		up:      migrateV7,
+	},
+	{
+		version: 8,
+		name:    "report scan scope columns",
+		up:      migrateV8,
 	},
 }
 
@@ -442,6 +447,47 @@ var schemaV7SessionColumns = []column{
 	{name: "pinned", kind: colBool, def: "0"},
 	{name: "message_count", kind: colInt, def: "0"},
 	{name: "title", kind: colText, def: "''"},
+}
+
+// schemaV8ReportColumns 是第 8 版给 reports 追加的巡检范围两列（P8.13，方案 17 §7.1）。
+//
+// 它们只回答「这份报告是扫什么出来的」，用于展示与过滤：不参与对象 key（key 仍按
+// cluster/scan 段组装），也不参与读鉴权（可见性仍只看 created_by + cluster_id）。
+// 空 scope_kind 只出现在 v8 之前的存量行，页面显示「未记录」。
+var schemaV8ReportColumns = []column{
+	{name: "scope_kind", kind: colText, def: "''"},
+	{name: "scope_value", kind: colText, def: "''"},
+}
+
+// schemaV8ReportIndexes 给「按任务反查产物」这条页面路径建索引：发起巡检后前端要按
+// scan_id 找回自己的报告，没索引就是全表扫。
+var schemaV8ReportIndexes = []indexSpec{
+	{name: "idx_reports_scan", table: "reports", cols: "scan_id"},
+}
+
+// migrateV8 给 reports 补巡检范围列并按任务反查的索引（P8.13）。
+//
+// 补列冲突即跳过：MySQL 没有 ADD COLUMN IF NOT EXISTS，重复执行时拿到的是重复列错误，
+// 与 v6/v7 同一套幂等处理。存量行不回填——v8 之前根本没有范围信息，编一个值出来比留空
+// 更糟（页面会把「猜的」当成「记录的」）。
+func migrateV8(ctx context.Context, tx *sql.Tx, d dialect) error {
+	for _, c := range schemaV8ReportColumns {
+		if _, err := tx.ExecContext(ctx, d.addColumn("reports", c)); err != nil {
+			if d.isDuplicateColumnErr(err) {
+				continue
+			}
+			return fmt.Errorf("add column reports.%s: %w", c.name, err)
+		}
+	}
+	for _, idx := range schemaV8ReportIndexes {
+		if _, err := tx.ExecContext(ctx, d.createIndex(idx.name, idx.table, idx.cols)); err != nil {
+			if d.isDuplicateIndexErr(err) {
+				continue
+			}
+			return fmt.Errorf("create index %s: %w", idx.name, err)
+		}
+	}
+	return nil
 }
 
 

@@ -23,6 +23,12 @@ const (
 	ClusterManage   = "cluster.manage"
 	SkillRead       = "skill.read"
 	SkillManage     = "skill.manage"
+	// ScanExecute 是「在页面上发起一次巡检」的权限位（P8.13，方案 17 §4）。
+	//
+	// 它不复用 chat.write：巡检会以平台身份读命名空间的清单、事件与日志并产出报告，语义上
+	// 离对话很远；也不复用 cluster.read：读现成报告和主动发起一次扫描是两回事。
+	// 种子里只给 operator（user 角色默认无发起权，需要就单授）。
+	ScanExecute = "scan.execute"
 	ApprovalRead    = "approval.read"
 	ApprovalExecute = "approval.execute"
 	AuditRead       = "audit.read"

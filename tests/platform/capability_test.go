@@ -35,14 +35,16 @@ func TestUserAndRoleCapability(t *testing.T) {
 			t.Fatalf("缺少内置角色 %q", name)
 		}
 	}
-	// 三角色权限口径：admin 全权，user/operator 零平台权限起步。
+	// 三角色权限口径：admin 全权，user 零平台权限起步，operator 只多一个发起巡检权。
 	if len(byName["admin"]) != 1 || byName["admin"][0] != "*" {
 		t.Errorf("admin 角色权限应为 [*]，实得 %+v", byName["admin"])
 	}
-	for _, name := range []string{"user", "operator"} {
-		if len(byName[name]) != 0 {
-			t.Errorf("%s 角色应零平台权限起步，实得 %+v", name, byName[name])
-		}
+	if len(byName["user"]) != 0 {
+		t.Errorf("user 角色应零平台权限起步，实得 %+v", byName["user"])
+	}
+	// 发起巡检权是 operator 与 user 的唯一差别，多给一位就等于扩大了 operator 的能力面。
+	if len(byName["operator"]) != 1 || byName["operator"][0] != "scan.execute" {
+		t.Errorf("operator 角色权限应为 [scan.execute]，实得 %+v", byName["operator"])
 	}
 
 	userID := h.createUser(admin, "alice", "alice-password-123", "operator")

@@ -83,7 +83,7 @@ func TestPermissionGateAllowsAdmin(t *testing.T) {
 		t.Fatalf("admin /me 应为 200, got %d", meResp.StatusCode)
 	}
 	decodeData(t, meResp, nil)
-	resp, err := authedPost(ts, "/api/v1/scans", `{"namespace":"default"}`, token)
+	resp, err := authedPost(ts, "/api/v1/scans", `{"scope":"namespace","namespace":"default"}`, token)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,8 +120,8 @@ func TestPermissionGateEnforcesRolePermissions(t *testing.T) {
 	}
 	decodeData(t, getResp, nil)
 
-	// 未授予 chat.write，创建 scan 应 403。
-	resp, err := authedPost(ts, "/api/v1/scans", `{"namespace":"default"}`, token)
+	// 未授予 scan.execute，创建 scan 应 403（方案 17 §4.1：发起巡检不再复用 chat.write）。
+	resp, err := authedPost(ts, "/api/v1/scans", `{"scope":"namespace","namespace":"default"}`, token)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -260,6 +260,40 @@ type ReportAttribution struct {
 	ClusterID string
 	// ScanID 是扫描任务 ID（Server 侧即 ScanJob.ID）；空表示无任务标识。
 	ScanID string
+	// ScopeKind / ScopeValue 是巡检范围（cluster|namespace|pod 与取值，P8.13 方案 17 §7.1）。
+	// 只回答「这份报告是扫什么出来的」，用于页面展示与列表过滤：既不参与对象 key 组装，
+	// 也不参与读鉴权。CLI 不填即空串，报告页面显示「未记录」。
+	ScopeKind  string
+	ScopeValue string
+}
+
+// 报告巡检范围取值（P8.13，方案 17 §7.1）：reports.scope_kind 的合法值域。
+//
+// 放在 model 是因为发起侧（Server 的巡检 DTO）与归档侧（service 写 reports 行）都要用，
+// 而这两处中间隔着 service 包——值域定义属于领域根，不属于任何一侧。
+const (
+	ScopeCluster   = "cluster"
+	ScopeNamespace = "namespace"
+	ScopePod       = "pod"
+)
+
+// ValidReportScope 判断一组巡检范围能否落库。
+//
+// 空 kind 是合法值：v8 之前的存量行、以及 CLI 本地扫描（不填归属）都落在这一类，页面显示
+// 「未记录」。非法值不合法就非法，不做「大概是用户手滑」的猜测式纠正。
+func ValidReportScope(kind, value string) bool {
+	switch kind {
+	case "":
+		return true
+	case ScopeCluster:
+		// 全集群没有取值：编一个 "all" 出来会让过滤条件多一种没人写的写法。
+		return value == ""
+	case ScopeNamespace, ScopePod:
+		// pod 的取值形态是 <ns>/<pod>；形态校验归发起侧（Server 组装），这里只管有没有。
+		return value != ""
+	default:
+		return false
+	}
 }
 
 // Key 返回资源的稳定内部键（kind/namespace/name），供关联索引与指纹使用。

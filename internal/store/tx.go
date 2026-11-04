@@ -131,11 +131,40 @@ func (t *Tx) InsertReport(ctx context.Context, r *Report) error {
 		r.CreatedAt = time.Now()
 	}
 	_, err := t.tx.ExecContext(ctx, `
-		INSERT INTO reports (id, cluster_id, scan_id, kind, blob_key, media_type, size, sha256, findings, created_by, available, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO reports (id, cluster_id, scan_id, kind, blob_key, media_type, size, sha256, findings, created_by, available, created_at, scope_kind, scope_value)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, r.ClusterID, r.ScanID, r.Kind, r.BlobKey, r.MediaType, r.Size, r.SHA256,
-		r.Findings, r.CreatedBy, boolInt(r.Available), r.CreatedAt)
+		r.Findings, r.CreatedBy, boolInt(r.Available), r.CreatedAt, r.ScopeKind, r.ScopeValue)
 	return mapErr(err, "insert report")
+}
+
+// DeleteReport 删掉一条报告业务行，必须与释放它引用的 Tx.Release 落在同一个事务里。
+//
+// 这里只删业务引用，绝不碰后端对象：内容寻址让两份报告可能共享同一个 blob_key
+// （同内容重跑 ref_count=2），在 handler 或 service 里直接删桶内对象会把别人的报告一起
+// 删掉。物理回收只由 blobs gc 在 gc_grace_period 之后执行（方案 15 §15）。
+//
+// blob_key 进 WHERE 是一次 CAS：行在读取与删除之间被换过内容（并发重跑写新行不覆盖旧行，
+// 但任何未来的替换路径都可能改 blob_key）时未命中，返回 false 让调用方回 404，而不是把
+// 一份没人认领的行删掉、再把 Release 减到别人头上。key 非法直接报错——传错 key 是调用方
+// 的缺陷，静默当未命中会把它伪装成一次普通的并发冲突。
+func (t *Tx) DeleteReport(ctx context.Context, id, blobKey string) (bool, error) {
+	switch {
+	case strings.TrimSpace(id) == "":
+		return false, fmt.Errorf("delete report: empty id")
+	}
+	if err := objectstore.ValidateKey(blobKey); err != nil {
+		return false, err
+	}
+	res, err := t.tx.ExecContext(ctx, `DELETE FROM reports WHERE id = ? AND blob_key = ?`, id, blobKey)
+	if err != nil {
+		return false, mapErr(err, "delete report")
+	}
+	changed, err := res.RowsAffected()
+	if err != nil {
+		return false, mapErr(err, "delete report rows affected")
+	}
+	return changed > 0, nil
 }
 
 // Acquire 给对象加一次引用，必须在写下引用它的业务行的同一事务里调用。

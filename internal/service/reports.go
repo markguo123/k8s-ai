@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/k8s-ai/k8s-ai/internal/objectstore"
@@ -40,6 +41,10 @@ type ReportView struct {
 	CreatedBy string    `json:"createdBy"`
 	Available bool      `json:"available"`
 	CreatedAt time.Time `json:"createdAt"`
+	// ScopeKind / ScopeValue 是巡检范围（P8.13）：空 kind 表示 v8 之前的存量报告或 CLI 产物，
+	// 页面显示「未记录」。它们不参与鉴权，读得到就读得到，与 scope 无关。
+	ScopeKind  string `json:"scopeKind,omitempty"`
+	ScopeValue string `json:"scopeValue,omitempty"`
 }
 
 // ReportScope 是本次请求的可见性范围（方案 15 §12.2）。由 server 层从认证上下文与
@@ -54,6 +59,10 @@ type ReportScope struct {
 	SystemClusterIDs   []string
 	ClusterID          string
 	Kind               string
+	// ScanID 按扫描任务反查产物（P8.13）：页面发起巡检后靠它找回自己的报告。
+	// 它是过滤条件而不是授权条件——归属判定仍然只看 owner 与集群授权，扫描 ID 猜中了
+	// 也读不到别人的报告。
+	ScanID string
 }
 
 // ReportPlatform 是报告的读取面（P8.5）：归属判定 + 对象内容取回。
@@ -84,6 +93,7 @@ func (p *ReportPlatform) List(ctx context.Context, scope ReportScope, limit, off
 		SystemClusterIDs:  scope.SystemClusterIDs,
 		ClusterID:         scope.ClusterID,
 		Kind:              scope.Kind,
+		ScanID:            scope.ScanID,
 		Limit:             limit,
 		Offset:            offset,
 	})
@@ -189,6 +199,140 @@ func (p *ReportPlatform) resolve(ctx context.Context, id string, scope ReportSco
 	return row, meta, nil
 }
 
+// CleanupSkip 是批量清理里一个没删掉的 id 及其原因。
+type CleanupSkip struct {
+	ID     string `json:"id"`
+	Reason string `json:"reason"`
+}
+
+// maxCleanupBatch 是批量清理的单次上限（方案 15 v1.12 §0）。
+//
+// 上限不是为了性能——逐 id 独立事务本身就不会打满连接——而是把「一次点击」保持在一个可审计、
+// 可解释的规模里：一次清两万条不像人的动作，更像脚本失控。
+const maxCleanupBatch = 200
+
+// 清理结果里 CleanupSkip.Reason 的取值。
+const (
+	CleanupSkipNotFound = "not_found"
+	CleanupSkipInternal = "internal"
+)
+
+// Delete 删除一条报告的业务引用（P8.14，方案 15 §13.1）。
+//
+// 与读面刻意不同的两点：
+//
+//  1. **不复用 resolve()**。读面的 available→410 与 driver→409 闸门是给「下载正文」把门的，
+//     而清理的主要对象恰恰是这些内容已不可恢复的行——照抄判定链等于把要清理的东西全挡在门外，
+//     功能永远做不完。这里只复用 reportVisible 判归属。
+//  2. **删行与 Release 同事务**，且绝不碰后端对象：blob_key 内容寻址，两份报告可能共享同一个
+//     key，删对象会连别人的报告一起删掉。物理回收只归 blobs gc 在宽限期之后执行。
+//
+// objects 元数据行已被 GC 清账（或从未提交）时只删业务行并记 WARN：这一类行恰恰是清单里最该
+// 清掉的，为了「引用没减成功」把它永久留在列表里，清理功能就对它永久无效。
+func (p *ReportPlatform) Delete(ctx context.Context, id string, scope ReportScope) (ReportView, error) {
+	if p == nil || p.st == nil {
+		return ReportView{}, fmt.Errorf("delete report: report platform not wired")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ReportView{}, store.ErrNotFound
+	}
+	row, err := p.st.Reports().Get(ctx, id)
+	if err != nil {
+		return ReportView{}, err
+	}
+	if !reportVisible(row, scope) {
+		// 与读面同形：越权与不存在都是 store.ErrNotFound → 404，不回 403。
+		return ReportView{}, store.ErrNotFound
+	}
+
+	// 引用能不能减，必须在事务开始前就知道（WithTx 回调里不能再调非事务入口）。
+	skipRelease := false
+	meta, err := p.st.Objects().Get(ctx, row.BlobKey)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		skipRelease = true
+	case err != nil:
+		return ReportView{}, err
+	case meta.RefCount <= 0:
+		// 计数已归零：GC 已认领它，再 Release 就是下溢报错。业务行照删。
+		skipRelease = true
+	}
+	if skipRelease {
+		slog.Warn("report: 清理时对象引用已不存在，仅删除业务行",
+			"report_id", row.ID, "blob_key", row.BlobKey)
+	}
+
+	err = p.st.WithTx(ctx, func(tx *store.Tx) error {
+		changed, err := tx.DeleteReport(ctx, row.ID, row.BlobKey)
+		if err != nil {
+			return err
+		}
+		if !changed {
+			return store.ErrNotFound
+		}
+		if skipRelease {
+			return nil
+		}
+		return tx.Release(ctx, row.BlobKey)
+	})
+	if err != nil {
+		return ReportView{}, err
+	}
+	return toReportView(row), nil
+}
+
+// ErrCleanupTooMany 批量清理的 id 数超过单次上限（server 层翻成 400）。
+//
+// 它是 sentinel 而不是靠错误文案匹配：HTTP 层要区分「请求不合法」与「库里出了岔子」，
+// 前者该 400 让调用方改请求，后者该 500 并留下日志。
+var ErrCleanupTooMany = errors.New("service: cleanup too many report ids")
+
+// Cleanup 逐 id 删除（P8.14）。批量只是省掉前端的 N 次往返，不放宽任何一条判定：每个 id
+// 单独判归属、单独成事务，所以「一批里混进别人的 id」既不会整批失败，也不会顺手删掉。
+//
+// deleted 按请求顺序返回被删报告的视图（server 层要据此逐条落审计），skipped 带原因；
+// err 只在请求本身不合法（超过上限）时非空。
+func (p *ReportPlatform) Cleanup(ctx context.Context, ids []string, scope ReportScope) ([]ReportView, []CleanupSkip, error) {
+	targets, err := cleanupTargets(ids)
+	if err != nil {
+		return nil, nil, err
+	}
+	deleted := make([]ReportView, 0, len(targets))
+	var skipped []CleanupSkip
+	for _, id := range targets {
+		view, err := p.Delete(ctx, id, scope)
+		switch {
+		case err == nil:
+			deleted = append(deleted, view)
+		case errors.Is(err, store.ErrNotFound):
+			skipped = append(skipped, CleanupSkip{ID: id, Reason: CleanupSkipNotFound})
+		default:
+			slog.Warn("report: 清理单条报告失败", "report_id", id, "error", err)
+			skipped = append(skipped, CleanupSkip{ID: id, Reason: CleanupSkipInternal})
+		}
+	}
+	return deleted, skipped, nil
+}
+
+// cleanupTargets 去空白、去重并保序，同时把请求规模收在上限内。
+func cleanupTargets(ids []string) ([]string, error) {
+	seen := make(map[string]bool, len(ids))
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	if len(out) > maxCleanupBatch {
+		return nil, fmt.Errorf("%w: %d ids, max %d", ErrCleanupTooMany, len(out), maxCleanupBatch)
+	}
+	return out, nil
+}
+
 // markMissing 只在后端明确回答 ErrNotFound 时调用；失败本身不该盖掉 410 的响应。
 func (p *ReportPlatform) markMissing(ctx context.Context, key string) {
 	if err := p.st.Objects().MarkMissing(ctx, []string{key}); err != nil {
@@ -235,5 +379,7 @@ func toReportView(r *store.Report) ReportView {
 		CreatedBy: r.CreatedBy,
 		Available: r.Available,
 		CreatedAt: r.CreatedAt,
+		ScopeKind:  r.ScopeKind,
+		ScopeValue: r.ScopeValue,
 	}
 }

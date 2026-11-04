@@ -33,6 +33,10 @@ type reportFixture struct {
 	authzSvc *authz.Service
 	authSvc  *auth.Service
 	scan     *capturingScan
+	// scanBaseline 是页面发起巡检时的连接/模型基线。测试改它即可模拟「部署配了模型 /
+	// 没配模型」两种现场，而不用真的接一个 LLM。
+	scanBaseline model.ScanOptions
+	server       *Server
 }
 
 // newReportFixture 建服务。reportsOverride 非 nil 时用它顶替真实报告面（错误映射用例）。
@@ -67,11 +71,18 @@ func newReportFixture(t *testing.T, reportsOverride reportService) *reportFixtur
 	}
 	authzSvc := authz.New(st)
 	scan := &capturingScan{seen: make(chan model.ScanOptions, 8)}
-	handler := NewWithPlatform(scan, authSvc, settings.New(st, settings.WithCipher(cipher)), service.NewAuditService(st)).
-		WithAuthz(authzSvc).WithReports(reports).WithStorage(gw).Handler()
+	srv := NewWithPlatform(scan, authSvc, settings.New(st, settings.WithCipher(cipher)), service.NewAuditService(st)).
+		WithAuthz(authzSvc).WithReports(reports).WithStorage(gw)
+	handler := srv.Handler()
 	ts := httptest.NewServer(handler)
 	t.Cleanup(ts.Close)
-	return &reportFixture{ts: ts, st: st, backend: backend, gw: gw, authzSvc: authzSvc, authSvc: authSvc, scan: scan}
+	return &reportFixture{ts: ts, st: st, backend: backend, gw: gw, authzSvc: authzSvc, authSvc: authSvc, scan: scan, server: srv}
+}
+
+// setScanBaseline 注入页面巡检的参数基线。必须在发第一个 scan 请求之前调用。
+func (f *reportFixture) setScanBaseline(opts model.ScanOptions) {
+	f.scanBaseline = opts
+f.server.WithScanBaseline(func(context.Context) model.ScanOptions { return f.scanBaseline })
 }
 
 // req 发一次请求并读完响应体（返回状态码、响应头与原始 body 字符串——同形 404 只能比原始体）。
@@ -469,6 +480,16 @@ func (s scriptedReportService) Presign(context.Context, string, service.ReportSc
 	return service.ReportView{}, "", store.ErrNotFound
 }
 
+// Delete / Cleanup 只为满足 reportService 契约：错误映射用例不碰删除路径，删除行为由
+// TestReportDelete* 用真实报告面覆盖。
+func (s scriptedReportService) Delete(context.Context, string, service.ReportScope) (service.ReportView, error) {
+	return service.ReportView{}, store.ErrNotFound
+}
+
+func (s scriptedReportService) Cleanup(context.Context, []string, service.ReportScope) ([]service.ReportView, []service.CleanupSkip, error) {
+	return nil, nil, nil
+}
+
 var _ reportService = scriptedReportService{}
 
 func TestReportContentErrorStatusMapping(t *testing.T) {
@@ -557,9 +578,35 @@ func (c *capturingScan) Run(_ context.Context, opts model.ScanOptions) (*model.S
 
 func (c *capturingScan) Validate(context.Context, model.ScanOptions) (string, error) { return "ok", nil }
 
-// TestCreateScanOverridesForgedAttribution 锁 §6.4：actor 与 scan_id 一律由服务端决定。
-// 攻击者就取一个有权限的登录用户本人——伪造照样无效才算守住。
-func TestCreateScanOverridesForgedAttribution(t *testing.T) {
+// TestCreateScanRejectsForgedAttribution 锁方案 17 §8 的白名单请求体：归属字段与连接类
+// 参数一律不在 DTO 里，请求体带上来就是 400，而不是一边接受一边「覆盖」。改造前这里直接
+// Decode 到 model.ScanOptions，伪造 actor 能把报告挂到别人名下。
+func TestCreateScanRejectsForgedAttribution(t *testing.T) {
+	f := newReportFixture(t, nil)
+	admin := f.adminToken(t)
+
+	for name, body := range map[string]string{
+		"attribution": `{"scope":"namespace","namespace":"kube-system","attribution":{"actor":"victim"}}`,
+		"scanId":      `{"scope":"namespace","namespace":"kube-system","scanId":"forged"}`,
+		"kubeconfig":  `{"scope":"namespace","namespace":"kube-system","kubeconfig":"/etc/passwd"}`,
+		"reportDir":   `{"scope":"namespace","namespace":"kube-system","reportDirectory":"/tmp/pwn"}`,
+		"timeout":     `{"scope":"namespace","namespace":"kube-system","timeout":3600000000000}`,
+	} {
+		status, _, raw := f.req(t, http.MethodPost, "/api/v1/scans", admin, body)
+		if status != http.StatusBadRequest {
+			t.Errorf("%s 字段应 400，got %d：%s", name, status, raw)
+		}
+	}
+	// 白名单字段本身要能过：否则上面那批 400 可能只是请求格式全错了。
+	if status, _, raw := f.req(t, http.MethodPost, "/api/v1/scans", admin,
+		`{"scope":"namespace","namespace":"kube-system","preset":"quick"}`); status != http.StatusAccepted {
+		t.Fatalf("合法请求应 202，got %d：%s", status, raw)
+	}
+}
+
+// TestCreateScanAttributesServerSide 锁 §6.4：actor 取认证身份、scan_id 取本次任务 ID、
+// scope 取校验后的范围，三者都不来自请求体。
+func TestCreateScanAttributesServerSide(t *testing.T) {
 	f := newReportFixture(t, nil)
 	admin := f.adminToken(t)
 	user, _, err := f.authSvc.UserByToken(context.Background(), admin)
@@ -567,13 +614,16 @@ func TestCreateScanOverridesForgedAttribution(t *testing.T) {
 		t.Fatal(err)
 	}
 	status, _, raw := f.req(t, http.MethodPost, "/api/v1/scans", admin,
-		`{"namespace":"kube-system","attribution":{"actor":"victim","scanId":"forged-scan","clusterId":"c-prod"}}`)
+		`{"scope":"namespace","namespace":"kube-system"}`)
 	if status != http.StatusAccepted {
 		t.Fatalf("发起扫描应 202，got %d：%s", status, raw)
 	}
 	var accepted struct {
 		Data struct {
-			ID string `json:"id"`
+			ID         string `json:"id"`
+			Owner      string `json:"owner"`
+			ScopeKind  string `json:"scopeKind"`
+			ScopeValue string `json:"scopeValue"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(raw), &accepted); err != nil {
@@ -581,6 +631,10 @@ func TestCreateScanOverridesForgedAttribution(t *testing.T) {
 	}
 	if accepted.Data.ID == "" {
 		t.Fatalf("202 响应缺少任务 ID：%s", raw)
+	}
+	// 任务归属同步回显：页面要靠它判断「这是不是我发起的」。
+	if accepted.Data.Owner != user.ID || accepted.Data.ScopeKind != model.ScopeNamespace || accepted.Data.ScopeValue != "kube-system" {
+		t.Fatalf("202 回显的任务归属不对：%+v", accepted.Data)
 	}
 
 	var opts model.ScanOptions
@@ -595,10 +649,213 @@ func TestCreateScanOverridesForgedAttribution(t *testing.T) {
 	if opts.Attribution.ScanID != accepted.Data.ID {
 		t.Fatalf("scan_id 应取本次任务 ID %s：%+v", accepted.Data.ID, opts.Attribution)
 	}
-	if opts.Attribution.ClusterID != "c-prod" {
-		t.Fatalf("cluster_id 是业务参数，应保留 body 值：%+v", opts.Attribution)
+	if opts.Attribution.ScopeKind != model.ScopeNamespace || opts.Attribution.ScopeValue != "kube-system" {
+		t.Fatalf("巡检范围没有随归属一起下发：%+v", opts.Attribution)
+	}
+	if opts.Attribution.ClusterID != "" {
+		t.Fatalf("本期巡检目标固定为平台自身集群，cluster_id 应为空：%+v", opts.Attribution)
 	}
 	if opts.Namespace != "kube-system" {
 		t.Fatalf("其余扫描参数被改写了：%+v", opts)
 	}
+	// 页面巡检不落容器本地副本（方案 17 §7.3）：reportDirectory 非空意味着往容器里写文件。
+	if opts.ReportDirectory != "" || opts.ReportMode != "" {
+		t.Fatalf("页面巡检不应写容器本地副本：%+v", opts)
+	}
+}
+
+// ---- P8.14 报告清单清理 ----
+
+// deleteAudits 取全部 report.delete 审计（删除每一条都留痕，与下载只记跨 owner 不同）。
+func deleteAudits(t *testing.T, st store.Store) []store.AuditEvent {
+	t.Helper()
+	rows, err := st.Audit().List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []store.AuditEvent
+	for _, e := range rows {
+		if e.Action == store.ActionReportDelete {
+			out = append(out, *e)
+		}
+	}
+	return out
+}
+
+// TestReportDeleteRemovesRowAndReleasesRef 锁 §13.1 主路径：删自己的报告 → 200、列表里消失、
+// 独占引用归零可回收、对象本身还在（物理回收只归 gc）。
+func TestReportDeleteRemovesRowAndReleasesRef(t *testing.T) {
+	f := newReportFixture(t, nil)
+	owner := f.userToken(t, "del-owner", "user")
+	ref := f.putContent(t, "# only mine", []string{"c1", "scan-del"})
+	f.seedReport(t, "r-del", "u-del-owner", "c1", ref)
+
+	if status, _, raw := f.req(t, http.MethodPost, "/api/v1/reports/cleanup", owner, `{"ids":["r-del"]}`); status != http.StatusOK {
+		t.Fatalf("删自己的报告应 200，got %d：%s", status, raw)
+	}
+	if _, err := f.st.Reports().Get(context.Background(), "r-del"); err == nil {
+		t.Fatal("业务行仍在列表里：删除没生效")
+	}
+	meta, err := f.st.Objects().Get(context.Background(), ref.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.RefCount != 0 {
+		t.Fatalf("引用未随删除释放，GC 永远不会回收它：ref_count=%d", meta.RefCount)
+	}
+	// 引用归零不等于对象消失——在宽限期内它还得能靠备份/对账解释清楚。
+	if rc, _, err := f.backend.Get(context.Background(), ref.Key); err != nil {
+		t.Fatalf("删除路径不该碰后端对象：%v", err)
+	} else {
+		_ = rc.Close()
+	}
+	audits := deleteAudits(t, f.st)
+	if len(audits) != 1 || audits[0].UserID != "u-del-owner" || audits[0].ResourceName != "r-del" {
+		t.Fatalf("删除审计不对： %+v", audits)
+	}
+	if strings.Contains(audits[0].ResultSummary, "cross_owner") {
+		t.Fatalf("删自己的报告不该标 cross_owner：%s", audits[0].ResultSummary)
+	}
+}
+
+// TestReportDeleteVisibilityMatchesRead 锁「清理不是第二条授权通道」：别人的报告删不掉，
+// 且响应与不存在同形，report id 不因为加了 DELETE 就变成存在性探针。
+func TestReportDeleteVisibilityMatchesRead(t *testing.T) {
+	f := newReportFixture(t, nil)
+	owner := f.userToken(t, "del-keeper", "user")
+	stranger := f.userToken(t, "del-stranger", "user")
+	ref := f.putContent(t, "# not yours", []string{"c1", "scan-mine"})
+	f.seedReport(t, "r-mine", "u-del-keeper", "c1", ref)
+
+	status, _, raw := f.req(t, http.MethodDelete, "/api/v1/reports/r-mine", stranger, "")
+	if status != http.StatusNotFound {
+		t.Fatalf("他人删除应与不存在同形 404，got %d：%s", status, raw)
+	}
+	if _, err := f.st.Reports().Get(context.Background(), "r-mine"); err != nil {
+		t.Fatalf("被拒的删除动到了数据：%v", err)
+	}
+	// 批量端点同判：混进别人的 id 只会计成 skipped，整批既不失败也不顺手删。
+	if status, _, raw := f.req(t, http.MethodPost, "/api/v1/reports/cleanup", stranger,
+		`{"ids":["r-mine","r-absent"]}`); status != http.StatusOK {
+		t.Fatalf("批量清理应 200 并逐条报告结果，got %d：%s", status, raw)
+	} else {
+		var env struct {
+			Data struct {
+				Deleted []string             `json:"deleted"`
+				Skipped []map[string]string  `json:"skipped"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(raw), &env); err != nil {
+			t.Fatal(err)
+		}
+		if len(env.Data.Deleted) != 0 {
+			t.Fatalf("越权 id 不该被删：%+v", env.Data.Deleted)
+		}
+		if len(env.Data.Skipped) != 2 {
+			t.Fatalf("两个 id 都该被跳过：%s", raw)
+		}
+	}
+	if _, err := f.st.Reports().Get(context.Background(), "r-mine"); err != nil {
+		t.Fatalf("批量越权动到了数据：%v", err)
+	}
+	// owner 本人可删，收尾。
+	if status, _, raw := f.req(t, http.MethodDelete, "/api/v1/reports/r-mine", owner, ""); status != http.StatusOK {
+		t.Fatalf("owner 删除应 200，got %d：%s", status, raw)
+	}
+}
+
+// TestReportAdminCrossOwnerDeleteAudits 锁 §13.1「管理员跨归属删除必须留痕」这一半：
+// 允许，但审计里要能看出删的是别人的报告。
+func TestReportAdminCrossOwnerDeleteAudits(t *testing.T) {
+	f := newReportFixture(t, nil)
+	f.userToken(t, "del-victim", "user")
+	ref := f.putContent(t, "# user report", []string{"c1", "scan-user"})
+	f.seedReport(t, "r-userrep", "u-del-victim", "c1", ref)
+
+	admin := f.adminToken(t)
+	if status, _, raw := f.req(t, http.MethodDelete, "/api/v1/reports/r-userrep", admin, ""); status != http.StatusOK {
+		t.Fatalf("admin 跨归属删除应 200，got %d：%s", status, raw)
+	}
+	audits := deleteAudits(t, f.st)
+	if len(audits) != 1 {
+		t.Fatalf("应有 1 条删除审计：%+v", audits)
+	}
+	if !strings.Contains(audits[0].ResultSummary, `"cross_owner":true`) {
+		t.Fatalf("跨归属删除必须显式标注：%s", audits[0].ResultSummary)
+	}
+	if audits[0].UserID != "admin" && audits[0].UserID != "" {
+		// 审计的操作者必须是执行删除的管理员本人，不能记成报告归属人。
+		if got := audits[0].UserID; got == "u-del-victim" {
+			t.Fatalf("删除审计把操作者记成了报告归属人：%s", got)
+		}
+	}
+}
+
+// TestReportCleanupUnavailableRow 锁「清理的主要对象恰恰是内容已不可恢复的行」：
+// available=false、甚至 objects 元数据都没了，业务行照样要能清掉。
+func TestReportCleanupUnavailableRow(t *testing.T) {
+	f := newReportFixture(t, nil)
+	owner := f.userToken(t, "del-orphan", "user")
+	ctx := context.Background()
+	// 直接造一行「有业务行、无对象元数据」的孤儿：正常运行期由 GC 竞态或历史迁移留下，
+	// 这里手工复现，验的就是清理对这种行的兜底。
+	row := &store.Report{
+		ID: "r-orphan", ClusterID: "c1", ScanID: "scan-orphan", Kind: service.ReportKindLatestMD,
+		// key 必须过 objectstore 的格式校验（末段以 64 位 sha256 开头），否则这条用例会
+		// 在 DeleteReport 的 key 校验处先炸，测不到真正想测的「元数据缺失仍可清理」。
+		BlobKey: "blobs/reports/c1/scan-orphan/" + strings.Repeat("a", 64) + "-gone.md",
+		MediaType: "text/markdown", Size: 10,
+		SHA256: strings.Repeat("a", 64), Findings: 1, CreatedBy: "u-del-orphan",
+		Available: false, CreatedAt: time.Now().UTC(),
+	}
+	// 报告面刻意不暴露脱离事务的 Create，孤儿行只能经 Tx 造（这里刻意不 Acquire）。
+	if err := f.st.WithTx(ctx, func(tx *store.Tx) error { return tx.InsertReport(ctx, row) }); err != nil {
+		t.Fatalf("create orphan: %v", err)
+	}
+	if status, _, raw := f.req(t, http.MethodPost, "/api/v1/reports/cleanup", owner, `{"ids":["r-orphan"]}`); status != http.StatusOK {
+		t.Fatalf("孤儿行应可清理，got %d：%s", status, raw)
+	}
+	if _, err := f.st.Reports().Get(ctx, "r-orphan"); err == nil {
+		t.Fatal("孤儿行没被清掉：清理功能对它永久失效")
+	}
+}
+
+// TestReportCleanupBatchLimit 锁单次上限：超限是 400（请求不合法），不是 500。
+func TestReportCleanupBatchLimit(t *testing.T) {
+	f := newReportFixture(t, nil)
+	owner := f.userToken(t, "del-flood", "user")
+	var sb strings.Builder
+	sb.WriteString(`{"ids":[`)
+	for i := 0; i <= 200; i++ {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		sb.WriteString(`"r-` + fmt.Sprint(i) + `"`)
+	}
+	sb.WriteString(`]}`)
+	status, _, raw := f.req(t, http.MethodPost, "/api/v1/reports/cleanup", owner, sb.String())
+	if status != http.StatusBadRequest {
+		t.Fatalf("超过单次上限应 400，got %d：%s", status, raw)
+	}
+	if code := errorOf(t, raw); !strings.HasPrefix(code, codeInvalidArgument+"|") {
+		t.Fatalf("上限错误应是 invalid_argument：%s", code)
+	}
+}
+
+// TestReportDeleteNotConfigured 未装配报告面时删除/清理回 501，与其他报告端点一致。
+func TestReportDeleteNotConfigured(t *testing.T) {
+	f := newReportFixture(t, scriptedReportService{})
+	// scriptedReportService 的 Delete/Cleanup 恒回 ErrNotFound，这里要验的是「没装配」这条
+	// 更早的分支，所以另起一台不带 reports 的服务。
+	srv := httptest.NewServer(New(&fakeScan{}).Handler())
+	t.Cleanup(srv.Close)
+	resp, err := http.Post(srv.URL+"/api/v1/reports/cleanup", "application/json", strings.NewReader(`{"ids":["x"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = f
+	if resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("未装配时应 401/501，got %d", resp.StatusCode)
+	}
+	decodeData(t, resp, nil)
 }

@@ -91,7 +91,7 @@ func TestHealthReadyVersion(t *testing.T) {
 func TestCreateAndGetScan(t *testing.T) {
 	ts, token, _, _ := newAuthedScanServer(t, &fakeScan{result: &model.ScanResult{}})
 
-	resp, err := authedPost(ts, "/api/v1/scans", `{"namespace":"default"}`, token)
+	resp, err := authedPost(ts, "/api/v1/scans", `{"scope":"namespace","namespace":"default"}`, token)
 	if err != nil || resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("create = %v %v", resp, err)
 	}
@@ -118,11 +118,12 @@ func TestSingleConcurrency(t *testing.T) {
 	start := make(chan struct{})
 	ts, token, _, _ := newAuthedScanServer(t, &fakeScan{result: &model.ScanResult{}, delay: time.Second, start: start})
 
-	r1, err := authedPost(ts, "/api/v1/scans", `{}`, token)
+	// 全集群巡检只有 admin 能发（方案 17 §4.2），这里的 token 来自 Bootstrap 的 admin。
+	r1, err := authedPost(ts, "/api/v1/scans", `{"scope":"cluster"}`, token)
 	if err != nil || r1.StatusCode != http.StatusAccepted {
 		t.Fatalf("第一次创建 = %v %v", r1, err)
 	}
-	r2, err := authedPost(ts, "/api/v1/scans", `{}`, token)
+	r2, err := authedPost(ts, "/api/v1/scans", `{"scope":"cluster"}`, token)
 	if err != nil || r2.StatusCode != http.StatusConflict {
 		t.Fatalf("并发时第二次应 409: %v %v", r2, err)
 	}

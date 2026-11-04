@@ -44,8 +44,12 @@ func DefaultAPIPolicy() *permission.Policy {
 		permission.Rule{Method: "GET", Path: "/api/v1/auth/me", Access: permission.AccessAuthenticated},
 		permission.Rule{Method: "GET", Path: "/api/v1/auth/scope", Access: permission.AccessAuthenticated},
 		permission.Rule{Method: "POST", Path: "/api/v1/auth/password", Access: permission.AccessAuthenticated},
-		permission.Rule{Method: "POST", Path: "/api/v1/scans", Access: permission.AccessPermission, Permission: permission.ChatWrite},
-		permission.Rule{Method: "GET", Path: "/api/v1/scans/{id}", Access: permission.AccessPermission, Permission: permission.ClusterRead},
+		// 发起巡检单独立权限位 scan.execute（方案 17 §4.1）：借 chat.write 会让「能聊天」
+		// 等于「能在集群上跑一次全量采集」，而这两件事的爆炸半径完全不同。
+		permission.Rule{Method: "POST", Path: "/api/v1/scans", Access: permission.AccessPermission, Permission: permission.ScanExecute},
+		// 任务详情只登记到「登录」这一档：真正的闸门在 handler 里按发起人判定（任务结果
+		// 含被扫命名空间的问题清单，任何持 cluster.read 的人凭 job id 读他人任务即越权）。
+		permission.Rule{Method: "GET", Path: "/api/v1/scans/{id}", Access: permission.AccessAuthenticated},
 		permission.Rule{Method: "POST", Path: "/api/v1/clusters", Access: permission.AccessPermission, Permission: permission.ClusterManage},
 		permission.Rule{Method: "POST", Path: "/api/v1/clusters/test", Access: permission.AccessPermission, Permission: permission.ClusterManage},
 		permission.Rule{Method: "GET", Path: "/api/v1/clusters", Access: permission.AccessPermission, Permission: permission.ClusterRead},
@@ -79,6 +83,10 @@ func DefaultAPIPolicy() *permission.Policy {
 		// 权限位会让人误以为存在「授予后即可读所有报告」的开关（方案 15 §12.2）。
 		permission.Rule{Method: "GET", Path: "/api/v1/reports", Access: permission.AccessAuthenticated},
 		permission.Rule{Method: "GET", Path: "/api/v1/reports/{id}/content", Access: permission.AccessAuthenticated},
+		// 清理两面同样只登记到「登录」：归属判定复用报告读侧那一套（owner / system+集群授权 /
+		// admin），不新增权限位（方案 15 v1.12 §18）。
+		permission.Rule{Method: "DELETE", Path: "/api/v1/reports/{id}", Access: permission.AccessAuthenticated},
+		permission.Rule{Method: "POST", Path: "/api/v1/reports/cleanup", Access: permission.AccessAuthenticated},
 		// 对象存储健康：权限复用 settings.read（已代表「能看平台运行形态」），不新增权限位。
 		permission.Rule{Method: "GET", Path: "/api/v1/storage/health", Access: permission.AccessPermission, Permission: permission.SettingsRead},
 	)

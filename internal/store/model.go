@@ -225,4 +225,8 @@ type Report struct {
 	CreatedBy string    `json:"createdBy,omitempty"`
 	Available bool      `json:"available"`
 	CreatedAt time.Time `json:"createdAt"`
+	// ScopeKind / ScopeValue 是巡检范围（cluster|namespace|pod 与取值，P8.13）。
+	// 空串表示 v8 之前入库的存量报告，页面显示「未记录」；两者只用于展示与过滤。
+	ScopeKind  string `json:"scopeKind,omitempty"`
+	ScopeValue string `json:"scopeValue,omitempty"`
 }

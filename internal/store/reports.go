@@ -16,7 +16,7 @@ import (
 // 列表查询刻意复用同一串列名，包括 blob_key：它只在 service 层换取内容时用，不进
 // JSON 视图（model.Report 上是 json:"-"），但读进内存本身不泄露给响应。
 const reportColumns = "id, cluster_id, scan_id, kind, blob_key, media_type, size, sha256, " +
-	"findings, created_by, available, created_at"
+	"findings, created_by, available, created_at, scope_kind, scope_value"
 
 // ReportQuery 是报告列表的过滤与归属条件（方案 15 §12.3）。
 //
@@ -36,6 +36,8 @@ type ReportQuery struct {
 	// ClusterID / Kind 是可选过滤条件。
 	ClusterID string
 	Kind      string
+	// ScanID 是按扫描任务反查产物（P8.13）：页面发起巡检后靠它找回自己的报告。
+	ScanID string
 	// Limit / Offset 是分页；Limit<=0 表示不分页（仍按时间倒序全量返回）。
 	Limit  int
 	Offset int
@@ -45,7 +47,8 @@ type ReportQuery struct {
 //
 // 写面刻意只有 WithTx 的 Tx.InsertReport：报告行必须与对象引用同事务提交，
 // 这里开一个脱离事务的 Create 就等于允许「行提交了、引用没加」的悬空引用。
-// 删除属 P8.9 的 GC 生命周期（Release + Forget），本期不暴露删行入口。
+// 删除同理：只有 Tx.DeleteReport，且必须与 Tx.Release 同一事务（P8.14，方案 15 §13.1）——
+// 脱离了 Release 的删行就是永久悬空引用，对象再也回收不掉。
 type ReportStore interface {
 	// List 按归属与过滤条件分页列出报告，返回值同时给出同条件下的总行数（分页 total）。
 	List(ctx context.Context, q ReportQuery) ([]*Report, int64, error)
@@ -146,6 +149,10 @@ func (q ReportQuery) where() (string, []any, error) {
 		clauses = append(clauses, "kind = ?")
 		args = append(args, kind)
 	}
+	if scanID := strings.TrimSpace(q.ScanID); scanID != "" {
+		clauses = append(clauses, "scan_id = ?")
+		args = append(args, scanID)
+	}
 	if len(clauses) == 0 {
 		return `WHERE 1 = 1`, nil, nil
 	}
@@ -178,8 +185,11 @@ func scanReport(row scanner) (*Report, error) {
 	// 直接 Scan 进 bool 在 MySQL 上会因驱动返回类型不稳而报错，按 int 收再转换。
 	var available int
 	var createdAt time.Time
+	// 顺序必须与 reportColumns 严格一致：列名单源在那边，这里靠位置对齐，多一列少一列
+	// 都是运行期才炸的错。
 	err := row.Scan(&r.ID, &r.ClusterID, &r.ScanID, &r.Kind, &r.BlobKey, &r.MediaType,
-		&r.Size, &r.SHA256, &r.Findings, &r.CreatedBy, &available, &createdAt)
+		&r.Size, &r.SHA256, &r.Findings, &r.CreatedBy, &available, &createdAt,
+		&r.ScopeKind, &r.ScopeValue)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, mapErr(err, "get report")

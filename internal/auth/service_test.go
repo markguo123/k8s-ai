@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/k8s-ai/k8s-ai/internal/permission"
 	"github.com/k8s-ai/k8s-ai/internal/store"
 )
 
@@ -86,8 +87,8 @@ func TestBootstrapAndLogin(t *testing.T) {
 	}
 }
 
-// TestBootstrapCanonicalizesRoles 覆盖已有库重启：三角色固定，
-// user/operator 的平台权限每次收敛为零。
+// TestBootstrapCanonicalizesRoles 覆盖已有库重启：三角色固定，内置角色的平台权限
+// 每次启动都被覆盖回代码口径——user 收敛为零，operator 只保留 scan.execute。
 func TestBootstrapCanonicalizesRoles(t *testing.T) {
 	st := newStore(t)
 	svc := New(st.Users(), st.Roles())
@@ -128,9 +129,15 @@ func TestBootstrapCanonicalizesRoles(t *testing.T) {
 	}
 	for _, role := range roles {
 		switch role.Name {
-		case RoleUser, RoleOperator:
+		case RoleUser:
 			if len(role.Permissions) != 0 {
 				t.Fatalf("%s permissions = %v, want zero", role.Name, role.Permissions)
+			}
+		case RoleOperator:
+			// 手工塞进去的 chat.write/cluster.manage 必须被抹掉，只留发起巡检权。
+			if len(role.Permissions) != 1 || role.Permissions[0] != permission.ScanExecute {
+				t.Fatalf("%s permissions = %v, want [%s]",
+					role.Name, role.Permissions, permission.ScanExecute)
 			}
 		}
 	}

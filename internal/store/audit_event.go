@@ -58,6 +58,9 @@ var eventTypeByAction = map[string]string{
 	"secret.value_requested":  AuditEventSecretRead,
 	"secret.touched":          AuditEventSecretRead,
 	"report.download":         AuditEventReport,
+	// 删除低频且不可逆，必须与下载同一事件类型进事件中心；漏掉这一行的话动作字面量照样
+	// 写库，只是EventTypeForAction 把它静默归成 OTHER（P8.14，方案 15 v1.12 §0 第 5 条）。
+	"report.delete":           AuditEventReport,
 	"verification.started":    AuditEventResourceMutation,
 	"verification.succeeded":  AuditEventResourceMutation,
 	"verification.failed":     AuditEventResourceMutation,
@@ -75,6 +78,9 @@ const (
 	ActionAuthPassword = "auth.password"
 	// ActionReportDownload 是报告下载动作（含 admin 跨归属读取）。
 	ActionReportDownload = "report.download"
+	// ActionReportDelete 是报告清理动作（P8.14）。与下载只记跨 owner 不同，删除**每一条**
+	// 都记：删自己的报告虽然也是日常动作，但它不可逆，事后要能回答「谁在什么时候清掉了哪份」。
+	ActionReportDelete = "report.delete"
 )
 
 // EventTypeForAction 返回三期动作对应的四期事件类型；未知动作归入 OTHER。

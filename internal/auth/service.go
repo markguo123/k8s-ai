@@ -19,6 +19,7 @@ import (
 	"golang.org/x/crypto/argon2"
 
 	"github.com/k8s-ai/k8s-ai/internal/store"
+	"github.com/k8s-ai/k8s-ai/internal/permission"
 )
 
 // 默认角色名：平台只开放 user / operator / admin 三角色。
@@ -282,10 +283,13 @@ type roleDef struct {
 func defaultRoles() []roleDef {
 	return []roleDef{
 		{name: RoleAdmin, description: "管理员：全部平台权限", permissions: []string{"*"}},
-		// user/operator 的平台权限默认为空。实际集群能力由 admin 授予的
-		// namespace AuthzGrant 决定，不能靠角色默认值预先放行。
+		// user 的平台权限为空。实际集群能力由 admin 授予的 namespace AuthzGrant 决定，
+		// 不能靠角色默认值预先放行；普通用户默认不给发起巡检权（方案 17 §4 第 1 条）。
 		{name: RoleUser, description: "普通用户：零平台权限，按 namespace 授权使用集群能力", permissions: []string{}},
-		{name: RoleOperator, description: "操作员：零平台权限，按 namespace 授权使用集群能力", permissions: []string{}},
+		// operator 只多一个 scan.execute：巡检发起权。它能触发的读能力仍受 namespace 授权
+		// 闸门约束（server 侧逐次判定），所以这一位不扩大任何人的可见范围，只是让「巡检」
+		// 按钮对操作员可用——reconcileRoles 每次启动覆盖内置角色，这里补上就会自动补齐存量库。
+		{name: RoleOperator, description: "操作员：仅发起巡检权，按 namespace 授权使用集群能力", permissions: []string{permission.ScanExecute}},
 	}
 }
 

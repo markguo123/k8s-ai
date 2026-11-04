@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -9,8 +10,10 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode"
 	"time"
 
+	"github.com/k8s-ai/k8s-ai/internal/model"
 	"github.com/k8s-ai/k8s-ai/internal/objectstore"
 	"github.com/k8s-ai/k8s-ai/internal/permission"
 	"github.com/k8s-ai/k8s-ai/internal/service"
@@ -32,6 +35,8 @@ type reportService interface {
 	List(ctx context.Context, scope service.ReportScope, limit, offset int) ([]service.ReportView, int64, error)
 	OpenContent(ctx context.Context, id string, scope service.ReportScope) (service.ReportView, io.ReadCloser, objectstore.Ref, error)
 	Presign(ctx context.Context, id string, scope service.ReportScope, ttl time.Duration) (service.ReportView, string, error)
+	Delete(ctx context.Context, id string, scope service.ReportScope) (service.ReportView, error)
+	Cleanup(ctx context.Context, ids []string, scope service.ReportScope) ([]service.ReportView, []service.CleanupSkip, error)
 }
 
 // handleListReports GET /api/v1/reports：只列本人 + 有权集群的系统报告。
@@ -54,6 +59,12 @@ func (s *Server) handleListReports(w http.ResponseWriter, r *http.Request) {
 	}
 	if kind := r.URL.Query().Get("kind"); kind != "" {
 		scope.Kind = kind
+	}
+	// scanId 是「刚发起的巡检出报告了没有」的找回路径（P8.13）：任务注册表在内存里，
+	// 刷新页面就没了，靠 reports.scan_id 反查是唯一不引入新端点的做法。它是过滤条件，
+	// 不是授权条件——猜中别人的 scanId 也只能看到自己名下的报告。
+	if scanID := r.URL.Query().Get("scanId"); scanID != "" {
+		scope.ScanID = scanID
 	}
 	page, pageSize := PageOf(r)
 	items, total, err := s.reportSvc.List(r.Context(), scope, pageSize, (page-1)*pageSize)
@@ -110,7 +121,7 @@ func (s *Server) handleGetReportContent(w http.ResponseWriter, r *http.Request) 
 
 	// 强制下载 + 禁 MIME 嗅探：报告正文来自集群数据，绝不能让浏览器把它当同源脚本渲染。
 	h := w.Header()
-	h.Set("Content-Disposition", "attachment; filename*=UTF-8''"+reportFilename(view, ref))
+	h.Set("Content-Disposition", "attachment; filename*=UTF-8''"+rfc5987Encode(reportFilename(view, ref)))
 	h.Set("X-Content-Type-Options", "nosniff")
 	mediaType := ref.MediaType
 	if mediaType == "" {
@@ -225,24 +236,178 @@ func (s *Server) recordReportDownload(r *http.Request, user *store.User, view se
 	}
 }
 
-// reportFilename 生成下载文件名。收敛到 [A-Za-z0-9._-] 之后不需要真正的百分号编码
-// （RFC 5987 的 attr-char 已覆盖这个集合），这样既满足 filename* 语法，也不会因为
-// kind/ID 里混进引号或换行而把响应头写坏——头部注入在这里是一行就能打开的洞。
+// reportFilename 生成人可读的下载文件名（方案 17 §7.2）：巡检-命名空间arc-20261103-1712.md。
+//
+// 文件名要回答「这份报告是扫什么、什么时候扫的」，否则下载下来的一堆 .md 只能靠修改时间认。
 func reportFilename(view service.ReportView, ref objectstore.Ref) string {
-	name := "report-" + view.ID + "-" + view.Kind + mediaExt(view, ref)
-	out := make([]rune, 0, len(name))
+	ext := mediaExt(view, ref)
+	label := reportScopeLabel(view)
+	if label == "" {
+		// v8 之前的存量行与 CLI 产物没有 scope：回退旧式命名。把老报告改成一个对不上
+		// 任何记录的名字，比它的名字不好看更糟。
+		return sanitizeFilename("report-" + view.ID + "-" + view.Kind + ext)
+	}
+	// 本地时区而不是 UTC：文件名是给人核对「上午那次巡检」用的。
+	return sanitizeFilename("巡检-" + label + "-" + view.CreatedAt.Local().Format("20060102-1504") + ext)
+}
+
+// reportScopeLabel 把 scope 两列翻成文件名片段；kind 为空（存量行/CLI 产物）时返回空串。
+func reportScopeLabel(view service.ReportView) string {
+	switch view.ScopeKind {
+	case model.ScopeCluster:
+		return "全集群"
+	case model.ScopeNamespace:
+		return "命名空间" + view.ScopeValue
+	case model.ScopePod:
+		return "Pod-" + strings.ReplaceAll(view.ScopeValue, "/", "-")
+	default:
+		return ""
+	}
+}
+
+// sanitizeFilename 放行 Unicode 字母与数字（中文名不再被打成一串下划线），仍剔除路径
+// 分隔符、shell/Windows 非法字符、控制字符与首尾空白点号。这里防的是响应头注入与
+// 「下载名里带 ../」两类问题，不是给文件名做美观处理。
+func sanitizeFilename(name string) string {
+	name = strings.TrimSpace(name)
+	out := make([]rune, 0, len(name)+8)
 	for _, r := range name {
 		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+		case r == '/' || r == '\\' || r == ':' || r == '?' || r == '*' || r == '"' || r == '<' || r == '>' || r == '|':
+			out = append(out, '_')
+		case r < 0x20 || r == 0x7f:
+			out = append(out, '_')
+		case unicode.IsLetter(r) || unicode.IsDigit(r) || r == '.' || r == '_' || r == '-' || r == ' ':
 			out = append(out, r)
 		default:
 			out = append(out, '_')
 		}
 	}
-	if len(out) == 0 {
-		return "report.bin"
+	trimmed := strings.Trim(strings.TrimSpace(string(out)), ".")
+	if trimmed == "" {
+		return "report"
 	}
-	return string(out)
+	return trimmed
+}
+
+// rfc5987Encode 按 RFC 5987 的 attr-char 百分号编码。中文文件名必须真编码：Go 的服务端
+// 会放行 obs-text（0x80-0xFF）字节，但反向代理与浏览器对裸 UTF-8 头部并没有一致口径，
+// 靠"多半能过"来发下载名是拿用户的产品换运气。
+func rfc5987Encode(s string) string {
+	const attrChars = "!#$&+-.^_`|~"
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, by := range []byte(s) {
+		switch {
+		case by >= 'a' && by <= 'z', by >= 'A' && by <= 'Z', by >= '0' && by <= '9',
+			strings.IndexByte(attrChars, by) >= 0:
+			b.WriteByte(by)
+		default:
+			fmt.Fprintf(&b, "%%%02X", by)
+		}
+	}
+	return b.String()
+}
+
+// handleDeleteReport DELETE /api/v1/reports/{id}：删除一条报告的业务引用（P8.14）。
+//
+// 这里删的是「平台认为这份报告存在」这件事，不是正文：正文归 blobs gc 在宽限期后回收，
+// 请求路径里任何时候都不允许出现后端对象的 Delete（共享 blob_key 的报告会被连带删掉）。
+func (s *Server) handleDeleteReport(w http.ResponseWriter, r *http.Request) {
+	if s.reportSvc == nil {
+		writeError(w, r, http.StatusNotImplemented, codeInternal, "reports is not configured")
+		return
+	}
+	scope, user, err := s.reportScopeFor(r.Context())
+	if err != nil {
+		writeReportScopeError(w, r, err)
+		return
+	}
+	view, err := s.reportSvc.Delete(r.Context(), r.PathValue("id"), scope)
+	if err != nil {
+		writeReportError(w, r, err)
+		return
+	}
+	s.recordReportDelete(r, user, view)
+	// 响应形状与批量端点一致（deleted 是 id 数组）：前端两条路径共用一套收尾逻辑。
+	writeOK(w, r, http.StatusOK, map[string]any{"deleted": []string{view.ID}, "skipped": []string{}})
+}
+
+// cleanupReportsRequest 是批量清理的请求体。
+type cleanupReportsRequest struct {
+	IDs []string `json:"ids"`
+}
+
+// handleCleanupReports POST /api/v1/reports/cleanup：批量清理（P8.14）。
+//
+// 批量端点不构成第二条授权通道：service 侧逐 id 判归属、逐 id 独立事务，语义与逐条
+// DELETE 完全一致，混进来的他人 id 只会变成一条 skipped，不会整批失败也不会顺手删掉。
+func (s *Server) handleCleanupReports(w http.ResponseWriter, r *http.Request) {
+	if s.reportSvc == nil {
+		writeError(w, r, http.StatusNotImplemented, codeInternal, "reports is not configured")
+		return
+	}
+	var req cleanupReportsRequest
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, r, http.StatusBadRequest, codeInvalidArgument, "invalid body: "+err.Error())
+		return
+	}
+	scope, user, err := s.reportScopeFor(r.Context())
+	if err != nil {
+		writeReportScopeError(w, r, err)
+		return
+	}
+	deleted, skipped, err := s.reportSvc.Cleanup(r.Context(), req.IDs, scope)
+	if errors.Is(err, service.ErrCleanupTooMany) {
+		writeError(w, r, http.StatusBadRequest, codeInvalidArgument, err.Error())
+		return
+	}
+	if err != nil {
+		slog.Warn("server: 报告批量清理失败", "error", err)
+		writeError(w, r, http.StatusInternalServerError, codeInternal, "cleanup reports failed")
+		return
+	}
+	ids := make([]string, 0, len(deleted))
+	for _, view := range deleted {
+		s.recordReportDelete(r, user, view)
+		ids = append(ids, view.ID)
+	}
+	// deleted 返回 id 而不是整行：前端手里已经有行了，把视图再塞回去只会让响应体随批量
+	// 规模线性变长，而它唯一要做的就是把删掉的行从表里移出去。
+	writeOK(w, r, http.StatusOK, map[string]any{"deleted": ids, "skipped": skipped})
+}
+
+// recordReportDelete 为**每一条**删除落一条 report.delete 审计（方案 15 §13.1）。
+//
+// 与 report.download 只记跨 owner 相反：删除低频且不可逆，全量留痕才配得上「谁能说这份
+// 巡检结论不存在了」。跨 owner（管理员删别人的报告）在 ResultSummary 里显式标出来。
+func (s *Server) recordReportDelete(r *http.Request, user *store.User, view service.ReportView) {
+	if s.auditlog == nil || user == nil {
+		return
+	}
+	summary := fmt.Sprintf(`{"kind":%q,"owner":%q,"size":%d,"scope_kind":%q,"scope_value":%q`,
+		view.Kind, view.CreatedBy, view.Size, view.ScopeKind, view.ScopeValue)
+	if view.CreatedBy != user.ID {
+		summary += `,"cross_owner":true`
+	}
+	summary += "}"
+	err := s.auditlog.Record(r.Context(), store.AuditEvent{
+		Action:       store.ActionReportDelete,
+		EventType:    store.AuditEventReport,
+		RequestID:    RequestIDFrom(r.Context()),
+		UserID:       user.ID,
+		ClusterID:    view.ClusterID,
+		Operation:    "delete",
+		ResourceKind: "report",
+		ResourceName: view.ID,
+		Status:       "success",
+		ResultSummary: summary,
+	})
+	if err != nil {
+		slog.Warn("server: 报告删除审计写入失败", "report_id", view.ID, "user_id", user.ID, "error", err)
+	}
 }
 
 // mediaExt 只给常见类型配扩展名；认不出来就不加，好过编一个误导性的。
