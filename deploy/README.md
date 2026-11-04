@@ -30,6 +30,9 @@ deploy/
   scan/          可选：一期每日巡检 CronJob（独立 ConfigMap）
   example/       参考与补丁示例，不是清单，不能 apply
   rbac-write.example.yaml  可选：开放写权限的 ClusterRole（跨形态）
+  install.sh     一键安装/重装的九阶段调谐器（唯一的发布执行者）
+  install.env.example      42 个安装参数的全注释模板（纯占位值）
+  upgrade.sh     发布/升级驱动器：取码 + TAG 绑定 commit + 发布后验收 + 记账 + 一键回滚（发布仍委托 install.sh）
 ```
 
 | 文件 | 产物 | 必需性 |
@@ -125,6 +128,26 @@ deploy/install.sh --env-file install.env             # 重跑验幂等：不重�
   （`BLOBS_BACKEND=s3` 指向它）。
 - `BUILD=true` 但探测不到容器运行时时自动降级为只发布；离线场景用 `--load-tar=<tar>` 导入。
 - 参数口径的权威源是 `docs/03-运维与部署/01-部署与安装.md` §4.10，本文件只引用不复制。
+
+## 升级与回滚（推荐）
+
+升级没有第二套流程：**换镜像 TAG 重跑一遍 `install.sh`**。`deploy/upgrade.sh` 只是它外面的一层驱动器，
+补上四件 `install.sh` 刻意不管的事——取码、TAG 与 commit 绑定、发布后验收、发布记录与回滚。
+参数文件与发布记录放在源码目录之外（默认 `~/.k8s-ai/deploy`），所以一台测试机只需常驻一份代码目录：
+
+```bash
+mkdir -p ~/.k8s-ai/deploy && cp deploy/install.env.example ~/.k8s-ai/deploy/install.env
+chmod 600 ~/.k8s-ai/deploy/install.env
+
+deploy/upgrade.sh --dry-run                # 先看将要用的 TAG 与渲染产物
+deploy/upgrade.sh --ref=DEV-v4.0.0         # 拉代码 → 构建推送 → 发布 → 验收 → 记账
+deploy/upgrade.sh --status                 # 现在跑的是哪个 TAG / commit
+deploy/upgrade.sh --rollback               # 回到上一个已验收版本（隐含 --no-build）
+```
+
+镜像 TAG 默认由 git 派生（`<install.env 的 TAG>-<短 sha>`，脏树再加 `-dirty`），同一个 TAG 不会对应两个 commit；
+正式发版用 `--follow-env-tag` 沿用固定发布号。回滚靠重发上一个已验收 TAG，不用 `rollout undo`。
+完整口径见 `docs/03-运维与部署/01-部署与安装.md` §4.11。
 
 ## 形态 A：前后端一体化
 
@@ -223,7 +246,7 @@ Get-ChildItem deploy -Recurse -Filter *.yaml | ForEach-Object {
 ```bash
 kubectl -n k8s-ai get deploy,svc,ingress,job
 kubectl -n k8s-ai logs deploy/k8s-ai-server | head -50
-kubectl -n k8s-ai exec deploy/k8s-ai-server -- version   # 默认档内置 bash/jq/kubectl（P6.3）
+kubectl -n k8s-ai exec deploy/k8s-ai-server -- k8s-ai version   # 默认档内置 bash/jq/kubectl（P6.3）
 kubectl -n k8s-ai exec deploy/k8s-ai-server -- kubectl version --client   # 镜像内 kubectl 就位
 curl -s https://<host>/version
 ```

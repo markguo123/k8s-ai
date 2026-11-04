@@ -14,9 +14,10 @@
 # 换后端之前必须先迁对象（重要）：server 只按配置装配一个内容后端。已经跑过 db 或 dir
 # 后端的实例，直接把 driver 改成 s3，会让 objects 表里仍写着旧 driver 的历史对象读不到
 # （下载返回 409 待迁移，历史报告打不开）。正确顺序：
-#   k8s-ai blobs migrate --to s3 --dry-run     # 先看清单，零改动
-#   k8s-ai blobs migrate --to s3               # 内容先落桶、按 sha256 核对，才翻元数据
-#   k8s-ai blobs verify --strict               # 退出码 0 才算迁完
+# 容器内必须带 --config /etc/k8s-ai/config.yaml：不带就回落默认 sqlite（空库），只会报 schema 0
+#   k8s-ai --config /etc/k8s-ai/config.yaml blobs migrate --to s3 --dry-run   # 先看清单，零改动
+#   k8s-ai --config /etc/k8s-ai/config.yaml blobs migrate --to s3               # 内容先落桶、按 sha256 核对，才翻元数据
+#   k8s-ai --config /etc/k8s-ai/config.yaml blobs verify --strict            # 退出码 0 才算迁完
 #   然后再打本补丁并切 driver
 # deploy/install.sh 在 apply 之前会挡这一步（ALLOW_DRIVER_MISMATCH 是显式绕行，不是推荐路径）。
 #

@@ -108,19 +108,23 @@ func openBlobOps(ctx context.Context, cmd *cobra.Command, deps Dependencies) (*b
 	if err != nil {
 		return nil, fmt.Errorf("platform.blobs.prefix: %w", err)
 	}
-	st, _, err := openPlatformStore(cfg)
+	st, target, err := openPlatformStore(cfg)
 	if err != nil {
 		return nil, err
 	}
 	// 登记表必须先存在：blobs 是运维命令，不替 k8s-ai db migrate 改 schema。把「库里还
 	// 没有 objects 表」渲染成一句可执行的指引，比让驱动报 no such table 有用得多。
+	//
+	// 两句错误都必须指名实际打开的库：容器里漏掉 --config 时配置回落默认 sqlite，打开的是
+	// 一个全新空库，此时只报「schema 版本 0，请先 db migrate」会把人推向「去迁移真库」，
+	// 而真正的问题是从头到尾没连上真库（2026-11-03 真机验证踩过）。
 	if version, expected, err := st.MigrationStatus(ctx); err != nil {
 		_ = st.Close()
-		return nil, fmt.Errorf("read platform schema version: %w", err)
+		return nil, fmt.Errorf("read platform schema version (store %s): %w", target, err)
 	} else if version < expected {
 		_ = st.Close()
-		return nil, fmt.Errorf("platform schema is at version %d, this build needs %d: run k8s-ai db migrate first",
-			version, expected)
+		return nil, fmt.Errorf("platform schema is at version %d, this build needs %d: run k8s-ai db migrate first "+
+			"(store %s; pass --config if the platform config is not the default one)", version, expected, target)
 	}
 	ops := &blobOps{cfg: cfg, st: st, driver: blobs.EffectiveDriver(), prefix: prefix}
 	ops.maxBytes = maxBytes

@@ -346,6 +346,14 @@ func TestBlobsRefusesUnmigratedPlatformSchema(t *testing.T) {
 	if !strings.Contains(err.Error(), "db migrate") {
 		t.Fatalf("error must point at the migrate entrypoint, got %v", err)
 	}
+	// 报错必须指名实际打开的库：漏 --config 时打开的是默认 sqlite 空库，只喊「去 db
+	// migrate」会把人引向错方向（2026-11-03 真机踩过一次）。
+	if !strings.Contains(err.Error(), "store sqlite:") {
+		t.Fatalf("error must name the store actually opened, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "--config") {
+		t.Fatalf("error must hint that the config file decides the store, got %v", err)
+	}
 	if strings.Contains(out, "total objects=") {
 		t.Fatalf("must not report inventory from an unmigrated schema:\n%s", out)
 	}

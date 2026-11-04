@@ -544,12 +544,32 @@ secret_get_value() {
 }
 
 # 从 stdin 建 Secret：值不进 ps、不进 shell history，再经 apply 幂等落库。
+# 注解由脚本自己拼进 YAML，不用 kubectl create secret 的 --annotation：那个 flag 要 kubectl 1.32+，
+# 1.28 直接 "unknown flag: --annotation" 退出（--annotations 同样没有）。这个坑在真机上藏了很久：
+# Secret 已存在时走「复用」分支根本不碰这段，只有空集群首装、换 AK/SK 或 --rotate 才炸（2026-11-03 撞上）。
+managed_secret_yaml() { # managed_secret_yaml <name> <key> <base64value> [<key> <base64value>...]
+  local name="$1"
+  shift
+  printf 'apiVersion: v1\nkind: Secret\nmetadata:\n  name: "%s"\n  namespace: "%s"\n' "$name" "$NAMESPACE"
+  printf '  annotations:\n    k8s-ai/install-managed: "true"\ntype: Opaque\ndata:\n'
+  while [[ $# -ge 2 ]]; do
+    printf '  "%s": "%s"\n' "$1" "$2"
+    shift 2
+  done
+}
+
+# 服务端 apply：客户端 apply 会把整份 YAML 塞进 kubectl.kubernetes.io/last-applied-configuration，
+# DSN 与 AK/SK 就在同一个 Secret 上多存了一份 base64 副本（1.28 实测如此）；SSA 只记 managedFields，
+# 不留这份副本，也顺手接管运维手工建好的同名 Secret。--force-conflicts 是接管别的 field manager
+# （含手工创建时的 before-first-apply）时必需的，本脚本就是这些 Secret 的权威写入方。
+apply_secret_yaml() {
+  "$KUBECTL_BIN" apply --server-side --force-conflicts --field-manager k8s-ai-install -f - >/dev/null
+}
+
 create_secret_from_stdin() {
-  local name="$1" key="$2" value="$3"
-  printf '%s' "$value" | "$KUBECTL_BIN" -n "$NAMESPACE" create secret generic "$name" \
-    "--from-file=${key}=/dev/stdin" \
-    --annotation k8s-ai/install-managed=true \
-    --dry-run=client -o yaml | "$KUBECTL_BIN" apply -f - >/dev/null
+  local name="$1" key="$2" value="$3" b64=""
+  b64="$(printf '%s' "$value" | base64 | tr -d '\n')"
+  managed_secret_yaml "$name" "$key" "$b64" | apply_secret_yaml
 }
 
 # --- 清单渲染引擎 ------------------------------------------------------------
@@ -788,13 +808,13 @@ run_diff() {
 
 # 两个键的 Secret（AK/SK 必须一次建好）：值先落到渲染目录里的 600 文件，用完即删。
 create_secret_two_keys() {
-  local name="$1" k1="$2" v1="$3" k2="$4" v2="$5" f1="${RENDER_DIR}/.k1" f2="${RENDER_DIR}/.k2"
+  local name="$1" k1="$2" v1="$3" k2="$4" v2="$5" f1="${RENDER_DIR}/.k1" f2="${RENDER_DIR}/.k2" rc=0
   ( umask 077; printf '%s' "$v1" >"$f1"; printf '%s' "$v2" >"$f2" )
-  "$KUBECTL_BIN" -n "$NAMESPACE" create secret generic "$name" \
-    "--from-file=${k1}=${f1}" "--from-file=${k2}=${f2}" \
-    --annotation k8s-ai/install-managed=true \
-    --dry-run=client -o yaml | "$KUBECTL_BIN" apply -f - >/dev/null
-  local rc=$?
+  # 值只经 600 文件与 stdin，不上命令行；base64 在这里算好拼进 YAML。
+  managed_secret_yaml "$name" \
+    "$k1" "$(base64 <"$f1" | tr -d '\n')" \
+    "$k2" "$(base64 <"$f2" | tr -d '\n')" |
+    apply_secret_yaml || rc=$?
   rm -f "$f1" "$f2"
   return $rc
 }
@@ -1366,11 +1386,28 @@ blobs_current_backend() {
   return 0
 }
 
+# POD_PLATFORM_CONFIG：容器里平台配置的路径（平台 ConfigMap 挂在 /etc/k8s-ai）。
+# Pod 的 HOME 是 emptyDir，容器内跑 CLI 漏掉 --config 就落到一个全新空 sqlite，
+# 数出来的对象数恒为 0，闸门会形同虚设（2026-11-03 真机栽在同一个坑上）。
+POD_PLATFORM_CONFIG=/etc/k8s-ai/config.yaml
+
+# blobs_current_object_count 数「集群现在跑着的那个后端」里已有多少对象。
+# 换后端到底要不要迁移，取决于这个数，而不是取决于 driver 名字变没变。
+# 只能在 server 容器里数：那里才有平台配置，也才知道旧后端连的是 db 还是 s3。
+# 数不到（后端没就绪 / 配置读不了 / 输出格式变了）就输出空串，由调用方按最保守处理。
+blobs_current_object_count() {
+  "$KUBECTL_BIN" -n "$NAMESPACE" exec "deploy/k8s-ai-server" -- \
+    k8s-ai --config "$POD_PLATFORM_CONFIG" blobs stat 2>/dev/null |
+    awk '/^total objects=/ { v = $0; sub(/^total objects=/, "", v); sub(/[^0-9].*$/, "", v); print v; exit }' || true
+  return 0
+}
+
 # blobs_gate_backend_switch 挡住「换了对象后端但历史对象没迁」：server 只按配置装配一个内容
 # 后端，driver 一改，objects 表里仍写着旧 driver 的对象就取不到内容（历史报告下载报待迁移）。
-# 正确顺序是先 blobs migrate --to <新> 再 blobs verify --strict，确认历史对象可弃才绕行。
+# 但 driver 名字变了不等于真有东西要迁：一个对象都没写过时切走不丢任何东西，所以先数再决定——
+# 0 个直接放行；有对象（或数不出来）必须先 blobs migrate --to <新> 再 blobs verify --strict。
 blobs_gate_backend_switch() {
-  local cur
+  local cur count
   cur="$(blobs_current_backend)"
   cur="${cur//[[:space:]]/}"
   if [[ -z "$cur" ]]; then
@@ -1381,12 +1418,23 @@ blobs_gate_backend_switch() {
     ok "对象存储后端沿用 ${BLOBS_BACKEND}（未切换）"
     return 0
   fi
+  count="$(blobs_current_object_count)"
+  count="${count//[[:space:]]/}"
+  if [[ "$count" == "0" ]]; then
+    ok "对象存储后端从 ${cur} 切到 ${BLOBS_BACKEND}：旧后端 ${cur} 里 0 个对象，无需迁移"
+    return 0
+  fi
   if is_true "$ALLOW_DRIVER_MISMATCH"; then
     warn "对象存储后端从 ${cur} 切到 ${BLOBS_BACKEND}：已按要求跳过迁移闸门，objects 表里写着 ${cur} 的历史对象将读不到"
     return 0
   fi
-  die "对象存储后端要从 ${cur} 换成 ${BLOBS_BACKEND}，但历史对象还没迁移" \
-    "先 k8s-ai blobs migrate --to ${BLOBS_BACKEND} --dry-run 看清单，再去掉 --dry-run 真迁，最后 k8s-ai blobs verify --strict 退出码 0 才重跑本脚本；确认 ${cur} 里的历史对象可弃，就加 --allow-driver-mismatch 重跑"
+  # 数不出对象数就按「有历史对象」处理：宁可多挡一次，也不能让历史报告静默打不开。
+  if [[ -z "$count" ]]; then
+    die "要把对象存储后端从 ${cur} 换成 ${BLOBS_BACKEND}，但在 server 容器里数不出旧后端的对象数" \
+      "先确认后端就绪：kubectl -n ${NAMESPACE} rollout status deploy/k8s-ai-server；再手工跑 kubectl -n ${NAMESPACE} exec deploy/k8s-ai-server -- k8s-ai --config ${POD_PLATFORM_CONFIG} blobs stat 看它报什么；确认 ${cur} 里的历史对象可弃，就加 --allow-driver-mismatch 重跑本脚本"
+  fi
+  die "对象存储后端要从 ${cur} 换成 ${BLOBS_BACKEND}，但旧后端里还有 ${count} 个历史对象没迁移" \
+    "先在 server 容器里带配置跑：k8s-ai --config ${POD_PLATFORM_CONFIG} blobs migrate --to ${BLOBS_BACKEND} --dry-run 看清单，再去掉 --dry-run 真迁，最后同配置跑 blobs verify --strict 退出码 0 才重跑本脚本；确认 ${cur} 里的历史对象可弃，就加 --allow-driver-mismatch 重跑"
 }
 
 stage_preflight() {

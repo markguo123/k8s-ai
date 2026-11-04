@@ -119,6 +119,10 @@ func TestInstallScriptCoversRequiredBehavior(t *testing.T) {
 		{"dir 后端必须落 PVC", "BLOBS_BACKEND=dir 必须持久化"},
 		{"换对象后端前的迁移闸门", "blobs_gate_backend_switch"},
 		{"迁移闸门的显式绕行开关", "--allow-driver-mismatch)"},
+		// 闸门要比 driver 名字更进一步：先数旧后端还剩多少对象，空后端不该被当成数据搬迁
+		// （否则第一次接 S3 只能拿语义是「历史对象可弃」的绕行开关往前走）。
+		{"换后端闸门先数旧后端对象数", "blobs_current_object_count"},
+		{"闸门在容器里数对象走挂载配置", "POD_PLATFORM_CONFIG=/etc/k8s-ai/config.yaml"},
 		// 闸门读「集群现在跑在哪个后端」的两条命门：env 要按变量名取（按容器名过滤永远取不到，
 		// 只会退化去读恒为 db 的 ConfigMap），且四个 driver 都得显式下发 driver（否则 s3 切回 db 读不到旧后端）。
 		{"闸门按 env 变量名读 driver", `containers[*].env[?(@.name=="K8S_AI_PLATFORM_BLOBS_DRIVER")]`},
@@ -141,9 +145,29 @@ func TestInstallScriptSecretsNeverGoViaCommandLine(t *testing.T) {
 	if strings.Contains(body, "--from-literal") {
 		t.Errorf("%s 用了 --from-literal：密钥会出现在 ps 输出与 shell history 里，改走 --from-file 或 stdin", installScriptPath)
 	}
-	for _, needle := range []string{`"--from-file=${key}=/dev/stdin"`, "create_secret_from_stdin", "create secret generic"} {
+	// 密钥只能经 stdin 管道交给 kubectl：值既不在 argv，也不进渲染出来的明文清单；
+	// 落库必须走服务端 apply，客户端 apply 的 last-applied 注解会把 DSN/AK/SK 再存一份 base64。
+	for _, needle := range []string{
+		"managed_secret_yaml", "create_secret_from_stdin", "create_secret_two_keys",
+		"apply --server-side --force-conflicts",
+	} {
 		if !strings.Contains(body, needle) {
-			t.Errorf("%s 缺少密钥注入实现 %q（必须经 stdin 落 Secret）", installScriptPath, needle)
+			t.Errorf("%s 缺少密钥注入实现 %q（必须自己拼 Secret YAML，经 stdin 交服务端 apply）", installScriptPath, needle)
+		}
+	}
+	// --annotation/--annotations 是 kubectl 1.32+ 才有的 flag，1.28 直接 unknown flag 退出。
+	if n := strings.Count(body, "apply_secret_yaml"); n < 3 {
+		t.Errorf("%s 的 Secret 写入没有统一走 apply_secret_yaml（定义 + 两处调用），实际出现 %d 次", installScriptPath, n)
+	}
+	// --annotation/--annotations 是 kubectl 1.32+ 才有的 flag，1.28 直接 unknown flag 退出。
+	// Secret 已存在时走「复用」分支掩盖了它，只有空集群首装、换 AK/SK、--rotate 才炸，注解必须由脚本拼进 YAML。
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue // 解释这个坑的注释本身要提到这个 flag
+		}
+		if strings.Contains(line, "--annotation") {
+			t.Errorf("%s 在非注释行用了 --annotation(s)：低版本 kubectl 不认该 flag：%s", installScriptPath, line)
+			break
 		}
 	}
 	// DSN 与管理员口令只能进 Secret，不能渲染进任何下发清单。
