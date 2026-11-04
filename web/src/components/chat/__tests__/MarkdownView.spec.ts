@@ -12,7 +12,7 @@ import MarkdownView from '../MarkdownView.vue'
  *   2. markdown 一旦真的产出标签，代码块包壳的 DOM 顺序错误会抛 HierarchyRequestError。
  */
 const SAMPLE = [
-  '## 巡检报告',
+  '## 体检报告',
   '',
   '**时间**：2026-10-14 · `default`',
   '',

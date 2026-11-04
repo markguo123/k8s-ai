@@ -11,6 +11,7 @@ type CorrelationIndex struct {
 	Services   map[string]*ServiceInfo
 	Endpoints  map[string]*EndpointSliceInfo
 	Storage    map[string]*StorageInfo
+	Ingresses  map[string]*IngressInfo
 
 	PodsByNode      map[string][]*PodInfo
 	PodsByWorkload  map[string][]*PodInfo
@@ -20,8 +21,11 @@ type CorrelationIndex struct {
 	PVByPVC         map[string]*StorageInfo
 	SCByPV          map[string]*StorageInfo
 	SlicesByService map[string][]*EndpointSliceInfo
-	EventsByUID     map[string][]EventInfo
-	EventsByKey     map[string][]EventInfo
+	// IngressesByService 按后端引用反查 Ingress（出处 spec.rules[].http.paths[].backend）。
+	// 少了这张表，「Ingress 报 503」和「后端 Service 没有 Endpoint」会被写成两条互不相干的结论。
+	IngressesByService map[string][]*IngressInfo
+	EventsByUID        map[string][]EventInfo
+	EventsByKey        map[string][]EventInfo
 }
 
 // Namespace 按名称返回命名空间。
@@ -77,6 +81,11 @@ func (ix *CorrelationIndex) PodsOfService(key string) []*PodInfo {
 // SlicesOfService 返回属于该 Service 的 EndpointSlice。
 func (ix *CorrelationIndex) SlicesOfService(key string) []*EndpointSliceInfo {
 	return ix.SlicesByService[key]
+}
+
+// IngressesOfService 返回把该 Service 列为后端的 Ingress。
+func (ix *CorrelationIndex) IngressesOfService(key string) []*IngressInfo {
+	return ix.IngressesByService[key]
 }
 
 // ServicesOfPod 返回选中该 Pod 的 Service。

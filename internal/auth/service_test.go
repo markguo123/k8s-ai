@@ -134,7 +134,7 @@ func TestBootstrapCanonicalizesRoles(t *testing.T) {
 				t.Fatalf("%s permissions = %v, want zero", role.Name, role.Permissions)
 			}
 		case RoleOperator:
-			// 手工塞进去的 chat.write/cluster.manage 必须被抹掉，只留发起巡检权。
+			// 手工塞进去的 chat.write/cluster.manage 必须被抹掉，只留发起体检权。
 			if len(role.Permissions) != 1 || role.Permissions[0] != permission.ScanExecute {
 				t.Fatalf("%s permissions = %v, want [%s]",
 					role.Name, role.Permissions, permission.ScanExecute)

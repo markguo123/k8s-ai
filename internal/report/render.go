@@ -3,6 +3,7 @@ package report
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -42,19 +43,20 @@ func (MarkdownRenderer) Render(r *model.ScanResult) ([]byte, error) {
 	rootIdx := rootInc(r)
 	memberIdx := memberInc(r)
 	var b strings.Builder
-	// 标题与范围：目标扫描输出"命名空间巡检报告"，全集群输出"集群巡检报告"。
-	title := "Kubernetes 集群巡检报告"
+	// 标题与范围：全集群是"集群体检"，指定 namespace/Pod 是"业务体检"——报告标题、报告
+	// 列表、筛选器三处用同一套类别词，用户在页面上看到的分类名和下载下来的文件名对得上。
+	title := "Kubernetes 集群体检报告"
 	scope := "cluster"
 	switch {
 	case r.Meta.Pod != "":
-		title = fmt.Sprintf("Kubernetes Pod 巡检报告：%s/%s", r.Meta.Namespace, r.Meta.Pod)
+		title = fmt.Sprintf("Kubernetes 业务体检报告：Pod %s/%s", r.Meta.Namespace, r.Meta.Pod)
 		scope = "pod " + r.Meta.Namespace + "/" + r.Meta.Pod
 	case r.Meta.Namespace != "":
-		title = fmt.Sprintf("Kubernetes 命名空间巡检报告：%s", r.Meta.Namespace)
+		title = fmt.Sprintf("Kubernetes 业务体检报告：命名空间 %s", r.Meta.Namespace)
 		scope = "namespace " + r.Meta.Namespace
 	}
 	fmt.Fprintf(&b, "# %s\n\n", title)
-	fmt.Fprintf(&b, "## 1. 巡检概览\n\n")
+	fmt.Fprintf(&b, "## 1. 体检概览\n\n")
 	fmt.Fprintf(&b, "- Scan Scope: %s\n", scope)
 	fmt.Fprintf(&b, "- Cluster: %s\n", orDash(r.Meta.Cluster))
 	fmt.Fprintf(&b, "- ServerVersion: %s\n", r.Meta.ServerVersion)
@@ -72,14 +74,36 @@ func (MarkdownRenderer) Render(r *model.ScanResult) ([]byte, error) {
 	if r.HealthScore.CorrelatedExcluded > 0 {
 		fmt.Fprintf(&b, "已排除相关异常 %d 条（不重复扣分）。\n\n", r.HealthScore.CorrelatedExcluded)
 	}
+	if r.HealthScore.Capped {
+		fmt.Fprintf(&b, "> 评分已封顶：%s（数据完整性 %s，覆盖率 %.1f%%）\n\n",
+			orDash(r.HealthScore.CapReason), orDash(r.HealthScore.DataIntegrity), r.HealthScore.Coverage*100)
+	}
 
-	fmt.Fprintf(&b, "## 3. 异常摘要\n\n| Severity | Count |\n|---|---:|\n")
+	// v2 区块：结论 → 采集质量 → 诊断口径 → 异常摘要（v1 报告缺这些区块，整段跳过）。
+	section := 3
+	if r.Conclusion != nil {
+		fmt.Fprintf(&b, "## %d. 体检结论\n\n", section)
+		section++
+		renderConclusion(&b, r.Conclusion)
+	}
+	if r.Collection != nil {
+		fmt.Fprintf(&b, "## %d. 采集质量\n\n", section)
+		section++
+		renderCollection(&b, r.Collection)
+	}
+	if r.DiagnosisSummary != nil {
+		fmt.Fprintf(&b, "## %d. 诊断信息\n\n", section)
+		section++
+		renderDiagnosisSummary(&b, r.DiagnosisSummary, r.LLMSummary.StatusCounts, r.LLMSummary.Degradations)
+	}
+
+	fmt.Fprintf(&b, "## %d. 异常摘要\n\n| Severity | Count |\n|---|---:|\n", section)
+	section++
 	for _, sev := range severityOrder {
 		fmt.Fprintf(&b, "| %s | %d |\n", sev, countBySeverity(r.Findings, sev))
 	}
 	b.WriteString("\n")
 
-	section := 4
 	if r.History != nil {
 		fmt.Fprintf(&b, "## %d. 历史对比\n\n", section)
 		section++
@@ -139,6 +163,65 @@ func (MarkdownRenderer) Render(r *model.ScanResult) ([]byte, error) {
 			}
 			b.WriteString("\n")
 		}
+	}
+
+	// v2 区块：故障链与根因 → 资源健康 → 处置清单 → 执行阶段。
+	if len(r.Incidents) > 0 && hasRootCauseLayer(r) {
+		fmt.Fprintf(&b, "## %d. 故障链与根因分析\n\n", section)
+		section++
+		renderIncidents(&b, r)
+	}
+	if len(r.Statistics) > 0 {
+		fmt.Fprintf(&b, "## %d. 资源健康\n\n", section)
+		section++
+		fmt.Fprintf(&b, "| 资源域 | 资源数 | 异常 | 高风险及以上 | 说明 |\n|---|---:|---:|---:|---|\n")
+		for _, d := range r.Statistics {
+			fmt.Fprintf(&b, "| %s | %d | %d | %d | %s |\n", d.Domain, d.Total, d.Unhealthy, d.Critical, orDash(d.Detail))
+		}
+		b.WriteString("\n")
+	}
+	if len(r.Remediation) > 0 {
+		fmt.Fprintf(&b, "## %d. 处置建议\n\n", section)
+		section++
+		for _, kind := range []string{"investigation", "remediation", "verification"} {
+			var items []model.RemediationItem
+			for _, it := range r.Remediation {
+				if it.Kind == kind {
+					items = append(items, it)
+				}
+			}
+			if len(items) == 0 {
+				continue
+			}
+			fmt.Fprintf(&b, "### %s\n\n", remediationKindTitle(kind))
+			for _, it := range items {
+				if isCommandText(it.Text) {
+					fmt.Fprintf(&b, "- `%s`", it.Text)
+				} else {
+					fmt.Fprintf(&b, "- %s", it.Text)
+				}
+				if it.Target != "" {
+					fmt.Fprintf(&b, "　_%s_", it.Target)
+				}
+				if it.Risk != "" {
+					fmt.Fprintf(&b, "　风险 `%s`", it.Risk)
+				}
+				if it.Required {
+					b.WriteString("　**必须处理**")
+				}
+				b.WriteString("\n")
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("以上命令仅供人工确认后执行，程序不会代你执行（ADR-014）。\n\n")
+	}
+	if len(r.Stages) > 0 {
+		fmt.Fprintf(&b, "## %d. 执行阶段\n\n| 阶段 | 状态 | 耗时 | 说明 |\n|---|---|---:|---|\n", section)
+		section++
+		for _, st := range r.Stages {
+			fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", orDash(st.Title), st.Status, orDash(st.Elapsed), orDash(st.Detail))
+		}
+		b.WriteString("\n")
 	}
 
 	fmt.Fprintf(&b, "## %d. 资源汇总\n\n", section)
@@ -382,4 +465,223 @@ func memberInc(r *model.ScanResult) map[string]model.Incident {
 		}
 	}
 	return m
+}
+
+// ---- v2 报告区块渲染（需求 §7 / 方案 18）----
+
+func renderConclusion(b *strings.Builder, c *model.Conclusion) {
+	label := map[string]string{"healthy": "正常", "attention": "需关注", "critical": "严重", "unknown": "无法判定"}[c.Level]
+	fmt.Fprintf(b, "**结论：%s**　%s\n\n", orDash(label), c.Headline)
+	if c.Summary != "" {
+		fmt.Fprintf(b, "%s\n\n", c.Summary)
+	}
+	if len(c.TopRisks) > 0 {
+		b.WriteString("主要风险：\n\n")
+		for _, s := range c.TopRisks {
+			fmt.Fprintf(b, "- %s\n", s)
+		}
+		b.WriteString("\n")
+	}
+	if len(c.Priorities) > 0 {
+		b.WriteString("优先处置：\n\n")
+		for i, s := range c.Priorities {
+			fmt.Fprintf(b, "%d. %s\n", i+1, s)
+		}
+		b.WriteString("\n")
+	}
+	if len(c.DataCaveats) > 0 {
+		b.WriteString("结论限制（数据缺口）：\n\n")
+		for _, s := range c.DataCaveats {
+			fmt.Fprintf(b, "- ⚠️ %s\n", s)
+		}
+		b.WriteString("\n")
+	}
+}
+
+func renderCollection(b *strings.Builder, q *model.CollectionQuality) {
+	label := map[string]string{
+		model.IntegrityComplete: "完整", model.IntegrityPartial: "部分缺失", model.IntegrityInsufficient: "关键数据不足",
+	}[q.Integrity]
+	fmt.Fprintf(b, "- 完整性：**%s**（%s）\n", orDash(label), q.Integrity)
+	fmt.Fprintf(b, "- 采集项：%d 计划 / %d 成功 / %d 失败 / %d 跳过\n", q.Planned, q.Collected, q.Failed, q.Skipped)
+	fmt.Fprintf(b, "- 采集覆盖率：%.1f%%\n\n", q.Coverage*100)
+	if len(q.FailedKinds) > 0 {
+		fmt.Fprintf(b, "- 采集失败类型：%s\n\n", strings.Join(q.FailedKinds, "、"))
+	}
+	if len(q.SkippedKinds) > 0 {
+		fmt.Fprintf(b, "- 本次跳过类型：%s（档位配置，不代表数据正常）\n\n", strings.Join(q.SkippedKinds, "、"))
+	}
+	if len(q.CriticalGaps) > 0 {
+		b.WriteString("关键缺口：\n\n")
+		for _, s := range q.CriticalGaps {
+			fmt.Fprintf(b, "- ❌ %s\n", s)
+		}
+		b.WriteString("\n")
+	}
+	if len(q.MissingData) > 0 {
+		b.WriteString("数据缺口：\n\n")
+		for _, s := range q.MissingData {
+			fmt.Fprintf(b, "- %s\n", s)
+		}
+		b.WriteString("\n")
+	}
+	if len(q.Errors) > 0 {
+		b.WriteString("采集错误：\n\n")
+		for _, s := range q.Errors {
+			fmt.Fprintf(b, "- %s\n", s)
+		}
+		b.WriteString("\n")
+	}
+}
+
+func renderDiagnosisSummary(b *strings.Builder, d *model.DiagnosisSummary, statusCounts map[string]int, degradations []model.LLMDegradation) {
+	mode := map[string]string{
+		"rule_only":    "仅确定性诊断（未调用 LLM）",
+		"llm_enhanced": "确定性诊断 + LLM 增强",
+		"llm_degraded": "LLM 未生效，结论均来自确定性诊断",
+	}[d.Mode]
+	fmt.Fprintf(b, "- 诊断口径：**%s**\n\n", orDash(mode))
+	fmt.Fprintf(b, "- 规则 Finding：%d　确定性诊断：%d（确认 %d / 疑似 %d / 未定位 %d）\n",
+		d.RuleFindings, d.Deterministic, d.Confirmed, d.Probable, d.Unknown)
+	if d.LLMCalls > 0 || d.LLMSucceeded > 0 || d.LLMFailed > 0 {
+		fmt.Fprintf(b, "- LLM 调用：%d　成功 %d　失败 %d　降级 %d　校验退回 %d　混合 %d\n\n",
+			d.LLMCalls, d.LLMSucceeded, d.LLMFailed, d.LLMDegraded, d.LLMRejected, d.Hybrid)
+	}
+	if len(statusCounts) > 0 {
+		keys := make([]string, 0, len(statusCounts))
+		for k := range statusCounts {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		b.WriteString("- LLM 状态分布：\n\n")
+		for _, k := range keys {
+			fmt.Fprintf(b, "  - `%s`：%d\n", k, statusCounts[k])
+		}
+		b.WriteString("\n")
+	}
+	if len(degradations) > 0 {
+		b.WriteString("- 降级明细：\n\n")
+		for _, dg := range degradations {
+			kept := ""
+			if dg.KeptDeterministic {
+				kept = "（已保留确定性结论）"
+			}
+			fmt.Fprintf(b, "  - %s `%s`：%s%s\n", orDash(dg.IncidentID), dg.Status, orDash(dg.Reason), kept)
+		}
+		b.WriteString("\n")
+	}
+}
+
+// hasRootCauseLayer 判断报告是否带四期 P9 的根因层（v1 报告没有，整段跳过）。
+func hasRootCauseLayer(r *model.ScanResult) bool {
+	for _, inc := range r.Incidents {
+		if inc.RootCauseStatus != "" || len(inc.CausalEdges) > 0 || len(inc.ImpactChain) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func renderIncidents(b *strings.Builder, r *model.ScanResult) {
+	diagByIncident := map[string]model.Diagnosis{}
+	for _, d := range r.Diagnoses {
+		if d.IncidentID != "" {
+			diagByIncident[d.IncidentID] = d
+		}
+	}
+	byID := map[string]model.Finding{}
+	for _, f := range r.Findings {
+		byID[f.ID] = f
+	}
+	for i, inc := range r.Incidents {
+		fmt.Fprintf(b, "### 故障链 %d：%s（%s）\n\n", i+1, orDash(inc.Title), inc.Severity)
+		fmt.Fprintf(b, "- 根因状态：**%s**", orDash(inc.RootCauseStatus))
+		if inc.RootCauseRule != "" {
+			fmt.Fprintf(b, "　诊断器 `%s`", inc.RootCauseRule)
+		}
+		if inc.RootCauseMethod != "" {
+			fmt.Fprintf(b, "　来源 `%s`", inc.RootCauseMethod)
+		}
+		if inc.Confidence > 0 {
+			fmt.Fprintf(b, "　置信度 %.2f", inc.Confidence)
+		}
+		b.WriteString("\n")
+		if inc.RootCause != "" {
+			fmt.Fprintf(b, "- 根因：%s\n", inc.RootCause)
+		}
+		if inc.ConfidenceBasis != "" {
+			fmt.Fprintf(b, "- 可信度依据：%s\n", inc.ConfidenceBasis)
+		}
+		fmt.Fprintf(b, "- 根 Finding：%s `%s/%s`（%s）\n", inc.Root.ID, inc.Root.Resource.Kind, inc.Root.Resource.Namespace+"/"+inc.Root.Resource.Name, inc.Root.Rule)
+		if len(inc.ImpactChain) > 0 {
+			fmt.Fprintf(b, "- 影响链：%s\n", strings.Join(inc.ImpactChain, " → "))
+		}
+		if len(inc.EvidenceRefs) > 0 {
+			fmt.Fprintf(b, "- 证据引用：%s\n", strings.Join(inc.EvidenceRefs, " "))
+		}
+		if len(inc.CausalEdges) > 0 {
+			b.WriteString("\n因果边（均有资源关系出处）：\n\n")
+			for _, e := range inc.CausalEdges {
+				fmt.Fprintf(b, "- `%s` → `%s`　`%s`　%s（%s）\n",
+					e.SourceFinding, e.TargetFinding, e.RelationType, e.Mechanism, e.Confidence)
+				if len(e.EvidenceRefs) > 0 {
+					fmt.Fprintf(b, "  - 依据证据：%s\n", strings.Join(e.EvidenceRefs, " "))
+				}
+			}
+			b.WriteString("\n")
+		}
+		if len(inc.Members) > 0 {
+			b.WriteString("派生症状：\n\n")
+			for _, m := range inc.Members {
+				fmt.Fprintf(b, "- %s %s/%s：%s（%s）\n", severityIcon(m.Severity), m.Resource.Namespace, m.Resource.Name, m.Title, m.Rule)
+			}
+			b.WriteString("\n")
+		}
+		if len(inc.AlternativeCauses) > 0 {
+			b.WriteString("待排除的其他可能：\n\n")
+			for _, s := range inc.AlternativeCauses {
+				fmt.Fprintf(b, "- %s\n", s)
+			}
+			b.WriteString("\n")
+		}
+		if len(inc.EvidenceGaps) > 0 {
+			b.WriteString("证据缺口：\n\n")
+			for _, s := range inc.EvidenceGaps {
+				fmt.Fprintf(b, "- ⚠️ %s\n", s)
+			}
+			b.WriteString("\n")
+		}
+		if d, ok := diagByIncident[inc.ID]; ok {
+			fmt.Fprintf(b, "- 诊断来源：`%s`　状态：`%s`\n\n", orDash(d.Source), orDash(d.Status))
+			if d.Validation != nil && !d.Validation.Passed {
+				b.WriteString("- LLM 结论未通过校验，已退回确定性结论：\n\n")
+				for _, s := range d.Validation.Issues {
+					fmt.Fprintf(b, "  - %s\n", s)
+				}
+				b.WriteString("\n")
+			}
+			renderDiagnosis(b, d)
+		}
+		_ = byID
+	}
+}
+
+func remediationKindTitle(kind string) string {
+	switch kind {
+	case "remediation":
+		return "修复动作（需人工确认）"
+	case "verification":
+		return "验证方式"
+	default:
+		return "排查步骤"
+	}
+}
+
+func isCommandText(s string) bool {
+	for _, p := range []string{"kubectl", "helm", "crictl", "journalctl", "systemctl", "curl ", "openssl", "df ", "ls "} {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
 }

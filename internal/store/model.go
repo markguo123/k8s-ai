@@ -206,7 +206,7 @@ type Attachment struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-// Report 是一次巡检渲染产物的落点登记（方案 15 §6.2）。Kind 取 latest-md /
+// Report 是一次体检渲染产物的落点登记（方案 15 §6.2）。Kind 取 latest-md /
 // latest-json / daily-md，一个渲染产物一行，kind 不唯一：同 scan 重跑产生新对象新行，
 // 旧行仍是有效历史。ScanID 允许为空（CLI 本地扫描不入表）。
 //
@@ -225,7 +225,7 @@ type Report struct {
 	CreatedBy string    `json:"createdBy,omitempty"`
 	Available bool      `json:"available"`
 	CreatedAt time.Time `json:"createdAt"`
-	// ScopeKind / ScopeValue 是巡检范围（cluster|namespace|pod 与取值，P8.13）。
+	// ScopeKind / ScopeValue 是体检范围（cluster|namespace|pod 与取值，P8.13）。
 	// 空串表示 v8 之前入库的存量报告，页面显示「未记录」；两者只用于展示与过滤。
 	ScopeKind  string `json:"scopeKind,omitempty"`
 	ScopeValue string `json:"scopeValue,omitempty"`

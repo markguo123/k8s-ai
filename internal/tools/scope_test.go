@@ -30,7 +30,7 @@ func TestAccessScopeDeniesClusterAndForeignResources(t *testing.T) {
 		{"nodes", "get_nodes", `{}`, "集群级资源读取"},
 		{"foreign namespace", "get_pods", `{"namespace":"default"}`, `namespace "default"`},
 		{"all namespaces", "get_pods", `{}`, "显式 namespace"},
-		{"full scan", "scan_cluster", `{}`, "全集群巡检"},
+		{"full scan", "scan_cluster", `{}`, "集群体检"},
 		{"resource kind", "get_resources", `{"kind":"nodes"}`, "集群级资源读取"},
 		{"kubectl nodes", "kubectl", `{"command":"kubectl get nodes"}`, "集群级资源读取"},
 		{"kubectl shell", "kubectl", `{"command":"kubectl get pods -n mysql-dev | head"}`, "shell 构造"},

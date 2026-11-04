@@ -95,7 +95,7 @@ func (r VerifyResult) Inconsistent() int {
 }
 
 // BlobVerifier 是对账器。和 BlobGC 一样只依赖内容后端 + 元数据登记表两个既有接口，
-// 因此 CLI、恢复脚本、将来的定时巡检都能原样复用同一套判定。
+// 因此 CLI、恢复脚本、将来的定时体检都能原样复用同一套判定。
 type BlobVerifier struct {
 	backend objectstore.Store
 	objects store.ObjectStore

@@ -144,7 +144,7 @@ func (s AccessScope) Check(toolName string, input json.RawMessage) error {
 	if toolName == "scan_cluster" {
 		ns := strings.TrimSpace(stringArg(args, "namespace"))
 		if ns == "" {
-			return s.deny("全集群巡检权限")
+			return s.deny("集群体检权限")
 		}
 		return s.checkNamespace(ns)
 	}

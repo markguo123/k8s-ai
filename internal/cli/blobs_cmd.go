@@ -31,7 +31,7 @@ var errBlobBackendUnavailable = errors.New("object storage backend is not usable
 // newBlobsCmd 聚合对象存储的运维入口。
 //
 // 它和 k8s-ai db 一样属「显式运维命令」：需要平台库，也允许 driver=s3。§16 的 CLI 零影响
-// 约束管的是巡检链路（scan/chat）不得因为一个桶起不来，不是禁止运维工具碰桶——迁移动词
+// 约束管的是体检链路（scan/chat）不得因为一个桶起不来，不是禁止运维工具碰桶——迁移动词
 // 天生要 s3 凭据（§10.1）。
 func newBlobsCmd(deps Dependencies) *cobra.Command {
 	cmd := &cobra.Command{

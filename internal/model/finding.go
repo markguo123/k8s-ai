@@ -26,10 +26,10 @@ type Finding struct {
 	Evidence   []Evidence    `json:"evidence"`
 	Related    []ResourceRef `json:"related,omitempty"`
 	Correlated bool          `json:"correlated,omitempty"`
-	FirstSeen  string        `json:"firstSeen,omitempty"` // 1.2 trend
-	LastSeen   string        `json:"lastSeen,omitempty"`  // 1.2 trend
-	Doc        string        `json:"doc,omitempty"`       // P7.7 字段文档（--with-doc）
-	Category   string        `json:"category,omitempty"`  // P7.8 问题域，报告聚合（引擎注入）
-	Kind       string        `json:"kind,omitempty"`      // P7.8 关联资源 Kind，报告聚合（引擎注入）
+	FirstSeen  string        `json:"firstSeen,omitempty"`  // 1.2 trend
+	LastSeen   string        `json:"lastSeen,omitempty"`   // 1.2 trend
+	Doc        string        `json:"doc,omitempty"`        // P7.7 字段文档（--with-doc）
+	Category   string        `json:"category,omitempty"`   // P7.8 问题域，报告聚合（引擎注入）
+	Kind       string        `json:"kind,omitempty"`       // P7.8 关联资源 Kind，报告聚合（引擎注入）
 	Suggestion bool          `json:"suggestion,omitempty"` // P7.8 是否建议（suggestion）类规则
 }

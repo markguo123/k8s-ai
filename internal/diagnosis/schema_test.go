@@ -62,7 +62,7 @@ func TestBuildDiagnosisValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := buildDiagnosis(testFinding(), out)
+	d := buildDiagnosis(testFinding(), out, nil)
 	// Evidence ID：E1 保留，E99 丢弃。
 	if len(d.EvidenceChain) != 1 || d.EvidenceChain[0] != "E1" {
 		t.Fatalf("evidence chain = %v", d.EvidenceChain)
@@ -247,7 +247,7 @@ func TestSchemaNewFields(t *testing.T) {
 			t.Errorf("risk 变体 %q = %q, want %q", r.raw, out.Risk, r.want)
 		}
 	}
-	d := buildDiagnosis(testFinding(), out)
+	d := buildDiagnosis(testFinding(), out, nil)
 	if d.ConfidenceLevel != "HIGH_CONFIDENCE" || d.CausalChain != "c" || d.Uncertainty != "u" {
 		t.Fatalf("Diagnosis 映射异常: %+v", d)
 	}

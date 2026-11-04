@@ -36,7 +36,7 @@ const healthCheckProtocol = `
 3. 命名空间：get_resources kind=namespaces
 4. 异常 Pod：get_pods（phase 非 Running/Succeeded 的逐个说明）
 5. 系统组件：scan_cluster 的 components 视图（CoreDNS/kube-proxy/CNI/CSI 等）
-6. 规则巡检：scan_cluster（问题清单 + 健康评分 + 历史对比）
+6. 规则体检：scan_cluster（问题清单 + 健康评分 + 历史对比）
 7. 警告事件：get_events（type=Warning，按 namespace 归类）
 最终输出结构：整体状态 → 节点 → 资源使用 → 命名空间 → Pod → 系统组件 → 警告事件 → 健康评分与整体评估 → 建议。
 健康评分：给出两个数值评分——规则健康评分（scan_cluster 返回，0-100，程序计算）与你的综合健康评分（0-100，基于节点/资源使用/系统组件/Pod/警告事件综合判断），并解释两者差异（如：规则扣分多但实际影响小，或规则未覆盖资源压力）；评分偏低时列出主要扣分项，不要只报一个数字。
@@ -79,7 +79,7 @@ const toolSelectionProtocol = `
 
 ### 第四层：集群全景（整个集群有没有问题 / 健康检查）
 —— 对应"检查集群健康 / 集群状态 / 集群有没有问题"。
-按 健康检查协议（healthCheckProtocol）的 7 个维度调查，其中规则巡检用 **scan_cluster()**（全量，无 namespace），
+按 健康检查协议（healthCheckProtocol）的 7 个维度调查，其中规则体检用 **scan_cluster()**（全量，无 namespace），
 组件状态/事件/资源压力按各自结构化工具。
 
 ### 第五层：创建/部署/新建意图（创建/新建/部署/建库/上线/Nginx/MySQL/XXX 服务等）

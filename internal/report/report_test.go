@@ -74,7 +74,7 @@ func TestMarkdownRender(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(out)
-	for _, want := range []string{"# Kubernetes 集群巡检报告", "## 2. 健康评分", "## 3. 异常摘要", "容器反复崩溃", "E1", "系统组件", "CoreDNS", "Root Cause", "修复方案", "风险：MEDIUM", "█"} {
+	for _, want := range []string{"# Kubernetes 集群体检报告", "## 2. 健康评分", "## 3. 异常摘要", "容器反复崩溃", "E1", "系统组件", "CoreDNS", "Root Cause", "修复方案", "风险：MEDIUM", "█"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("markdown 缺少 %q", want)
 		}
@@ -127,7 +127,7 @@ func TestWriterModes(t *testing.T) {
 	}
 }
 
-// TestMarkdownRenderTargeted 验证目标扫描输出"命名空间巡检报告"且资源汇总不含集群级资源。
+// TestMarkdownRenderTargeted 验证目标扫描输出"业务体检报告"且资源汇总不含集群级资源。
 func TestMarkdownRenderTargeted(t *testing.T) {
 	r := testResult()
 	r.Meta.Namespace = "mysql-dev"
@@ -136,7 +136,7 @@ func TestMarkdownRenderTargeted(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(out)
-	for _, want := range []string{"Kubernetes 命名空间巡检报告：mysql-dev", "Scan Scope: namespace mysql-dev", "集群级资源，不随 namespace 过滤"} {
+	for _, want := range []string{"Kubernetes 业务体检报告：命名空间 mysql-dev", "Scan Scope: namespace mysql-dev", "集群级资源，不随 namespace 过滤"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("目标扫描报告缺少 %q", want)
 		}
@@ -146,7 +146,7 @@ func TestMarkdownRenderTargeted(t *testing.T) {
 	}
 }
 
-// TestMarkdownRenderPod 验证单 Pod 扫描输出 Pod 巡检报告。
+// TestMarkdownRenderPod 验证单 Pod 扫描输出业务体检报告（Pod 范围）。
 func TestMarkdownRenderPod(t *testing.T) {
 	r := testResult()
 	r.Meta.Namespace = "mysql-dev"
@@ -156,7 +156,7 @@ func TestMarkdownRenderPod(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(out)
-	for _, want := range []string{"Kubernetes Pod 巡检报告：mysql-dev/db-0", "Scan Scope: pod mysql-dev/db-0", "- Pod: 1（mysql-dev/db-0）"} {
+	for _, want := range []string{"Kubernetes 业务体检报告：Pod mysql-dev/db-0", "Scan Scope: pod mysql-dev/db-0", "- Pod: 1（mysql-dev/db-0）"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("Pod 报告缺少 %q", want)
 		}

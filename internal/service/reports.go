@@ -41,7 +41,7 @@ type ReportView struct {
 	CreatedBy string    `json:"createdBy"`
 	Available bool      `json:"available"`
 	CreatedAt time.Time `json:"createdAt"`
-	// ScopeKind / ScopeValue 是巡检范围（P8.13）：空 kind 表示 v8 之前的存量报告或 CLI 产物，
+	// ScopeKind / ScopeValue 是体检范围（P8.13）：空 kind 表示 v8 之前的存量报告或 CLI 产物，
 	// 页面显示「未记录」。它们不参与鉴权，读得到就读得到，与 scope 无关。
 	ScopeKind  string `json:"scopeKind,omitempty"`
 	ScopeValue string `json:"scopeValue,omitempty"`
@@ -54,15 +54,18 @@ type ReportScope struct {
 	ViewerID string
 	// Admin 表示角色含全域权限（*），可跨用户读取（跨 owner 由 server 层落审计）。
 	Admin bool
-	// AllSystemClusters / SystemClusterIDs 决定能看到哪些系统巡检报告。
+	// AllSystemClusters / SystemClusterIDs 决定能看到哪些系统体检报告。
 	AllSystemClusters  bool
 	SystemClusterIDs   []string
 	ClusterID          string
 	Kind               string
-	// ScanID 按扫描任务反查产物（P8.13）：页面发起巡检后靠它找回自己的报告。
+	// ScanID 按扫描任务反查产物（P8.13）：页面发起体检后靠它找回自己的报告。
 	// 它是过滤条件而不是授权条件——归属判定仍然只看 owner 与集群授权，扫描 ID 猜中了
 	// 也读不到别人的报告。
 	ScanID string
+	// ScopeCategory 是报告类别过滤（P9.13，store.ScopeCategory* 三个取值之一，空 = 全部）。
+	// 与 ScanID 同类：过滤条件，不是授权条件。
+	ScopeCategory string
 }
 
 // ReportPlatform 是报告的读取面（P8.5）：归属判定 + 对象内容取回。
@@ -94,6 +97,7 @@ func (p *ReportPlatform) List(ctx context.Context, scope ReportScope, limit, off
 		ClusterID:         scope.ClusterID,
 		Kind:              scope.Kind,
 		ScanID:            scope.ScanID,
+		ScopeCategory:     scope.ScopeCategory,
 		Limit:             limit,
 		Offset:            offset,
 	})
@@ -105,6 +109,52 @@ func (p *ReportPlatform) List(ctx context.Context, scope ReportScope, limit, off
 		out = append(out, toReportView(r))
 	}
 	return out, total, nil
+}
+
+// ReportOverview 是报告列表顶部的总览（P9.13）。
+//
+// 口径是「你看得见的全部报告」，不是「当前这一页」：列表分页时页码只是一个浏览位置，
+// 拿它当信息展示没有任何价值，而「一共多少份、各类几份」才是用户挑报告前想知道的事。
+// 统计与列表共用同一条归属谓词，所以这里的数字永远和点进去的行数一致。
+type ReportOverview struct {
+	Total    int64 `json:"total"`
+	Cluster  int64 `json:"cluster"`
+	Business int64 `json:"business"`
+	Other    int64 `json:"other"`
+	Markdown int64 `json:"markdown"`
+	JSON     int64 `json:"json"`
+	// Available 是内容仍可取回的行数；总数减它就是「列表里还剩几条其实已经读不到」。
+	Available int64 `json:"available"`
+}
+
+// Overview 统计可见报告的分布。过滤条件与列表一致：用户筛了某类，总览就跟着变，
+// 否则「类别筛选」和「总览数字」会在同一屏里互相打脸。
+func (p *ReportPlatform) Overview(ctx context.Context, scope ReportScope) (ReportOverview, error) {
+	if p == nil || p.st == nil {
+		return ReportOverview{}, fmt.Errorf("overview reports: report platform not wired")
+	}
+	stats, err := p.st.Reports().Stats(ctx, store.ReportQuery{
+		ViewerID:          scope.ViewerID,
+		Admin:             scope.Admin,
+		AllSystemClusters: scope.AllSystemClusters,
+		SystemClusterIDs:  scope.SystemClusterIDs,
+		ClusterID:         scope.ClusterID,
+		Kind:              scope.Kind,
+		ScanID:            scope.ScanID,
+		ScopeCategory:     scope.ScopeCategory,
+	})
+	if err != nil {
+		return ReportOverview{}, err
+	}
+	return ReportOverview{
+		Total:     stats.Total,
+		Cluster:   stats.Cluster,
+		Business:  stats.Business,
+		Other:     stats.Other,
+		Markdown:  stats.Markdown,
+		JSON:      stats.JSON,
+		Available: stats.Available,
+	}, nil
 }
 
 // OpenContent 打开报告正文，调用方必须 Close 返回的流。
@@ -351,7 +401,7 @@ func reportVisible(r *store.Report, scope ReportScope) bool {
 	if scope.ViewerID != "" && r.CreatedBy == scope.ViewerID {
 		return true
 	}
-	// 系统巡检报告按集群授权放行；cluster_id 为空的系统报告只 admin 可读（无授权对象可比对）。
+	// 系统体检报告按集群授权放行；cluster_id 为空的系统报告只 admin 可读（无授权对象可比对）。
 	if r.CreatedBy != objectstore.SystemActor || r.ClusterID == "" {
 		return false
 	}

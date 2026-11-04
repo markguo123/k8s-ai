@@ -123,7 +123,7 @@ func TestReportPlatformOtherUsersReportLooksAbsent(t *testing.T) {
 	}
 }
 
-// TestReportPlatformSystemReportsFollowClusterGrants 覆盖系统巡检报告的可见性策略：
+// TestReportPlatformSystemReportsFollowClusterGrants 覆盖系统体检报告的可见性策略：
 // 按集群授权放行；未绑定集群的一份都不给（没有可比对的授权对象时默认拒绝）。
 func TestReportPlatformSystemReportsFollowClusterGrants(t *testing.T) {
 	ctx := context.Background()

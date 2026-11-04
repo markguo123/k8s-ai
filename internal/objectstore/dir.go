@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	// dirPerm/dirFilePerm 收紧到组可读：根目录默认落在主机盘或 PVC 上，装的是巡检报告
+	// dirPerm/dirFilePerm 收紧到组可读：根目录默认落在主机盘或 PVC 上，装的是体检报告
 	// 与附件，不需要对外全局可读。
 	dirPerm     = 0o750
 	dirFilePerm = 0o640

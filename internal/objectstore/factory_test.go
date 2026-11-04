@@ -91,7 +91,7 @@ func TestFactoryRejectsBadConfig(t *testing.T) {
 	})
 }
 
-// TestFactoryCLIRefusesSharedBackends 锁 CLI 白名单：一次离线巡检不该因为「没准备好
+// TestFactoryCLIRefusesSharedBackends 锁 CLI 白名单：一次离线体检不该因为「没准备好
 // MySQL 或桶」而失败，也不该悄悄写进一个只有 server 才读得到的地方（§16）。
 func TestFactoryCLIRefusesSharedBackends(t *testing.T) {
 	for _, driver := range []string{"db", "s3"} {

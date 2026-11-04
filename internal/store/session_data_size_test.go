@@ -72,7 +72,7 @@ func TestMigrateV5SkippedOnSQLite(t *testing.T) {
 	}
 }
 
-// TestSessionDataOverMySQLTextLimitRoundTrips 复现真机事故的数据体量：一次全集群巡检
+// TestSessionDataOverMySQLTextLimitRoundTrips 复现真机事故的数据体量：一次集群体检
 // 把大量工具结果写进会话消息，序列化后远超 MySQL TEXT 的 64KB 上限。Store 必须整条
 // 写入、整条读回——既不能保存失败（当时整轮对话记录丢失），也不能静默截断。
 func TestSessionDataOverMySQLTextLimitRoundTrips(t *testing.T) {
@@ -80,15 +80,15 @@ func TestSessionDataOverMySQLTextLimitRoundTrips(t *testing.T) {
 	st := newTestStore(t)
 	db := st.(*dbStore)
 
-	// 模拟巡检输出：约 200KB 的 Pod 清单，形态接近真实 kubectl/scan 结果。
+	// 模拟体检输出：约 200KB 的 Pod 清单，形态接近真实 kubectl/scan 结果。
 	var b strings.Builder
 	for i := 0; b.Len() < 200*1024; i++ {
 		b.WriteString("namespace-" + strconv.Itoa(i%47) + "/pod-" + strconv.Itoa(i) + " 1/1 Running 0 3d\n")
 	}
 	bulk := b.String()
 
-	sess := &session.Session{ID: "big-scan-1", UserID: "u1", Name: "全集群巡检"}
-	sess.AddMessage(session.Message{Role: "user", Type: "text", Content: "巡检整个集群"})
+	sess := &session.Session{ID: "big-scan-1", UserID: "u1", Name: "集群体检"}
+	sess.AddMessage(session.Message{Role: "user", Type: "text", Content: "体检整个集群"})
 	sess.AddMessage(session.Message{
 		Role: "tool", Type: "tool-call-response", Name: "scan_cluster",
 		Content: bulk, Data: map[string]any{"report": bulk},

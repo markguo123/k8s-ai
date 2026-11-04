@@ -12,7 +12,7 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/store"
 )
 
-// 页面发起巡检的三档预设（方案 17 §5）。
+// 页面发起体检的三档预设（方案 17 §5）。
 //
 // 它们是**行为预设**而不是现场调参项，所以锁在代码常量表里并进测试，不进配置中心：
 // 一旦变成配置键，「快速体检为什么这次跑了 5 分钟」就没有确定答案了。
@@ -22,7 +22,7 @@ const (
 	scanPresetDeep     = "deep"
 )
 
-// defaultScanPreset 是缺省档位：标准巡检。
+// defaultScanPreset 是缺省档位：标准体检。
 const defaultScanPreset = scanPresetStandard
 
 // scanPresetSpec 是一个档位对 model.ScanOptions 的映射。
@@ -55,6 +55,9 @@ type scanRequest struct {
 	Pod       string `json:"pod"`
 	Preset    string `json:"preset"`
 	ClusterID string `json:"clusterId"`
+	// Format 是报告产物格式（P9.13）：json | markdown，空 = json。一次体检只留选中的
+	// 那一份，不再同时归档两份——报告列表里「一次体检两份产物」是用户反馈的第一现场。
+	Format string `json:"format"`
 }
 
 // scanGateError 是发起闸门拒绝时的 HTTP 映射（状态码 + 错误码 + 给用户看的文案）。
@@ -75,7 +78,7 @@ func scanInvalid(message string) *scanGateError {
 }
 
 // scanBaselineFunc 提供连接类与模型类参数的基线（由组合根构造，见 cli/server.go：
-// 配置中心优先、静态文件兜底）。每次发起现取，配置中心改完下一次巡检即生效。
+// 配置中心优先、静态文件兜底）。每次发起现取，配置中心改完下一次体检即生效。
 type scanBaselineFunc func(ctx context.Context) model.ScanOptions
 
 // WithScanBaseline 注入连接类参数基线（P8.13）。链式可选；未注入时用零值
@@ -92,7 +95,7 @@ func (s *Server) baselineOptions(ctx context.Context) model.ScanOptions {
 	return s.scanBaseline(ctx)
 }
 
-// handleCreateScan 发起一次页面巡检：白名单校验 → 授权闸门 → 档位映射 → 异步任务。
+// handleCreateScan 发起一次页面体检：白名单校验 → 授权闸门 → 档位映射 → 异步任务。
 //
 // 归属（谁触发的、扫的是什么范围）一律由服务端决定，不接受请求体值：请求方若能指定
 // actor，就能把报告挂到别人名下；若能指定 cluster_id，就能借「系统报告按集群授权可见」
@@ -135,17 +138,27 @@ func (s *Server) handleCreateScan(w http.ResponseWriter, r *http.Request) {
 	}
 	s.jobs[job.ID] = job
 	s.running = true
-	s.mu.Unlock()
+	// 取消函数在同一个锁里登记（P9.11）：任务对 HTTP 可见的那一刻起就能被停止，
+	// 不存在「刚点发起、正好停不掉」的窗口。
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	s.registerScanCancelLocked(job.ID, cancelRun)
 
 	// ScanID 依赖任务 ID，只能在任务登记后回填（Attribution 是值类型，直接整体赋值）。
 	opts.Attribution.ScanID = job.ID
 
+	// 起跑状态在锁内写，响应体也在锁内取副本：goroutine 一起来就会通过进度回调改
+	// job.Stages，把活对象直接交给 json.Marshal 是拿响应体去赌没人同时在写。
 	started := time.Now().UTC()
 	job.Status = StatusRunning
 	job.StartedAt = &started
-	go s.runJob(job, opts)
+	accepted := *job
+	s.mu.Unlock()
 
-	writeOK(w, r, http.StatusAccepted, job)
+	// 阶段账回调：扫描跑到哪一步，页面上一次轮询就能看到，不用等整次体检结束。
+	opts.Progress = scanStageSink{srv: s, job: job}
+	go s.runJob(job, runCtx, opts)
+
+	writeOK(w, r, http.StatusAccepted, accepted)
 }
 
 // buildScanOptions 把白名单请求翻译成内部 ScanOptions：范围闸门 + 档位映射 + 连接基线。
@@ -160,6 +173,12 @@ func (s *Server) buildScanOptions(r *http.Request, u *store.User, role *store.Ro
 	if !ok {
 		return model.ScanOptions{}, scanInvalid("unknown preset: " + presetName + " (quick|standard|deep)")
 	}
+	// 产物格式在授权判定之前校验：格式非法是请求写错了，不该先把「你有没有这个命名空间」
+	// 的结论暴露给一个连参数都没配对齐的请求。
+	artifact, gateErr := scanArtifactOf(req.Format)
+	if gateErr != nil {
+		return model.ScanOptions{}, gateErr
+	}
 
 	scope := strings.TrimSpace(req.Scope)
 	ns := strings.TrimSpace(req.Namespace)
@@ -167,7 +186,7 @@ func (s *Server) buildScanOptions(r *http.Request, u *store.User, role *store.Ro
 	if req.ClusterID != "" {
 		// 多集群本期只留口不实现连通（方案 17 §6）：宁可现在拒绝，也不能让请求体里一个
 		// clusterId 把扫描打到平台之外的集群上。
-		return model.ScanOptions{}, scanInvalid("该集群尚未接入扫描：本期巡检目标固定为平台自身集群（clusterId 必须为空）")
+		return model.ScanOptions{}, scanInvalid("该集群尚未接入扫描：本期体检目标固定为平台自身集群（clusterId 必须为空）")
 	}
 
 	scopeKind, scopeValue, targetNS, gateErr := s.resolveScanScope(r.Context(), u, role, scope, ns, pod)
@@ -179,8 +198,8 @@ func (s *Server) buildScanOptions(r *http.Request, u *store.User, role *store.Ro
 	opts.Namespace = targetNS
 	opts.PodTarget = pod
 	opts.FailOn = ""
-	// 页面巡检不写容器本地副本：页面下载走对象存储，容器里再落一份文件没有消费方，
-	// 还会把「PVC 没挂上」这类部署问题变成整次巡检失败（Run 写本地副本失败是硬错误）。
+	// 页面体检不写容器本地副本：页面下载走对象存储，容器里再落一份文件没有消费方，
+	// 还会把「PVC 没挂上」这类部署问题变成整次体检失败（Run 写本地副本失败是硬错误）。
 	// CLI 的 report.directory 语义一字未动，见方案 17 §7.3。
 	opts.ReportMode = ""
 	opts.ReportDirectory = ""
@@ -190,11 +209,30 @@ func (s *Server) buildScanOptions(r *http.Request, u *store.User, role *store.Ro
 		Actor:      u.ID,
 		ScopeKind:  scopeKind,
 		ScopeValue: scopeValue,
+		// 页面一次体检只留一份产物（P9.13）。opts.ReportFormat 不动：它管的是
+		// report.directory 的本地落盘格式，而页面体检的 ReportMode 为空、根本不落盘。
+		ReportArtifact: artifact,
 	}
 	return opts, nil
 }
 
-// resolveScanScope 校验巡检范围并给出实际扫描的 namespace（方案 17 §4）。
+// scanArtifactOf 校验页面请求的报告格式（P9.13）。
+//
+// 缺省是 JSON 而不是 Markdown：详情页的故障链、证据、质量账全部从结构化报告渲染，
+// 只归档 Markdown 时页面只能显示「无法展开」，等于把 P9 的能力关掉。需要 Markdown 归档的
+// 人显式选它，或者在详情页按需导出（前端从结构化报告生成，不额外占一份归档）。
+func scanArtifactOf(raw string) (string, *scanGateError) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "json":
+		return model.ReportArtifactJSON, nil
+	case "markdown", "md":
+		return model.ReportArtifactMarkdown, nil
+	default:
+		return "", scanInvalid(`format 只能是 "json" 或 "markdown"`)
+	}
+}
+
+// resolveScanScope 校验体检范围并给出实际扫描的 namespace（方案 17 §4）。
 //
 // 返回的 scopeKind/scopeValue 是落 reports 的两列；targetNS 是传给扫描器的命名空间
 // （全集群时为空串，扫描器把空串理解为「全部命名空间」）。
@@ -202,9 +240,9 @@ func (s *Server) resolveScanScope(ctx context.Context, u *store.User, role *stor
 	switch scope {
 	case model.ScopeCluster:
 		if !serverRoleIsAdmin(role) {
-			// 全集群巡检会读全命名空间的清单、事件与日志，超出 namespace 授权模型的表达力，
+			// 集群体检会读全命名空间的清单、事件与日志，超出 namespace 授权模型的表达力，
 			// 只能由 admin 发起。
-			return "", "", "", scanDenied("scope=cluster 仅管理员可发起：全集群巡检超出 namespace 授权范围")
+			return "", "", "", scanDenied("scope=cluster 仅管理员可发起：集群体检超出 namespace 授权范围")
 		}
 		return model.ScopeCluster, "", "", nil
 	case model.ScopeNamespace:
@@ -231,14 +269,14 @@ func (s *Server) resolveScanScope(ctx context.Context, u *store.User, role *stor
 // requireNamespaceAccess 判定非 admin 调用者能否扫指定命名空间。
 //
 // 越权一律 403 并点名是哪个 ns，**绝不静默裁剪成授权子集**：静默裁剪会让人以为扫了全量，
-// 而巡检结论的价值恰恰在于「我知道我扫了什么」。
+// 而体检结论的价值恰恰在于「我知道我扫了什么」。
 func (s *Server) requireNamespaceAccess(ctx context.Context, u *store.User, role *store.Role, ns string) *scanGateError {
 	if serverRoleIsAdmin(role) {
 		return nil
 	}
 	if s.authzSvc == nil || role == nil {
 		// 判定不了就是不允许：这里默认放行等于把 namespace 授权当成装饰。
-		return scanDenied("无法校验 namespace 授权（授权服务未装配），拒绝发起巡检")
+		return scanDenied("无法校验 namespace 授权（授权服务未装配），拒绝发起体检")
 	}
 	es, err := s.authzSvc.EffectiveScope(ctx, u, role, "")
 	if err != nil {
@@ -248,7 +286,7 @@ func (s *Server) requireNamespaceAccess(ctx context.Context, u *store.User, role
 			message: "校验 namespace 授权失败，请稍后重试"}
 	}
 	if es == nil {
-		return scanDenied("无法校验 namespace 授权，拒绝发起巡检")
+		return scanDenied("无法校验 namespace 授权，拒绝发起体检")
 	}
 	if es.ClusterScoped || es.IsAdmin {
 		return nil
@@ -258,7 +296,7 @@ func (s *Server) requireNamespaceAccess(ctx context.Context, u *store.User, role
 			return nil
 		}
 	}
-	return scanDenied("命名空间 " + ns + " 不在你的授权范围内，未发起巡检（不会自动改扫已授权的命名空间）")
+	return scanDenied("命名空间 " + ns + " 不在你的授权范围内，未发起体检（不会自动改扫已授权的命名空间）")
 }
 
 // serverRoleIsAdmin 判定角色是否持全域权限（与报告面 reportScopeFor 同一判据）。
@@ -271,7 +309,7 @@ func serverRoleIsAdmin(role *store.Role) bool {
 // 两条刻意的取舍：
 //
 //  1. 档位只能**关掉** LLM，不能凭空打开。opts.LLM.Enabled 来自部署配置，没有凭据时
-//     把它置真是把部署问题变成用户面前的巡检失败；「无 LLM 配置时快速体检仍出结论」
+//     把它置真是把部署问题变成用户面前的体检失败；「无 LLM 配置时快速体检仍出结论」
 //     这条验收靠的就是这里不无中生有。
 //  2. Timeout 取档位封顶与配置上限的较小者。两个方向都不能单独生效：只看档位会让现场
 //     的 scan.timeout=30s 形同虚设，只看配置会让「快速体检」跑成十分钟。
@@ -296,26 +334,38 @@ func applyScanPreset(opts *model.ScanOptions, p scanPresetSpec) {
 }
 
 // runJob 后台执行扫描（ctx 带 opts.Timeout 预算）。
-func (s *Server) runJob(job *ScanJob, opts model.ScanOptions) {
-	ctx := context.Background()
+//
+// ctx 由发起处传入（可取消），档位超时在这里作为它的子上下文叠加：停止与超时共用同一条
+// 退出路径，扫描器不需要知道「是谁让我停的」。
+func (s *Server) runJob(job *ScanJob, ctx context.Context, opts model.ScanOptions) {
 	if opts.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, opts.Timeout)
-		defer cancel()
+		var cancelTimeout context.CancelFunc
+		ctx, cancelTimeout = context.WithTimeout(ctx, opts.Timeout)
+		defer cancelTimeout()
 	}
+	defer s.clearScanCancel(job.ID)
 	result, err := s.svc.Run(ctx, opts)
 	ended := time.Now().UTC()
 	s.mu.Lock()
 	job.EndedAt = &ended
 	s.running = false
-	if err != nil {
+	switch {
+	case job.Status == StatusCancelled:
+		// 发起人已经按过停止：状态与文案以停止时写下的为准，别让 context canceled
+		// 冒充成一次体检失败（P9.11）。
+	case err != nil:
 		job.Status = StatusFailed
 		job.Error = err.Error()
-	} else {
+	default:
 		job.Status = StatusSucceeded
 		job.Result = result
 	}
 	s.mu.Unlock()
+	// Run 收尾阶段（写报告、归档）是最后才进阶段账的，落一份完整快照，页面刷一次就能
+	// 看到和报告「诊断信息」区块一模一样的十步。
+	if result != nil {
+		s.setScanStages(job, result.Stages)
+	}
 }
 
 // handleGetScan 查询任务状态：只有发起人本人与 admin 可读（方案 17 §4.5）。
@@ -330,9 +380,7 @@ func (s *Server) handleGetScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	s.mu.Lock()
-	job, ok := s.jobs[id]
-	s.mu.Unlock()
+	job, ok := s.scanJobSnapshot(id)
 	if !ok {
 		writeError(w, r, http.StatusNotFound, codeNotFound, "scan not found")
 		return

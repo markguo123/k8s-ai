@@ -20,7 +20,7 @@ function event(type: AgentEvent['event_type'], data: unknown, turnId = 'turn-1')
  *   3. 终态之后到达的迟到分片被当成新块 → 永久停在「正在生成…」。
  */
 const FULL_REPORT = [
-  '## default 命名空间巡检报告',
+  '## default 命名空间体检报告',
   '',
   '**结论**：发现 3 个异常项',
   '',
@@ -157,7 +157,7 @@ describe('MessageTimeline（P2.6/P2.7 回合聚合）', () => {
   it('终态早于末段正文时，仍然只有一块报告且不残留「正在生成…」', () => {
     const wrapper = mountTimeline({
       events: [
-        event('turn.started', { status: 'running', input: '巡检 default 命名空间' }),
+        event('turn.started', { status: 'running', input: '体检 default 命名空间' }),
         event('reason.started', { kind: 'reason', status: 'running' }),
         event('message.delta', { role: 'reasoning', delta: '先看 Pod 列表', index: 0 }),
         event('reason.completed', { kind: 'reason', status: 'done' }),
@@ -180,7 +180,7 @@ describe('MessageTimeline（P2.6/P2.7 回合聚合）', () => {
     const fragments = Array.from({ length: 30 }, (_, i) => `第${i}段内容`)
     const wrapper = mountTimeline({
       events: [
-        event('turn.started', { status: 'running', input: '巡检 default 命名空间' }),
+        event('turn.started', { status: 'running', input: '体检 default 命名空间' }),
         ...fragments.map((delta, index) => event('message.delta', { role: 'assistant', delta, index })),
         event('turn.completed', { status: 'done', output: FULL_REPORT }),
         event('message.completed', { role: 'assistant', delta: FULL_REPORT }),
@@ -198,7 +198,7 @@ describe('MessageTimeline（P2.6/P2.7 回合聚合）', () => {
   it('思考增量早于 reason.started 也会被保留（不出现空面板 + 有正文面板两个）', () => {
     const wrapper = mountTimeline({
       events: [
-        event('turn.started', { status: 'running', input: '巡检 default 命名空间' }),
+        event('turn.started', { status: 'running', input: '体检 default 命名空间' }),
         event('message.delta', { role: 'reasoning', delta: '先诊断 nginx', index: 0 }),
         event('message.delta', { role: 'reasoning', delta: '，再汇总报告', index: 1 }),
         event('reason.started', { kind: 'reason', status: 'running' }),
@@ -214,7 +214,7 @@ describe('MessageTimeline（P2.6/P2.7 回合聚合）', () => {
   it('没有思考增量时不渲染空的思考面板', () => {
     const wrapper = mountTimeline({
       events: [
-        event('turn.started', { status: 'running', input: '巡检 default 命名空间' }),
+        event('turn.started', { status: 'running', input: '体检 default 命名空间' }),
         event('reason.started', { kind: 'reason', status: 'running' }),
         event('reason.completed', { kind: 'reason', status: 'done' }),
         event('message.completed', { role: 'assistant', delta: FULL_REPORT }),
@@ -228,7 +228,7 @@ describe('MessageTimeline（P2.6/P2.7 回合聚合）', () => {
   it('刷新后的历史快照保持「思考 → 工具 → 思考 → 报告」的顺序与分组', () => {
     const wrapper = mountTimeline({
       history: history([
-        { role: 'user', type: 'text', content: '巡检 default 命名空间', timestamp: '2026-10-14T23:30:00.000Z' },
+        { role: 'user', type: 'text', content: '体检 default 命名空间', timestamp: '2026-10-14T23:30:00.000Z' },
         { role: 'assistant', type: 'reasoning', content: '先看 Pod 列表', timestamp: '2026-10-14T23:30:01.000Z' },
         {
           role: 'tool',
@@ -264,7 +264,7 @@ describe('MessageTimeline（P2.6/P2.7 回合聚合）', () => {
   it('P7.2 上滑后暂停跟随并出现"回到底部"，点击后恢复', async () => {
     const wrapper = mountTimeline({
       events: [
-        event('turn.started', { status: 'running', input: '巡检 default 命名空间' }),
+        event('turn.started', { status: 'running', input: '体检 default 命名空间' }),
         event('message.completed', { role: 'assistant', delta: FULL_REPORT }),
       ],
     })

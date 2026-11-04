@@ -36,12 +36,12 @@ func (b *scanToolBase) Risk(json.RawMessage) model.RiskLevel {
 	return model.RiskSafe
 }
 
-// scanClusterTool：全集群/命名空间巡检（规则级，快；LLM 诊断由 Agent 后续分析）。
+// scanClusterTool：全集群/命名空间体检（规则级，快；LLM 诊断由 Agent 后续分析）。
 type scanClusterTool struct{ scanToolBase }
 
 func (t *scanClusterTool) Name() string { return "scan_cluster" }
 func (t *scanClusterTool) Description() string {
-	return "对集群（或指定命名空间）执行一期巡检：复用 Scanner+规则引擎+Incident+历史对比，返回问题清单与健康评分。适合『检查集群有没有异常』类问题。"
+	return "对集群（或指定命名空间）执行规则体检：复用 Scanner+规则引擎+Incident+历史对比，返回问题清单与健康评分。适合『检查集群有没有异常』类问题。"
 }
 func (t *scanClusterTool) InputSchema() any {
 	return objSchema(map[string]any{"namespace": strProp("命名空间（可选，省略=全集群）")})
@@ -54,7 +54,7 @@ func (t *scanClusterTool) Execute(ctx context.Context, input json.RawMessage) (T
 	opts := t.baseOpts
 	opts.Namespace = args["namespace"]
 	opts.PodTarget = ""
-	opts.LLM.Enabled = false // 规则级巡检保持快速，LLM 分析由 Agent 负责
+	opts.LLM.Enabled = false // 规则级体检保持快速，LLM 分析由 Agent 负责
 	opts.ReportMode = "none"
 	result, err := t.runner.Run(ctx, opts)
 	if err != nil {
@@ -63,12 +63,12 @@ func (t *scanClusterTool) Execute(ctx context.Context, input json.RawMessage) (T
 	return ToolResult{Data: summarizeScanResult(result)}, nil
 }
 
-// scanPodTool：单 Pod 巡检（规则级）。
+// scanPodTool：单 Pod 体检（规则级）。
 type scanPodTool struct{ scanToolBase }
 
 func (t *scanPodTool) Name() string { return "scan_pod" }
 func (t *scanPodTool) Description() string {
-	return "对单个 Pod 执行一期巡检（规则级），返回该 Pod 及其关联资源的 Finding 清单。"
+	return "对单个 Pod 执行规则体检（规则级），返回该 Pod 及其关联资源的 Finding 清单。"
 }
 func (t *scanPodTool) InputSchema() any {
 	return objSchema(map[string]any{
@@ -129,12 +129,12 @@ type diagnoseNodeTool struct{ scanToolBase }
 
 func (t *diagnoseNodeTool) Name() string { return "diagnose_node" }
 func (t *diagnoseNodeTool) Description() string {
-	return "对单个 Node 深度诊断：巡检后只保留该 Node 及其相关 Pod 的 Finding 与证据，供 Agent 分析。"
+	return "对单个 Node 深度诊断：体检后只保留该 Node 及其相关 Pod 的 Finding 与证据，供 Agent 分析。"
 }
 func (t *diagnoseNodeTool) InputSchema() any {
 	return objSchema(map[string]any{
 		"name":      strProp("Node 名称"),
-		"namespace": strProp("命名空间（可选，省略=全集群巡检后过滤）"),
+		"namespace": strProp("命名空间（可选，省略=集群体检后过滤）"),
 	}, "name")
 }
 func (t *diagnoseNodeTool) Execute(ctx context.Context, input json.RawMessage) (ToolResult, error) {
@@ -162,7 +162,7 @@ type diagnoseWorkloadTool struct{ scanToolBase }
 
 func (t *diagnoseWorkloadTool) Name() string { return "diagnose_workload" }
 func (t *diagnoseWorkloadTool) Description() string {
-	return "对 Deployment/StatefulSet/DaemonSet 深度诊断：巡检后保留该 Workload 及其 Pod 链的 Finding 与证据（含故障链聚合 Incident），供 Agent 分析。"
+	return "对 Deployment/StatefulSet/DaemonSet 深度诊断：体检后保留该 Workload 及其 Pod 链的 Finding 与证据（含故障链聚合 Incident），供 Agent 分析。"
 }
 func (t *diagnoseWorkloadTool) InputSchema() any {
 	return objSchema(map[string]any{

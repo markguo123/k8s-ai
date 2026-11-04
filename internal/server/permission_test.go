@@ -120,7 +120,7 @@ func TestPermissionGateEnforcesRolePermissions(t *testing.T) {
 	}
 	decodeData(t, getResp, nil)
 
-	// 未授予 scan.execute，创建 scan 应 403（方案 17 §4.1：发起巡检不再复用 chat.write）。
+	// 未授予 scan.execute，创建 scan 应 403（方案 17 §4.1：发起体检不再复用 chat.write）。
 	resp, err := authedPost(ts, "/api/v1/scans", `{"scope":"namespace","namespace":"default"}`, token)
 	if err != nil {
 		t.Fatal(err)

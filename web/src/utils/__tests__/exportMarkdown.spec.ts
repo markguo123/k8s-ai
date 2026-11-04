@@ -21,12 +21,12 @@ describe('buildSessionMarkdown（P7.5 导出）', () => {
   it('按 提问 → 思考 → 工具 → 报告 的顺序导出，并带上会话元信息', () => {
     const md = buildSessionMarkdown(messages, {
       id: '20261015-c851',
-      name: 'default 巡检',
+      name: 'default 体检',
       model: 'qwen-plus',
       exportedAt: new Date('2026-10-15T12:00:00Z'),
     })
 
-    const order = ['# default 巡检', '## 提问', '## 思考过程', '## 工具调用 · get_pods', '## 最终报告']
+    const order = ['# default 体检', '## 提问', '## 思考过程', '## 工具调用 · get_pods', '## 最终报告']
     let cursor = -1
     for (const marker of order) {
       const at = md.indexOf(marker)
@@ -62,8 +62,8 @@ describe('buildSessionMarkdown（P7.5 导出）', () => {
 
 describe('markdownFileName', () => {
   it('生成 k8s-ai-<会话名>-<时间>.md 并过滤非法字符', () => {
-    expect(markdownFileName('default 巡检 / prod:01', new Date('2026-10-15T09:05:00'))).toBe(
-      'k8s-ai-default-巡检-prod-01-20261015-0905.md',
+    expect(markdownFileName('default 体检 / prod:01', new Date('2026-10-15T09:05:00'))).toBe(
+      'k8s-ai-default-体检-prod-01-20261015-0905.md',
     )
     expect(markdownFileName('', new Date('2026-10-15T09:05:00'))).toBe('k8s-ai-session-20261015-0905.md')
   })

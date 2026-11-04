@@ -12,7 +12,7 @@ const (
 	// colText 短文本：可作主键/唯一键/索引列（SQLite TEXT，MySQL VARCHAR(191)）。
 	colText colKind = iota
 	// colLong 长文本：不可建索引，常存放 JSON（SQLite TEXT，MySQL MEDIUMTEXT）。
-	// MySQL 侧刻意不用 TEXT：TEXT 上限只有 64KB，一次全集群巡检的工具结果就能把
+	// MySQL 侧刻意不用 TEXT：TEXT 上限只有 64KB，一次集群体检的工具结果就能把
 	// sessions.data 撑过上限（真机报 Error 1406 "Data too long for column 'data'"，
 	// 那一轮对话记录整条静默丢失）。
 	colLong

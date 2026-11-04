@@ -13,6 +13,10 @@ type findingContext struct {
 	finding model.Finding
 	text    string
 	tokens  int
+
+	// evUniverse：除本 Finding 的 E-ID 之外仍然合法的证据引用集合
+	// （按 Incident 送诊时是故障链成员的 `<findingID>#<E-ID>`）。
+	evUniverse map[string]bool
 }
 
 // buildContexts 按严重级排序，在预算内构造 DiagnosisContext：

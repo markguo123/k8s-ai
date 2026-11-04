@@ -33,7 +33,7 @@ type reportFixture struct {
 	authzSvc *authz.Service
 	authSvc  *auth.Service
 	scan     *capturingScan
-	// scanBaseline 是页面发起巡检时的连接/模型基线。测试改它即可模拟「部署配了模型 /
+	// scanBaseline 是页面发起体检时的连接/模型基线。测试改它即可模拟「部署配了模型 /
 	// 没配模型」两种现场，而不用真的接一个 LLM。
 	scanBaseline model.ScanOptions
 	server       *Server
@@ -79,7 +79,7 @@ func newReportFixture(t *testing.T, reportsOverride reportService) *reportFixtur
 	return &reportFixture{ts: ts, st: st, backend: backend, gw: gw, authzSvc: authzSvc, authSvc: authSvc, scan: scan, server: srv}
 }
 
-// setScanBaseline 注入页面巡检的参数基线。必须在发第一个 scan 请求之前调用。
+// setScanBaseline 注入页面体检的参数基线。必须在发第一个 scan 请求之前调用。
 func (f *reportFixture) setScanBaseline(opts model.ScanOptions) {
 	f.scanBaseline = opts
 f.server.WithScanBaseline(func(context.Context) model.ScanOptions { return f.scanBaseline })
@@ -264,7 +264,7 @@ func errorOf(t *testing.T, raw string) string {
 // 下载头按 §13.3 强制 attachment + nosniff，响应里不出现对象 key。
 func TestReportsOwnerListAndDownloadLocksContract(t *testing.T) {
 	f := newReportFixture(t, nil)
-	body := "# 巡检结论\n发现 3 条风险\n"
+	body := "# 体检结论\n发现 3 条风险\n"
 	f.seedReport(t, "r-mine", "u-alice", "c-prod", f.putContent(t, body, []string{"c-prod", "scan-mine"}))
 	token := f.userToken(t, "alice", "user")
 
@@ -415,11 +415,11 @@ func TestAdminCrossOwnerDownloadIsAudited(t *testing.T) {
 }
 
 // TestSystemReportVisibilityFollowsClusterGrants 覆盖三层判定的中间层：created_by=system
-// 的巡检报告按 AuthzGrant 集群授权放行；cluster_id 为空的系统报告只 admin 可读。
+// 的体检报告按 AuthzGrant 集群授权放行；cluster_id 为空的系统报告只 admin 可读。
 func TestSystemReportVisibilityFollowsClusterGrants(t *testing.T) {
 	f := newReportFixture(t, nil)
-	f.seedReport(t, "r-sys-prod", objectstore.SystemActor, "c-prod", f.putContent(t, "prod 巡检", []string{"c-prod", "scan-prod"}))
-	f.seedReport(t, "r-sys-staging", objectstore.SystemActor, "c-staging", f.putContent(t, "staging 巡检", []string{"c-staging", "scan-staging"}))
+	f.seedReport(t, "r-sys-prod", objectstore.SystemActor, "c-prod", f.putContent(t, "prod 体检", []string{"c-prod", "scan-prod"}))
+	f.seedReport(t, "r-sys-staging", objectstore.SystemActor, "c-staging", f.putContent(t, "staging 体检", []string{"c-staging", "scan-staging"}))
 	f.seedReport(t, "r-sys-nocluster", objectstore.SystemActor, "", f.putContent(t, "无集群标识", []string{"local", "scan-local"}))
 	granted := f.userToken(t, "carol", "operator")
 	f.grantCluster(t, "u-carol", "c-prod")
@@ -488,6 +488,22 @@ func (s scriptedReportService) Delete(context.Context, string, service.ReportSco
 
 func (s scriptedReportService) Cleanup(context.Context, []string, service.ReportScope) ([]service.ReportView, []service.CleanupSkip, error) {
 	return nil, nil, nil
+}
+
+// OpenStructuredReport 只为满足 reportService 契约：详情页行为由 TestReportStructured* 用
+// 真实报告面覆盖，本用例只关心 HTTP 错误映射。
+func (s scriptedReportService) OpenStructuredReport(context.Context, string, service.ReportScope) (service.StructuredReport, error) {
+	return service.StructuredReport{}, store.ErrNotFound
+}
+
+// Overview / ExportMarkdown 同样只为满足契约：总览与按需导出的真实行为分别由
+// TestReportOverview* 与 TestReportExport* 用真实报告面覆盖。
+func (s scriptedReportService) Overview(context.Context, service.ReportScope) (service.ReportOverview, error) {
+	return service.ReportOverview{}, nil
+}
+
+func (s scriptedReportService) ExportMarkdown(context.Context, string, service.ReportScope) (service.ReportView, []byte, error) {
+	return service.ReportView{}, nil, store.ErrNotFound
 }
 
 var _ reportService = scriptedReportService{}
@@ -650,17 +666,17 @@ func TestCreateScanAttributesServerSide(t *testing.T) {
 		t.Fatalf("scan_id 应取本次任务 ID %s：%+v", accepted.Data.ID, opts.Attribution)
 	}
 	if opts.Attribution.ScopeKind != model.ScopeNamespace || opts.Attribution.ScopeValue != "kube-system" {
-		t.Fatalf("巡检范围没有随归属一起下发：%+v", opts.Attribution)
+		t.Fatalf("体检范围没有随归属一起下发：%+v", opts.Attribution)
 	}
 	if opts.Attribution.ClusterID != "" {
-		t.Fatalf("本期巡检目标固定为平台自身集群，cluster_id 应为空：%+v", opts.Attribution)
+		t.Fatalf("本期体检目标固定为平台自身集群，cluster_id 应为空：%+v", opts.Attribution)
 	}
 	if opts.Namespace != "kube-system" {
 		t.Fatalf("其余扫描参数被改写了：%+v", opts)
 	}
-	// 页面巡检不落容器本地副本（方案 17 §7.3）：reportDirectory 非空意味着往容器里写文件。
+	// 页面体检不落容器本地副本（方案 17 §7.3）：reportDirectory 非空意味着往容器里写文件。
 	if opts.ReportDirectory != "" || opts.ReportMode != "" {
-		t.Fatalf("页面巡检不应写容器本地副本：%+v", opts)
+		t.Fatalf("页面体检不应写容器本地副本：%+v", opts)
 	}
 }
 

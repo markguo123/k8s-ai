@@ -80,7 +80,7 @@ func TestReportListRequiresViewerForNonAdmin(t *testing.T) {
 	}
 }
 
-// TestReportListSystemReportsFollowClusterGrants 系统巡检报告按集群授权放行，
+// TestReportListSystemReportsFollowClusterGrants 系统体检报告按集群授权放行，
 // cluster_id 为空的系统报告只 admin 能读——没有可比对的授权对象时默认拒绝。
 func TestReportListSystemReportsFollowClusterGrants(t *testing.T) {
 	s := newTestStore(t)

@@ -200,7 +200,7 @@ func (t *typedStreamLLM) ChatStreamEvents(_ context.Context, _ llm.ChatRequest, 
 //  2. message.delta 的 index 按 role 各自从 0 计数（reasoning 分片不会推高报告分片序号）。
 func TestChatServiceEventOrdering(t *testing.T) {
 	fl := &typedStreamLLM{rounds: []typedRound{
-		{reasoning: []string{"先看", "Pod 列表"}, content: "## 巡检报告\n\n一切正常"},
+		{reasoning: []string{"先看", "Pod 列表"}, content: "## 体检报告\n\n一切正常"},
 	}}
 	col := &collector{}
 	svc := testChatServiceWithSink(t, fl, col)

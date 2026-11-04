@@ -17,7 +17,7 @@ import (
 // 后端三样接好之后，stat/get/put/gc 在真文件与真库上给出人看得懂的结果。回收语义本身
 // 在 internal/service/blobgc_test.go 锁，两层不重复。
 
-// blobsEnv 是一个最小现场：一个平台库 + 一个 dir 后端，巡检链路完全不参与。
+// blobsEnv 是一个最小现场：一个平台库 + 一个 dir 后端，体检链路完全不参与。
 type blobsEnv struct {
 	cfg   *config.Config
 	root  string

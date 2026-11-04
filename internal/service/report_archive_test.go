@@ -181,7 +181,7 @@ func TestReportArchiveWritesNoRowsWhenPutFails(t *testing.T) {
 	}
 }
 
-// TestReportArchiveAttributesSystemTasks：CLI 与定时巡检不填 Actor，归档必须落到系统归属，
+// TestReportArchiveAttributesSystemTasks：CLI 与定时体检不填 Actor，归档必须落到系统归属，
 // 否则这些报告会被当成某个不存在用户的私有报告，谁都读不到。
 func TestReportArchiveAttributesSystemTasks(t *testing.T) {
 	ctx := context.Background()

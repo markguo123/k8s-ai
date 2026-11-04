@@ -196,12 +196,12 @@ func containsString(values []string, want string) bool {
 	return false
 }
 
-// AuthorizedClusterIDs 返回该用户「能读到哪些集群的系统巡检报告」（P8.5，方案 15 §12.2）。
+// AuthorizedClusterIDs 返回该用户「能读到哪些集群的系统体检报告」（P8.5，方案 15 §12.2）。
 //
 // 它与 EffectiveScope 共用同一套归属判据——角色含 * 即全域、user ID 与 username 都可作
 // principalId、过期授权跳过——但刻意不复制那一条「grant.permissions 必须含 *」：
-// EffectiveScope 回答「能不能在这个集群里写」，这里只回答「能不能看见这个集群的巡检结论」，
-// 巡检报告是只读产物，把写权限判据搬过来会让只读角色一份报告都看不到。
+// EffectiveScope 回答「能不能在这个集群里写」，这里只回答「能不能看见这个集群的体检结论」，
+// 体检报告是只读产物，把写权限判据搬过来会让只读角色一份报告都看不到。
 //
 // 返回 all=true 表示存在一条不限定集群的授权（空 clusterId），调用方据此放开全部集群；
 // 它只放宽系统报告，不放宽他人私有报告——后者只认 created_by 归属。

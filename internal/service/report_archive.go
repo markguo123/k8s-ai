@@ -57,6 +57,9 @@ func (s *scanService) SetReportArchive(w *ReportArchiveWriter) { s.archive = w }
 // （内容寻址让 ref_count 变 2），这是设计允许的历史记录而不是重复数据。
 //
 // 任一对象写入失败即返回错误且不写它的行；调用方（Run）只记 WARN，不改扫描返回值。
+//
+// 产物份数由 attr.ReportArtifact 决定（P9.13）：页面发起的体检一次只留用户选中的那一份，
+// 空值保持三期的双产物行为（CLI / CronJob 路径不变）。
 func (w *ReportArchiveWriter) Archive(ctx context.Context, result *model.ScanResult, attr model.ReportAttribution) (int, error) {
 	if w == nil || w.gw == nil || w.st == nil {
 		return 0, fmt.Errorf("archive report: writer not wired")
@@ -70,19 +73,24 @@ func (w *ReportArchiveWriter) Archive(ctx context.Context, result *model.ScanRes
 	}
 	scope := archiveScope(attr.ClusterID, attr.ScanID)
 	scopeKind, scopeValue := archiveScopeLabel(attr.ScopeKind, attr.ScopeValue)
+	wantJSON, wantMD, err := reportArtifactWanted(attr.ReportArtifact)
+	if err != nil {
+		return 0, fmt.Errorf("archive report: %w", err)
+	}
 
 	targets := []struct {
 		kind      string
 		ext       string
 		mediaType string
+		want      bool
 		render    func() ([]byte, error)
 	}{
 		// .md 必须显式给 media type：objectstore 的扩展名推断表里没有 .md，
 		// 交给它只会得到 application/octet-stream，浏览器就会当成二进制下载。
-		{ReportKindLatestMD, ".md", "text/markdown; charset=utf-8", func() ([]byte, error) {
+		{ReportKindLatestMD, ".md", "text/markdown; charset=utf-8", wantMD, func() ([]byte, error) {
 			return report.MarkdownRenderer{}.Render(result)
 		}},
-		{ReportKindLatestJSON, ".json", "", func() ([]byte, error) {
+		{ReportKindLatestJSON, ".json", "", wantJSON, func() ([]byte, error) {
 			return report.JSONRenderer{}.Render(result)
 		}},
 	}
@@ -90,6 +98,9 @@ func (w *ReportArchiveWriter) Archive(ctx context.Context, result *model.ScanRes
 	var done int
 	var errs []string
 	for _, t := range targets {
+		if !t.want {
+			continue
+		}
 		payload, err := t.render()
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("%s: render: %v", t.kind, err))
@@ -120,7 +131,7 @@ func (w *ReportArchiveWriter) Archive(ctx context.Context, result *model.ScanRes
 			CreatedBy: actor,
 			Available: true,
 			CreatedAt: time.Now().UTC(),
-			// 巡检范围与业务行同事务落库（P8.13）：它只回答「扫的是什么」，不参与 key 与鉴权。
+			// 体检范围与业务行同事务落库（P8.13）：它只回答「扫的是什么」，不参与 key 与鉴权。
 			// 非法值一律降级成空串而不是拒掉整次归档——范围是展示信息，为一个展示字段丢一份
 			// 已经写进桶的报告本末倒置；降级会留 WARN，不会变成一个没人知道的分支。
 			ScopeKind:  scopeKind,
@@ -146,6 +157,24 @@ func (w *ReportArchiveWriter) Archive(ctx context.Context, result *model.ScanRes
 	return done, nil
 }
 
+// reportArtifactWanted 把「这次体检留几份产物」翻成两个布尔（要不要 JSON / 要不要 Markdown）。
+//
+// 空值与 both 都返回双份：三期 CLI 与 CronJob 不填这个字段，它们的报告列表就是两行，
+// 改变这件事会让老用户的归档结果悄悄变少。未知取值直接报错而不是猜一个默认值——
+// 值域在 server 层已经校验过，走到这里说明是代码写错了，静默降级只会让排查更难。
+func reportArtifactWanted(artifact string) (json, markdown bool, err error) {
+	switch strings.TrimSpace(artifact) {
+	case "", model.ReportArtifactBoth:
+		return true, true, nil
+	case model.ReportArtifactJSON:
+		return true, false, nil
+	case model.ReportArtifactMarkdown:
+		return false, true, nil
+	default:
+		return false, false, fmt.Errorf("unknown report artifact %q", artifact)
+	}
+}
+
 // archiveScope 组装 key 的命名空间段：只用内部生成的 ID（clusterID/scanID），都空时
 // 退化成一个稳定占位段。刻意不做「净化用户输入」——能进这里的都是系统生成的 ID，
 // 真出现非法字符就该由 BuildKey 报 ErrKeyInvalid 并经 WARN 冒出来，静默改写只会把
@@ -167,10 +196,10 @@ func archiveScope(clusterID, scanID string) []string {
 // archiveScanPhase 是归档阶段的进度名（Web 端阶段列表按它显示）。
 const archiveScanPhase = "archive"
 
-// archiveScopeLabel 校验巡检范围两列的取值（P8.13，方案 17 §7.1）。
+// archiveScopeLabel 校验体检范围两列的取值（P8.13，方案 17 §7.1）。
 //
 // 值域外一律清空并记 WARN：范围只用于展示与过滤，为一个展示字段丢掉一份已经写进桶的报告
-// 本末倒置；但也不能把调用方传来的野值原样落库——那会让页面的「巡检范围」列长出无法枚举的
+// 本末倒置；但也不能把调用方传来的野值原样落库——那会让页面的「体检范围」列长出无法枚举的
 // 取值。清空 + WARN 是唯一一种既不断链、又留得下线索的收尾。
 func archiveScopeLabel(kind, value string) (string, string) {
 	kind = strings.TrimSpace(kind)
@@ -178,12 +207,12 @@ func archiveScopeLabel(kind, value string) (string, string) {
 	if model.ValidReportScope(kind, value) {
 		return kind, value
 	}
-	slog.Warn("archive report: 忽略非法的巡检范围取值", "scope_kind", kind, "scope_value", value)
+	slog.Warn("archive report: 忽略非法的体检范围取值", "scope_kind", kind, "scope_value", value)
 	return "", ""
 }
 
 // archiveReportsIfNeeded 在 Run 的末尾归档报告：未注入写入器时直接返回，注入了则任何
-// 失败都只记 WARN 并标该阶段降级——扫描结果本身已经算完，绝不能因为桶不可达让整次巡检
+// 失败都只记 WARN 并标该阶段降级——扫描结果本身已经算完，绝不能因为桶不可达让整次体检
 // 变成失败（方案 15 §11.3「对象存储故障不影响基础业务」）。
 func (s *scanService) archiveReportsIfNeeded(
 	ctx context.Context,

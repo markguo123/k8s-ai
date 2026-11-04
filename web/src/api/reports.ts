@@ -19,7 +19,14 @@ import {
   apiPost,
   readToken,
 } from './request'
-import type { ReportCleanupResult, ReportDownloadTicket, ReportView, StorageHealth } from './types'
+import type {
+  ReportCleanupResult,
+  ReportDownloadTicket,
+  ReportOverview,
+  ReportView,
+  StorageHealth,
+  StructuredReportEnvelope,
+} from './types'
 
 /** 报告列表查询条件（后端 handleListReports 的 query 参数）。 */
 export interface ReportListOptions {
@@ -27,8 +34,13 @@ export interface ReportListOptions {
   pageSize?: number
   clusterId?: string
   kind?: string
-  /** 只看某次巡检产出的产物；这是筛选条件，不是授权条件，越权判定仍由后端做。 */
+  /** 只看某次体检产出的产物；这是筛选条件，不是授权条件，越权判定仍由后端做。 */
   scanId?: string
+  /**
+   * 报告类别（cluster | business | other）：集群体检 / 业务体检 / 范围未记录。
+   * 与顶部总览共用后端的同一条分组口径，非法取值后端按「不筛」处理。
+   */
+  scopeCategory?: string
 }
 
 /** 报告列表结果：total 与当页共用后端同一条归属谓词，因此不会把别人的报告算进来。 */
@@ -45,7 +57,7 @@ export async function listReports(opts: ReportListOptions = {}): Promise<ReportL
   const env = await apiGet<ReportView[]>(
     '/reports',
     { page: opts.page, pageSize: opts.pageSize },
-    { clusterId: opts.clusterId, kind: opts.kind, scanId: opts.scanId },
+    { clusterId: opts.clusterId, kind: opts.kind, scanId: opts.scanId, scopeCategory: opts.scopeCategory },
   )
   return {
     items: env.data ?? [],
@@ -88,15 +100,13 @@ function decodeFilename(raw: string, fallback: string): string {
  *
  * 必须自己拼 fetch：响应体是二进制附件，套进 request() 的 JSON 解析会把内容吃掉。
  */
-export async function downloadReport(id: string): Promise<string> {
+async function fetchAndSave(id: string, suffix: string): Promise<string> {
   const headers = new Headers({ Accept: 'application/octet-stream' })
   const token = readToken()
   if (token) {
     headers.set('Authorization', `Bearer ${token}`)
   }
-  const response = await fetch(`${API_BASE}/reports/${encodeURIComponent(id)}/content?mode=stream`, {
-    headers,
-  })
+  const response = await fetch(`${API_BASE}/reports/${encodeURIComponent(id)}${suffix}`, { headers })
   if (!response.ok) {
     throw apiErrorFrom(response.status, await response.text())
   }
@@ -106,6 +116,21 @@ export async function downloadReport(id: string): Promise<string> {
   triggerBrowserDownload(url, filename)
   window.setTimeout(() => URL.revokeObjectURL(url), BLOB_URL_TTL_MS)
   return filename
+}
+
+/** 流式下载归档里的原文（Markdown 或 JSON，取决于发起体检时选的那一种）。 */
+export async function downloadReport(id: string): Promise<string> {
+  return fetchAndSave(id, '/content?mode=stream')
+}
+
+/**
+ * 按需导出一份 Markdown（P9.10）。
+ *
+ * 一次体检只归档一种产物，想要另一种格式时由后端用同一份正文当场渲染：归档里只有
+ * 一个事实源，页面上也就不会出现「哪份才是最新的」这种问题。
+ */
+export async function exportReportMarkdown(id: string): Promise<string> {
+  return fetchAndSave(id, '/export')
 }
 
 function triggerBrowserDownload(url: string, filename: string): void {
@@ -136,6 +161,25 @@ export async function getReportDownloadUrl(id: string): Promise<ReportDownloadTi
 }
 
 /**
+ * 读结构化体检报告（P9 报告详情页数据源）。
+ *
+ * 与 downloadReport 是两条用途不同的通道，不能互相顶替：/content 强制附件下载且禁
+ * MIME 嗅探，浏览器里拿不到正文；/report 走普通 JSON 信封，专门给页面渲染。两者的
+ * 可见性判定复用后端同一条 scope 谓词，详情页因此不是第二条越权读取通道。
+ *
+ * 后端会顺着同一轮体检去找 JSON 产物（列表里点开的往往是 Markdown 那一行），前端
+ * 不需要知道哪一行是 latest-json；真的没有结构化形态时回 415，由 describeReportError
+ * 翻译成「请使用原文下载」。
+ */
+export async function getStructuredReport(id: string): Promise<StructuredReportEnvelope> {
+  const env = await apiGet<StructuredReportEnvelope>(`/reports/${encodeURIComponent(id)}/report`)
+  if (!env.data) {
+    throw new Error('报告详情为空')
+  }
+  return env.data
+}
+
+/**
  * 对象存储健康。后端恒回 200（degraded 也是 200 + status），这样徽标不会因为
  * 一次"健康的坏消息"变成请求失败，probeError 那句真正有用的话也就丢掉了。
  */
@@ -143,6 +187,24 @@ export async function getStorageHealth(): Promise<StorageHealth> {
   const env = await apiGet<StorageHealth>('/storage/health')
   if (!env.data) {
     throw new Error('存储健康数据为空')
+  }
+  return env.data
+}
+
+/**
+ * 报告列表顶部的类别总览（P9.13）。
+ *
+ * 统计口径是「你看得见的全部报告」，与分页无关，因此翻页不需要重算；但它和列表共用
+ * 同一条归属与筛选谓词，所以筛「业务体检」时这里的数字会跟着一起变。
+ */
+export async function getReportSummary(opts: ReportListOptions = {}): Promise<ReportOverview> {
+  const env = await apiGet<ReportOverview>(
+    '/reports/summary',
+    undefined,
+    { clusterId: opts.clusterId, kind: opts.kind, scanId: opts.scanId, scopeCategory: opts.scopeCategory },
+  )
+  if (!env.data) {
+    throw new Error('报告总览数据为空')
   }
   return env.data
 }
@@ -176,6 +238,12 @@ function normalizeCleanup(data?: ReportCleanupResult): ReportCleanupResult {
 export function describeReportError(method: string, error: unknown): string {
   if (error instanceof ApiRequestError) {
     switch (error.status) {
+      case 415:
+        // 不是错误清单里的一条，而是「这条报告太老，压根没有结构化形态」：
+        // 页面要给出的动作是去看原文，而不是渲染一个空壳详情页。
+        return '该报告没有结构化版本（早期只归档了 Markdown 正文），请使用原文下载查看'
+      case 413:
+        return '报告正文超过服务端读取上限，无法在页面展开，请改用原文下载查看'
       case 503:
         return '对象存储暂不可用，报告暂时读不到；聊天、审批、审计不受影响，请稍后重试'
       case 410:
@@ -204,8 +272,11 @@ export function describeReportError(method: string, error: unknown): string {
 // 保持 DefaultExport 便于使用方统一 import 默认值。
 export default {
   listReports,
+  getReportSummary,
   downloadReport,
+  exportReportMarkdown,
   getReportDownloadUrl,
+  getStructuredReport,
   getStorageHealth,
   deleteReport,
   cleanupReports,

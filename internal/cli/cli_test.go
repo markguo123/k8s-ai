@@ -143,7 +143,7 @@ func TestScanTargetedTerminal(t *testing.T) {
 	if !strings.Contains(buf.String(), "Pod 处于 Pending 状态") {
 		t.Fatalf("终端应输出完整报告: %q", buf.String())
 	}
-	if !strings.Contains(buf.String(), "命名空间巡检报告：mysql") || !strings.Contains(buf.String(), "Scan Scope: namespace mysql") {
+	if !strings.Contains(buf.String(), "业务体检报告：命名空间 mysql") || !strings.Contains(buf.String(), "Scan Scope: namespace mysql") {
 		t.Fatalf("目标扫描应标注命名空间范围: %q", buf.String())
 	}
 	if strings.Contains(buf.String(), "Report:") {
@@ -151,7 +151,7 @@ func TestScanTargetedTerminal(t *testing.T) {
 	}
 }
 
-// TestScanPodCommand 验证 scan pod 子命令输出 Pod 巡检报告。
+// TestScanPodCommand 验证 scan pod 子命令输出业务体检报告（Pod 范围）。
 func TestScanPodCommand(t *testing.T) {
 	cfg := defaultCfg(t)
 	cfg.Kubernetes.Namespace = "mysql" // 测试用 fake LoadConfig 不应用 flag 覆盖，直接注入
@@ -171,8 +171,8 @@ func TestScanPodCommand(t *testing.T) {
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(buf.String(), "Kubernetes Pod 巡检报告：mysql/db-0") {
-		t.Fatalf("应输出 Pod 巡检报告: %q", buf.String())
+	if !strings.Contains(buf.String(), "业务体检报告：Pod mysql/db-0") {
+		t.Fatalf("应输出业务体检报告: %q", buf.String())
 	}
 	if !strings.Contains(buf.String(), "容器 db 因 OOMKilled 被杀") {
 		t.Fatalf("应包含该 Pod 的 Finding: %q", buf.String())

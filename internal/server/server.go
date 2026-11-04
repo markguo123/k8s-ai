@@ -28,6 +28,9 @@ const (
 	StatusRunning   ScanStatus = "running"
 	StatusSucceeded ScanStatus = "succeeded"
 	StatusFailed    ScanStatus = "failed"
+	// StatusCancelled 表示发起人主动停止（P9.11）。它不复用 failed：中断与失败在报告口径上
+	// 是两件事——失败要说「为什么没跑完」，中断只说明「有人决定不跑了」。
+	StatusCancelled ScanStatus = "cancelled"
 )
 
 // ScanJob 内存任务。
@@ -42,9 +45,12 @@ type ScanJob struct {
 	// Owner 是发起人的用户 ID（P8.13）。任务结果含被扫命名空间的问题清单，
 	// 没有 owner 就没法判「谁的任务」，GET 只能对全体登录用户开放。
 	Owner string `json:"owner,omitempty"`
-	// ScopeKind / ScopeValue 是本次巡检范围，与 reports 的 scope 两列同源。
-	ScopeKind  string `json:"scopeKind,omitempty"`
-	ScopeValue string `json:"scopeValue,omitempty"`
+	// ScopeKind / ScopeValue 是本次体检范围，与 reports 的 scope 两列同源。
+	ScopeKind string `json:"scopeKind,omitempty"`
+	// Stages 是本次体检的阶段账（P9）：扫描过程中由进度回调实时刷新，结束后与报告
+	//「诊断信息」区块同源，页面进度条读的就是它。
+	Stages     []model.StageRecord `json:"stages,omitempty"`
+	ScopeValue string              `json:"scopeValue,omitempty"`
 }
 
 // Server 最小化 HTTP 服务。
@@ -67,16 +73,20 @@ type Server struct {
 	// 注意这里只准依赖 service 包的窄接口：本文件定义 handleReadyz，架构门禁禁止
 	// 该文件引用 objectstore（方案 15 §11.1）。
 	storageSvc storageHealthService
-	perms    *permission.Enforcer
+	perms      *permission.Enforcer
 	// ready 是就绪探针回调（P6.1）：由组合根注入 store 连通 + 迁移完成判定。
 	// nil 时按"进程活着即可用"处理，与一期行为一致。
-	ready   ReadinessCheck
-	// scanBaseline 提供巡检的连接类参数基线（P8.13）：请求体不再携带 kubeconfig /
+	ready ReadinessCheck
+	// scanBaseline 提供体检的连接类参数基线（P8.13）：请求体不再携带 kubeconfig /
 	// reportDirectory 一类的内部参数，这些只能来自服务端配置。
 	scanBaseline scanBaselineFunc
-	mu      sync.Mutex
-	jobs    map[string]*ScanJob
-	running bool
+	mu           sync.Mutex
+	jobs         map[string]*ScanJob
+	// scanCancels 存放每个在跑任务的 context 取消函数（P9.11 停止体检）。
+	// 它刻意不放进 ScanJob：ScanJob 会被整体复制成 HTTP 响应体，函数值混进去只会让
+	// 「快照里有什么」变得难以推理。
+	scanCancels map[string]context.CancelFunc
+	running     bool
 }
 
 // ReadinessCheck 报告服务是否可以接活（P6.1 /readyz 判据）。返回的 error 文本
@@ -86,9 +96,10 @@ type ReadinessCheck func(context.Context) error
 // New 创建服务（注入 ScanService）。
 func New(svc service.ScanService) *Server {
 	return &Server{
-		svc:   svc,
-		perms: permission.NewEnforcer(DefaultAPIPolicy()),
-		jobs:  map[string]*ScanJob{},
+		svc:         svc,
+		perms:       permission.NewEnforcer(DefaultAPIPolicy()),
+		jobs:        map[string]*ScanJob{},
+		scanCancels: map[string]context.CancelFunc{},
 	}
 }
 
@@ -187,6 +198,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/auth/password", s.handleChangePassword)
 	mux.HandleFunc("POST /api/v1/scans", s.handleCreateScan)
 	mux.HandleFunc("GET /api/v1/scans/{id}", s.handleGetScan)
+	mux.HandleFunc("POST /api/v1/scans/{id}/cancel", s.handleCancelScan)
 	mux.HandleFunc("POST /api/v1/clusters", s.handleCreateCluster)
 	mux.HandleFunc("POST /api/v1/clusters/test", s.handleTestCluster)
 	mux.HandleFunc("GET /api/v1/clusters", s.handleListClusters)
@@ -216,7 +228,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/skills/import-zip", s.handleImportProceduralZip)
 	mux.HandleFunc("PATCH /api/v1/skills/{name}/enabled", s.handlePatchSkillEnabled)
 	mux.HandleFunc("GET /api/v1/reports", s.handleListReports)
+	// 总览必须在 {id} 之前登记：Go 的 mux 让静态段优先于通配段，登记顺序只是把
+	// 「summary 不是一个报告 ID」这件事写给读代码的人看。
+	mux.HandleFunc("GET /api/v1/reports/summary", s.handleReportSummary)
+	// 按需导出一份 Markdown：体检只归档一种产物时，另一个格式在下载这一刻渲染。
+	mux.HandleFunc("GET /api/v1/reports/{id}/export", s.handleExportReportMarkdown)
 	mux.HandleFunc("GET /api/v1/reports/{id}/content", s.handleGetReportContent)
+	mux.HandleFunc("GET /api/v1/reports/{id}/report", s.handleGetReportStructured)
 	mux.HandleFunc("DELETE /api/v1/reports/{id}", s.handleDeleteReport)
 	mux.HandleFunc("POST /api/v1/reports/cleanup", s.handleCleanupReports)
 	mux.HandleFunc("GET /api/v1/storage/health", s.handleStorageHealth)

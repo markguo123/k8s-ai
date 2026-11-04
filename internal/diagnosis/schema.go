@@ -156,7 +156,11 @@ func normalizeRisk(raw string) string {
 }
 
 // buildDiagnosis 把 LLM 输出映射为 Diagnosis，并做 Evidence ID 与命令校验（ADR-005）。
-func buildDiagnosis(f model.Finding, out *llmOutput) model.Diagnosis {
+//
+// universe 是本故障链额外允许的证据引用（派生症状的 `<findingID>#<E-ID>`）：
+// 增强上下文会明确要求模型这样引用成员证据，schema 层如果按「只看根因 Finding 的
+// E-ID」判定，就会把它当成编造并剥掉，模型越按规矩写反而越容易被判越界。
+func buildDiagnosis(f model.Finding, out *llmOutput, universe map[string]bool) model.Diagnosis {
 	d := model.Diagnosis{
 		FindingID:            f.ID,
 		Summary:              out.Summary,
@@ -171,7 +175,17 @@ func buildDiagnosis(f model.Finding, out *llmOutput) model.Diagnosis {
 		RemediationDirection: out.RemediationDirection,
 		LLMUsed:              true,
 	}
-	d.EvidenceChain = filterEvidenceRefs(f.Evidence, out.EvidenceChain)
+	kept, dropped := splitEvidenceRefs(f.Evidence, out.EvidenceChain, universe)
+	d.EvidenceChain = kept
+	if len(dropped) > 0 {
+		// 编造证据不再静默丢弃：记进校验结果，报告要能看出是模型越界。
+		d.Validation = &model.DiagnosisValidation{
+			Passed:             false,
+			Rule:               validationRule,
+			Issues:             []string{fmt.Sprintf("引用了 %d 个不存在的证据编号", len(dropped))},
+			FabricatedEvidence: dropped,
+		}
+	}
 	for _, text := range out.Investigation {
 		if cmd, ok := validateCommand(text, model.CmdInvestigation, f.Resource.Namespace); ok {
 			d.Investigation = append(d.Investigation, cmd)
@@ -193,18 +207,31 @@ func buildDiagnosis(f model.Finding, out *llmOutput) model.Diagnosis {
 
 // filterEvidenceRefs 只保留真实存在的 E-ID，丢弃编造的引用（ADR-005）。
 func filterEvidenceRefs(evidence []model.Evidence, refs []string) []string {
+	kept, _ := splitEvidenceRefs(evidence, refs, nil)
+	return kept
+}
+
+// splitEvidenceRefs 拆分真实引用与编造引用。
+func splitEvidenceRefs(evidence []model.Evidence, refs []string, universe map[string]bool) (kept, dropped []string) {
 	valid := map[string]bool{}
 	for _, e := range evidence {
 		valid[e.ID] = true
 	}
-	var out []string
+	for ref := range universe {
+		valid[ref] = true
+	}
 	for _, r := range refs {
 		r = strings.TrimSpace(r)
+		if r == "" {
+			continue
+		}
 		if valid[r] {
-			out = append(out, r)
+			kept = append(kept, r)
+		} else {
+			dropped = append(dropped, r)
 		}
 	}
-	return out
+	return kept, dropped
 }
 
 // remediationRisk 修复命令风险：LLM 未提供合法值时按动词计算。

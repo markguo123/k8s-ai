@@ -211,6 +211,16 @@ type ScanProgress interface {
 	PhaseDone(name, detail string, ok bool, elapsed time.Duration)
 }
 
+// StageSink 是 ScanProgress 的**可选**附加接口：实现它，扫描流水线会在每个阶段状态
+// 变化时推送整份阶段账快照（全量而非增量，实现端直接替换自己那份即可）。
+//
+// 页面体检靠它把「跑到第几步、每步花了多久」在扫描过程中就暴露给轮询接口，而不是等
+// 整次扫描结束才一次性看到结果。阶段账的语义（含 skipped 补齐、不编造百分比）只由
+// service 侧的实现负责，接收端不该自己再数一遍事件。
+type StageSink interface {
+	StagesUpdated(stages []StageRecord)
+}
+
 // LLMOptions 是 LLM 诊断的执行参数（FR-015/FR-016）。
 type LLMOptions struct {
 	Enabled        bool
@@ -250,7 +260,7 @@ type ReportOptions struct {
 // created_by 是「谁能读这份报告」的唯一依据，而扫描任务本身是进程内对象、没有 owner
 // 列可继承，所以归属必须由调用方显式带进来。
 //
-// Actor 为空表示系统任务（定时巡检、CLI 本地扫描），归档时记 objectstore 的系统归属。
+// Actor 为空表示系统任务（定时体检、CLI 本地扫描），归档时记 objectstore 的系统归属。
 // Server 侧必须在解码请求体之后无条件覆盖这三个字段：它们由登录态与任务 ID 决定，
 // 让请求体里的值漏进来就等于允许调用方伪造报告归属、把报告挂到别人名下。
 type ReportAttribution struct {
@@ -260,16 +270,35 @@ type ReportAttribution struct {
 	ClusterID string
 	// ScanID 是扫描任务 ID（Server 侧即 ScanJob.ID）；空表示无任务标识。
 	ScanID string
-	// ScopeKind / ScopeValue 是巡检范围（cluster|namespace|pod 与取值，P8.13 方案 17 §7.1）。
+	// ScopeKind / ScopeValue 是体检范围（cluster|namespace|pod 与取值，P8.13 方案 17 §7.1）。
 	// 只回答「这份报告是扫什么出来的」，用于页面展示与列表过滤：既不参与对象 key 组装，
 	// 也不参与读鉴权。CLI 不填即空串，报告页面显示「未记录」。
 	ScopeKind  string
 	ScopeValue string
+
+	// ReportArtifact 决定一次体检在对象存储里留几份产物（P9.13）：
+	// ReportArtifactJSON / ReportArtifactMarkdown / ReportArtifactBoth。
+	//
+	// 空值 = Both，这是 CLI 与定时任务的历史行为（md + json 各一行）；页面发起的体检
+	// 一定会带上具体值，因此报告列表里「一次体检一份报告」是从页面这条路径保证的。
+	// 报告格式是「产物有几份」而不是「渲染成什么」——本地 report.directory 落盘仍由
+	// ScanOptions.ReportFormat 单独决定，两者互不影响。
+	ReportArtifact string
 }
 
-// 报告巡检范围取值（P8.13，方案 17 §7.1）：reports.scope_kind 的合法值域。
+// 报告产物形态取值（P9.13）：reports 行里一次体检留几份产物。
 //
-// 放在 model 是因为发起侧（Server 的巡检 DTO）与归档侧（service 写 reports 行）都要用，
+// JSON 是详情页的数据源（故障链、证据、质量账都要结构化），Markdown 是给人读/归档的
+// 正文，both 保留三期 CLI 与 CronJob 的双产物行为。
+const (
+	ReportArtifactJSON     = "json"
+	ReportArtifactMarkdown = "markdown"
+	ReportArtifactBoth     = "both"
+)
+
+// 报告体检范围取值（P8.13，方案 17 §7.1）：reports.scope_kind 的合法值域。
+//
+// 放在 model 是因为发起侧（Server 的体检 DTO）与归档侧（service 写 reports 行）都要用，
 // 而这两处中间隔着 service 包——值域定义属于领域根，不属于任何一侧。
 const (
 	ScopeCluster   = "cluster"
@@ -277,7 +306,7 @@ const (
 	ScopePod       = "pod"
 )
 
-// ValidReportScope 判断一组巡检范围能否落库。
+// ValidReportScope 判断一组体检范围能否落库。
 //
 // 空 kind 是合法值：v8 之前的存量行、以及 CLI 本地扫描（不填归属）都落在这一类，页面显示
 // 「未记录」。非法值不合法就非法，不做「大概是用户手滑」的猜测式纠正。

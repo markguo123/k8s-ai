@@ -35,7 +35,15 @@ const routes: RouteRecordRaw[] = [
         path: 'report',
         name: 'report',
         component: () => import('@/views/report/ReportsView.vue'),
-        meta: { title: '报告' },
+        meta: { title: '智能诊断中心' },
+      },
+      {
+        // 报告详情（P9）：同样不带 permission。可见性由后端按 owner/集群授权判定，
+        // 越权与不存在同形 404，详情页拿不到内容时就诚实显示拿不到。
+        path: 'report/:id',
+        name: 'report-detail',
+        component: () => import('@/views/report/ReportDetailView.vue'),
+        meta: { title: '体检报告' },
       },
       {
         path: 'skill',

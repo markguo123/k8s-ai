@@ -7,7 +7,7 @@ package config
 // 判定与拒写在 internal/store 的会话写入路径落地，配置面只负责给出有效值。
 const (
 	// DefaultSessionMaxBytes 是单会话正文上限的默认值：12MiB。取值依据是一次大集群
-	// 巡检（47 命名空间 / 533 Pod）的工具结果约 2MiB 量级，12MiB 容得下连续多轮大
+	// 体检（47 命名空间 / 533 Pod）的工具结果约 2MiB 量级，12MiB 容得下连续多轮大
 	// 结果而不至于让一行 MySQL 长文本无限膨胀。
 	DefaultSessionMaxBytes = int64(12 << 20)
 

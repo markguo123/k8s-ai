@@ -118,7 +118,7 @@ func TestSingleConcurrency(t *testing.T) {
 	start := make(chan struct{})
 	ts, token, _, _ := newAuthedScanServer(t, &fakeScan{result: &model.ScanResult{}, delay: time.Second, start: start})
 
-	// 全集群巡检只有 admin 能发（方案 17 §4.2），这里的 token 来自 Bootstrap 的 admin。
+	// 集群体检只有 admin 能发（方案 17 §4.2），这里的 token 来自 Bootstrap 的 admin。
 	r1, err := authedPost(ts, "/api/v1/scans", `{"scope":"cluster"}`, token)
 	if err != nil || r1.StatusCode != http.StatusAccepted {
 		t.Fatalf("第一次创建 = %v %v", r1, err)

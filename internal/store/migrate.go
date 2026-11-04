@@ -371,7 +371,7 @@ var schemaV6 = []tableSpec{
 			{name: "ref_count", kind: colInt, def: "0"},
 			{name: "state", kind: colText, def: "'ready'"},
 			{name: "deleted_at", kind: colTimeOrNull},
-			// created_by 是报告归属的唯一依据：巡检 job 是进程内对象，没有 owner 列可继承。
+			// created_by 是报告归属的唯一依据：体检 job 是进程内对象，没有 owner 列可继承。
 			{name: "created_by", kind: colText, def: "''"},
 			{name: "payload", kind: colBytes, nullable: true},
 			{name: "created_at", kind: colTime},
@@ -449,7 +449,7 @@ var schemaV7SessionColumns = []column{
 	{name: "title", kind: colText, def: "''"},
 }
 
-// schemaV8ReportColumns 是第 8 版给 reports 追加的巡检范围两列（P8.13，方案 17 §7.1）。
+// schemaV8ReportColumns 是第 8 版给 reports 追加的体检范围两列（P8.13，方案 17 §7.1）。
 //
 // 它们只回答「这份报告是扫什么出来的」，用于展示与过滤：不参与对象 key（key 仍按
 // cluster/scan 段组装），也不参与读鉴权（可见性仍只看 created_by + cluster_id）。
@@ -459,13 +459,13 @@ var schemaV8ReportColumns = []column{
 	{name: "scope_value", kind: colText, def: "''"},
 }
 
-// schemaV8ReportIndexes 给「按任务反查产物」这条页面路径建索引：发起巡检后前端要按
+// schemaV8ReportIndexes 给「按任务反查产物」这条页面路径建索引：发起体检后前端要按
 // scan_id 找回自己的报告，没索引就是全表扫。
 var schemaV8ReportIndexes = []indexSpec{
 	{name: "idx_reports_scan", table: "reports", cols: "scan_id"},
 }
 
-// migrateV8 给 reports 补巡检范围列并按任务反查的索引（P8.13）。
+// migrateV8 给 reports 补体检范围列并按任务反查的索引（P8.13）。
 //
 // 补列冲突即跳过：MySQL 没有 ADD COLUMN IF NOT EXISTS，重复执行时拿到的是重复列错误，
 // 与 v6/v7 同一套幂等处理。存量行不回填——v8 之前根本没有范围信息，编一个值出来比留空
@@ -596,7 +596,7 @@ func longTextColumns() []columnRef {
 // migrateV5 把全部长文本列重定义为 dialect 认定的长文本类型（MySQL TEXT →
 // MEDIUMTEXT）。
 //
-// 起因是真机事故：一次 47 命名空间 / 533 Pod 的巡检结果写进会话消息后，
+// 起因是真机事故：一次 47 命名空间 / 533 Pod 的体检结果写进会话消息后，
 // sessions.data 超过 MySQL TEXT 的 64KB 上限，落库直接 Error 1406，整轮对话记录
 // 丢失。SQLite 的 TEXT 没有长度上限，modifyColumn 返回空串，本迁移在 SQLite 上是
 // 空操作；MySQL 侧重复 MODIFY 同类型列只是重建，可安全重跑。

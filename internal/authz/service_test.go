@@ -292,7 +292,7 @@ func TestTargetUserMustExist(t *testing.T) {
 func strp(s string) *string { return &s }
 
 // TestAuthorizedClusterIDs 覆盖 P8.5 报告可见性的授权来源（方案 15 §12.2）：
-// 系统巡检报告能看见哪些集群，取决于 AuthzGrant 而不是角色名。这里一旦放宽，
+// 系统体检报告能看见哪些集群，取决于 AuthzGrant 而不是角色名。这里一旦放宽，
 // 普通用户就能读到全集群的体检结论；收紧过度则只读角色一份系统报告都看不到。
 func TestAuthorizedClusterIDs(t *testing.T) {
 	svc, st, userID := newTestService(t)
@@ -354,7 +354,7 @@ func TestAuthorizedClusterIDs(t *testing.T) {
 		}
 	}
 
-	// 一条不限定集群的授权 = 全部系统巡检报告可见（只放宽系统报告，不放宽他人私有报告）。
+	// 一条不限定集群的授权 = 全部系统体检报告可见（只放宽系统报告，不放宽他人私有报告）。
 	if _, err := svc.CreateGrant(ctx, CreateGrantRequest{
 		PrincipalType: "user", PrincipalID: user.ID,
 		Namespaces: []string{"app"}, Permissions: []string{"destroy"},

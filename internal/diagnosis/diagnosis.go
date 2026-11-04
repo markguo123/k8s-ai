@@ -34,6 +34,10 @@ type Diagnoser interface {
 type diagnoser struct {
 	opts   model.LLMOptions
 	system string
+
+	// dc 是确定性诊断层给出的「程序已知事实」（四期 P9）。为 nil 时
+	// 诊断退化为纯 Finding 上下文，与 New 的行为完全一致。
+	dc *Context
 }
 
 // New 创建诊断编排器。
@@ -46,6 +50,13 @@ type summaryCounters struct {
 	mu     sync.Mutex
 	calls  int
 	failed int
+
+	// 四期 P9 诊断质量口径：区分「调用成功但被校验退回」与「调用失败」。
+	succeeded    int
+	validated    int
+	rejected     int
+	statuses     map[string]int
+	degradations []model.LLMDegradation
 }
 
 func (s *summaryCounters) call() {
@@ -57,6 +68,48 @@ func (s *summaryCounters) call() {
 func (s *summaryCounters) fail() {
 	s.mu.Lock()
 	s.failed++
+	s.mu.Unlock()
+}
+
+// record 记录一次送诊结果（成功/降级/退回），status 取 model.LLMStatus*。
+func (s *summaryCounters) record(status string, ok bool, deg *model.LLMDegradation) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.statuses == nil {
+		s.statuses = map[string]int{}
+	}
+	s.statuses[status]++
+	if ok {
+		s.succeeded++
+		return
+	}
+	if deg != nil {
+		s.degradations = append(s.degradations, *deg)
+	}
+}
+
+// snapshot 把计数写入 LLMSummary。
+func (s *summaryCounters) snapshot(sum *model.LLMSummary) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sum.Calls = s.calls
+	sum.Failed = s.failed
+	sum.Succeeded = s.succeeded
+	sum.Validated = s.validated
+	sum.Rejected = s.rejected
+	sum.StatusCounts = s.statuses
+	sum.Degradations = s.degradations
+}
+
+func (s *summaryCounters) markValidated() {
+	s.mu.Lock()
+	s.validated++
+	s.mu.Unlock()
+}
+
+func (s *summaryCounters) markRejected() {
+	s.mu.Lock()
+	s.rejected++
 	s.mu.Unlock()
 }
 
@@ -88,11 +141,12 @@ func (d *diagnoser) Diagnose(ctx context.Context, findings []model.Finding, clie
 			diag, err := d.diagnoseOne(ctx, c, client, counters)
 			if err != nil {
 				if ctx.Err() != nil {
-					diag = degraded(c.finding, "LLM 诊断超时/预算不足")
+					diag = degradedStatus(c.finding, model.LLMStatusTimeout, "LLM 诊断超时/预算不足")
 				} else {
 					return // 非预期错误：保持空槽，主流程统一降级
 				}
 			}
+			tally(counters, diag, "")
 			mu.Lock()
 			out[i] = diag
 			if !diag.LLMUsed {
@@ -110,21 +164,41 @@ func (d *diagnoser) Diagnose(ctx context.Context, findings []model.Finding, clie
 		}
 		for i := range out {
 			if out[i].FindingID == "" {
-				out[i] = degraded(contexts[i].finding, "LLM 诊断超时/预算不足")
+				out[i] = degradedStatus(contexts[i].finding, model.LLMStatusTimeout, "LLM 诊断超时/预算不足")
+				tally(counters, out[i], "")
 				summary.Degraded++
 			}
 		}
 	}
-	summary.Calls = counters.calls
-	summary.Failed = counters.failed
+	counters.snapshot(&summary)
 	return out, summary, nil
+}
+
+// tally 记录一次送诊结果：成功只计数，降级/失败额外留下可解释的降级原因。
+func tally(counters *summaryCounters, diag model.Diagnosis, incID string) {
+	if diag.LLMUsed {
+		counters.record(model.LLMStatusSuccess, true, nil)
+		return
+	}
+	status := diag.Status
+	if status == "" {
+		status = model.LLMStatusDegraded
+	}
+	counters.record(status, false, &model.LLMDegradation{
+		IncidentID:        incID,
+		FindingID:         diag.FindingID,
+		Status:            status,
+		Reason:            diag.Error,
+		// 按 Finding 送诊时没有确定性诊断层参与：规则标题不是「确定性结论」，
+		// 这里声称保留了确定性结论，报告就会把规则判定说成引擎判定。
+	})
 }
 
 // diagnoseOne 对单个 Finding 送诊；解析/校验失败带修复指令重试一次，
 // 仍失败则降级为规则结论（FR-016）。
 func (d *diagnoser) diagnoseOne(ctx context.Context, c findingContext, client llm.LLMClient, counters *summaryCounters) (model.Diagnosis, error) {
 	msgs := d.diagnosisMessages(llm.BuildMessages(d.system, c.text))
-	diag, err := d.tryDiagnose(ctx, client, msgs, c.finding, counters)
+	diag, err := d.tryDiagnose(ctx, client, msgs, c, counters)
 	if err == nil {
 		return diag, nil // 成功或已降级
 	}
@@ -137,17 +211,17 @@ func (d *diagnoser) diagnoseOne(ctx context.Context, c findingContext, client ll
 		if ctx.Err() != nil {
 			return model.Diagnosis{}, ctx.Err()
 		}
-		return degraded(c.finding, "LLM 调用失败（重试）"), nil
+		return degradedStatus(c.finding, model.LLMStatusRequestFailed, "LLM 调用失败（重试）"), nil
 	}
-	diag2, err2 := d.parseAndBuild(resp.Content, c.finding)
+	diag2, err2 := d.parseAndBuild(resp.Content, c.finding, c.evUniverse)
 	if err2 != nil {
-		return degraded(c.finding, "LLM 输出解析失败"), nil
+		return degradedStatus(c.finding, model.LLMStatusInvalidResponse, "LLM 输出解析失败"), nil
 	}
 	return diag2, nil
 }
 
 // tryDiagnose 调用一次 LLM；网络/服务端失败直接降级，解析失败返回错误由上层重试。
-func (d *diagnoser) tryDiagnose(ctx context.Context, client llm.LLMClient, msgs []llm.Message, f model.Finding, counters *summaryCounters) (model.Diagnosis, error) {
+func (d *diagnoser) tryDiagnose(ctx context.Context, client llm.LLMClient, msgs []llm.Message, c findingContext, counters *summaryCounters) (model.Diagnosis, error) {
 	counters.call()
 	resp, err := client.Chat(ctx, llm.ChatRequest{Messages: msgs, MaxTokens: d.diagnosisMaxTokens(), Thinking: d.opts.Thinking})
 	if err != nil {
@@ -155,13 +229,13 @@ func (d *diagnoser) tryDiagnose(ctx context.Context, client llm.LLMClient, msgs 
 		if ctx.Err() != nil {
 			return model.Diagnosis{}, ctx.Err()
 		}
-		return degraded(f, "LLM 调用失败："+errRedactor.Redact(err.Error())), nil
+		return degradedStatus(c.finding, model.LLMStatusRequestFailed, "LLM 调用失败："+errRedactor.Redact(err.Error())), nil
 	}
-	return d.parseAndBuild(resp.Content, f)
+	return d.parseAndBuild(resp.Content, c.finding, c.evUniverse)
 }
 
 // parseAndBuild 解析 LLM 输出并构建 Diagnosis；schema 错误返回 error 触发修复重试。
-func (d *diagnoser) parseAndBuild(content string, f model.Finding) (model.Diagnosis, error) {
+func (d *diagnoser) parseAndBuild(content string, f model.Finding, universe map[string]bool) (model.Diagnosis, error) {
 	out, err := parseLLMOutput(content)
 	if err != nil {
 		// 记录脱敏后的输出预览，便于排查模型输出格式问题。
@@ -172,17 +246,27 @@ func (d *diagnoser) parseAndBuild(content string, f model.Finding) (model.Diagno
 		slog.Warn("llm: 输出解析失败", "finding", f.ID, "error", err.Error(), "preview", errRedactor.Redact(preview))
 		return model.Diagnosis{}, err
 	}
-	diag := buildDiagnosis(f, out)
+	diag := buildDiagnosis(f, out, universe)
 	if strings.TrimSpace(diag.RootCause) == "" || strings.TrimSpace(diag.Summary) == "" {
-		return degraded(f, "LLM 输出校验失败"), nil
+		return degradedStatus(f, model.LLMStatusSchemaInvalid, "LLM 输出校验失败"), nil
 	}
 	ensureRemediation(&diag, f)
+	if diag.Status == "" {
+		diag.Status = model.LLMStatusSuccess
+	}
 	return diag, nil
 }
 
 // degraded 构造降级 Diagnosis：LLM 不可用时仍基于已采证据生成"规则判定初步判断"，
 // 并自动提取日志关键行（panic/fatal/error），避免"分析不可用"浪费已有证据。
 func degraded(f model.Finding, reason string) model.Diagnosis {
+	return degradedStatus(f, model.LLMStatusDegraded, reason)
+}
+
+// degradedStatus 同 degraded，但显式记录失败类别（timeout/request_failed/
+// invalid_response/schema_validation_failed），报告据此区分「模型没答」和
+// 「模型答得不对」。
+func degradedStatus(f model.Finding, status, reason string) model.Diagnosis {
 	d := model.Diagnosis{
 		FindingID:            f.ID,
 		Summary:              f.Title,
@@ -190,6 +274,8 @@ func degraded(f model.Finding, reason string) model.Diagnosis {
 		Error:                reason,
 		RootCause:            ruleBasedRootCause(f),
 		RemediationDirection: remediationDirection(f.Rule),
+		Source:               "rule",
+		Status:               status,
 	}
 	if ref := f.Resource; ref.Kind == "Pod" {
 		d.Investigation = []model.Command{
@@ -319,7 +405,8 @@ type incidentContext struct {
 // DiagnoseIncidents 按 Incident 送诊（并发 2），结果按入参顺序；超时降级不失败。
 func (d *diagnoser) DiagnoseIncidents(ctx context.Context, incidents []model.Incident, findingByID map[string]model.Finding, client llm.LLMClient) ([]model.Diagnosis, model.LLMSummary, error) {
 	summary := model.LLMSummary{Enabled: true}
-	ctxs := buildIncidentContexts(incidents, findingByID, d.opts)
+	ctxs := d.buildIncidentContexts(incidents, findingByID)
+	summary.Skipped = len(incidents) - len(ctxs)
 	for _, c := range ctxs {
 		summary.TokensEstimated += c.tokens
 	}
@@ -392,11 +479,11 @@ func (d *diagnoser) DiagnoseIncidents(ctx context.Context, incidents []model.Inc
 				d.opts.Progress.IncidentStarted(c.inc.ID, i+1, len(ctxs))
 			}
 			startTimer(i)
-			diag, err := d.diagnoseOneIncident(ctx, c, client, counters)
+			diag, err := d.diagnoseOneIncident(ctx, c, findingByID, client, counters)
 			stopTimer(i)
 			if err != nil {
 				if ctx.Err() != nil {
-					diag = degraded(c.root, "LLM 诊断超时/预算不足")
+					diag = degradedStatus(c.root, model.LLMStatusTimeout, "LLM 诊断超时/预算不足")
 				} else {
 					if d.opts.Progress != nil {
 						d.opts.Progress.IncidentDone(c.inc.ID, i+1, len(ctxs), diag.LLMUsed, err)
@@ -404,6 +491,10 @@ func (d *diagnoser) DiagnoseIncidents(ctx context.Context, incidents []model.Inc
 					return
 				}
 			}
+			// 结果校验（架构图第 8 阶段）：模型的每句话都要在已采事实里落地，
+			// 越界就退回确定性结论，而不是让编造内容进报告。
+			diag = d.finishIncidentDiagnosis(diag, c, findingByID, counters)
+			diag.IncidentID = c.inc.ID
 			if d.opts.Progress != nil {
 				d.opts.Progress.IncidentDone(c.inc.ID, i+1, len(ctxs), diag.LLMUsed, err)
 			}
@@ -422,19 +513,128 @@ func (d *diagnoser) DiagnoseIncidents(ctx context.Context, incidents []model.Inc
 		}
 		for i := range out {
 			if out[i].FindingID == "" {
-				out[i] = degraded(ctxs[i].root, "LLM 诊断超时/预算不足")
+				out[i] = d.finishIncidentDiagnosis(
+					degradedStatus(ctxs[i].root, model.LLMStatusTimeout, "LLM 诊断超时/预算不足"),
+					ctxs[i], findingByID, counters)
+				out[i].IncidentID = ctxs[i].inc.ID
 				summary.Degraded++
 			}
 		}
 	}
-	summary.Calls = counters.calls
-	summary.Failed = counters.failed
+	counters.snapshot(&summary)
 	return out, summary, nil
 }
 
+// finishIncidentDiagnosis 收口单个 Incident 的诊断结果并计入诊断账：
+//   - LLM 通过校验：原样返回（置信度上限已由校验层压到 probable）；
+//   - LLM 越界（编造证据/资源）：标记 rejected，有确定性结论就退回它；
+//   - LLM 没答上来：优先用确定性结论顶替「规则判定 + 标题」这种弱降级。
+func (d *diagnoser) finishIncidentDiagnosis(diag model.Diagnosis, c incidentContext,
+	findingByID map[string]model.Finding, counters *summaryCounters) model.Diagnosis {
+	if !diag.LLMUsed {
+		status := diag.Status
+		if status == "" {
+			status = model.LLMStatusDegraded
+		}
+		kept := false // 只有真的取回确定性引擎的结论才算「保留确定性结论」
+		if det, ok := d.deterministicOf(c.inc.ID); ok {
+			det.Status = status
+			det.Error = diag.Error
+			if det.FindingID == "" {
+				det.FindingID = diag.FindingID
+			}
+			diag, kept = det, true
+		}
+		counters.record(status, false, &model.LLMDegradation{
+			IncidentID:        c.inc.ID,
+			FindingID:         diag.FindingID,
+			Status:            status,
+			Reason:            diag.Error,
+			KeptDeterministic: kept,
+		})
+		return diag
+	}
+	if validateIncidentDiagnosis(&diag, c.inc, findingByID, d.dc) {
+		counters.markValidated()
+		counters.record(model.LLMStatusSuccess, true, nil)
+		if diag.Source == "" {
+			diag.Source = "llm"
+		}
+		return diag
+	}
+	counters.markRejected()
+	issue := "LLM 结论未通过与已采证据的一致性校验"
+	if diag.Validation != nil && len(diag.Validation.Issues) > 0 {
+		issue = strings.Join(diag.Validation.Issues, "；")
+	}
+	if det, ok := d.deterministicOf(c.inc.ID); ok {
+		v := diag.Validation
+		findingID := diag.FindingID
+		det.Validation = v
+		det.Status = model.LLMStatusEvidenceInvalid
+		det.Error = issue
+		if det.FindingID == "" {
+			det.FindingID = findingID
+		}
+		counters.record(model.LLMStatusEvidenceInvalid, false, &model.LLMDegradation{
+			IncidentID:        c.inc.ID,
+			FindingID:         det.FindingID,
+			Status:            model.LLMStatusEvidenceInvalid,
+			Reason:            issue,
+			KeptDeterministic: true,
+		})
+		return det
+	}
+	counters.record(model.LLMStatusEvidenceInvalid, false, &model.LLMDegradation{
+		IncidentID: c.inc.ID,
+		FindingID:  diag.FindingID,
+		Status:     model.LLMStatusEvidenceInvalid,
+		Reason:     issue,
+	})
+	return diag
+}
+
+// deterministicOf 取本故障链的确定性诊断结论（无增强上下文时返回 false）。
+func (d *diagnoser) deterministicOf(incidentID string) (model.Diagnosis, bool) {
+	if d.dc == nil || d.dc.Deterministic == nil {
+		return model.Diagnosis{}, false
+	}
+	det, ok := d.dc.Deterministic[incidentID]
+	return det, ok
+}
+
+// buildIncidentContexts 构造送诊上下文，并把确定性结论/资源关系/真实状态
+// 注入到预算允许的范围内（增强内容排在后部，超预算时按 rune 边界截断）。
+func (d *diagnoser) buildIncidentContexts(incidents []model.Incident, findingByID map[string]model.Finding) []incidentContext {
+	ctxs := buildIncidentContexts(incidents, findingByID, d.opts)
+	if d.dc == nil {
+		return ctxs
+	}
+	per := d.opts.MaxInputTokens
+	if per <= 0 {
+		per = 8192
+	}
+	for i := range ctxs {
+		left := per - ctxs[i].tokens
+		if left < 600 {
+			continue // 根因上下文已占满预算：不注入增强，避免挤掉证据
+		}
+		ext := d.enhanceText(ctxs[i].inc, findingByID)
+		if ext == "" {
+			continue
+		}
+		ext = capText(ext, left)
+		ctxs[i].text += ext
+		ctxs[i].tokens = estimateTokens(ctxs[i].text)
+	}
+	return ctxs
+}
+
 // diagnoseOneIncident 复用 diagnoseOne：把 Incident 的根因 Finding 作为诊断主体。
-func (d *diagnoser) diagnoseOneIncident(ctx context.Context, c incidentContext, client llm.LLMClient, counters *summaryCounters) (model.Diagnosis, error) {
-	fc := findingContext{finding: c.root, text: c.text, tokens: c.tokens}
+func (d *diagnoser) diagnoseOneIncident(ctx context.Context, c incidentContext, findingByID map[string]model.Finding,
+	client llm.LLMClient, counters *summaryCounters) (model.Diagnosis, error) {
+	fc := findingContext{finding: c.root, text: c.text, tokens: c.tokens,
+		evUniverse: incidentEvidenceUniverse(c.inc, findingByID)}
 	return d.diagnoseOne(ctx, fc, client, counters)
 }
 

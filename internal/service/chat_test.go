@@ -28,7 +28,7 @@ func TestSummarizeToolPrelude(t *testing.T) {
 		{name: "short progress", text: "我来检查下 test 命名空间下面的服务运行情况。", want: "我来检查下 test 命名空间下面的服务运行情况。"},
 		{name: "report conclusion", text: "根因是 PVC 配置错误，下面给出修复方案。", want: "根因是 PVC 配置错误，下面给出修复方案。"},
 		{name: "repair wording in progress", text: "我先检查 PVC，确认是 storageClass 错误，随后给出修复方案。", want: "我先检查 PVC，确认是 storageClass 错误，随后给出修复方案。"},
-		{name: "markdown report", text: "## 诊断报告\n服务异常", want: ""},
+		{name: "markdown report", text: "## 体检报告\n服务异常", want: ""},
 		{name: "too long", text: strings.Repeat("检查证据 ", 40), want: ""},
 	}
 	for _, tt := range tests {
@@ -50,7 +50,7 @@ func TestChatServicePersistsReasoningInRoundOrder(t *testing.T) {
 			reasoning: []string{"先看 ", "Pod 列表"},
 			toolCall:  &llm.ToolCall{ID: "c1", Name: "get_resources", Arguments: json.RawMessage(`{"kind":"pods"}`)},
 		},
-		{reasoning: []string{"汇总异常项"}, content: "## 巡检报告\n\n发现 1 个异常项"},
+		{reasoning: []string{"汇总异常项"}, content: "## 体检报告\n\n发现 1 个异常项"},
 	}}
 	col := &collector{}
 	svc := testChatServiceWithSink(t, fl, col)

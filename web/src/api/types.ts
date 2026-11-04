@@ -382,7 +382,7 @@ export interface ReportView {
   /** 报告归属人 ID；跨 owner 读取由后端落审计，前端不做安全判定。 */
   createdBy: string
   /**
-   * 巡检维度（P8.13）：cluster | namespace | pod。空串 = 这条记录早于范围留痕，
+   * 体检维度（P8.13）：cluster | namespace | pod。空串 = 这条记录早于范围留痕，
    * 页面显示「未记录」，不参与任何安全判定。
    */
   scopeKind?: string
@@ -391,12 +391,39 @@ export interface ReportView {
   /** false = 业务行还在但内容已不可恢复，下载会回 410。 */
   available: boolean
   createdAt: string
+  /**
+   * 发起人用户名（后端把 created_by 这个用户 ID 换成名字，P9.13）。
+   * 用户表里查不到该 ID（账号已删）时为空，页面回退显示占位符；展示字段，
+   * 不参与任何归属判定——可见性由后端逐次判定。
+   */
+  createdByName?: string
 }
 
-/** 页面巡检任务（后端 server.ScanJob，P8.13）。POST 回 202 时即为 pending。 */
+/**
+ * 报告列表顶部总览（GET /api/v1/reports/summary，P9.13）。
+ *
+ * 口径是「你看得见的全部报告」而不是当前页：类别由 scope 两列分组，数字与列表
+ * 共用同一条归属谓词，所以点进去的行数永远和这里一致。
+ */
+export interface ReportOverview {
+  total: number
+  /** 集群体检（全集群范围）。 */
+  cluster: number
+  /** 业务体检（命名空间 / 单 Pod 范围）。 */
+  business: number
+  /** 范围未记录：早期存量报告与命令行产物。 */
+  other: number
+  markdown: number
+  json: number
+  /** 内容仍可取回的行数；total 减它即为「列表里其实读不到的条数」。 */
+  available: number
+}
+
+/** 页面体检任务（后端 server.ScanJob，P8.13）。POST 回 202 时即为 pending。 */
 export interface ScanJob {
   id: string
-  status: 'pending' | 'running' | 'succeeded' | 'failed' | string
+  /** cancelled = 发起人主动停止（P9.11），也是一种终态，轮询到此即停。 */
+  status: 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled' | string
   error?: string
   createdAt: string
   startedAt?: string
@@ -405,11 +432,16 @@ export interface ScanJob {
   owner?: string
   scopeKind?: string
   scopeValue?: string
+  /**
+   * 阶段账（P9）：扫描中由后端进度回调实时刷新，页面用它画体检进度步骤条。
+   * 排队中的任务还没有阶段，前端要能接受空。
+   */
+  stages?: StageRecord[]
   result?: ScanJobResult
 }
 
 /**
- * 巡检结果里页面会用到的一小块（后端 model.ScanResult 的裁剪视图）。
+ * 体检结果里页面会用到的一小块（后端 model.ScanResult 的裁剪视图）。
  * 完整结果在对象存储的 latest.json 里，这里只够画完成态的一行摘要。
  */
 export interface ScanJobResult {
@@ -455,4 +487,332 @@ export interface StorageHealth {
 export interface ReportDownloadTicket {
   report: ReportView
   downloadUrl: string
+}
+
+/* ---------------------------------------------------------------------------
+ * 四期 P9：统一体检报告（方案 18）。
+ *
+ * 这一组类型是后端 internal/model 的镜像，不是前端自己设计的一套模型：字段名逐字对应
+ * JSON tag，新增区块一律可选（后端 omitempty），这样 v1 老报告解出来是 undefined 而不是
+ * 假数据。前端在这里只做「读」，任何诊断判断都留在后端——详情页一旦自己算根因，
+ * 就等于有了第二套诊断引擎。
+ * ------------------------------------------------------------------------- */
+
+/** 严重度（后端 model.Severity）。用 string 兜底：后端将来加档位不应让页面白屏。 */
+export type FindingSeverity = 'INFO' | 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' | string
+
+/** 资源引用。namespace 为空表示集群级资源。 */
+export interface ResourceRef {
+  kind: string
+  group?: string
+  namespace?: string
+  name: string
+  uid?: string
+}
+
+/** 一条证据。id 是 E1..En，诊断结论里的 evidenceChain 就是引用它。 */
+export interface Evidence {
+  id: string
+  kind: string
+  source: string
+  key: string
+  value: string
+  truncated?: boolean
+  redacted?: boolean
+}
+
+/** 规则引擎产出的一条异常。 */
+export interface Finding {
+  id: string
+  rule: string
+  severity: FindingSeverity
+  title: string
+  summary: string
+  resource: ResourceRef
+  evidence: Evidence[]
+  related?: ResourceRef[]
+  correlated?: boolean
+  category?: string
+  kind?: string
+  suggestion?: boolean
+}
+
+/** 故障链里的一条因果关系（谁把故障传给了谁，凭什么）。 */
+export interface CausalEdge {
+  sourceFinding: string
+  targetFinding: string
+  sourceResource: ResourceRef
+  targetResource: ResourceRef
+  relationType: string
+  mechanism: string
+  rule?: string
+  evidenceRefs?: string[]
+  confidence: string
+}
+
+/** 故障成员的精简引用（Incident.members / HistoryDiff 复用）。 */
+export interface FindingRef {
+  id: string
+  rule: string
+  severity: FindingSeverity
+  title: string
+  resource: ResourceRef
+}
+
+/** 一条故障链：一个根因 + 它牵连出来的所有异常。 */
+export interface Incident {
+  id: string
+  title: string
+  severity: FindingSeverity
+  root: FindingRef
+  members: FindingRef[]
+  /** confirmed | probable | unknown。 */
+  rootCauseStatus?: string
+  rootCause?: string
+  rootCauseRule?: string
+  /** rule | llm | hybrid | none：这个根因是谁给的。 */
+  rootCauseMethod?: string
+  confidence?: number
+  confidenceBasis?: string
+  causalEdges?: CausalEdge[]
+  impactChain?: string[]
+  evidenceRefs?: string[]
+  evidenceGaps?: string[]
+  alternativeCauses?: string[]
+  independent?: boolean
+}
+
+/** 处置建议里的一条命令（排查 / 修复 / 验证三类）。 */
+export interface DiagnosisCommand {
+  category: string
+  text: string
+  risk: string
+}
+
+/** LLM 诊断结果的校验账：假证据与不存在的资源必须能被追出来。 */
+export interface DiagnosisValidation {
+  passed: boolean
+  rule?: string
+  issues?: string[]
+  fabricatedEvidence?: string[]
+  unknownResources?: string[]
+  downgraded?: boolean
+}
+
+/** 一个 Incident 的诊断结论（可能来自确定性引擎、LLM 或两者合并）。 */
+export interface Diagnosis {
+  findingId: string
+  incidentId?: string
+  summary: string
+  rootCause: string
+  confidence: number
+  confidenceLevel?: string
+  causalChain?: string
+  uncertainty?: string
+  evidenceChain: string[]
+  impact: string
+  possibleCauses?: string[]
+  investigation?: DiagnosisCommand[]
+  remediation?: DiagnosisCommand[]
+  verification?: DiagnosisCommand[]
+  remediationText?: string
+  remediationDirection?: string
+  llmUsed: boolean
+  error?: string
+  /** rule | deterministic | llm | hybrid。 */
+  source?: string
+  status?: string
+  rootCauseStatus?: string
+  diagnoser?: string
+  confidenceBasis?: string
+  impactChain?: string[]
+  alternativeCauses?: string[]
+  evidenceGaps?: string[]
+  validation?: DiagnosisValidation
+}
+
+/** 总体结论：全部由程序从既有事实推导，不经 LLM。 */
+export interface Conclusion {
+  /** healthy | attention | critical | unknown。 */
+  level: string
+  headline: string
+  summary: string
+  topRisks?: string[]
+  priorities?: string[]
+  dataCaveats?: string[]
+}
+
+/** 体检阶段账的一格。没有百分比是设计决定：采了多久就是多久。 */
+export interface StageRecord {
+  name: string
+  title: string
+  /** running | done | failed | skipped。 */
+  status: string
+  detail?: string
+  elapsed?: string
+  millis: number
+  progress?: string
+}
+
+/** 采集完整性。integrity 直接决定健康评分能不能给高分。 */
+export interface CollectionQuality {
+  planned: number
+  collected: number
+  failed: number
+  skipped: number
+  coverage: number
+  /** complete | partial | insufficient。 */
+  integrity: string
+  failedKinds?: string[]
+  skippedKinds?: string[]
+  criticalGaps?: string[]
+  missingData?: string[]
+  errors?: string[]
+}
+
+/** 单个 Incident 的 LLM 处置记录。 */
+export interface LLMDegradation {
+  incidentId?: string
+  findingId?: string
+  status: string
+  reason?: string
+  keptDeterministic?: boolean
+}
+
+/** 诊断账：这个结论是程序判的还是模型猜的，看这里。 */
+export interface DiagnosisSummary {
+  ruleFindings: number
+  deterministic: number
+  confirmed: number
+  probable: number
+  unknown: number
+  llmCalls: number
+  llmSucceeded: number
+  llmFailed: number
+  llmDegraded: number
+  llmRejected: number
+  hybrid: number
+  /** rule_only | llm_enhanced | llm_degraded。 */
+  mode: string
+  degradations?: LLMDegradation[]
+}
+
+/** LLM 调用账（v1 报告里只有前五个字段）。 */
+export interface LLMSummary {
+  enabled: boolean
+  calls: number
+  failed: number
+  degraded: number
+  tokensEstimated: number
+  succeeded?: number
+  skipped?: number
+  validated?: number
+  rejected?: number
+  mode?: string
+  statusCounts?: Record<string, number>
+  degradations?: LLMDegradation[]
+}
+
+/** 一类资源的体检小结。 */
+export interface DomainHealth {
+  domain: string
+  total: number
+  unhealthy: number
+  critical: number
+  detail?: string
+}
+
+/** 汇总到报告顶层的一条处置建议。 */
+export interface RemediationItem {
+  /** investigation | remediation | verification。 */
+  kind: string
+  text: string
+  risk?: string
+  target?: string
+  required?: boolean
+}
+
+/** 集群关键组件就绪状态。 */
+export interface ComponentInfo {
+  name: string
+  namespace?: string
+  present: boolean
+  ready: boolean
+  detail?: string
+}
+
+/** 一条采集失败。它必须出现在报告里，否则「没采到」就会被读成「没问题」。 */
+export interface CollectionErrorEntry {
+  resource: ResourceRef
+  operation: string
+  message: string
+  time: string
+}
+
+export interface HealthPenalty {
+  findingId: string
+  resource: ResourceRef
+  severity: FindingSeverity
+  points: number
+  reason: string
+}
+
+export interface HealthScore {
+  score: number
+  max: number
+  penalties?: HealthPenalty[]
+  correlatedExcluded?: number
+  dataIntegrity?: string
+  coverage?: number
+  capped?: boolean
+  capReason?: string
+}
+
+/** 与上一轮体检的对比。recovered 是好消息，也要显示。 */
+export interface HistoryDiff {
+  previousScanAt?: string
+  added: FindingRef[]
+  continued: FindingRef[]
+  recovered: FindingRef[]
+}
+
+/** 统一体检报告本体（后端 model.InspectionReport，即 ScanResult 的别名）。 */
+export interface InspectionReport {
+  meta: {
+    toolVersion?: string
+    cluster?: string
+    serverVersion?: string
+    scanStartedAt?: string
+    scanEndedAt?: string
+    duration?: string
+    namespace?: string
+    pod?: string
+  }
+  summary?: Record<string, number>
+  findings?: Finding[]
+  diagnoses?: Diagnosis[]
+  incidents?: Incident[]
+  history?: HistoryDiff
+  healthScore?: HealthScore
+  components?: ComponentInfo[]
+  collectionErrors?: CollectionErrorEntry[]
+  llmSummary?: LLMSummary
+  reportPaths?: string[]
+  /** 缺省 = v1 老报告。 */
+  schemaVersion?: number
+  conclusion?: Conclusion
+  collection?: CollectionQuality
+  diagnosisSummary?: DiagnosisSummary
+  stages?: StageRecord[]
+  statistics?: DomainHealth[]
+  remediation?: RemediationItem[]
+}
+
+/** GET /api/v1/reports/{id}/report 的 data（后端 server.structuredReportResponse）。 */
+export interface StructuredReportEnvelope {
+  report: ReportView
+  schemaVersion: number
+  /** true = 四期之前的 v1 结构，缺结论/采集质量/诊断账等区块。 */
+  legacy: boolean
+  inspection: InspectionReport | null
 }

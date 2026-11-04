@@ -44,12 +44,15 @@ func DefaultAPIPolicy() *permission.Policy {
 		permission.Rule{Method: "GET", Path: "/api/v1/auth/me", Access: permission.AccessAuthenticated},
 		permission.Rule{Method: "GET", Path: "/api/v1/auth/scope", Access: permission.AccessAuthenticated},
 		permission.Rule{Method: "POST", Path: "/api/v1/auth/password", Access: permission.AccessAuthenticated},
-		// 发起巡检单独立权限位 scan.execute（方案 17 §4.1）：借 chat.write 会让「能聊天」
+		// 发起体检单独立权限位 scan.execute（方案 17 §4.1）：借 chat.write 会让「能聊天」
 		// 等于「能在集群上跑一次全量采集」，而这两件事的爆炸半径完全不同。
 		permission.Rule{Method: "POST", Path: "/api/v1/scans", Access: permission.AccessPermission, Permission: permission.ScanExecute},
 		// 任务详情只登记到「登录」这一档：真正的闸门在 handler 里按发起人判定（任务结果
 		// 含被扫命名空间的问题清单，任何持 cluster.read 的人凭 job id 读他人任务即越权）。
 		permission.Rule{Method: "GET", Path: "/api/v1/scans/{id}", Access: permission.AccessAuthenticated},
+		// 停止体检同 GET 任务详情：登记到「登录」，由 handler 判「是不是你发起的那次」。
+		// 不复用 scan.execute 是有意的——停自己的体检不该需要「能在集群上发起全量采集」的权限。
+		permission.Rule{Method: "POST", Path: "/api/v1/scans/{id}/cancel", Access: permission.AccessAuthenticated},
 		permission.Rule{Method: "POST", Path: "/api/v1/clusters", Access: permission.AccessPermission, Permission: permission.ClusterManage},
 		permission.Rule{Method: "POST", Path: "/api/v1/clusters/test", Access: permission.AccessPermission, Permission: permission.ClusterManage},
 		permission.Rule{Method: "GET", Path: "/api/v1/clusters", Access: permission.AccessPermission, Permission: permission.ClusterRead},
@@ -82,7 +85,15 @@ func DefaultAPIPolicy() *permission.Policy {
 		// 这里刻意不加 report.read 权限位——四期没有独立的报告权限域，凭空造一个恒真的
 		// 权限位会让人误以为存在「授予后即可读所有报告」的开关（方案 15 §12.2）。
 		permission.Rule{Method: "GET", Path: "/api/v1/reports", Access: permission.AccessAuthenticated},
+		// 报告总览（P9.13）：与列表同一条可见性判定，登记到「登录」，聚合口径在 handler 里算。
+		permission.Rule{Method: "GET", Path: "/api/v1/reports/summary", Access: permission.AccessAuthenticated},
+		// 按需导出 Markdown（P9.10）：产物只存 JSON 一份，给人看的正文按需渲染，
+		// 可见性与 /content 完全一致。
+		permission.Rule{Method: "GET", Path: "/api/v1/reports/{id}/export", Access: permission.AccessAuthenticated},
 		permission.Rule{Method: "GET", Path: "/api/v1/reports/{id}/content", Access: permission.AccessAuthenticated},
+		// 报告详情页（P9）：与原文下载同一档「必须登录」，可见集合复用 reportScopeFor，
+		// 不新增权限位——详情页不是第二条授权通道。
+		permission.Rule{Method: "GET", Path: "/api/v1/reports/{id}/report", Access: permission.AccessAuthenticated},
 		// 清理两面同样只登记到「登录」：归属判定复用报告读侧那一套（owner / system+集群授权 /
 		// admin），不新增权限位（方案 15 v1.12 §18）。
 		permission.Rule{Method: "DELETE", Path: "/api/v1/reports/{id}", Access: permission.AccessAuthenticated},

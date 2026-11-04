@@ -193,7 +193,7 @@ describe('reports API（P8.11）', () => {
 })
 
 describe('报告清理 API（P8.14）', () => {
-  it('listReports 把 scanId 带进 query，用于只看本次巡检产物', async () => {
+  it('listReports 把 scanId 带进 query，用于只看本次体检产物', async () => {
     const fetchMock = vi.fn().mockResolvedValue(envelopeResponse(200, [sampleReport()], { total: 1 }))
     vi.stubGlobal('fetch', fetchMock)
 

@@ -25,7 +25,7 @@ func (f *reportFixture) grantNamespaces(t *testing.T, principalID string, namesp
 	}
 }
 
-// postScan 发起巡检并返回 (状态码, 任务 ID)。
+// postScan 发起体检并返回 (状态码, 任务 ID)。
 func (f *reportFixture) postScan(t *testing.T, token, body string) (int, string) {
 	t.Helper()
 	status, _, raw := f.req(t, http.MethodPost, "/api/v1/scans", token, body)
@@ -68,7 +68,7 @@ func (f *reportFixture) waitScan(t *testing.T, token, id string) {
 	t.Fatal("任务未在超时内结束")
 }
 
-// TestScanClusterScopeRequiresAdmin 锁方案 17 §4.2：全集群巡检读的是全部命名空间的清单、
+// TestScanClusterScopeRequiresAdmin 锁方案 17 §4.2：集群体检读的是全部命名空间的清单、
 // 事件与日志，超出 namespace 授权的表达力，operator 有 scan.execute 也不能扫全集群。
 func TestScanClusterScopeRequiresAdmin(t *testing.T) {
 	f := newReportFixture(t, nil)
@@ -77,7 +77,7 @@ func TestScanClusterScopeRequiresAdmin(t *testing.T) {
 
 	status, _, raw := f.req(t, http.MethodPost, "/api/v1/scans", operator, `{"scope":"cluster"}`)
 	if status != http.StatusForbidden {
-		t.Fatalf("operator 发起全集群巡检应 403，got %d：%s", status, raw)
+		t.Fatalf("operator 发起集群体检应 403，got %d：%s", status, raw)
 	}
 	// 被拒时不该有任何一次扫描真的跑起来。
 	select {
@@ -87,7 +87,7 @@ func TestScanClusterScopeRequiresAdmin(t *testing.T) {
 	}
 
 	if status, id := f.postScan(t, f.adminToken(t), `{"scope":"cluster"}`); status != http.StatusAccepted {
-		t.Fatalf("admin 发起全集群巡检应 202，got %d", status)
+		t.Fatalf("admin 发起集群体检应 202，got %d", status)
 	} else {
 		f.waitScan(t, f.adminToken(t), id)
 	}
@@ -130,7 +130,7 @@ func TestScanNamespaceScopeRequiresGrant(t *testing.T) {
 		t.Fatalf("实际扫描命名空间被改写：%+v", opts)
 	}
 	if opts.Attribution.ScopeKind != model.ScopeNamespace || opts.Attribution.ScopeValue != "app" {
-		t.Fatalf("巡检范围两列不对：%+v", opts.Attribution)
+		t.Fatalf("体检范围两列不对：%+v", opts.Attribution)
 	}
 	f.waitScan(t, operator, id)
 
@@ -139,6 +139,30 @@ func TestScanNamespaceScopeRequiresGrant(t *testing.T) {
 		`{"scope":"pod","namespace":"kube-system","pod":"web-0"}`); status != http.StatusForbidden {
 		t.Fatalf("扫未授权命名空间里的 pod 应 403，got %d：%s", status, raw)
 	}
+}
+
+// TestScanFormatChoosesSingleArtifact 锁 P9.13 的产物口径：页面发起的体检只留用户选中的
+// 那一种格式，缺省是 JSON。一次存两份会让报告列表长出两条几乎相同的行，用户反而分不清
+// 哪份是最新的；另一种格式由 /reports/{id}/export 按需渲染。
+func TestScanFormatChoosesSingleArtifact(t *testing.T) {
+	f := newReportFixture(t, nil)
+	operator := f.userToken(t, "op-fmt", "operator")
+	f.grantNamespaces(t, "u-op-fmt", "app")
+
+	status, id := f.postScan(t, operator, `{"scope":"namespace","namespace":"app","format":"markdown"}`)
+	if status != http.StatusAccepted {
+		t.Fatalf("指定 markdown 应 202，got %d", status)
+	}
+	var opts model.ScanOptions
+	select {
+	case opts = <-f.scan.seen:
+	case <-time.After(5 * time.Second):
+		t.Fatal("扫描未被调用")
+	}
+	if opts.Attribution.ReportArtifact != model.ReportArtifactMarkdown {
+		t.Fatalf("产物格式没落到 markdown：%+v", opts.Attribution)
+	}
+	f.waitScan(t, operator, id)
 }
 
 // TestScanScopeValidation 锁范围参数本身的形状：缺字段、野值、clusterId 一律 400，
@@ -153,6 +177,7 @@ func TestScanScopeValidation(t *testing.T) {
 		"pod 缺 pod":       `{"scope":"pod","namespace":"app"}`,
 		"pod 缺 namespace": `{"scope":"pod","pod":"web-0"}`,
 		"preset 野值":        `{"scope":"namespace","namespace":"app","preset":"ultra"}`,
+		"format 野值":       `{"scope":"namespace","namespace":"app","format":"yaml"}`,
 		"clusterId 未接入":    `{"scope":"namespace","namespace":"app","clusterId":"c-prod"}`,
 	}
 	for name, body := range cases {
@@ -174,7 +199,7 @@ func TestScanJobOwnerIsolation(t *testing.T) {
 
 	_, id := f.postScan(t, operator, `{"scope":"namespace","namespace":"app"}`)
 	if id == "" {
-		t.Fatal("发起巡检未拿到任务 ID")
+		t.Fatal("发起体检未拿到任务 ID")
 	}
 	f.waitScan(t, operator, id)
 
@@ -212,7 +237,7 @@ func TestScanPresetMapping(t *testing.T) {
 		t.Fatalf("不采日志时不该留着日志窗口参数：%+v", quick)
 	}
 
-	// 深度巡检：开日志与时间窗。
+	// 深度体检：开日志与时间窗。
 	deep := base()
 	applyScanPreset(&deep, scanPresets[scanPresetDeep])
 	if !deep.LLM.Enabled || !deep.CollectLogs || deep.Since != time.Hour {
@@ -227,7 +252,7 @@ func TestScanPresetMapping(t *testing.T) {
 		t.Fatalf("超时应收敛到配置值 2m，got %v", tight.Timeout)
 	}
 
-	// 部署没配模型时，档位不许凭空打开 LLM（否则标准巡检必然以失败收场）。
+	// 部署没配模型时，档位不许凭空打开 LLM（否则标准体检必然以失败收场）。
 	noLLM := model.ScanOptions{Timeout: 10 * time.Minute}
 	applyScanPreset(&noLLM, scanPresets[scanPresetStandard])
 	if noLLM.LLM.Enabled {

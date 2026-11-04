@@ -29,18 +29,49 @@ type ReportQuery struct {
 	ViewerID string
 	// Admin 为 true 时不加归属过滤（跨用户读取由 service 层落审计）。
 	Admin bool
-	// AllSystemClusters 表示可查看者拥有全部集群授权，系统巡检报告不按 cluster 收窄。
+	// AllSystemClusters 表示可查看者拥有全部集群授权，系统体检报告不按 cluster 收窄。
 	AllSystemClusters bool
-	// SystemClusterIDs 是可查看者被授权的集群 ID，决定能看到哪些系统巡检报告。
+	// SystemClusterIDs 是可查看者被授权的集群 ID，决定能看到哪些系统体检报告。
 	SystemClusterIDs []string
 	// ClusterID / Kind 是可选过滤条件。
 	ClusterID string
 	Kind      string
-	// ScanID 是按扫描任务反查产物（P8.13）：页面发起巡检后靠它找回自己的报告。
+	// ScanID 是按扫描任务反查产物（P8.13）：页面发起体检后靠它找回自己的报告。
 	ScanID string
+	// ScopeCategory 是「报告类别」过滤（P9.13）：集群体检 / 业务体检 / 其它。
+	// 它是展示层的分组口径（namespace 与 pod 都归业务体检），不是授权条件——归属与集群
+	// 授权仍由上面三段决定，类别只在已可见的行里再切一刀。
+	ScopeCategory string
 	// Limit / Offset 是分页；Limit<=0 表示不分页（仍按时间倒序全量返回）。
 	Limit  int
 	Offset int
+}
+
+// 报告类别取值（P9.13）：页面「报告类别」筛选与总览共用这一份口径。
+//
+// 口径放在 store 是因为它是 scope_kind 列的分组规则——列表过滤与总览统计必须由同一条
+// 规则算出来，否则会出现「筛出 3 条、总览写着 5 条」这种自相矛盾的页面。
+const (
+	// ScopeCategoryCluster 是集群体检（scope_kind = cluster）。
+	ScopeCategoryCluster = "cluster"
+	// ScopeCategoryBusiness 是业务体检（scope_kind = namespace 或 pod）。
+	ScopeCategoryBusiness = "business"
+	// ScopeCategoryOther 是范围未记录：v8 之前的存量行与 CLI/CronJob 产物。
+	ScopeCategoryOther = "other"
+)
+
+// ReportStats 是「同一归属条件」下的分类计数（P9.13 报告列表总览）。
+//
+// 它必须与列表共用 where()：总览说「集群体检 12 份」而点进去只有 3 份，比不给总览更糟。
+// 同样，未授权用户的行既不计入 items 也不计入这些计数。
+type ReportStats struct {
+	Total     int64 `json:"total"`
+	Cluster   int64 `json:"cluster"`
+	Business  int64 `json:"business"`
+	Other     int64 `json:"other"`
+	Markdown  int64 `json:"markdown"`
+	JSON      int64 `json:"json"`
+	Available int64 `json:"available"`
 }
 
 // ReportStore 是报告业务行的读面（方案 15 §6.2）。
@@ -53,6 +84,8 @@ type ReportStore interface {
 	// List 按归属与过滤条件分页列出报告，返回值同时给出同条件下的总行数（分页 total）。
 	List(ctx context.Context, q ReportQuery) ([]*Report, int64, error)
 	Get(ctx context.Context, id string) (*Report, error)
+	// Stats 给出与 List 同一套归属/过滤条件下的分类计数（不看分页）。
+	Stats(ctx context.Context, q ReportQuery) (ReportStats, error)
 }
 
 type reportStore struct{ s *dbStore }
@@ -125,7 +158,7 @@ func (q ReportQuery) where() (string, []any, error) {
 		switch {
 		case q.AllSystemClusters:
 			// 拥有全部集群授权：系统报告按「有集群标识」放行。cluster_id 为空串的系统
-			// 报告（未绑定平台集群的历史/本地任务）仍然只有 admin 能读——没有可比对的
+			// 报告（未绑定已登记集群的历史/本地任务）仍然只有 admin 能读——没有可比对的
 			// 授权对象时，默认拒绝比默认放行诚实。
 			own = append(own, "created_by = ? AND cluster_id <> ''")
 			ownArgs = append(ownArgs, objectstore.SystemActor)
@@ -153,10 +186,50 @@ func (q ReportQuery) where() (string, []any, error) {
 		clauses = append(clauses, "scan_id = ?")
 		args = append(args, scanID)
 	}
+	// 类别过滤用字面量而不是占位符：值域是上面三个常量，不来自请求体，
+	// 拼进 SQL 不会引入注入面，反而让 IN 列表少两个参数、便于比对两处 SQL。
+	switch strings.TrimSpace(q.ScopeCategory) {
+	case ScopeCategoryCluster:
+		clauses = append(clauses, "scope_kind = 'cluster'")
+	case ScopeCategoryBusiness:
+		clauses = append(clauses, "scope_kind IN ('namespace', 'pod')")
+	case ScopeCategoryOther:
+		// NOT IN 天然含空串：范围留痕之前的行与未知取值都归到这里，不会在页面上消失。
+		clauses = append(clauses, "scope_kind NOT IN ('cluster', 'namespace', 'pod')")
+	}
 	if len(clauses) == 0 {
 		return `WHERE 1 = 1`, nil, nil
 	}
 	return "WHERE " + strings.Join(clauses, " AND "), args, nil
+}
+
+// Stats 一次查询算完全部分类计数：列表页顶部要在同一时刻给出总数与各类别，
+// 拆成多条查询会出现「刷新一次、三个数字来自三个瞬间」的错位。
+func (st *reportStore) Stats(ctx context.Context, q ReportQuery) (ReportStats, error) {
+	// 总览不关心分页字段：带着 LIMIT/OFFSET 统计出来的是一页的分布，不是列表的分布。
+	q.Limit = 0
+	q.Offset = 0
+	where, args, err := q.where()
+	if err != nil {
+		return ReportStats{}, err
+	}
+	var stats ReportStats
+	// COALESCE 是必需的：没有任何行时 SUM 返回 NULL，直接 Scan 进 int64 会报错，
+	// 「一条报告都没有」绝不该变成一个数据库错误。
+	err = st.s.db.QueryRowContext(ctx, `SELECT COUNT(*), `+
+		`COALESCE(SUM(CASE WHEN scope_kind = 'cluster' THEN 1 ELSE 0 END), 0), `+
+		`COALESCE(SUM(CASE WHEN scope_kind IN ('namespace', 'pod') THEN 1 ELSE 0 END), 0), `+
+		`COALESCE(SUM(CASE WHEN scope_kind NOT IN ('cluster', 'namespace', 'pod') THEN 1 ELSE 0 END), 0), `+
+		`COALESCE(SUM(CASE WHEN kind = 'latest-md' THEN 1 ELSE 0 END), 0), `+
+		`COALESCE(SUM(CASE WHEN kind = 'latest-json' THEN 1 ELSE 0 END), 0), `+
+		`COALESCE(SUM(CASE WHEN available = 1 THEN 1 ELSE 0 END), 0) `+
+		`FROM reports `+where, args...).
+		Scan(&stats.Total, &stats.Cluster, &stats.Business, &stats.Other,
+			&stats.Markdown, &stats.JSON, &stats.Available)
+	if err != nil {
+		return ReportStats{}, mapErr(err, "stats reports")
+	}
+	return stats, nil
 }
 
 // validClusterIDs 去掉空白与重复项，保证 IN 子句不会因为一个空串而退化成全表匹配。

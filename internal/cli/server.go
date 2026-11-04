@@ -123,8 +123,8 @@ func newServerCmd(deps Dependencies) *cobra.Command {
 				WithAuthz(authzSvc).
 				WithReports(service.NewReportPlatform(st, blobGW)).
 				WithStorage(blobGW).
-				// P8.13：页面发起巡检的连接/模型基线。配置中心是动态键的权威源（D-29，
-				// 口径里 scan 与 chat 同源），解析失败回退静态文件并记 WARN——巡检的
+				// P8.13：页面发起体检的连接/模型基线。配置中心是动态键的权威源（D-29，
+				// 口径里 scan 与 chat 同源），解析失败回退静态文件并记 WARN——体检的
 				// 规则结论不依赖模型，不该因为模型配置读不出来就整次发起失败。
 				WithScanBaseline(func(ctx context.Context) model.ScanOptions {
 					base := cfg

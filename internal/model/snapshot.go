@@ -168,9 +168,9 @@ type HpaInfo struct {
 	Ref             ResourceRef
 	MinReplicas     *int32
 	MaxReplicas     int32
-	DesiredReplicas int32   // status.desiredReplicas
-	CurrentReplicas int32   // status.currentReplicas
-	ScaleTarget     string  // scaleTargetRef 的 Kind/name
+	DesiredReplicas int32  // status.desiredReplicas
+	CurrentReplicas int32  // status.currentReplicas
+	ScaleTarget     string // scaleTargetRef 的 Kind/name
 }
 
 // PdbInfo Pod 驱逐预算（policy/v1）归一化信息（P7.5）。
@@ -179,13 +179,13 @@ type PdbInfo struct {
 	MinAvailable       string
 	MaxUnavailable     string
 	Selector           map[string]string
-	DisruptionsAllowed int32  // status.disruptionsAllowed
+	DisruptionsAllowed int32 // status.disruptionsAllowed
 }
 
 // ClusterRoleInfo RBAC ClusterRole（rbac/v1）归一化信息（P7.5，只读元数据）。
 type ClusterRoleInfo struct {
-	Ref    ResourceRef
-	Rules  []PolicyRuleInfo
+	Ref   ResourceRef
+	Rules []PolicyRuleInfo
 }
 
 // PolicyRuleInfo 单条 RBAC 策略规则的归一化描述（P7.5）。

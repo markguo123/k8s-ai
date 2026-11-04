@@ -117,7 +117,7 @@ async function handleLogin(): Promise<void> {
 
         <div class="card-title">
           <h1>欢迎回来</h1>
-          <p>登录后即可巡检、诊断并处置集群异常</p>
+          <p>登录后即可体检、诊断并处置集群异常</p>
         </div>
 
         <form class="form" novalidate @submit.prevent="handleLogin">

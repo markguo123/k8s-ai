@@ -27,7 +27,7 @@ describe('hasPermission', () => {
 })
 
 describe('角色权限口径', () => {
-  it('admin 全量，user 平台权限为零，operator 只多一个发起巡检权', () => {
+  it('admin 全量，user 平台权限为零，operator 只多一个发起体检权', () => {
     expect(hasPermission(permissionsOf('admin'), PERM.userManage)).toBe(true)
     // 与后端 auth.defaultRoles() 同口径：多给的每一位都要能说出理由。
     expect(permissionsOf('operator')).toEqual([PERM.scanExecute])
