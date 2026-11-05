@@ -179,7 +179,7 @@ func (s *Service) Bootstrap(ctx context.Context, adminPassword string) error {
 // 已有用户时不会重建或重命名管理员，但会修复三角色定义。
 //
 // 首启判定以 users 表为准（P6.1 / U-09）：库里已有用户就不再要求
-// K8S_AI_ADMIN_PASSWORD，已有库重启无需口令；只有空库首次引导才要求口令，
+// AEGISOPS_ADMIN_PASSWORD，已有库重启无需口令；只有空库首次引导才要求口令，
 // 缺口令时启动失败（不允许悄悄建一个空口令管理员）。
 func (s *Service) BootstrapWithName(ctx context.Context, adminUsername, adminPassword string) error {
 	if strings.TrimSpace(adminUsername) == "" {
@@ -193,7 +193,7 @@ func (s *Service) BootstrapWithName(ctx context.Context, adminUsername, adminPas
 		return s.reconcileRoles(ctx)
 	}
 	if strings.TrimSpace(adminPassword) == "" {
-		return errors.New("auth: first start requires an admin password (set K8S_AI_ADMIN_PASSWORD)")
+		return errors.New("auth: first start requires an admin password (set AEGISOPS_ADMIN_PASSWORD)")
 	}
 	now := s.now().UTC()
 	roleIDs := map[string]string{}

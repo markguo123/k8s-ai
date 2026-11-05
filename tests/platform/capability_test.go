@@ -140,7 +140,7 @@ func TestPermissionBoundariesOnZeroRole(t *testing.T) {
 // 只写不读（value 为 null、hasValue=true），响应与审计都不带明文。
 func TestSettingsCenterMasksSensitiveValues(t *testing.T) {
 	const apiKey = "sk-live-SENTINEL-apikey-0001"
-	const kubeconfigPath = "/etc/k8s-ai/SENTINEL-kubeconfig-path"
+	const kubeconfigPath = "/etc/aegisops/SENTINEL-kubeconfig-path"
 	h := newHarness(t)
 	admin := h.adminToken()
 

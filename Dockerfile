@@ -1,16 +1,16 @@
 # syntax=docker/dockerfile:1
-# k8s-ai 后端镜像（P6.11 / D-30 形态 A）：内嵌前端产物，单端口同时提供 SPA 与 API。
+# AegisOps 后端镜像（P6.11 / D-30 形态 A）：内嵌前端产物，单端口同时提供 SPA 与 API。
 #
 # 默认构建路径可复现：前端在 node 阶段按 package-lock.json 干净安装后构建，
 # 不依赖开发者本地产物；仓库里的 web/dist 只用于让 go:embed 在干净检出下编译。
 #
 # 构建示例：
-#   docker build --build-arg VERSION=4.0.0 --build-arg COMMIT=<sha> -t k8s-ai:4.0.0 .
+#   docker build --build-arg VERSION=4.0.0 --build-arg COMMIT=<sha> -t aegisops:4.0.0 .
 # 国内/内网构建（两个参数都要传，否则会卡在被墙的站点上各等 5 分钟）：
 #   GOPROXY 走国内代理；kubectl 不走 dl.k8s.io，两种投递方式任选（详见下方 kubectl 段注释）：
 #     docker build --build-arg GOPROXY=https://goproxy.cn,direct \
 #                  --build-arg KUBECTL_DOWNLOAD_BASE=https://files.m.daocloud.io/dl.k8s.io/release \
-#                  --build-arg KUBECTL_VERSION=v1.28.13 -t k8s-ai:4.0.0 .
+#                  --build-arg KUBECTL_VERSION=v1.28.13 -t aegisops:4.0.0 .
 #   离线投递（推荐，构建全程零外网）：把 kubectl 放进 deploy/kubectl/ 即可，kubectl 无需额外参数。
 #   内网自建 mirror 时把 base 换成与 dl.k8s.io/release 目录结构一致的根路径即可。
 # 构建断言（P6.3 §8.3，交付前自查）：
@@ -23,7 +23,7 @@
 # 人工审批、Secret 值与 --raw 硬拒、真实权限由集群 RBAC 决定。可用 platform.exec.shell_enabled
 # 关闭 shell 通道；安全基线明确禁止容器内 shell 的现场改用 Dockerfile.distroless。
 # 离线加速（可选）：用一个只含 dist/ 的目录覆盖 webdist 阶段，跳过 npm 构建。
-#   docker build --build-context webdist=<dir-containing-dist> -t k8s-ai:dev .
+#   docker build --build-context webdist=<dir-containing-dist> -t aegisops:dev .
 # 形态 B（纯 API，前端由独立 Nginx 镜像提供）：同一镜像，部署时把
 #   platform.server.static_enabled 设为 false 即可。
 
@@ -61,7 +61,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
       -X github.com/k8s-ai/k8s-ai/internal/version.Version=${VERSION} \
       -X github.com/k8s-ai/k8s-ai/internal/version.Commit=${COMMIT} \
       -X github.com/k8s-ai/k8s-ai/internal/version.Date=${DATE}" \
-    -o /out/k8s-ai ./cmd/k8s-ai
+    -o /out/aopsctl ./cmd/aopsctl
 # ---- BUILD STAGES END ----
 
 # 运行阶段（P6.3）：debian slim + 排障工具层。base 里 bash/coreutils/grep/sed/awk/diff
@@ -118,11 +118,11 @@ RUN --mount=type=bind,source=deploy/kubectl,target=/kubectl-vendor,readonly set 
 
 # 非 root 运行：uid/gid 65532 与 deploy 清单的 runAsUser 一致（tests/arch 交叉断言）。
 # HOME 必须可写：kubectl 把服务发现缓存写在 $HOME/.kube，而清单开了只读根文件系统，
-# 所以 deploy 侧给 /home/k8sai 挂了 emptyDir，这里同时把 HOME 指过去。
-RUN groupadd --gid 65532 k8sai \
-    && useradd --uid 65532 --gid 65532 --create-home --home-dir /home/k8sai --shell /bin/bash k8sai
+# 所以 deploy 侧给 /home/aegisops 挂了 emptyDir，这里同时把 HOME 指过去。
+RUN groupadd --gid 65532 aegisops \
+    && useradd --uid 65532 --gid 65532 --create-home --home-dir /home/aegisops --shell /bin/bash aegisops
 
-COPY --from=build /out/k8s-ai /usr/local/bin/k8s-ai
-ENV HOME=/home/k8sai
+COPY --from=build /out/aopsctl /usr/local/bin/aopsctl
+ENV HOME=/home/aegisops
 USER 65532:65532
-ENTRYPOINT ["/usr/local/bin/k8s-ai"]
+ENTRYPOINT ["/usr/local/bin/aopsctl"]

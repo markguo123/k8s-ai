@@ -108,8 +108,8 @@ async function handleLogin(): Promise<void> {
               </svg>
             </div>
             <div class="brand-text">
-              <strong>K8S-AI</strong>
-              <span>企业级 Kubernetes AI 运维工作台</span>
+              <strong>AegisOps</strong>
+              <span>云原生智能工作台</span>
             </div>
           </div>
           <div class="status"><i></i>在线</div>

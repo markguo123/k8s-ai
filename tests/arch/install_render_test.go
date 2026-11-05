@@ -25,12 +25,12 @@ var renderDirLineRE = regexp.MustCompile(`渲染产物保留在：(?:\x1b\[[0-9;
 
 // bashProbeMarker 用来确认「这个 bash 真的能跑命令」。Windows 上 PATH 里的 bash 常常是
 // WSL 的占位程序：没有装发行版时它只会打印一句话就退出，不能当被测 shell 用。
-const bashProbeMarker = "k8s-ai-bash-probe"
+const bashProbeMarker = "aegisops-bash-probe"
 
 // findBash 找一个可用的 bash；一个都没有时返回空串，由调用方跳过测试。
 func findBash() string {
 	var candidates []string
-	if custom := os.Getenv("K8S_AI_TEST_BASH"); custom != "" {
+	if custom := os.Getenv("AEGISOPS_TEST_BASH"); custom != "" {
 		candidates = append(candidates, custom)
 	}
 	if p, err := exec.LookPath("bash"); err == nil {
@@ -75,7 +75,7 @@ func renderManifests(t *testing.T, bash string, args ...string) string {
 	full := append([]string{"deploy/install.sh", "--dry-run", "--BUILD=false", "--PUSH=false", "--TAG=test"}, args...)
 	cmd := exec.Command(bash, full...)
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "K8S_AI_INSTALL_NO_TEE=1", "TMPDIR=/tmp")
+	cmd.Env = append(os.Environ(), "AEGISOPS_INSTALL_NO_TEE=1", "TMPDIR=/tmp")
 	combined, err := cmd.CombinedOutput()
 	output := string(combined)
 	if err != nil {
@@ -123,7 +123,7 @@ type renderedEnvVar struct {
 	} `yaml:"valueFrom"`
 }
 
-// serverEnv 从渲染目录里取出平台 Deployment（两形态同名 k8s-ai-server）的容器 env。
+// serverEnv 从渲染目录里取出平台 Deployment（两形态同名 aegisops-server）的容器 env。
 func serverEnv(t *testing.T, dir string) []renderedEnvVar {
 	t.Helper()
 	path := filepath.Join(dir, "separated", "deployment.yaml")
@@ -200,12 +200,12 @@ func assertEnv(t *testing.T, env []renderedEnvVar, wantValue, wantSecret, forbid
 func TestInstallScriptRendersParseableManifests(t *testing.T) {
 	bash := findBash()
 	if bash == "" {
-		t.Skip("本机没有可用的 bash（Windows 需 Git for Windows，或设 K8S_AI_TEST_BASH 指定），跳过渲染门禁")
+		t.Skip("本机没有可用的 bash（Windows 需 Git for Windows，或设 AEGISOPS_TEST_BASH 指定），跳过渲染门禁")
 	}
 
 	const (
-		prefix = "K8S_AI_PLATFORM_BLOBS_"
-		admin  = "K8S_AI_PLATFORM_AUTH_ADMIN_USERNAME"
+		prefix = "AEGISOPS_PLATFORM_BLOBS_"
+		admin  = "AEGISOPS_PLATFORM_AUTH_ADMIN_USERNAME"
 	)
 	mysql := []string{
 		"--STORE_DRIVER=mysql",
@@ -214,7 +214,7 @@ func TestInstallScriptRendersParseableManifests(t *testing.T) {
 	separated := append([]string{
 		"--FORM=separated",
 		"--IMAGE=registry.local/k8s-ai/k8s-ai",
-		"--IMAGE_WEB=registry.local/k8s-ai/k8s-ai-web",
+		"--IMAGE_WEB=registry.local/k8s-ai/aegisops-web",
 		"--BLOBS_PREFIX=team-a",
 		"--ADMIN_USERNAME=admin",
 	}, mysql...)
@@ -281,16 +281,16 @@ func TestInstallScriptRendersParseableManifests(t *testing.T) {
 				prefix + "USE_TLS":       "false",
 				prefix + "PATH_STYLE":    "true",
 				prefix + "CREATE_BUCKET": "false",
-				prefix + "TMP_DIR":       "/tmp/k8s-ai-blobs",
+				prefix + "TMP_DIR":       "/tmp/aegisops-blobs",
 				prefix + "PREFIX":        "team-a",
 			},
-			wantSecret: map[string]string{prefix + "ACCESS_KEY": "k8s-ai-blobs/access_key", prefix + "SECRET_KEY": "k8s-ai-blobs/secret_key"},
+			wantSecret: map[string]string{prefix + "ACCESS_KEY": "aegisops-blobs/access_key", prefix + "SECRET_KEY": "aegisops-blobs/secret_key"},
 		},
 		{
 			name:       "allinone-s3",
 			args:       merge(allinone, s3),
-			wantValue:  map[string]string{prefix + "DRIVER": "s3", prefix + "CREATE_BUCKET": "false", prefix + "TMP_DIR": "/tmp/k8s-ai-blobs"},
-			wantSecret: map[string]string{prefix + "ACCESS_KEY": "k8s-ai-blobs/access_key", prefix + "SECRET_KEY": "k8s-ai-blobs/secret_key"},
+			wantValue:  map[string]string{prefix + "DRIVER": "s3", prefix + "CREATE_BUCKET": "false", prefix + "TMP_DIR": "/tmp/aegisops-blobs"},
+			wantSecret: map[string]string{prefix + "ACCESS_KEY": "aegisops-blobs/access_key", prefix + "SECRET_KEY": "aegisops-blobs/secret_key"},
 		},
 	}
 
@@ -369,7 +369,7 @@ type renderedPullSecrets struct {
 func TestInstallScriptInjectsImagePullSecretsInEveryPod(t *testing.T) {
 	bash := findBash()
 	if bash == "" {
-		t.Skip("本机没有可用的 bash（Windows 需 Git for Windows，或设 K8S_AI_TEST_BASH 指定），跳过渲染门禁")
+		t.Skip("本机没有可用的 bash（Windows 需 Git for Windows，或设 AEGISOPS_TEST_BASH 指定），跳过渲染门禁")
 	}
 	const secret = "registry-private"
 	base := []string{
@@ -377,7 +377,7 @@ func TestInstallScriptInjectsImagePullSecretsInEveryPod(t *testing.T) {
 		"--STORE_DRIVER=mysql",
 		"--MYSQL_DSN=user:pass@tcp(mysql:3306)/k8s_ai",
 	}
-	separated := []string{"--FORM=separated", "--IMAGE_WEB=registry.local/k8s-ai/k8s-ai-web"}
+	separated := []string{"--FORM=separated", "--IMAGE_WEB=registry.local/k8s-ai/aegisops-web"}
 	separated = append(separated, base...)
 	withPull := append([]string{"--IMAGE_PULL_SECRET=" + secret}, separated...)
 	allinone := append([]string{"--FORM=allinone", "--IMAGE_PULL_SECRET=" + secret}, base...)

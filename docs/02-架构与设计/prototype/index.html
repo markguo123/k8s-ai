@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>k8s-ai 前端原型（四期·平台化）v0.1</title>
+<title>AegisOps 前端原型（四期·平台化）v0.1</title>
 <style>
 :root{
   --bg:#0f1115; --surface:#161a22; --surface-2:#1b212c; --border:#272e3b;
@@ -836,7 +836,7 @@ table.tbl{width:100%;border-collapse:collapse;font-size:12.5px}
         </div>
         <div class="card" style="padding:14px 16px">
           <div class="sub" style="font-weight:650;color:var(--text);margin-bottom:8px">授权模型（平台 AuthzGrant 为权威，K8s RBAC 为派生）</div>
-          <div class="muted" style="font-size:12.5px;line-height:1.8">主体 <span class="mono">k8s-ai:user:&lt;id&gt;</span> → RoleBinding 派生；授权到期 / 撤销即回收 RBAC；执行前 SAR 只验权限，操作安全仍由 Code Guard + 准入控制把关。销毁动作（delete namespace/pvc/pv）仅 admin 与显式委派可执行。</div>
+          <div class="muted" style="font-size:12.5px;line-height:1.8">主体 <span class="mono">aegisops:user:&lt;id&gt;</span> → RoleBinding 派生；授权到期 / 撤销即回收 RBAC；执行前 SAR 只验权限，操作安全仍由 Code Guard + 准入控制把关。销毁动作（delete namespace/pvc/pv）仅 admin 与显式委派可执行。</div>
         </div>
       </section>
 

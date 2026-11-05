@@ -36,7 +36,7 @@ const (
 	s3CopyBuffer = 64 << 10
 	// s3TempPattern 是上传中转文件的命名前缀。崩溃残留靠它认出来是谁家的（前缀里带
 	// 项目名），但它落在系统临时目录而不是对象目录里，不会被任何 List 扫到。
-	s3TempPattern = "k8sai-put-"
+	s3TempPattern = "aegisops-put-"
 	// s3TempDirPerm 收紧到仅属主可访问：中转文件里是还没进桶的正文（可能是附件）。
 	s3TempDirPerm = 0o750
 
@@ -140,7 +140,7 @@ func NewS3(cfg S3Config) (Store, error) {
 	prefix, err := NormalizePrefix(cfg.Prefix)
 	if err != nil {
 		// 叠一层配置键：NormalizePrefix 只说「这个前缀不合法」，不说它来自哪个键。多段前缀
-		// （k8sai/reports）是合法的，这里真正会拦下来的是穿越段。
+		// （aegisops/reports）是合法的，这里真正会拦下来的是穿越段。
 		return nil, fmt.Errorf("%w (platform.blobs.prefix)", err)
 	}
 	maxBytes := cfg.MaxBytes

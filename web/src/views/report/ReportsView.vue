@@ -500,7 +500,7 @@ let pollTimer: number | undefined
  * 状态，就能把进度横幅重新挂上。用 sessionStorage 而不是 localStorage——换一张标签页
  * 就是新会话，不该把别的窗口那次的进度搬过来。
  */
-const ACTIVE_SCAN_KEY = 'k8s-ai.activeScan'
+const ACTIVE_SCAN_KEY = 'aegisops.activeScan'
 
 function readStoredScan(): { id: string; preset: string } | null {
   try {
@@ -807,7 +807,7 @@ onBeforeUnmount(stopPolling)
       </div>
     </div>
 
-    <p v-if="mismatchText" class="mismatch">{{ mismatchText }}，请执行 k8s-ai blobs migrate</p>
+    <p v-if="mismatchText" class="mismatch">{{ mismatchText }}，请执行 aopsctl blobs migrate</p>
 
     <div v-if="activeJob" class="scan-banner" :class="activeTone">
       <div class="scan-head">
@@ -1108,7 +1108,7 @@ onBeforeUnmount(stopPolling)
 
         <div v-if="scanScope === 'pod'" class="field">
           <span class="field-label">Pod 名称</span>
-          <el-input v-model="scanPod" placeholder="例如 k8s-ai-server-846ffd68bf-gd5dr" />
+          <el-input v-model="scanPod" placeholder="例如 aegisops-server-846ffd68bf-gd5dr" />
         </div>
 
         <div class="field">

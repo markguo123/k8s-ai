@@ -392,12 +392,12 @@ func TestBlobGCCollectsMissingTombstones(t *testing.T) {
 func TestBlobGCDifferenceSetSparesSharedBucket(t *testing.T) {
 	ctx := context.Background()
 	st := newArchiveStore(t)
-	// 共用同一个根/同一个桶时，邻居只会多出一段兄弟命名空间：k8sai-export/...
+	// 共用同一个根/同一个桶时，邻居只会多出一段兄弟命名空间：aegisops-export/...
 	// dir 后端的 List 走字符串前缀匹配（与 S3 同语义），所以它一定会被扫到。
 	root := t.TempDir()
 	backend := gcDirBackendAt(t, root)
 
-	neighbor := filepath.Join(root, filepath.FromSlash("k8sai-export/reports/"+strings.Repeat("a", 64)+".md"))
+	neighbor := filepath.Join(root, filepath.FromSlash("aegisops-export/reports/"+strings.Repeat("a", 64)+".md"))
 	if err := os.MkdirAll(filepath.Dir(neighbor), 0o755); err != nil {
 		t.Fatalf("create neighbour dir: %v", err)
 	}

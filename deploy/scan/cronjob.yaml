@@ -1,20 +1,20 @@
 # 一期每日巡检通道（可选件，P6.2）：只读 scan + daily 报告。
 #
 # 这份清单独立于四期平台清单：scan 是终端直用通道，配置来自本目录的
-# deploy/scan/configmap.yaml（k8s-ai-scan-config，引擎键），不是平台用的
-# k8s-ai-config（platform: 静态段）。平台 Web 配置中心的设置不会影响本 CronJob。
+# deploy/scan/configmap.yaml（aegisops-scan-config，引擎键），不是平台用的
+# aegisops-config（platform: 静态段）。平台 Web 配置中心的设置不会影响本 CronJob。
 #
 # 依赖（按序）：namespace / serviceaccount / clusterrole / clusterrolebinding /
 #   deploy/scan/configmap.yaml / deploy/base/pvc.yaml（报告要跨重启保留就必须有）。
-# 可选：k8s-ai-llm Secret（模型密钥）；没有就把 scan 配置里的 llm.enabled 改成 false。
+# 可选：aegisops-llm Secret（模型密钥）；没有就把 scan 配置里的 llm.enabled 改成 false。
 # spec.timeZone 需要 Kubernetes >= 1.27。
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: k8s-ai-daily
-  namespace: k8s-ai
+  name: aegisops-daily
+  namespace: aegisops
   labels:
-    app: k8s-ai
+    app: aegisops
     app.kubernetes.io/component: scan
 spec:
   schedule: "0 8 * * *"
@@ -27,28 +27,28 @@ spec:
       backoffLimit: 2
       template:
         spec:
-          serviceAccountName: k8s-ai
+          serviceAccountName: aegisops
           automountServiceAccountToken: true
           restartPolicy: OnFailure
           containers:
-            - name: k8s-ai
-              image: k8s-ai:latest
+            - name: aegisops
+              image: aegisops:latest
               args:
                 - scan
                 - --report-mode
                 - daily
                 - --config
-                - /etc/k8s-ai/config.yaml
+                - /etc/aegisops/config.yaml
               env:
-                - name: K8S_AI_LLM_API_KEY
+                - name: AEGISOPS_LLM_API_KEY
                   valueFrom:
                     secretKeyRef:
-                      name: k8s-ai-llm
+                      name: aegisops-llm
                       key: api_key
                       optional: true
               volumeMounts:
                 - name: config
-                  mountPath: /etc/k8s-ai
+                  mountPath: /etc/aegisops
                   readOnly: true
                 - name: reports
                   mountPath: /reports
@@ -72,10 +72,10 @@ spec:
           volumes:
             - name: config
               configMap:
-                name: k8s-ai-scan-config
+                name: aegisops-scan-config
             - name: reports
               persistentVolumeClaim:
-                claimName: k8s-ai-data
+                claimName: aegisops-data
             - name: data
               emptyDir: {}
           securityContext:

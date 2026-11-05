@@ -102,7 +102,7 @@ func TestBlobBackendSwitchGateCountsObjects(t *testing.T) {
 				"NAMESPACE=testns",
 				"BLOBS_BACKEND=\"${GATE_WANT:-s3}\"",
 				"ALLOW_DRIVER_MISMATCH=\"${GATE_ALLOW:-false}\"",
-				"POD_PLATFORM_CONFIG=/etc/k8s-ai/config.yaml",
+				"POD_PLATFORM_CONFIG=/etc/aegisops/config.yaml",
 				"ok()     { printf 'OK: %s\\n' \"$*\"; }",
 				"warn()   { printf 'WARN: %s\\n' \"$*\"; }",
 				"detail() { printf 'DETAIL: %s\\n' \"$*\"; }",

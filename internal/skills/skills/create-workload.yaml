@@ -2,7 +2,7 @@ name: create-workload
 domain: workload
 version: 3.0.0
 source: builtin
-author: k8s-ai
+author: AegisOps
 description: 创建工作负载类资源（Deployment/StatefulSet/DaemonSet）的方法论与风险提示
 kinds:
   - apps/v1/Deployment

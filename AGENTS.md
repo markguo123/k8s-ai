@@ -1,8 +1,8 @@
-# k8s-ai Development Rules
+# AegisOps Development Rules
 
 ## Project
 
-k8s-ai is a Kubernetes AI inspection, diagnosis and operation tool
+AegisOps is a Kubernetes AI inspection, diagnosis and operation tool
 (Phase 1: read-only inspection; Phase 2: natural-language Agent with
 approved read/write operations).
 
@@ -155,7 +155,7 @@ To reach kubectl-ai-equivalent chat interaction, interaction-related code
 (terminal/web UI, message streaming, sessions, audit journal) may be reused
 directly from kubectl-ai (Apache-2.0) with the original license header
 preserved and provenance recorded in docs/CREDITS.md. Other design logic may
-be borrowed and re-implemented in k8s-ai's own architecture. Documentation
+be borrowed and re-implemented in AegisOps's own architecture. Documentation
 consistently refers to this as "借鉴" (borrowed).
 
 Phase 3 (future) may add: MCP external tools, observability integration

@@ -65,7 +65,7 @@ const props = withDefaults(
 )
 
 // P7.4：手动折叠状态持久化（key=toolCallId），刷新后保持，手动优先于自动折叠。
-const FOLD_KEY_PREFIX = 'k8s_ai_tool_fold:'
+const FOLD_KEY_PREFIX = 'aegisops_tool_fold:'
 const storedFold = (() => {
   try {
     return localStorage.getItem(FOLD_KEY_PREFIX + props.tool.key)

@@ -51,8 +51,8 @@ func TestPrecedence(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("K8S_AI_LLM_MODEL", "env-model")
-	t.Setenv("K8S_AI_KUBERNETES_QPS", "7")
+	t.Setenv("AEGISOPS_LLM_MODEL", "env-model")
+	t.Setenv("AEGISOPS_KUBERNETES_QPS", "7")
 
 	cfg, err := Load(LoadOptions{
 		ConfigFile: path,
@@ -99,8 +99,8 @@ func TestAgentDirsExpandHome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantSessions := filepath.Join(home, ".k8s-ai", "sessions")
-	wantAudit := filepath.Join(home, ".k8s-ai", "audit")
+	wantSessions := filepath.Join(home, ".aegisops", "sessions")
+	wantAudit := filepath.Join(home, ".aegisops", "audit")
 	if cfg.Agent.SessionDir != wantSessions {
 		t.Errorf("session_dir = %q, want %q", cfg.Agent.SessionDir, wantSessions)
 	}

@@ -55,9 +55,9 @@ try {
   ]
   await page.goto(`${appUrl}/login`, { waitUntil: 'networkidle2' })
   await page.evaluate(() => {
-    localStorage.setItem('k8s_ai_token', 'demo-token')
+    localStorage.setItem('aegisops_token', 'demo-token')
     localStorage.setItem(
-      'k8s_ai_user',
+      'aegisops_user',
       JSON.stringify({ userId: 'u1', username: 'admin', displayName: '管理员', role: 'admin' }),
     )
   })

@@ -100,7 +100,7 @@ describe('clusters API（P3.4）', () => {
     const error = new ApiRequestError(
       501,
       'internal_error',
-      'cluster service is not configured: set K8S_AI_ENC_KEY',
+      'cluster service is not configured: set AEGISOPS_ENC_KEY',
     )
     expect(describeClusterError('加载集群', error)).toBe(
       '集群管理能力未启用，请联系平台管理员配置凭据加密密钥后重试',

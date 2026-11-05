@@ -14,5 +14,5 @@ var (
 
 // String returns the full human-readable version line.
 func String() string {
-	return fmt.Sprintf("k8s-ai %s (commit %s, built %s)", Version, Commit, Date)
+	return fmt.Sprintf("AegisOps %s (commit %s, built %s)", Version, Commit, Date)
 }

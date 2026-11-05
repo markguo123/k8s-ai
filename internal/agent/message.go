@@ -1,6 +1,6 @@
 // Package agent 实现二期 Agent 核心：消息总线、状态机、Agentic Loop
 // （Loop 在 P2 接入，P0 先落消息契约与状态定义）。
-// 设计逻辑借鉴 kubectl-ai 的消息模型，但类型与语义按 k8s-ai 重新实现。
+// 设计逻辑借鉴 kubectl-ai 的消息模型，但类型与语义按 AegisOps 重新实现。
 package agent
 
 import (

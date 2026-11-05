@@ -2,7 +2,7 @@ name: create-rbac
 domain: rbac
 version: 3.0.0
 source: builtin
-author: k8s-ai
+author: AegisOps
 description: 创建 RBAC 权限资源（Role/RoleBinding/ClusterRole）的方法论与风险提示
 kinds:
   - rbac.authorization.k8s.io/v1/Role

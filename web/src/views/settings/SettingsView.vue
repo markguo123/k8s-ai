@@ -419,7 +419,7 @@ onMounted(loadGroup)
                 :closable="false"
                 show-icon
                 title="敏感配置暂不可保存"
-                description="服务端尚未配置 K8S_AI_ENC_KEY。请联系平台管理员完成加密密钥配置后再保存 API Key、kubeconfig 或 MCP 配置。"
+                description="服务端尚未配置 AEGISOPS_ENC_KEY。请联系平台管理员完成加密密钥配置后再保存 API Key、kubeconfig 或 MCP 配置。"
               />
               <div v-for="item in view?.items ?? []" :key="item.key" class="field">
                 <div class="field-meta">

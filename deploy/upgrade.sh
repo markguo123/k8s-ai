@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# k8s-ai 四期发布/升级驱动器（配合 deploy/install.sh，不替代它）
+# AegisOps 四期发布/升级驱动器（配合 deploy/install.sh，不替代它）
 #
 # 一句话：把「取码 → 算不可变 TAG → 调 install.sh 发布 → 验收 → 记账」串成一条命令；
 # 装坏了 --rollback 一条命令回到上一个好版本。
@@ -25,9 +25,9 @@ ENV_VAR_NAMES=" $(compgen -e | tr '\n' ' ') "
 key_from_env() { [[ "$ENV_VAR_NAMES" == *" $1 "* ]]; }
 
 # --- 可配置项 ---------------------------------------------------------------
-: "${K8S_AI_DEPLOY_STATE:=${HOME}/.k8s-ai/deploy}"
+: "${AEGISOPS_DEPLOY_STATE:=${HOME}/.aegisops/deploy}"
 SRC_DIR=""            # 常驻源码目录，默认 upgrade.sh 所在的这份仓库
-STATE_DIR="${K8S_AI_DEPLOY_STATE}"
+STATE_DIR="${AEGISOPS_DEPLOY_STATE}"
 ENV_FILE=""
 GIT_REMOTE="origin"   # 取码用的 remote 名；SRC_DIR 不存在时按它的 URL 克隆
 GIT_REMOTE_URL=""     # 直接给地址（首次 bootstrap，SRC_DIR 还不存在时用）
@@ -86,7 +86,7 @@ die() {
 
 usage() {
   cat <<'EOF'
-k8s-ai 一键发布/升级（deploy/upgrade.sh）
+aegisops 一键发布/升级（deploy/upgrade.sh）
 
 它不重复实现安装：真正的发布动作始终由 deploy/install.sh 的九阶段完成，
 本脚本负责取码、镜像 TAG、发布后验收、发布记录与回滚。
@@ -106,14 +106,14 @@ k8s-ai 一键发布/升级（deploy/upgrade.sh）
   --status             只看当前集群跑的是什么、上一次发布记了什么，不改动任何东西
   --diff               转发 install.sh --diff（kubectl diff 预演，不写集群）
   --dry-run            转发 install.sh --dry-run（只渲染清单，不碰集群）
-  --state-dir=<dir>    发布记录目录，默认 ~/.k8s-ai/deploy（或环境变量 K8S_AI_DEPLOY_STATE）
+  --state-dir=<dir>    发布记录目录，默认 ~/.aegisops/deploy（或环境变量 AEGISOPS_DEPLOY_STATE）
   --env-file=<path>    install.sh 参数文件，默认 <state-dir>/install.env，回落到 ./install.env
   --verify-timeout=<s> 验收等待秒数，默认 300
   -y, --yes            无人值守
   -h, --help           看这份说明
 
 典型用法（把参数文件从源码目录里挪出来，源码目录就能常驻复用）：
-  mkdir -p ~/.k8s-ai/deploy && cp deploy/install.env.example ~/.k8s-ai/deploy/install.env
+  mkdir -p ~/.aegisops/deploy && cp deploy/install.env.example ~/.aegisops/deploy/install.env
   deploy/upgrade.sh --dry-run                      # 先看渲染结果
   deploy/upgrade.sh --ref=DEV-v4.0.0               # 拉最新代码 → 构建 → 发布 → 验收 → 记账
   deploy/upgrade.sh                                # 就发当前工作树（不 fetch、不 checkout）
@@ -129,10 +129,10 @@ parse_args() {
     case "$arg" in
       -h|--help) usage; exit 0 ;;
       --src=*) SRC_DIR="${arg#*=}" ;;
-      --src) [[ $# -ge 2 ]] || die "--src 缺少取值" "例：--src=/root/k8s-ai-src"; SRC_DIR="$2"; shift ;;
+      --src) [[ $# -ge 2 ]] || die "--src 缺少取值" "例：--src=/root/aegisops-src"; SRC_DIR="$2"; shift ;;
       --state-dir=*) STATE_DIR="${arg#*=}" ;;
       --env-file=*) ENV_FILE="${arg#*=}" ;;
-      --env-file) [[ $# -ge 2 ]] || die "--env-file 缺少取值" "例：--env-file ~/.k8s-ai/deploy/install.env"; ENV_FILE="$2"; shift ;;
+      --env-file) [[ $# -ge 2 ]] || die "--env-file 缺少取值" "例：--env-file ~/.aegisops/deploy/install.env"; ENV_FILE="$2"; shift ;;
       --remote=*) GIT_REMOTE="${arg#*=}" ;;
       --remote-url=*) GIT_REMOTE_URL="${arg#*=}" ;;
       --ref=*) REF="${arg#*=}" ;;
@@ -291,7 +291,7 @@ state_load() {
 state_record_ok() {
   mkdir -p "$STATE_DIR" 2>/dev/null || true
   {
-    printf '# k8s-ai 发布记录（由 deploy/upgrade.sh 维护，手工改请谨慎）\n'
+    printf '# AegisOps 发布记录（由 deploy/upgrade.sh 维护，手工改请谨慎）\n'
     printf 'LAST_GOOD_TS=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'LAST_GOOD_REF=%s\n' "$TARGET_REF"
     printf 'LAST_GOOD_SHA=%s\n' "$TARGET_SHA"
@@ -308,8 +308,8 @@ state_record_fail() {
 
 # --- 验收：Ready 由 readinessProbe(/readyz) 把关，版本再由 exec version 核对 --
 verify_release() {
-  local deps=(k8s-ai-server) dep out got
-  [[ "$FORM" == "separated" ]] && deps+=(k8s-ai-web)
+  local deps=(aegisops-server) dep out got
+  [[ "$FORM" == "separated" ]] && deps+=(aegisops-web)
   for dep in "${deps[@]}"; do
     info "验收：等待 ${dep} Ready（readinessProbe 打的是 /readyz）"
     "$KUBECTL_BIN" -n "$NAMESPACE" rollout status "deployment/${dep}" --timeout="${VERIFY_TIMEOUT}s" || {
@@ -317,11 +317,11 @@ verify_release() {
       return 1
     }
   done
-  out="$("$KUBECTL_BIN" -n "$NAMESPACE" exec deploy/k8s-ai-server -- /usr/local/bin/k8s-ai version 2>/dev/null || true)"
+  out="$("$KUBECTL_BIN" -n "$NAMESPACE" exec deploy/aegisops-server -- /usr/local/bin/aopsctl version 2>/dev/null || true)"
   got="$(printf '%s' "$out" | sed -n 's/.*commit \([0-9a-f]\{4,\}\).*/\1/p')"
   DEPLOYED_COMMIT="$got"
   if [[ -z "$got" ]]; then
-    warn "没能从 k8s-ai version 里读到 commit（镜像可能是手工构建的）：只核对了 Ready 状态"
+    warn "没能从 aopsctl version 里读到 commit（镜像可能是手工构建的）：只核对了 Ready 状态"
   elif [[ "$got" == "$TARGET_SHA" || "$TARGET_SHA" == "none" || "$got" == "$TARGET_SHA"* ]]; then
     ok "版本核对通过：${out}"
   else
@@ -332,13 +332,13 @@ verify_release() {
 
 show_status() {
   local cur=""
-  cur="$("$KUBECTL_BIN" -n "$NAMESPACE" exec deploy/k8s-ai-server -- /usr/local/bin/k8s-ai version 2>/dev/null || echo '（读不到：后端没起来或不在本命名空间）')"
+  cur="$("$KUBECTL_BIN" -n "$NAMESPACE" exec deploy/aegisops-server -- /usr/local/bin/aopsctl version 2>/dev/null || echo '（读不到：后端没起来或不在本命名空间）')"
   _emit ""
   _emit "当前命名空间 ${NAMESPACE}"
   _emit "  集群里   ：${cur}"
-  _emit "  镜像     ：$("$KUBECTL_BIN" -n "$NAMESPACE" get deploy k8s-ai-server -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo 未知)"
+  _emit "  镜像     ：$("$KUBECTL_BIN" -n "$NAMESPACE" get deploy aegisops-server -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo 未知)"
   if [[ "$FORM" == "separated" ]]; then
-    _emit "  前端镜像 ：$("$KUBECTL_BIN" -n "$NAMESPACE" get deploy k8s-ai-web -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo 未知)"
+    _emit "  前端镜像 ：$("$KUBECTL_BIN" -n "$NAMESPACE" get deploy aegisops-web -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo 未知)"
   fi
   _emit "  发布记录 ：${STATE_FILE}"
   if [[ -n "${LAST_GOOD_TAG:-}" ]]; then
@@ -391,7 +391,7 @@ main() {
   [[ -f "$INSTALL_SH" ]] || die "缺少 ${INSTALL_SH}" "确认 deploy/ 目录完整"
 
   pick_env_file
-  NAMESPACE="$(resolve_key NAMESPACE k8s-ai)"
+  NAMESPACE="$(resolve_key NAMESPACE aegisops)"
   FORM="$(resolve_key FORM allinone)"
   IMAGE_BASE="$(resolve_key IMAGE)"
   WEB_IMAGE_BASE="$(resolve_key IMAGE_WEB)"
@@ -400,7 +400,7 @@ main() {
   LOG_DIR="${STATE_DIR}/logs"
   mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null || true
   UPGRADE_LOG="${LOG_DIR}/upgrade-${NAMESPACE}-${RUN_TS}.log"
-  if [[ "${K8S_AI_INSTALL_NO_TEE:-0}" != "1" ]]; then
+  if [[ "${AEGISOPS_INSTALL_NO_TEE:-0}" != "1" ]]; then
     exec > >(tee -a "$UPGRADE_LOG") 2>&1
   fi
 
@@ -419,17 +419,17 @@ main() {
       ok "回滚完成：现在跑的是 ${TARGET_TAG}"
     else
       state_record_fail
-      die "回滚后验收没通过" "kubectl -n ${NAMESPACE} get pods；kubectl -n ${NAMESPACE} logs deploy/k8s-ai-server --tail=80"
+      die "回滚后验收没通过" "kubectl -n ${NAMESPACE} get pods；kubectl -n ${NAMESPACE} logs deploy/aegisops-server --tail=80"
     fi
     return 0
   fi
 
   sync_source
   compute_tag
-  [[ -n "$IMAGE_BASE" ]] || die "参数文件里没有 IMAGE" "在 ${ENV_FILE_PATH} 里写 IMAGE=<仓库地址>/k8s-ai（必填）"
+  [[ -n "$IMAGE_BASE" ]] || die "参数文件里没有 IMAGE" "在 ${ENV_FILE_PATH} 里写 IMAGE=<仓库地址>/aegisops（必填）"
 
   _emit ""
-  _emit "${C_BLU}k8s-ai 发布${C_OFF}  命名空间=${NAMESPACE}  形态=${FORM}"
+  _emit "${C_BLU}aegisops 发布${C_OFF}  命名空间=${NAMESPACE}  形态=${FORM}"
   _emit "  源码目录  ：${SRC_DIR}（ref=${TARGET_REF} commit=${TARGET_SHA}）"
   _emit "  镜像      ：${IMAGE_BASE}:${TARGET_TAG}${WEB_IMAGE_BASE:+ / ${WEB_IMAGE_BASE}:${TARGET_TAG}}"
   _emit "  参数文件  ：${ENV_FILE_PATH}"

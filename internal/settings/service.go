@@ -33,7 +33,7 @@ var (
 // SecretCipher 是敏感配置值的静态加密接口（P3.9）：
 // Encrypt 把明文归一化取值加密为带版本前缀的密文；Decrypt 做对称还原，
 // 供"unchanged 比较"与迁移校验使用。默认实现为 cluster.Cipher（AES-256-GCM，
-// v1: 前缀，密钥读取自 K8S_AI_ENC_KEY，永不落库）。
+// v1: 前缀，密钥读取自 AEGISOPS_ENC_KEY，永不落库）。
 type SecretCipher interface {
 	Encrypt(plain []byte) (string, error)
 	Decrypt(encoded string) ([]byte, error)
@@ -390,7 +390,7 @@ func (s *Service) ChatRuntimeConfig(ctx context.Context, base *config.Config) (*
 	if s.modelExplicitlyConfigured(configured, cfg) {
 		return cfg, nil
 	}
-	return nil, fmt.Errorf("%w: 请在配置中心「模型」分组设置接口地址与模型名，或部署时注入 K8S_AI_LLM_ENDPOINT / K8S_AI_LLM_MODEL", ErrModelNotConfigured)
+	return nil, fmt.Errorf("%w: 请在配置中心「模型」分组设置接口地址与模型名，或部署时注入 AEGISOPS_LLM_ENDPOINT / AEGISOPS_LLM_MODEL", ErrModelNotConfigured)
 }
 
 // modelExplicitlyConfigured 判定模型接入是否已被显式配置。

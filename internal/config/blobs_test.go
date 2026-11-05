@@ -55,7 +55,7 @@ func TestPlatformBlobsDefaults(t *testing.T) {
 	if b.EffectiveDriver() != BlobDriverDB || b.IsS3() || !b.Enabled() {
 		t.Errorf("默认后端应为 db: %+v", b)
 	}
-	if b.Prefix != "k8sai" || b.Region != "us-east-1" {
+	if b.Prefix != "aegisops" || b.Region != "us-east-1" {
 		t.Errorf("prefix/region 默认不符: %+v", b)
 	}
 	if !b.PathStyle || !b.CreateBucket {
@@ -128,7 +128,7 @@ func TestPlatformBlobsS3RequiresAllFourFields(t *testing.T) {
 			if !strings.Contains(err.Error(), tc.key) {
 				t.Fatalf("报错应点出 %s, got %v", tc.key, err)
 			}
-			if !strings.Contains(err.Error(), "K8S_AI_PLATFORM_BLOBS_") {
+			if !strings.Contains(err.Error(), "AEGISOPS_PLATFORM_BLOBS_") {
 				t.Fatalf("报错应给出 Secret 注入用的环境变量名, got %v", err)
 			}
 		})
@@ -171,7 +171,7 @@ func TestPlatformBlobsFieldLimits(t *testing.T) {
 		{"prefix 空", func(b *PlatformBlobsConfig) { b.Prefix = "  " }, "prefix"},
 		{"prefix 超长", func(b *PlatformBlobsConfig) { b.Prefix = strings.Repeat("a", maxBlobPrefixLen+1) }, "prefix"},
 		{"prefix 非法字符", func(b *PlatformBlobsConfig) { b.Prefix = "k8s/ai" }, "prefix"},
-		{"prefix 首字符非法", func(b *PlatformBlobsConfig) { b.Prefix = "-k8sai" }, "prefix"},
+		{"prefix 首字符非法", func(b *PlatformBlobsConfig) { b.Prefix = "-aegisops" }, "prefix"},
 		{"presign 零", func(b *PlatformBlobsConfig) { b.PresignTTL = 0 }, "presign_ttl"},
 		{"presign 超 24h", func(b *PlatformBlobsConfig) { b.PresignTTL = 25 * time.Hour }, "presign_ttl"},
 		{"容量单位不认识", func(b *PlatformBlobsConfig) { b.MaxObjectSize = "12XiB" }, "max_object_size"},
@@ -221,15 +221,15 @@ func TestParseByteSize(t *testing.T) {
 }
 
 // TestPlatformBlobsEnvOverride 锁部署侧注入通道与真实环境变量名（install.sh 与 P8.4
-// 清单按这套名字写）。前缀 K8S_AI + "."→"_" 意味着 platform.blobs.* 对应
-// K8S_AI_PLATFORM_BLOBS_*，不是 K8S_AI_BLOBS_*。
+// 清单按这套名字写）。前缀 AEGISOPS + "."→"_" 意味着 platform.blobs.* 对应
+// AEGISOPS_PLATFORM_BLOBS_*，不是 AEGISOPS_BLOBS_*。
 func TestPlatformBlobsEnvOverride(t *testing.T) {
-	t.Setenv("K8S_AI_PLATFORM_BLOBS_DRIVER", "s3")
-	t.Setenv("K8S_AI_PLATFORM_BLOBS_ENDPOINT", "minio.k8s-ai.svc.cluster.local:9000")
-	t.Setenv("K8S_AI_PLATFORM_BLOBS_BUCKET", "k8s-ai-reports")
-	t.Setenv("K8S_AI_PLATFORM_BLOBS_ACCESS_KEY", "ak-from-secret")
-	t.Setenv("K8S_AI_PLATFORM_BLOBS_SECRET_KEY", "sk-from-secret")
-	t.Setenv("K8S_AI_PLATFORM_BLOBS_TMP_DIR", "/var/tmp/k8s-ai-put")
+	t.Setenv("AEGISOPS_PLATFORM_BLOBS_DRIVER", "s3")
+	t.Setenv("AEGISOPS_PLATFORM_BLOBS_ENDPOINT", "minio.aegisops.svc.cluster.local:9000")
+	t.Setenv("AEGISOPS_PLATFORM_BLOBS_BUCKET", "aegisops-reports")
+	t.Setenv("AEGISOPS_PLATFORM_BLOBS_ACCESS_KEY", "ak-from-secret")
+	t.Setenv("AEGISOPS_PLATFORM_BLOBS_SECRET_KEY", "sk-from-secret")
+	t.Setenv("AEGISOPS_PLATFORM_BLOBS_TMP_DIR", "/var/tmp/aegisops-put")
 	cfg, err := Load(LoadOptions{})
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -238,7 +238,7 @@ func TestPlatformBlobsEnvOverride(t *testing.T) {
 	if !b.IsS3() || b.Endpoint == "" || b.Bucket == "" || b.AccessKey != "ak-from-secret" || b.SecretKey != "sk-from-secret" {
 		t.Fatalf("env 注入未生效: %+v", b)
 	}
-	if b.TmpDir != "/var/tmp/k8s-ai-put" {
+	if b.TmpDir != "/var/tmp/aegisops-put" {
 		t.Fatalf("tmp_dir env 注入未生效: %q", b.TmpDir)
 	}
 }
@@ -251,12 +251,12 @@ func TestPlatformBlobsDirExpandsHome(t *testing.T) {
 	}
 	cfg, err := Load(LoadOptions{NoEnv: true, Overrides: map[string]any{
 		"platform.blobs.driver": BlobDriverDir,
-		"platform.blobs.dir":    "~/.k8s-ai/blobs",
+		"platform.blobs.dir":    "~/.aegisops/blobs",
 	}})
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if want := filepath.Join(home, ".k8s-ai", "blobs"); cfg.Platform.Blobs.Dir != want {
+	if want := filepath.Join(home, ".aegisops", "blobs"); cfg.Platform.Blobs.Dir != want {
 		t.Fatalf("dir = %q, want %q", cfg.Platform.Blobs.Dir, want)
 	}
 }
@@ -273,7 +273,7 @@ func TestPlatformBlobsCLITemplateLoadsDirBackend(t *testing.T) {
 	if b.EffectiveDriver() != BlobDriverDir {
 		t.Fatalf("CLI 模板应默认 dir 后端, got %q", b.Driver)
 	}
-	if !strings.HasSuffix(filepath.ToSlash(b.Dir), "/.k8s-ai/blobs") {
+	if !strings.HasSuffix(filepath.ToSlash(b.Dir), "/.aegisops/blobs") {
 		t.Fatalf("CLI 模板 dir 默认应落在用户目录, got %q", b.Dir)
 	}
 	warnings, err := Diagnostics(path, ValidateModeCLI)
@@ -348,7 +348,7 @@ func TestBlobsSessionDataHardReject(t *testing.T) {
 		"platform:\n"+
 		"  blobs:\n"+
 		"    driver: dir\n"+
-		"    dir: /tmp/k8s-ai-blobs\n"+
+		"    dir: /tmp/aegisops-blobs\n"+
 		"    session_data: true\n")
 	if _, err := Load(LoadOptions{ConfigFile: path, NoEnv: true}); err == nil {
 		t.Fatal("Load 应拒绝 session_data=true")

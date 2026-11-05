@@ -59,18 +59,18 @@ func TestEnvOverrideWhitelistTiers(t *testing.T) {
 func TestActiveEnvOverrides(t *testing.T) {
 	ctx := context.Background()
 	svc := New(newTestStore(t), WithEnvLookup(staticEnv(map[string]string{
-		"K8S_AI_LLM_MODEL":    "env-model",
-		"K8S_AI_NAMESPACE":    "prod",
-		"K8S_AI_KUBE_CONTEXT": "   ",
+		"AEGISOPS_LLM_MODEL":    "env-model",
+		"AEGISOPS_NAMESPACE":    "prod",
+		"AEGISOPS_KUBE_CONTEXT": "   ",
 	})))
 	active, err := svc.ActiveEnvOverrides(ctx)
 	if err != nil {
 		t.Fatalf("ActiveEnvOverrides: %v", err)
 	}
-	if got := active[envKey(GroupModel, "model")]; got.Env != "K8S_AI_LLM_MODEL" || got.Tier != EnvTierSeed {
+	if got := active[envKey(GroupModel, "model")]; got.Env != "AEGISOPS_LLM_MODEL" || got.Tier != EnvTierSeed {
 		t.Fatalf("模型名种子覆盖未生效: %+v", active)
 	}
-	if got := active[envKey(GroupOps, "namespace")]; got.Env != "K8S_AI_NAMESPACE" || got.Tier != EnvTierSeed {
+	if got := active[envKey(GroupOps, "namespace")]; got.Env != "AEGISOPS_NAMESPACE" || got.Tier != EnvTierSeed {
 		t.Fatalf("命名空间种子覆盖未生效: %+v", active)
 	}
 	if _, ok := active[envKey(GroupOps, "context")]; ok {
@@ -88,7 +88,7 @@ func TestSeedOverrideYieldsToDBValue(t *testing.T) {
 	ctx := context.Background()
 	const envEndpoint = "http://env.example:8000/v1"
 	const dbEndpoint = "http://db.example:9000/v1"
-	svc := New(st, WithEnvLookup(staticEnv(map[string]string{"K8S_AI_LLM_ENDPOINT": envEndpoint})))
+	svc := New(st, WithEnvLookup(staticEnv(map[string]string{"AEGISOPS_LLM_ENDPOINT": envEndpoint})))
 
 	// 态一：空库 —— 种子值进运行时，页面标注来源与档位。
 	cfg, err := svc.ChatRuntimeConfig(ctx, loadTestBaseline(t))
@@ -103,7 +103,7 @@ func TestSeedOverrideYieldsToDBValue(t *testing.T) {
 		t.Fatalf("GetGroup: %v", err)
 	}
 	item := itemOf(t, view, "base_url")
-	if item.EnvOverride != "K8S_AI_LLM_ENDPOINT" || item.EnvOverrideTier != string(EnvTierSeed) || !item.HasValue {
+	if item.EnvOverride != "AEGISOPS_LLM_ENDPOINT" || item.EnvOverrideTier != string(EnvTierSeed) || !item.HasValue {
 		t.Fatalf("应标注种子态覆盖来源, got envOverride=%q tier=%q hasValue=%v", item.EnvOverride, item.EnvOverrideTier, item.HasValue)
 	}
 
@@ -112,7 +112,7 @@ func TestSeedOverrideYieldsToDBValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("patch: %v", err)
 	}
-	if len(saved.Warnings) != 1 || !strings.Contains(saved.Warnings[0], "K8S_AI_LLM_ENDPOINT") ||
+	if len(saved.Warnings) != 1 || !strings.Contains(saved.Warnings[0], "AEGISOPS_LLM_ENDPOINT") ||
 		!strings.Contains(saved.Warnings[0], "以页面配置为准") {
 		t.Fatalf("种子态保存必须提示接管来源, got %+v", saved.Warnings)
 	}
@@ -146,7 +146,7 @@ func TestSecretOverrideAlwaysPrecedesDB(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
 	svc := New(st, WithCipher(testCipher{}), WithEnvLookup(staticEnv(map[string]string{
-		"K8S_AI_LLM_API_KEY": "sk-from-env",
+		"AEGISOPS_LLM_API_KEY": "sk-from-env",
 	})))
 	if _, err := svc.PatchGroup(ctx, GroupModel, patch(t, `{"base_url":"http://db.example:9000/v1","api_key":"sk-from-db"}`), Actor{UserID: "u-1"}); err != nil {
 		t.Fatalf("patch: %v", err)
@@ -165,7 +165,7 @@ func TestSecretOverrideAlwaysPrecedesDB(t *testing.T) {
 		t.Fatalf("GetGroup: %v", err)
 	}
 	item := itemOf(t, view, "api_key")
-	if item.EnvOverride != "K8S_AI_LLM_API_KEY" || item.EnvOverrideTier != string(EnvTierSecret) || !item.HasValue {
+	if item.EnvOverride != "AEGISOPS_LLM_API_KEY" || item.EnvOverrideTier != string(EnvTierSecret) || !item.HasValue {
 		t.Fatalf("敏感键覆盖应标注密钥态来源, got %+v", item)
 	}
 	if string(item.Value) != "null" {
@@ -194,13 +194,13 @@ func TestSecretOverrideAlwaysPrecedesDB(t *testing.T) {
 func TestSaveUnderSecretOverrideIsNotSilent(t *testing.T) {
 	ctx := context.Background()
 	svc := New(newTestStore(t), WithCipher(testCipher{}), WithEnvLookup(staticEnv(map[string]string{
-		"K8S_AI_LLM_API_KEY": "sk-from-env",
+		"AEGISOPS_LLM_API_KEY": "sk-from-env",
 	})))
 	view, err := svc.PatchGroup(ctx, GroupModel, patch(t, `{"api_key":"sk-from-page"}`), Actor{UserID: "u-1"})
 	if err != nil {
 		t.Fatalf("patch: %v", err)
 	}
-	if len(view.Warnings) != 1 || !strings.Contains(view.Warnings[0], "K8S_AI_LLM_API_KEY") ||
+	if len(view.Warnings) != 1 || !strings.Contains(view.Warnings[0], "AEGISOPS_LLM_API_KEY") ||
 		!strings.Contains(view.Warnings[0], "Secret") {
 		t.Fatalf("密钥态保存必须提示运行值仍以 Secret 为准, got %+v", view.Warnings)
 	}
@@ -226,8 +226,8 @@ func TestSaveUnderSecretOverrideIsNotSilent(t *testing.T) {
 func TestProviderEnvOverrideHasNoConfigCarrier(t *testing.T) {
 	ctx := context.Background()
 	svc := New(newTestStore(t), WithEnvLookup(staticEnv(map[string]string{
-		"K8S_AI_LLM_PROVIDER": "openai",
-		"K8S_AI_LLM_ENDPOINT": "http://gw.internal/v1",
+		"AEGISOPS_LLM_PROVIDER": "openai",
+		"AEGISOPS_LLM_ENDPOINT": "http://gw.internal/v1",
 	})))
 	if _, err := svc.LoadRuntimeConfig(ctx, loadTestBaseline(t)); err != nil {
 		t.Fatalf("无 config 承载方的覆盖不应让运行时加载失败: %v", err)
@@ -236,7 +236,7 @@ func TestProviderEnvOverrideHasNoConfigCarrier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetGroup: %v", err)
 	}
-	if item := itemOf(t, view, "provider"); item.EnvOverride != "K8S_AI_LLM_PROVIDER" || !item.HasValue {
+	if item := itemOf(t, view, "provider"); item.EnvOverride != "AEGISOPS_LLM_PROVIDER" || !item.HasValue {
 		t.Fatalf("provider 应标注来源, got %+v", item)
 	}
 }
@@ -271,15 +271,15 @@ func TestChatRuntimeConfigRequiresExplicitModel(t *testing.T) {
 
 	// 只有空白 env 值：仍算未配置。
 	blank := New(newTestStore(t), WithEnvLookup(staticEnv(map[string]string{
-		"K8S_AI_LLM_MODEL":    "  ",
-		"K8S_AI_LLM_ENDPOINT": "",
+		"AEGISOPS_LLM_MODEL":    "  ",
+		"AEGISOPS_LLM_ENDPOINT": "",
 	})))
 	if _, err := blank.ChatRuntimeConfig(ctx, base); !errors.Is(err, ErrModelNotConfigured) {
 		t.Fatalf("空白环境变量不应算已配置, got %v", err)
 	}
 
 	// 只配 env 端点（模型名留默认）：算已配置，不再拦对话。
-	envOnly := New(newTestStore(t), WithEnvLookup(staticEnv(map[string]string{"K8S_AI_LLM_ENDPOINT": "http://gw.internal/v1"})))
+	envOnly := New(newTestStore(t), WithEnvLookup(staticEnv(map[string]string{"AEGISOPS_LLM_ENDPOINT": "http://gw.internal/v1"})))
 	cfg, err := envOnly.ChatRuntimeConfig(ctx, base)
 	if err != nil {
 		t.Fatalf("env 覆盖端点应算已配置: %v", err)

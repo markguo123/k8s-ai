@@ -8,7 +8,7 @@ import "testing"
 // 会静默地继续跑成形态 A。
 func TestPlatformStaticEnabledFromEnv(t *testing.T) {
 	t.Run("默认开启形态A", func(t *testing.T) {
-		t.Setenv("K8S_AI_PLATFORM_SERVER_STATIC_ENABLED", "")
+		t.Setenv("AEGISOPS_PLATFORM_SERVER_STATIC_ENABLED", "")
 		cfg, err := Load(LoadOptions{})
 		if err != nil {
 			t.Fatalf("load: %v", err)
@@ -19,13 +19,13 @@ func TestPlatformStaticEnabledFromEnv(t *testing.T) {
 	})
 
 	t.Run("环境变量关闭为纯API", func(t *testing.T) {
-		t.Setenv("K8S_AI_PLATFORM_SERVER_STATIC_ENABLED", "false")
+		t.Setenv("AEGISOPS_PLATFORM_SERVER_STATIC_ENABLED", "false")
 		cfg, err := Load(LoadOptions{})
 		if err != nil {
 			t.Fatalf("load: %v", err)
 		}
 		if cfg.Platform.Server.StaticEnabled {
-			t.Fatal("K8S_AI_PLATFORM_SERVER_STATIC_ENABLED=false 应关闭静态托管（形态 B）")
+			t.Fatal("AEGISOPS_PLATFORM_SERVER_STATIC_ENABLED=false 应关闭静态托管（形态 B）")
 		}
 	})
 }

@@ -23,7 +23,7 @@ type Config struct {
 	// Prefix 是 key 顶层命名空间，空取 DefaultPrefix。
 	Prefix string
 	// Dir / TmpDir 分别来自 platform.blobs.dir / tmp_dir，由使用方给默认值：本包
-	// 不猜 ~/.k8s-ai/blobs 与 /data/blobs 哪个是对的（§14）。
+	// 不猜 ~/.aegisops/blobs 与 /data/blobs 哪个是对的（§14）。
 	Dir    string
 	TmpDir string
 	// MaxBytes 是单对象上限，<=0 取 DefaultMaxObjectBytes。
@@ -60,7 +60,7 @@ func New(cfg Config, openDB func() (Store, error)) (Store, error) {
 // NewCLI 构造 CLI 侧的后端，白名单只有 off 与 dir。
 //
 // 理由不是「CLI 不许用对象存储」，而是 CLI 的交付形态就是一个可执行文件加一个
-// ~/.k8s-ai 目录（§16）：让它默认依赖一个 MySQL 或一个桶，等于让离线体检先看运维有
+// ~/.aegisops 目录（§16）：让它默认依赖一个 MySQL 或一个桶，等于让离线体检先看运维有
 // 没有准备好中间件。db 需要平台库连接、s3 需要桶与凭据，两者在 CLI 里都没有可靠的
 // 来源与失败回退路径，所以在装配入口就硬拒，而不是等第一次上传才报一句不可用。
 //

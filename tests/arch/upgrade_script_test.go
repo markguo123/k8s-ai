@@ -94,7 +94,7 @@ func TestUpgradeScriptParsesTagFromGit(t *testing.T) {
 // TestUpgradeScriptKeepsStateOutsideSourceTree 钉住「参数与发布记录不跟着源码目录一起丢」。
 func TestUpgradeScriptKeepsStateOutsideSourceTree(t *testing.T) {
 	script := readUpgradeScript(t)
-	for _, want := range []string{"K8S_AI_DEPLOY_STATE", "STATE_DIR", "history-", "LOG_DIR", "state_load", "state_record_ok"} {
+	for _, want := range []string{"AEGISOPS_DEPLOY_STATE", "STATE_DIR", "history-", "LOG_DIR", "state_load", "state_record_ok"} {
 		if !strings.Contains(script, want) {
 			t.Errorf("deploy/upgrade.sh 缺少发布记录/参数解耦要素 %q", want)
 		}
@@ -116,14 +116,14 @@ func TestUpgradeScriptRollbackNeverRebuilds(t *testing.T) {
 func TestUpgradeScriptVerifiesDeployedCommit(t *testing.T) {
 	script := readUpgradeScript(t)
 	body := shellFuncBody(t, script, "verify_release")
-	for _, want := range []string{"rollout status", "exec deploy/k8s-ai-server -- /usr/local/bin/k8s-ai version", "commit", "separated"} {
+	for _, want := range []string{"rollout status", "exec deploy/aegisops-server -- /usr/local/bin/aopsctl version", "commit", "separated"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("verify_release 缺少 %q：发布完必须自己确认 Ready 与跑的是哪个 commit", want)
 		}
 	}
 	// kubectl exec 是整条替换容器命令，ENTRYPOINT 不参与：漏写二进制名会让 exec 恒失败，
 	// commit 核对就静默退化成「只核对了 Ready 状态」，验收门禁成了摆设。
-	if strings.Contains(script, "exec deploy/k8s-ai-server -- version") {
+	if strings.Contains(script, "exec deploy/aegisops-server -- version") {
 		t.Error("exec 必须写全二进制名：-- version 会被当成执行一个叫 version 的程序")
 	}
 }
@@ -164,7 +164,7 @@ func upgradeEnvFixture(t *testing.T, dir, tag string) string {
 	content := strings.Join([]string{
 		"IMAGE=registry.invalid/platform/k8s-ai",
 		"TAG=" + tag,
-		"IMAGE_WEB=registry.invalid/platform/k8s-ai-web",
+		"IMAGE_WEB=registry.invalid/platform/aegisops-web",
 		"FORM=separated",
 		"NAMESPACE=k8s-ai-archtest",
 		"STORE_DRIVER=mysql",
@@ -188,9 +188,9 @@ func runUpgrade(t *testing.T, bash string, env []string, args ...string) (string
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), env...)
 	// 默认关掉两个脚本的 tee：日志内容和 combined 输出重复，用例只读一份就够。
-	// 用例自己给了 K8S_AI_INSTALL_NO_TEE 就听用例的——有一条正要看日志是否落在 state/logs。
-	if !hasEnvPrefix(env, "K8S_AI_INSTALL_NO_TEE=") {
-		cmd.Env = append(cmd.Env, "K8S_AI_INSTALL_NO_TEE=1")
+	// 用例自己给了 AEGISOPS_INSTALL_NO_TEE 就听用例的——有一条正要看日志是否落在 state/logs。
+	if !hasEnvPrefix(env, "AEGISOPS_INSTALL_NO_TEE=") {
+		cmd.Env = append(cmd.Env, "AEGISOPS_INSTALL_NO_TEE=1")
 	}
 	cmd.Env = append(cmd.Env, "TMPDIR=/tmp")
 	combined, err := cmd.CombinedOutput()
@@ -209,11 +209,11 @@ func hasEnvPrefix(env []string, prefix string) bool {
 // bashTempDir 建一个 bash 与宿主都能可靠定位的临时 state 目录，返回 POSIX 路径与宿主路径。
 //
 // 为什么不用 t.TempDir()：git bash 会把 Windows 的 TEMP 重映射到自己的 /tmp，脚本按
-// K8S_AI_DEPLOY_STATE 写进去的日志，Go 侧拿原始宿主路径根本读不到，断言就会假失败。
+// AEGISOPS_DEPLOY_STATE 写进去的日志，Go 侧拿原始宿主路径根本读不到，断言就会假失败。
 // 统一在 bash 侧 mktemp，再用 pwd -W 换回宿主路径给 Go 用（install_render_test.go 同一套做法）。
 func bashTempDir(t *testing.T, bash string) (posix, host string) {
 	t.Helper()
-	cmd := exec.Command(bash, "-c", "mktemp -d /tmp/k8s-ai-upgrade-XXXXXX")
+	cmd := exec.Command(bash, "-c", "mktemp -d /tmp/aegisops-upgrade-XXXXXX")
 	cmd.Env = append(os.Environ(), "TMPDIR=/tmp")
 	out, err := cmd.Output()
 	if err != nil {
@@ -252,8 +252,8 @@ func TestUpgradeScriptDryRunDerivesTagAndKeepsLogsOutsideRepo(t *testing.T) {
 
 	// 这条用例要验日志落盘位置，所以显式打开 tee（默认是关的）。
 	out, err := runUpgrade(t, bash, []string{
-		"K8S_AI_DEPLOY_STATE=" + posixState,
-		"K8S_AI_INSTALL_NO_TEE=0",
+		"AEGISOPS_DEPLOY_STATE=" + posixState,
+		"AEGISOPS_INSTALL_NO_TEE=0",
 	}, "--dry-run", "--yes")
 	if err != nil {
 		t.Fatalf("upgrade.sh --dry-run 失败：%v\n输出尾部：\n%s", err, tailLines(out, 30))
@@ -280,7 +280,7 @@ func TestUpgradeScriptFollowEnvTagUsesReleaseTag(t *testing.T) {
 	posixState, state := bashTempDir(t, bash)
 	upgradeEnvFixture(t, state, "4.0.0-release")
 
-	out, err := runUpgrade(t, bash, []string{"K8S_AI_DEPLOY_STATE=" + posixState}, "--dry-run", "--yes", "--follow-env-tag")
+	out, err := runUpgrade(t, bash, []string{"AEGISOPS_DEPLOY_STATE=" + posixState}, "--dry-run", "--yes", "--follow-env-tag")
 	if err != nil {
 		t.Fatalf("upgrade.sh --dry-run --follow-env-tag 失败：%v\n输出尾部：\n%s", err, tailLines(out, 30))
 	}
@@ -288,7 +288,7 @@ func TestUpgradeScriptFollowEnvTagUsesReleaseTag(t *testing.T) {
 		t.Errorf("--follow-env-tag 应原样用 install.env 里的 TAG：\n%s", tailLines(out, 30))
 	}
 	if !strings.Contains(out, "k8s-ai:4.0.0-release") {
-		t.Errorf("期望镜像为 ...k8s-ai:4.0.0-release：\n%s", tailLines(out, 30))
+		t.Errorf("期望镜像为 ...aegisops:4.0.0-release：\n%s", tailLines(out, 30))
 	}
 }
 
@@ -303,7 +303,7 @@ func TestUpgradeScriptExportedTagOverridesEnvFileTag(t *testing.T) {
 	upgradeEnvFixture(t, state, "4.0.0-filetest")
 
 	out, err := runUpgrade(t, bash, []string{
-		"K8S_AI_DEPLOY_STATE=" + posixState,
+		"AEGISOPS_DEPLOY_STATE=" + posixState,
 		"TAG=9.9.9-exported",
 	}, "--dry-run", "--yes")
 	if err != nil {
@@ -337,7 +337,7 @@ func TestUpgradeScriptStatusShowsRecordedRelease(t *testing.T) {
 	}
 
 	out, err := runUpgrade(t, bash, []string{
-		"K8S_AI_DEPLOY_STATE=" + state,
+		"AEGISOPS_DEPLOY_STATE=" + state,
 		"KUBECTL_BIN=" + posixState + "/kubectl-stub.sh",
 	}, "--status")
 	if err != nil {
@@ -357,7 +357,7 @@ func TestUpgradeScriptRejectsMissingEnvFile(t *testing.T) {
 		t.Skip("没有可用的 bash，跳过 upgrade.sh 可执行用例")
 	}
 	posixState, _ := bashTempDir(t, bash)
-	out, err := runUpgrade(t, bash, []string{"K8S_AI_DEPLOY_STATE=" + posixState}, "--dry-run", "--yes")
+	out, err := runUpgrade(t, bash, []string{"AEGISOPS_DEPLOY_STATE=" + posixState}, "--dry-run", "--yes")
 	if err == nil {
 		t.Fatalf("缺参数文件必须失败，不能猜默认值：\n%s", tailLines(out, 30))
 	}

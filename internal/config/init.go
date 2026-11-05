@@ -6,19 +6,19 @@ import (
 	"path/filepath"
 )
 
-// TemplateKind 选择 `k8s-ai config init` 输出的模板种类（D-21 / ADR-031 v1.12）。
+// TemplateKind 选择 `aopsctl config init` 输出的模板种类（D-21 / ADR-031 v1.12）。
 // server 静态模板与 CLI 直用模板是两份完全独立的文件，互不覆盖。
 type TemplateKind string
 
 const (
 	// TemplateServer 是平台进程静态模板（config.yaml）：platform: 启动段 + 落盘目录键。
 	TemplateServer TemplateKind = "server"
-	// TemplateCLI 是终端直用模板（~/.k8s-ai/cli.yaml）：承载全量引擎键与 CLI 缺省。
+	// TemplateCLI 是终端直用模板（~/.aegisops/cli.yaml）：承载全量引擎键与 CLI 缺省。
 	TemplateCLI TemplateKind = "cli"
 )
 
-// ServerTemplate is written by `k8s-ai config init` (platform static config).
-const ServerTemplate = `# k8s-ai configuration
+// ServerTemplate is written by `aopsctl config init` (platform static config).
+const ServerTemplate = `# AegisOps configuration
 # 仅承载“这台实例想跑成什么样”的静态启动参数（P6.12 / P6.2）。
 # 内容分两部分：platform: 平台服务启动段，以及 report / agent 的落盘目录段
 # （容器里根文件系统只读，报告和会话/审计必须显式指向可写卷）。deploy/base/configmap.yaml
@@ -26,13 +26,13 @@ const ServerTemplate = `# k8s-ai configuration
 #
 # 动态业务配置（模型/Skill/审批/记忆/保留/MCP/集群运维）统一在 Web
 # 配置中心（settings 表）维护并即时生效；本文件刻意不出现这些动态键，
-# 避免“文件 vs 页面”双配置源漂移。k8s-ai chat / k8s-ai scan 等终端命令
-# 读的是另一份文件 ~/.k8s-ai/cli.yaml（见 k8s-ai config init --cli），
+# 避免“文件 vs 页面”双配置源漂移。aopsctl chat / aopsctl scan 等终端命令
+# 读的是另一份文件 ~/.aegisops/cli.yaml（见 aopsctl config init --cli），
 # 与本平台配置文件互不覆盖。
 #
 # 敏感值约定：admin 口令、LLM API Key、存储 DSN、场景凭据只经环境变量
 # / Kubernetes Secret 注入，config.yaml 永不写明文。Web 页面里模型 key、
-# kubeconfig、MCP env 属动态敏感配置，落库前由服务端用 K8S_AI_ENC_KEY 加密。
+# kubeconfig、MCP env 属动态敏感配置，落库前由服务端用 AEGISOPS_ENC_KEY 加密。
 
 # 平台服务监听（启动参数，修改需重启服务生效）
 platform:
@@ -45,20 +45,20 @@ platform:
       key_file: ""            # TLS 私钥路径（可 ~/ 展开），仅 enabled=true 时要求
   store:
     driver: mysql             # 四期主存储 MySQL；sqlite 为本地/单机兜底
-    sqlite_path: "~/.k8s-ai/k8s-ai.db"  # driver=sqlite 时的库文件（容器内须挂 PVC）
-    dsn: ""                   # 只经 K8S_AI_PLATFORM_STORE_DSN / Secret 注入；YAML 留空
+    sqlite_path: "~/.aegisops/aegisops.db"  # driver=sqlite 时的库文件（容器内须挂 PVC）
+    dsn: ""                   # 只经 AEGISOPS_PLATFORM_STORE_DSN / Secret 注入；YAML 留空
   blobs:                      # 二进制对象后端：附件、报告产物、可选的会话正文外置（P8.1 / D-32）
     driver: db                # off | db | dir | s3；默认 db（正文进 DB），老环境升级零行为变化
-    prefix: k8sai             # 对象键首段，≤32 字符，只允许小写字母数字与 - _
+    prefix: aegisops             # 对象键首段，≤32 字符，只允许小写字母数字与 - _
     dir: ""                   # driver=dir 的根目录；留空由进程按场景取默认（容器内 /data/blobs）
     tmp_dir: ""               # driver=s3 的上传落盘中转目录；留空取进程临时目录（容器里即 /tmp）
     endpoint: ""              # driver=s3 才用：host:port，不含 scheme（环境专有值，别提交进仓库）
     region: us-east-1         # 签名区域；MinIO 默认 us-east-1
     use_tls: false            # 自签 MinIO 常见 false；生产建议挂证书后改 true
     path_style: true          # MinIO/Ceph 必须 true（虚拟主机寻址会解析不到桶名）
-    bucket: k8s-ai            # driver=s3 必填
-    access_key: ""            # 只经 K8S_AI_PLATFORM_BLOBS_ACCESS_KEY / Secret 注入；YAML 留空
-    secret_key: ""            # 只经 K8S_AI_PLATFORM_BLOBS_SECRET_KEY / Secret 注入；YAML 留空
+    bucket: aegisops            # driver=s3 必填
+    access_key: ""            # 只经 AEGISOPS_PLATFORM_BLOBS_ACCESS_KEY / Secret 注入；YAML 留空
+    secret_key: ""            # 只经 AEGISOPS_PLATFORM_BLOBS_SECRET_KEY / Secret 注入；YAML 留空
     create_bucket: true       # 启动期幂等建桶；无建桶权限的现场置 false 并预先建桶
     presign_ttl: 15m          # 预签名下载链接有效期，≤24h
     max_object_size: 32MiB    # 单对象上限，≤256MiB，超限直接拒绝（不截断）
@@ -79,8 +79,8 @@ report:
   directory: "./reports"      # 报告目录（容器内 e.g. /reports）
   format: markdown            # markdown | json | yaml
 agent:
-  session_dir: "~/.k8s-ai/sessions"  # 会话落盘（容器内 e.g. /data/sessions）
-  audit_dir: "~/.k8s-ai/audit"       # 审计落盘（容器内 e.g. /data/audit）
+  session_dir: "~/.aegisops/sessions"  # 会话落盘（容器内 e.g. /data/sessions）
+  audit_dir: "~/.aegisops/audit"       # 审计落盘（容器内 e.g. /data/audit）
   audit_file_copy: true              # 会话审计 jsonl 副本：审计事实源是平台库 audit_events，
                                      # 置 false 只写库、不再产生文件副本（P8.0）
   session_max_bytes: 12582912        # 单会话正文上限（字节，默认 12MiB，P8.6）：达 85% 发可读
@@ -88,16 +88,16 @@ agent:
                                      # 到对象桶，需要更大会话就调这里或挂 PVC，不要改 platform.blobs.*
 `
 
-// CLITemplate is written by `k8s-ai config init --cli`（终端直用全量引擎键）。
-const CLITemplate = `# k8s-ai CLI 直用配置
-# 本文件只供终端命令读取：k8s-ai chat / k8s-ai scan 直接消费下列引擎键，
-# 不依赖平台数据库。k8s-ai server（企业平台进程）不读取也不回写本文件，
+// CLITemplate is written by `aopsctl config init --cli`（终端直用全量引擎键）。
+const CLITemplate = `# AegisOps CLI 直用配置
+# 本文件只供终端命令读取：aopsctl chat / aopsctl scan 直接消费下列引擎键，
+# 不依赖平台数据库。aopsctl server（企业平台进程）不读取也不回写本文件，
 # 平台侧模型/Skill/审批/记忆/保留/MCP/集群运维配置唯一落 DB settings 表，
 # 由 Web 配置中心维护；平台静态启动参数在 config.yaml 的 platform: 段（见
-# k8s-ai config init）。
+# aopsctl config init）。
 #
 # 优先级：CLI flag > 环境变量 > 本文件 > 内置默认。
-# 敏感值（LLM api_key）建议只经 K8S_AI_LLM_API_KEY 注入，本文件不留明文。
+# 敏感值（LLM api_key）建议只经 AEGISOPS_LLM_API_KEY 注入，本文件不留明文。
 
 kubernetes:
   kubeconfig: ""              # 留空 = 使用 KUBECONFIG 环境变量或默认 ~/.kube/config
@@ -111,7 +111,7 @@ kubernetes:
 llm:
   enabled: true               # 关闭则只出规则结论
   endpoint: "http://localhost:8000/v1"  # OpenAI Compatible 基础地址（自动拼 /chat/completions）
-  api_key: ""                 # 也可用环境变量 K8S_AI_LLM_API_KEY 注入
+  api_key: ""                 # 也可用环境变量 AEGISOPS_LLM_API_KEY 注入
   model: "qwen-plus"          # 建议：快速非思考型模型；思考型大模型较慢
   temperature: 0.1
   max_tokens: 4096
@@ -150,8 +150,8 @@ agent:
   approval_mode: strict       # strict | smart（smart 需显式开启）
   require_approval: true      # 写操作必须人工确认（false 仅用于 --skip-permissions 场景）
   skip_permissions: false     # true 时跳过审批（非交互自动化，慎用）
-  session_dir: "~/.k8s-ai/sessions"
-  audit_dir: "~/.k8s-ai/audit"
+  session_dir: "~/.aegisops/sessions"
+  audit_dir: "~/.aegisops/audit"
   create:
     enabled: true             # create_resource 开关
     deny_kinds: []            # 黑名单，默认空
@@ -168,12 +168,12 @@ rules:
 
 # 二进制产物本地目录（P8.1 / D-32）：终端直用只允许 off | dir 两档；桶与凭据
 # 键（endpoint/bucket/access_key/secret_key 等）属平台形态，写在 cli.yaml 里会被
-# k8s-ai config validate --mode cli 点名告警；driver 写 s3 会在构造后端时被拒绝
+# aopsctl config validate --mode cli 点名告警；driver 写 s3 会在构造后端时被拒绝
 # （写 db 按 dir 等价处理并提示），见方案 15 §11。
 platform:
   blobs:
     driver: dir               # off | dir
-    dir: "~/.k8s-ai/blobs"    # 与 cli.yaml/k8s-ai.db/sessions/audit 同处，整目录可拷走
+    dir: "~/.aegisops/blobs"    # 与 cli.yaml/aegisops.db/sessions/audit 同处，整目录可拷走
 `
 
 // DefaultTemplate 保留为 server 静态模板的别名（三期调用方兼容）。

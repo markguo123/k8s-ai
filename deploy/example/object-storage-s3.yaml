@@ -4,7 +4,7 @@
 # 只能用 kubectl patch --patch-file，`kubectl apply -R -f deploy/` 会在它这里报校验错误。
 #
 # 前置一：先建凭据（AK/SK 只进 Secret，不进 ConfigMap、不进仓库），见
-# deploy/base/secret.example.yaml 里的 k8s-ai-blobs 段。
+# deploy/base/secret.example.yaml 里的 aegisops-blobs 段。
 #
 # 前置二：桶由平台组预建，运行账号只给对象读写权限。清单里 create_bucket 恒为 false，
 # 因为启动期建桶会把「桶名写错 / 凭据没权限」变成 Pod 起不来——那样聊天、审批、审计
@@ -14,10 +14,10 @@
 # 换后端之前必须先迁对象（重要）：server 只按配置装配一个内容后端。已经跑过 db 或 dir
 # 后端的实例，直接把 driver 改成 s3，会让 objects 表里仍写着旧 driver 的历史对象读不到
 # （下载返回 409 待迁移，历史报告打不开）。正确顺序：
-# 容器内必须带 --config /etc/k8s-ai/config.yaml：不带就回落默认 sqlite（空库），只会报 schema 0
-#   k8s-ai --config /etc/k8s-ai/config.yaml blobs migrate --to s3 --dry-run   # 先看清单，零改动
-#   k8s-ai --config /etc/k8s-ai/config.yaml blobs migrate --to s3               # 内容先落桶、按 sha256 核对，才翻元数据
-#   k8s-ai --config /etc/k8s-ai/config.yaml blobs verify --strict            # 退出码 0 才算迁完
+# 容器内必须带 --config /etc/aegisops/config.yaml：不带就回落默认 sqlite（空库），只会报 schema 0
+#   aegisops --config /etc/aegisops/config.yaml blobs migrate --to s3 --dry-run   # 先看清单，零改动
+#   aegisops --config /etc/aegisops/config.yaml blobs migrate --to s3               # 内容先落桶、按 sha256 核对，才翻元数据
+#   aegisops --config /etc/aegisops/config.yaml blobs verify --strict            # 退出码 0 才算迁完
 #   然后再打本补丁并切 driver
 # deploy/install.sh 在 apply 之前会挡这一步（ALLOW_DRIVER_MISMATCH 是显式绕行，不是推荐路径）。
 #
@@ -28,42 +28,42 @@
 # 报告导出仍会写一份 report.directory 兼容副本，要不要跨重启保留见 deployment-reports-pvc.yaml。
 #
 # 应用方式（给后端 Deployment 追加环境变量，按 name 合并，不动其他字段）：
-#   kubectl -n k8s-ai patch deploy k8s-ai-server --type=strategic \
+#   kubectl -n aegisops patch deploy aegisops-server --type=strategic \
 #     --patch-file deploy/example/object-storage-s3.yaml
-# 撤销对象后端：kubectl -n k8s-ai set env deploy/k8s-ai-server \
-#   K8S_AI_PLATFORM_BLOBS_DRIVER- K8S_AI_PLATFORM_BLOBS_ENDPOINT- \
-#   K8S_AI_PLATFORM_BLOBS_BUCKET- K8S_AI_PLATFORM_BLOBS_TMP_DIR-
+# 撤销对象后端：kubectl -n aegisops set env deploy/aegisops-server \
+#   AEGISOPS_PLATFORM_BLOBS_DRIVER- AEGISOPS_PLATFORM_BLOBS_ENDPOINT- \
+#   AEGISOPS_PLATFORM_BLOBS_BUCKET- AEGISOPS_PLATFORM_BLOBS_TMP_DIR-
 spec:
   template:
     spec:
       containers:
-        - name: k8s-ai
+        - name: aegisops
           env:
-            - name: K8S_AI_PLATFORM_BLOBS_DRIVER
+            - name: AEGISOPS_PLATFORM_BLOBS_DRIVER
               value: "s3"
             # host:port，不带 scheme；TLS 用下面的 use_tls 表达。
-            - name: K8S_AI_PLATFORM_BLOBS_ENDPOINT
+            - name: AEGISOPS_PLATFORM_BLOBS_ENDPOINT
               value: "REPLACE_WITH_S3_HOST_PORT"
-            - name: K8S_AI_PLATFORM_BLOBS_BUCKET
+            - name: AEGISOPS_PLATFORM_BLOBS_BUCKET
               value: "REPLACE_WITH_BUCKET_NAME"
             # 签名区域。MinIO 等自建填 us-east-1 即可。
-            - name: K8S_AI_PLATFORM_BLOBS_REGION
+            - name: AEGISOPS_PLATFORM_BLOBS_REGION
               value: "us-east-1"
             # 集群内经 Service 访问自建 MinIO 常见 false；走公网对象存储必须 true。
-            - name: K8S_AI_PLATFORM_BLOBS_USE_TLS
+            - name: AEGISOPS_PLATFORM_BLOBS_USE_TLS
               value: "false"
             # 自建 MinIO/Ceph 必须路径式寻址；AWS 官方端点可置 false。
-            - name: K8S_AI_PLATFORM_BLOBS_PATH_STYLE
+            - name: AEGISOPS_PLATFORM_BLOBS_PATH_STYLE
               value: "true"
             # 生产口径：桶预建，运行账号无建桶权限。
-            - name: K8S_AI_PLATFORM_BLOBS_CREATE_BUCKET
+            - name: AEGISOPS_PLATFORM_BLOBS_CREATE_BUCKET
               value: "false"
             # 上传中转目录：镜像根文件系统只读，这里落在 /tmp 空卷上，不落根文件系统。
-            - name: K8S_AI_PLATFORM_BLOBS_TMP_DIR
-              value: "/tmp/k8s-ai-blobs"
-            - name: K8S_AI_PLATFORM_BLOBS_ACCESS_KEY
+            - name: AEGISOPS_PLATFORM_BLOBS_TMP_DIR
+              value: "/tmp/aegisops-blobs"
+            - name: AEGISOPS_PLATFORM_BLOBS_ACCESS_KEY
               valueFrom:
-                secretKeyRef: { name: k8s-ai-blobs, key: access_key }
-            - name: K8S_AI_PLATFORM_BLOBS_SECRET_KEY
+                secretKeyRef: { name: aegisops-blobs, key: access_key }
+            - name: AEGISOPS_PLATFORM_BLOBS_SECRET_KEY
               valueFrom:
-                secretKeyRef: { name: k8s-ai-blobs, key: secret_key }
+                secretKeyRef: { name: aegisops-blobs, key: secret_key }

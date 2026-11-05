@@ -166,7 +166,7 @@ func TestFactoryWarnsOnSharedDirectoryWithReplicas(t *testing.T) {
 			cfg.Endpoint = "minio.test.svc:9000"
 			cfg.Region = "us-east-1"
 			cfg.PathStyle = true
-			cfg.Bucket = "k8s-ai-objects"
+			cfg.Bucket = "aegisops-objects"
 			cfg.AccessKey = "ak-test"
 			cfg.SecretKey = "sk-test"
 			cfg.TmpDir = t.TempDir()

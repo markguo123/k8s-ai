@@ -104,7 +104,7 @@ func RenderTerminal(r *model.ScanResult) string {
 		scope = "namespace " + r.Meta.Namespace
 		healthLabel = "命名空间健康度"
 	}
-	fmt.Fprintf(&b, "# k8s-ai scan\n\n")
+	fmt.Fprintf(&b, "# aopsctl scan\n\n")
 	b.WriteString("| 项 | 值 |\n| --- | --- |\n")
 	writeTableRow(&b, "Scope", scope)
 	writeTableRow(&b, healthLabel, fmt.Sprintf("%d/%d  %s", r.HealthScore.Score, r.HealthScore.Max, scoreBar(r.HealthScore.Score, r.HealthScore.Max)))

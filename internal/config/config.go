@@ -1,4 +1,4 @@
-// Package config loads and validates k8s-ai configuration.
+// Package config loads and validates AegisOps configuration.
 // Precedence: CLI overrides > ENV > YAML file > defaults (FR-002).
 package config
 
@@ -245,16 +245,16 @@ type LoadOptions struct {
 	CLI        bool           // 终端直用面（chat/scan）：默认读 cli.yaml，缺失回退 config.yaml
 }
 
-// DefaultConfigFile returns the default config path (~/.k8s-ai/config.yaml).
+// DefaultConfigFile returns the default config path (~/.aegisops/config.yaml).
 func DefaultConfigFile() (string, error) {
-	return expandHome("~/.k8s-ai/config.yaml")
+	return expandHome("~/.aegisops/config.yaml")
 }
 
-// DefaultCLIConfigFile 返回终端直用配置的默认路径（~/.k8s-ai/cli.yaml，D-21）。
+// DefaultCLIConfigFile 返回终端直用配置的默认路径（~/.aegisops/cli.yaml，D-21）。
 // 它与平台静态 config.yaml 是两份独立文件：由 `config init --cli` 生成，只有
-// k8s-ai chat / scan 读取，server 既不读取也不回写。
+// aopsctl chat / scan 读取，server 既不读取也不回写。
 func DefaultCLIConfigFile() (string, error) {
-	return expandHome("~/.k8s-ai/cli.yaml")
+	return expandHome("~/.aegisops/cli.yaml")
 }
 
 // ResolveConfigFile 解析实际生效的配置文件路径（显式 --config 优先）。终端直用面
@@ -290,7 +290,7 @@ func Load(opts LoadOptions) (*Config, error) {
 	setDefaults(v)
 
 	if !opts.NoEnv {
-		v.SetEnvPrefix("K8S_AI")
+		v.SetEnvPrefix("AEGISOPS")
 		v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 		v.AutomaticEnv()
 	}
@@ -366,8 +366,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("agent.turn_max_bytes", 32*1024)
 	v.SetDefault("agent.cmd_max_bytes", 64*1024)
 	v.SetDefault("agent.history_turns", 20)
-	v.SetDefault("agent.session_dir", "~/.k8s-ai/sessions")
-	v.SetDefault("agent.audit_dir", "~/.k8s-ai/audit")
+	v.SetDefault("agent.session_dir", "~/.aegisops/sessions")
+	v.SetDefault("agent.audit_dir", "~/.aegisops/audit")
 	v.SetDefault("agent.session_max_bytes", defaultSessionMaxBytes())
 	v.SetDefault("agent.audit_file_copy", true)
 
@@ -391,12 +391,12 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("platform.server.tls.cert_file", "")
 	v.SetDefault("platform.server.tls.key_file", "")
 	v.SetDefault("platform.store.driver", StoreDriverSQLite)
-	v.SetDefault("platform.store.sqlite_path", "~/.k8s-ai/k8s-ai.db")
+	v.SetDefault("platform.store.sqlite_path", "~/.aegisops/aegisops.db")
 	v.SetDefault("platform.store.dsn", "")
 	// 二进制对象后端（P8.1 / D-32）：默认 db，未配置的环境升级即无感。每个键都必须
 	// 有默认值，viper 才能在 Unmarshal 时合并只来自环境变量（Secret）注入的取值。
 	v.SetDefault("platform.blobs.driver", BlobDriverDB)
-	v.SetDefault("platform.blobs.prefix", "k8sai")
+	v.SetDefault("platform.blobs.prefix", "aegisops")
 	v.SetDefault("platform.blobs.dir", "")
 	// tmp_dir 留空时由 objectstore 取 os.TempDir()（方案 15 §14）：装配层决定回落值，
 	// 配置面不猜，避免 validate 在有无临时卷的不同环境下结论不一致。
@@ -405,7 +405,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("platform.blobs.region", "us-east-1")
 	v.SetDefault("platform.blobs.use_tls", false)
 	v.SetDefault("platform.blobs.path_style", true)
-	v.SetDefault("platform.blobs.bucket", "k8s-ai")
+	v.SetDefault("platform.blobs.bucket", "aegisops")
 	v.SetDefault("platform.blobs.access_key", "")
 	v.SetDefault("platform.blobs.secret_key", "")
 	v.SetDefault("platform.blobs.create_bucket", true)

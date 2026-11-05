@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# k8s-ai 前端静态镜像（P6.2 / P6.13 形态 B）：Nginx + web/dist。
+# AegisOps 前端静态镜像（P6.2 / P6.13 形态 B）：Nginx + web/dist。
 #
 # 与仓库根 Dockerfile 是两个互不依赖的独立文件（D-30 / ADR-041）：
 #   仓库根 Dockerfile      后端镜像（形态 A 内嵌 dist；形态 B 关掉静态托管复用同一镜像）
@@ -7,9 +7,9 @@
 # 两者可分别构建、发布、回滚。形态 A 不需要构建本镜像。
 #
 # 构建：
-#   docker build -f deploy/separated/web.Dockerfile --build-arg VERSION=4.0.0 -t k8s-ai-web:4.0.0 .
+#   docker build -f deploy/separated/web.Dockerfile --build-arg VERSION=4.0.0 -t aegisops-web:4.0.0 .
 # 离线/内网加速（跳过 npm）：用一个「目录根下含 dist/」的目录覆盖 webdist 阶段：
-#   docker build -f deploy/separated/web.Dockerfile --build-context webdist=<dir-containing-dist> -t k8s-ai-web:dev .
+#   docker build -f deploy/separated/web.Dockerfile --build-context webdist=<dir-containing-dist> -t aegisops-web:dev .
 #
 # 运行镜像选 nginx-unprivileged：非 root 运行、监听 8080，直接满足 Pod Security
 # restricted（见 deploy/separated/web-deployment.yaml 的端口说明）。
@@ -26,7 +26,7 @@ RUN rm -rf /dist && mkdir -p /dist && cp -r /web/dist/. /dist/
 FROM nginxinc/nginx-unprivileged:1.27-alpine
 ARG VERSION=dev
 ARG COMMIT=none
-LABEL org.opencontainers.image.title="k8s-ai-web" \
+LABEL org.opencontainers.image.title="aegisops-web" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${COMMIT}"
 # 站点配置整体替换默认 default.conf（root 仍是镜像内的 /usr/share/nginx/html）。

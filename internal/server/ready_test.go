@@ -16,7 +16,7 @@ import (
 // /healthz 保持进程级（依赖故障时 liveness 不能把容器杀成重启风暴）。
 func TestReadyzReflectsReadinessCheck(t *testing.T) {
 	notReady := func(context.Context) error {
-		return fmt.Errorf("%w: schema version 0 < expected 4 (run k8s-ai db migrate)", store.ErrNotReady)
+		return fmt.Errorf("%w: schema version 0 < expected 4 (run aopsctl db migrate)", store.ErrNotReady)
 	}
 	srv := New(&fakeScan{}).WithReadiness(notReady)
 	ts := httptest.NewServer(srv.Handler())

@@ -8,7 +8,7 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/config"
 )
 
-// newDBCmd 聚合持久化运维子命令（P6.5）。与顶层 k8s-ai migrate 分工明确：
+// newDBCmd 聚合持久化运维子命令（P6.5）。与顶层 aopsctl migrate 分工明确：
 // db migrate 只升级 schema，migrate 负责把三期历史数据导入四期 Store。
 func newDBCmd(deps Dependencies) *cobra.Command {
 	cmd := &cobra.Command{
@@ -29,7 +29,7 @@ func newDBMigrateCmd(deps Dependencies) *cobra.Command {
 		Long: "Upgrade the configured store (platform.store.driver) to the current schema version.\n" +
 			"\n" +
 			"Scope: schema only. It does not import Phase-3 data (use the top-level\n" +
-			"'k8s-ai migrate') and it never creates the database itself; the schema and\n" +
+			"'aopsctl migrate') and it never creates the database itself; the schema and\n" +
 			"its character set must already exist. Re-running is a no-op, so this command\n" +
 			"is meant to be used as a pre-upgrade Job or initContainer.",
 		Args: cobra.NoArgs,

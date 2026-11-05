@@ -52,7 +52,7 @@ func TestDockerfileBuildStagesAreIdentical(t *testing.T) {
 	if a != b {
 		t.Errorf("两个 Dockerfile 的构建阶段必须逐字一致（前端产物与二进制同源）\n--- Dockerfile ---\n%s\n--- Dockerfile.distroless ---\n%s", a, b)
 	}
-	for _, want := range []string{"FROM node:22-alpine AS webdist", "AS build", "go build", "./cmd/k8s-ai"} {
+	for _, want := range []string{"FROM node:22-alpine AS webdist", "AS build", "go build", "./cmd/aopsctl"} {
 		if !strings.Contains(a, want) {
 			t.Errorf("构建阶段应包含 %q", want)
 		}
@@ -78,7 +78,7 @@ func TestDefaultImageRuntimeStageHasShellToolchain(t *testing.T) {
 		"ARG KUBECTL_DOWNLOAD_BASE=",
 		"ARG TARGETARCH",
 		"sha256sum -c",
-		`ENTRYPOINT ["/usr/local/bin/k8s-ai"]`,
+		`ENTRYPOINT ["/usr/local/bin/aopsctl"]`,
 	} {
 		if !strings.Contains(runtime, want) {
 			t.Errorf("默认镜像运行阶段缺少 %q", want)

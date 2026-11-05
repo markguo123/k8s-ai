@@ -54,7 +54,7 @@
   <rect x="70" y="546" width="280" height="96" rx="10" fill="#6366F1" opacity="0.9"/>
   <text x="210" y="574" font-family="Arial, sans-serif" font-size="14" font-weight="bold" text-anchor="middle" fill="#fff">Server-Side Apply</text>
   <text x="210" y="600" font-family="Arial, sans-serif" font-size="12" text-anchor="middle" fill="#C7D2FE">client-go dynamic + SSA</text>
-  <text x="210" y="620" font-family="Arial, sans-serif" font-size="12" text-anchor="middle" fill="#C7D2FE">fieldManager=k8s-ai</text>
+  <text x="210" y="620" font-family="Arial, sans-serif" font-size="12" text-anchor="middle" fill="#C7D2FE">fieldManager=AegisOps</text>
 
   <rect x="390" y="546" width="240" height="96" rx="10" fill="#5a55c0" opacity="0.92"/>
   <text x="510" y="574" font-family="Arial, sans-serif" font-size="14" font-weight="bold" text-anchor="middle" fill="#fff">一致性校验</text>

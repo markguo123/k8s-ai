@@ -1,5 +1,5 @@
 // Package session 实现二期会话：可插拔 Store（memory/file）与 Manager。
-// 设计逻辑借鉴 kubectl-ai 的 Store/Manager 模式，类型按 k8s-ai 重新实现。
+// 设计逻辑借鉴 kubectl-ai 的 Store/Manager 模式，类型按 AegisOps 重新实现。
 package session
 
 import (

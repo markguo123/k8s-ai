@@ -8,7 +8,7 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/model"
 )
 
-// 体检阶段名与官方总体架构图（docs/assets/images 下的「k8s-ai Kubernetes 体检诊断总体架构图.png」）
+// 体检阶段名与官方总体架构图（docs/assets/images 下的「aegisops Kubernetes 体检诊断总体架构图.png」）
 // 的九个方框一一对应。代码、报告「诊断信息」区块、Web 进度条三处用同一套名字，
 // 这样报告里写的阶段和用户屏幕上看到的阶段可以互相对账。
 const (

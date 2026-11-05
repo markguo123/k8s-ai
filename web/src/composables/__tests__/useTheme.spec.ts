@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
  * P7.1 / ADR-033：主题系统契约。
  * 覆盖三条验收：无存储时默认深色、跟随系统时按媒体查询取值、切换后持久化并落到 DOM。
  */
-const STORAGE_KEY = 'k8s_ai_theme_mode'
+const STORAGE_KEY = 'aegisops_theme_mode'
 let mediaMatches = false
 let changeListener: ((event: MediaQueryListEvent) => void) | null = null
 

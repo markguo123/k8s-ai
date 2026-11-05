@@ -147,7 +147,7 @@ describe('SettingsView 配置控件可读性', () => {
     await vi.waitFor(() => expect(wrapper.findAll('.field')).toHaveLength(1))
 
     expect(wrapper.find('.encryption-alert').exists()).toBe(true)
-    expect(wrapper.find('.encryption-alert').text()).toContain('K8S_AI_ENC_KEY')
+    expect(wrapper.find('.encryption-alert').text()).toContain('AEGISOPS_ENC_KEY')
     expect(wrapper.find('.field input').attributes('disabled')).toBeDefined()
   })
 
@@ -212,7 +212,7 @@ const ENV_ITEMS = [
     hasValue: true,
     sensitive: true,
     desc: '接口密钥（不回显）',
-    envOverride: 'K8S_AI_LLM_API_KEY',
+    envOverride: 'AEGISOPS_LLM_API_KEY',
     envOverrideTier: 'secret',
   },
   {
@@ -221,7 +221,7 @@ const ENV_ITEMS = [
     value: 'qwen-plus',
     hasValue: true,
     desc: '模型名',
-    envOverride: 'K8S_AI_LLM_MODEL',
+    envOverride: 'AEGISOPS_LLM_MODEL',
     envOverrideTier: 'seed',
   },
   { key: 'namespace', kind: 'string', value: 'default', hasValue: true, desc: '默认命名空间' },
@@ -268,7 +268,7 @@ describe('SettingsView 部署期覆盖态（P6.12 ⑩）', () => {
     const badge = field!.find('.pill.secret')
     expect(badge.exists()).toBe(true)
     expect(badge.text()).toContain('部署 Secret 提供')
-    expect(badge.text()).toContain('K8S_AI_LLM_API_KEY')
+    expect(badge.text()).toContain('AEGISOPS_LLM_API_KEY')
     expect(field!.find('.env-hint.secret').text()).toContain('运行值不变')
   })
 
@@ -280,7 +280,7 @@ describe('SettingsView 部署期覆盖态（P6.12 ⑩）', () => {
 
     const field = wrapper.findAll('.field')[1]
     expect(field!.find('.pill.seed').text()).toContain('部署种子值')
-    expect(field!.find('.pill.seed').text()).toContain('K8S_AI_LLM_MODEL')
+    expect(field!.find('.pill.seed').text()).toContain('AEGISOPS_LLM_MODEL')
     expect(field!.find('.env-hint.seed').text()).toContain('以页面配置为准')
   })
 
@@ -297,7 +297,7 @@ describe('SettingsView 部署期覆盖态（P6.12 ⑩）', () => {
 
   it('保存返回 warnings 时以警告收尾，不得报"配置已保存"', async () => {
     installScopedFetch([
-      'namespace 已写入配置库并立即生效：该键此前由部署变量 K8S_AI_NAMESPACE 提供首启种子值，保存后以页面配置为准。',
+      'namespace 已写入配置库并立即生效：该键此前由部署变量 AEGISOPS_NAMESPACE 提供首启种子值，保存后以页面配置为准。',
     ])
     const wrapper = mount(SettingsView)
     await flushPromises()

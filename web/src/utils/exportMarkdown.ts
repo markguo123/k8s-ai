@@ -25,7 +25,7 @@ function toolLine(message: ChatMessage): string[] {
 export function buildSessionMarkdown(messages: ChatMessage[], meta: ExportSessionMeta): string {
   const at = meta.exportedAt ?? new Date()
   const lines: string[] = [
-    `# ${meta.name?.trim() || 'k8s-ai 会话'}`,
+    `# ${meta.name?.trim() || 'AegisOps 会话'}`,
     '',
     `- 会话 ID：\`${meta.id}\``,
     `- 导出时间：${at.toISOString()}`,
@@ -56,7 +56,7 @@ export function buildSessionMarkdown(messages: ChatMessage[], meta: ExportSessio
   return `${lines.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd()}\n`
 }
 
-/** 文件名：`k8s-ai-<会话名>-<yyyyMMdd-HHmm>.md`（去掉文件系统非法字符）。 */
+/** 文件名：`aegisops-<会话名>-<yyyyMMdd-HHmm>.md`（去掉文件系统非法字符）。 */
 export function markdownFileName(name: string | undefined, at: Date = new Date()): string {
   const pad = (n: number): string => String(n).padStart(2, '0')
   const safe =
@@ -65,5 +65,5 @@ export function markdownFileName(name: string | undefined, at: Date = new Date()
       .replace(/[\\/:*?"<>|\s]+/g, '-')
       .replace(/^-+|-+$/g, '')
       .slice(0, 40) || 'session'
-  return `k8s-ai-${safe}-${at.getFullYear()}${pad(at.getMonth() + 1)}${pad(at.getDate())}-${pad(at.getHours())}${pad(at.getMinutes())}.md`
+  return `aegisops-${safe}-${at.getFullYear()}${pad(at.getMonth() + 1)}${pad(at.getDate())}-${pad(at.getHours())}${pad(at.getMinutes())}.md`
 }

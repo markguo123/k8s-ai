@@ -85,7 +85,7 @@ func readWorkload(t *testing.T, rel ...string) workload {
 // 这条会立刻挡住，避免「按文档装完才发现 config 有问题」。
 func TestDeployConfigMapsValidateUnderOwnProfile(t *testing.T) {
 	// DSN 只经 Secret 注入，清单里恒空：先模拟运行时注入。
-	t.Setenv("K8S_AI_PLATFORM_STORE_DSN", "k8s_ai:s3cret@tcp(db.internal:3306)/k8s_ai?charset=utf8mb4&parseTime=true&loc=Local")
+	t.Setenv("AEGISOPS_PLATFORM_STORE_DSN", "k8s_ai:s3cret@tcp(db.internal:3306)/k8s_ai?charset=utf8mb4&parseTime=true&loc=Local")
 
 	cases := []struct {
 		manifest string
@@ -154,7 +154,7 @@ func TestDeployPathsMatchVolumeMounts(t *testing.T) {
 	if err := os.WriteFile(path, []byte(cm.Data["config.yaml"]), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("K8S_AI_PLATFORM_STORE_DSN", "k8s_ai:s3cret@tcp(db.internal:3306)/k8s_ai?charset=utf8mb4&parseTime=true&loc=Local")
+	t.Setenv("AEGISOPS_PLATFORM_STORE_DSN", "k8s_ai:s3cret@tcp(db.internal:3306)/k8s_ai?charset=utf8mb4&parseTime=true&loc=Local")
 	cfg, err := config.Load(config.LoadOptions{ConfigFile: path})
 	if err != nil {
 		t.Fatalf("load platform config: %v", err)
@@ -194,16 +194,16 @@ func coveredByAnyMount(dir string, mounts []string) bool {
 }
 
 // TestDeployConfigVolumePointsAtExpectedConfigMap 挡住「清单改名后挂错配置」这类漂移：
-// 平台清单（server + 迁移 Job）只挂 k8s-ai-config，巡检 CronJob 只挂 k8s-ai-scan-config。
+// 平台清单（server + 迁移 Job）只挂 aegisops-config，巡检 CronJob 只挂 aegisops-scan-config。
 func TestDeployConfigVolumePointsAtExpectedConfigMap(t *testing.T) {
 	for _, tc := range []struct {
 		manifest []string
 		want     string
 	}{
-		{[]string{"deploy", "allinone", "deployment.yaml"}, "k8s-ai-config"},
-		{[]string{"deploy", "separated", "deployment.yaml"}, "k8s-ai-config"},
-		{[]string{"deploy", "base", "db-migrate-job.yaml"}, "k8s-ai-config"},
-		{[]string{"deploy", "scan", "cronjob.yaml"}, "k8s-ai-scan-config"},
+		{[]string{"deploy", "allinone", "deployment.yaml"}, "aegisops-config"},
+		{[]string{"deploy", "separated", "deployment.yaml"}, "aegisops-config"},
+		{[]string{"deploy", "base", "db-migrate-job.yaml"}, "aegisops-config"},
+		{[]string{"deploy", "scan", "cronjob.yaml"}, "aegisops-scan-config"},
 	} {
 		got := ""
 		for _, v := range readWorkload(t, tc.manifest...).podSpec().Volumes {
@@ -219,7 +219,7 @@ func TestDeployConfigVolumePointsAtExpectedConfigMap(t *testing.T) {
 
 // staticEnabledEnvKey 是两种部署形态之间唯一允许差异的键：形态 B 用它关掉后端内嵌的 SPA
 // 静态托管，让同一个后端镜像只对外提供 API。
-const staticEnabledEnvKey = "K8S_AI_PLATFORM_SERVER_STATIC_ENABLED"
+const staticEnabledEnvKey = "AEGISOPS_PLATFORM_SERVER_STATIC_ENABLED"
 
 // TestDeployFormsDifferOnlyByStaticSwitch 锁住「两种形态只差一个开关」这个约定。
 // 两份 Deployment 各自成文（deploy/allinone 与 deploy/separated），升级时很容易只改一份：
@@ -277,35 +277,35 @@ func TestDeployObjectStorageBackendWiring(t *testing.T) {
 		t.Errorf("%v 带了 apiVersion：它是 strategic merge patch，写成清单会让 kubectl apply -R -f deploy/ 报错", rel)
 	}
 	want := []string{
-		"K8S_AI_PLATFORM_BLOBS_DRIVER", "K8S_AI_PLATFORM_BLOBS_ENDPOINT",
-		"K8S_AI_PLATFORM_BLOBS_BUCKET", "K8S_AI_PLATFORM_BLOBS_REGION",
-		"K8S_AI_PLATFORM_BLOBS_USE_TLS", "K8S_AI_PLATFORM_BLOBS_PATH_STYLE",
-		"K8S_AI_PLATFORM_BLOBS_CREATE_BUCKET", "K8S_AI_PLATFORM_BLOBS_TMP_DIR",
-		"K8S_AI_PLATFORM_BLOBS_ACCESS_KEY", "K8S_AI_PLATFORM_BLOBS_SECRET_KEY",
+		"AEGISOPS_PLATFORM_BLOBS_DRIVER", "AEGISOPS_PLATFORM_BLOBS_ENDPOINT",
+		"AEGISOPS_PLATFORM_BLOBS_BUCKET", "AEGISOPS_PLATFORM_BLOBS_REGION",
+		"AEGISOPS_PLATFORM_BLOBS_USE_TLS", "AEGISOPS_PLATFORM_BLOBS_PATH_STYLE",
+		"AEGISOPS_PLATFORM_BLOBS_CREATE_BUCKET", "AEGISOPS_PLATFORM_BLOBS_TMP_DIR",
+		"AEGISOPS_PLATFORM_BLOBS_ACCESS_KEY", "AEGISOPS_PLATFORM_BLOBS_SECRET_KEY",
 	}
 	for _, key := range want {
 		if _, found := envVarValue(t, patch, key); !found {
 			t.Errorf("%v 缺少环境变量 %s：接 s3 需要一次性给全，缺一个就会在启动期报配置非法", rel, key)
 		}
 	}
-	if v, _ := envVarValue(t, patch, "K8S_AI_PLATFORM_BLOBS_DRIVER"); v != "s3" {
+	if v, _ := envVarValue(t, patch, "AEGISOPS_PLATFORM_BLOBS_DRIVER"); v != "s3" {
 		t.Errorf("%v 的 DRIVER 应为 s3，当前 %q", rel, v)
 	}
 	// 生产口径：桶预建。启动期建桶会把「桶名写错/没权限」放大成整个服务起不来。
-	if v, _ := envVarValue(t, patch, "K8S_AI_PLATFORM_BLOBS_CREATE_BUCKET"); v != "false" {
+	if v, _ := envVarValue(t, patch, "AEGISOPS_PLATFORM_BLOBS_CREATE_BUCKET"); v != "false" {
 		t.Errorf("%v 的 CREATE_BUCKET 必须是 \"false\"，当前 %q", rel, v)
 	}
 	// 镜像根文件系统只读，中转目录必须是可写卷上的绝对路径。
-	tmp, _ := envVarValue(t, patch, "K8S_AI_PLATFORM_BLOBS_TMP_DIR")
+	tmp, _ := envVarValue(t, patch, "AEGISOPS_PLATFORM_BLOBS_TMP_DIR")
 	if !strings.HasPrefix(tmp, "/") {
 		t.Errorf("%v 的 TMP_DIR 必须是绝对路径，当前 %q", rel, tmp)
 	}
-	for _, key := range []string{"K8S_AI_PLATFORM_BLOBS_ACCESS_KEY", "K8S_AI_PLATFORM_BLOBS_SECRET_KEY"} {
+	for _, key := range []string{"AEGISOPS_PLATFORM_BLOBS_ACCESS_KEY", "AEGISOPS_PLATFORM_BLOBS_SECRET_KEY"} {
 		if v, found := envVarValue(t, patch, key); found && v != "" {
 			t.Errorf("%v 的 %s 出现了明文值：AK/SK 只能经 secretKeyRef 注入", rel, key)
 		}
-		if name := secretRefName(t, patch, key); name != "k8s-ai-blobs" {
-			t.Errorf("%v 的 %s 应引用 Secret k8s-ai-blobs，当前 %q", rel, key, name)
+		if name := secretRefName(t, patch, key); name != "aegisops-blobs" {
+			t.Errorf("%v 的 %s 应引用 Secret aegisops-blobs，当前 %q", rel, key, name)
 		}
 	}
 	// 换后端必须先迁对象，这条顺序是历史报告能否读到的关键，必须写在示例里。

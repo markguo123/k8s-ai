@@ -298,7 +298,7 @@ func TestClusterErrorPaths(t *testing.T) {
 	if err := authSvc.Bootstrap(context.Background(), "admin-pw"); err != nil {
 		t.Fatal(err)
 	}
-	// 模拟 cli/server 在 K8S_AI_ENC_KEY 缺失时的装配结果：具体类型为
+	// 模拟 cli/server 在 AEGISOPS_ENC_KEY 缺失时的装配结果：具体类型为
 	// *cluster.Service(nil)。不能因 typed nil 包装进接口而 panic。
 	var unavailable *cluster.Service
 	plain := httptest.NewServer(NewWithAuth(&fakeScan{}, authSvc).WithClusters(unavailable).Handler())

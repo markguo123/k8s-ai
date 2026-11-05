@@ -1,6 +1,6 @@
 package cli
 
-// 本文件是 k8s-ai blobs 命令组（P8.9 / 方案 15 §9.3、§12.2、§10.1）。它和上面那份
+// 本文件是 aopsctl blobs 命令组（P8.9 / 方案 15 §9.3、§12.2、§10.1）。它和上面那份
 // server 装配（blobs.go: newBlobGateway）刻意是两套：网关的存在意义是「降级继续服务」，
 // 而运维命令没有降级可言——后端连不上就必须报错退出，把 503 打在终端上只会让人以为命令
 // 写坏了。共用的是同一批原语（objectstore.New、store.Objects()、service 的回收器），
@@ -30,7 +30,7 @@ var errBlobBackendUnavailable = errors.New("object storage backend is not usable
 
 // newBlobsCmd 聚合对象存储的运维入口。
 //
-// 它和 k8s-ai db 一样属「显式运维命令」：需要平台库，也允许 driver=s3。§16 的 CLI 零影响
+// 它和 aopsctl db 一样属「显式运维命令」：需要平台库，也允许 driver=s3。§16 的 CLI 零影响
 // 约束管的是体检链路（scan/chat）不得因为一个桶起不来，不是禁止运维工具碰桶——迁移动词
 // 天生要 s3 凭据（§10.1）。
 func newBlobsCmd(deps Dependencies) *cobra.Command {
@@ -112,7 +112,7 @@ func openBlobOps(ctx context.Context, cmd *cobra.Command, deps Dependencies) (*b
 	if err != nil {
 		return nil, err
 	}
-	// 登记表必须先存在：blobs 是运维命令，不替 k8s-ai db migrate 改 schema。把「库里还
+	// 登记表必须先存在：blobs 是运维命令，不替 aopsctl db migrate 改 schema。把「库里还
 	// 没有 objects 表」渲染成一句可执行的指引，比让驱动报 no such table 有用得多。
 	//
 	// 两句错误都必须指名实际打开的库：容器里漏掉 --config 时配置回落默认 sqlite，打开的是
@@ -123,7 +123,7 @@ func openBlobOps(ctx context.Context, cmd *cobra.Command, deps Dependencies) (*b
 		return nil, fmt.Errorf("read platform schema version (store %s): %w", target, err)
 	} else if version < expected {
 		_ = st.Close()
-		return nil, fmt.Errorf("platform schema is at version %d, this build needs %d: run k8s-ai db migrate first "+
+		return nil, fmt.Errorf("platform schema is at version %d, this build needs %d: run aopsctl db migrate first "+
 			"(store %s; pass --config if the platform config is not the default one)", version, expected, target)
 	}
 	ops := &blobOps{cfg: cfg, st: st, driver: blobs.EffectiveDriver(), prefix: prefix}
@@ -220,7 +220,7 @@ func newBlobsStatCmd(deps Dependencies) *cobra.Command {
 				for _, s := range stats {
 					mark := ""
 					if s.Driver != ops.driver {
-						mark = fmt.Sprintf("  <- content lives on %q, run: k8s-ai blobs migrate --to %s", s.Driver, ops.driver)
+						mark = fmt.Sprintf("  <- content lives on %q, run: aopsctl blobs migrate --to %s", s.Driver, ops.driver)
 					}
 					total += s.Objects
 					bytes += s.Bytes
@@ -246,7 +246,7 @@ func newBlobsStatCmd(deps Dependencies) *cobra.Command {
 			}
 			if meta.Driver != ops.driver {
 				fmt.Fprintf(w, "backend=other  content is on driver %q while this deployment runs %q\n", meta.Driver, ops.driver)
-				fmt.Fprintf(w, "  not a loss: run k8s-ai blobs migrate --to %s to bring it over\n", ops.driver)
+				fmt.Fprintf(w, "  not a loss: run aopsctl blobs migrate --to %s to bring it over\n", ops.driver)
 				return nil
 			}
 			if err := ops.requireBackend(); err != nil {
@@ -297,7 +297,7 @@ func newBlobsGetCmd(deps Dependencies) *cobra.Command {
 			}
 			w := cmd.OutOrStdout()
 			if meta.Driver != ops.driver {
-				return fmt.Errorf("content of %s lives on driver %q but this deployment runs %q: run k8s-ai blobs migrate --to %s first (方案 15 §10.1)",
+				return fmt.Errorf("content of %s lives on driver %q but this deployment runs %q: run aopsctl blobs migrate --to %s first (方案 15 §10.1)",
 					key, meta.Driver, ops.driver, ops.driver)
 			}
 			if meta.State == store.ObjectStateDeleting {
@@ -403,7 +403,7 @@ func newBlobsPutCmd(deps Dependencies) *cobra.Command {
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "put ok: key=%s sha256=%s size=%d driver=%s state=%s ref_count=%d\n",
 				ref.Key, ref.SHA256, ref.Size, ops.driver, row.State, row.RefCount)
-			fmt.Fprintf(cmd.OutOrStdout(), "  it stays collectable: acquire it within %s or k8s-ai blobs gc will reclaim it\n", grace)
+			fmt.Fprintf(cmd.OutOrStdout(), "  it stays collectable: acquire it within %s or aopsctl blobs gc will reclaim it\n", grace)
 			return nil
 		},
 	}
@@ -458,7 +458,7 @@ func newBlobsGCCmd(deps Dependencies) *cobra.Command {
 				res.Candidates, res.Claimed, res.RowsRemoved, res.ContentDeleted, res.Revived,
 				res.SkippedForeign, store.FormatBytes(res.ReclaimedBytes))
 			if res.SkippedForeign > 0 {
-				fmt.Fprintf(w, "  unmanaged:  %d object(s) live on another driver and were left alone - run: k8s-ai blobs migrate --to %s\n",
+				fmt.Fprintf(w, "  unmanaged:  %d object(s) live on another driver and were left alone - run: aopsctl blobs migrate --to %s\n",
 					res.SkippedForeign, res.Driver)
 			}
 			fmt.Fprintf(w, "  bucket:     listed=%d orphans=%d deleted=%d bytes=%s\n",
@@ -547,7 +547,7 @@ func newBlobsVerifyCmd(deps Dependencies) *cobra.Command {
 				fmt.Fprintf(w, "  garbage collection in flight: %d row(s) skipped (state=deleting)\n", res.Deleting)
 			}
 			if res.ForeignDriver > 0 {
-				fmt.Fprintf(w, "  pending:   %d row(s) still on another driver - not a loss, run: k8s-ai blobs migrate --to %s\n",
+				fmt.Fprintf(w, "  pending:   %d row(s) still on another driver - not a loss, run: aopsctl blobs migrate --to %s\n",
 					res.ForeignDriver, res.Driver)
 			}
 			fmt.Fprintf(w, "  bucket:    listed=%d orphans=%d bytes=%s foreign=%d (reverse scan ignores driver)\n",
@@ -655,7 +655,7 @@ func newBlobsMigrateCmd(deps Dependencies) *cobra.Command {
 			}
 			if target == ops.driver {
 				fmt.Fprintf(w, "platform.blobs.driver is already %q: nothing to migrate\n", target)
-				fmt.Fprintf(w, "  if objects still report another driver, run: k8s-ai blobs verify\n")
+				fmt.Fprintf(w, "  if objects still report another driver, run: aopsctl blobs verify\n")
 				return nil
 			}
 
@@ -734,11 +734,11 @@ func printMigrateResult(cmd *cobra.Command, ops *blobOps, res service.BlobMigrat
 		fmt.Fprintf(w, "  remaining: %d object(s) still on %q - finish the move before setting platform.blobs.driver=%s\n",
 			remaining, res.DriverFrom, target)
 	} else {
-		fmt.Fprintf(w, "  remaining: none on %q - platform.blobs.driver=%s is now safe, run k8s-ai blobs verify to confirm\n",
+		fmt.Fprintf(w, "  remaining: none on %q - platform.blobs.driver=%s is now safe, run aopsctl blobs verify to confirm\n",
 			res.DriverFrom, target)
 	}
 	if res.Unreadable > 0 {
-		fmt.Fprintf(w, "  note:      %d row(s) had no content to move on %q: those are broken rows, not misplaced ones (k8s-ai blobs verify)\n",
+		fmt.Fprintf(w, "  note:      %d row(s) had no content to move on %q: those are broken rows, not misplaced ones (aopsctl blobs verify)\n",
 			res.Unreadable, res.DriverFrom)
 	}
 }

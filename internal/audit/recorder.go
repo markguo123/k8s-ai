@@ -21,7 +21,7 @@ type Recorder interface {
 // redactor 统一对事件负载脱敏（Secret/Token/API Key 永不落审计）。
 var redactor = security.NewRedactor()
 
-// FileRecorder 把事件以 JSONL 追加写入文件（~/.k8s-ai/audit/<session>.jsonl）。
+// FileRecorder 把事件以 JSONL 追加写入文件（~/.aegisops/audit/<session>.jsonl）。
 type FileRecorder struct {
 	f *os.File
 }

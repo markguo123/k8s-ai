@@ -1,7 +1,7 @@
 // 三期创建通道的提交实现（R2.3/R2.4/R2.5）：Server-Side Apply + dry run + 存在性检查。
 //
 // 这里是全工程唯一把 manifest 写进集群的地方（架构测试守护）。采用 SSA 而非 Create/Update，
-// 是为了让字段所有权由 apiserver 裁决：k8s-ai 只声明自己写的字段，不会覆盖别人管理的字段。
+// 是为了让字段所有权由 apiserver 裁决：AegisOps 只声明自己写的字段，不会覆盖别人管理的字段。
 package executor
 
 import (
@@ -25,7 +25,7 @@ import (
 )
 
 // FieldManager 是 SSA 的字段归属标识（与 kubectl 的 "kubectl-cli" 区分开）。
-const FieldManager = "k8s-ai"
+const FieldManager = "aegisops"
 
 // SecretPlaceholder 与 manifestx.PlaceholderGenerate 同值：
 // manifest 里只出现占位符，真实值由执行器在提交前的深拷贝里生成（三期 D-06/D-12）。
@@ -124,7 +124,7 @@ func (r *Runner) getObject(ctx context.Context, ref ObjectRef) (*unstructured.Un
 	return obj, gvr, nil
 }
 
-// Apply 用 Server-Side Apply 提交单个对象（fieldManager=k8s-ai）。
+// Apply 用 Server-Side Apply 提交单个对象（fieldManager=aegisops）。
 //
 // 语义：
 //   - DryRun=true 时走 apiserver 全量校验但不落盘，返回的结论与真实提交一致；
@@ -349,7 +349,7 @@ func applyError(err error, kind, namespace, name string, dryRun bool) error {
 	}
 	switch {
 	case apierrors.IsForbidden(err):
-		return fmt.Errorf("RBAC 拒绝创建 %s：%w（真实权限边界来自集群 RBAC，k8s-ai 不会绕过）", subject, err)
+		return fmt.Errorf("RBAC 拒绝创建 %s：%w（真实权限边界来自集群 RBAC，AegisOps 不会绕过）", subject, err)
 	case apierrors.IsInvalid(err), apierrors.IsBadRequest(err):
 		return fmt.Errorf("%s 未通过 apiserver 校验：%w", subject, err)
 	case apierrors.IsConflict(err):

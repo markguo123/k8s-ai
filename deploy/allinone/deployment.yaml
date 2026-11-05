@@ -16,15 +16,15 @@
 # 真实权限由集群 RBAC 决定。安全基线禁止容器内 shell 的现场改用 Dockerfile.distroless 构建
 # 无 shell 变体，同时把 ConfigMap 里 platform.exec.shell_enabled 置为 false。
 #
-# 只读根文件系统 + 非 root 65532（与镜像 USER 一致）：/tmp 与 /home/k8sai 必须是可写卷，
+# 只读根文件系统 + 非 root 65532（与镜像 USER 一致）：/tmp 与 /home/aegisops 必须是可写卷，
 # 后者是 kubectl 服务发现缓存（$HOME/.kube）的落点，缺了会在首次 kubectl 调用时写失败。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: k8s-ai-server
-  namespace: k8s-ai
+  name: aegisops-server
+  namespace: aegisops
   labels:
-    app: k8s-ai
+    app: aegisops
     component: server
     app.kubernetes.io/component: server
 spec:
@@ -33,48 +33,48 @@ spec:
     type: Recreate
   selector:
     matchLabels:
-      app: k8s-ai
+      app: aegisops
       component: server
   template:
     metadata:
       labels:
-        app: k8s-ai
+        app: aegisops
         component: server
     spec:
-      serviceAccountName: k8s-ai
+      serviceAccountName: aegisops
       # 平台要用自身身份访问本集群 API（集群端点默认走 in-cluster 配置）。
       automountServiceAccountToken: true
       containers:
-        - name: k8s-ai
+        - name: aegisops
           # 镜像地址由部署方提供（deploy/install.sh 的 IMAGE/TAG 参数）；
           # 清单里不写私有仓库地址这类环境专有值。
-          image: k8s-ai:latest
-          args: ["server", "--config", "/etc/k8s-ai/config.yaml", "--addr", ":8080"]
+          image: aegisops:latest
+          args: ["server", "--config", "/etc/aegisops/config.yaml", "--addr", ":8080"]
           ports:
             - name: http
               containerPort: 8080
           env:
             # 存储 DSN（含数据库口令）：只走 Secret，ConfigMap 里的 dsn 恒为空。
-            - name: K8S_AI_PLATFORM_STORE_DSN
+            - name: AEGISOPS_PLATFORM_STORE_DSN
               valueFrom:
-                secretKeyRef: { name: k8s-ai-store, key: dsn }
+                secretKeyRef: { name: aegisops-store, key: dsn }
             # 凭据加密密钥：kubeconfig / 配置中心敏感键的落库加密主密钥。
-            - name: K8S_AI_ENC_KEY
+            - name: AEGISOPS_ENC_KEY
               valueFrom:
-                secretKeyRef: { name: k8s-ai-enc, key: key }
+                secretKeyRef: { name: aegisops-enc, key: key }
             # 首启管理员口令：仅空库首启必需，初始化完成后可以摘掉。
-            - name: K8S_AI_ADMIN_PASSWORD
+            - name: AEGISOPS_ADMIN_PASSWORD
               valueFrom:
-                secretKeyRef: { name: k8s-ai-admin, key: password, optional: true }
+                secretKeyRef: { name: aegisops-admin, key: password, optional: true }
             # 模型密钥（密钥态，env 恒优先）。其余动态键（模型地址/模型名/审批策略等）
             # 一律由配置中心页面写入 DB settings，不在清单里注入；
             # 非敏感部署期种子值见 deploy/example/env-overrides.example.yaml。
-            - name: K8S_AI_LLM_API_KEY
+            - name: AEGISOPS_LLM_API_KEY
               valueFrom:
-                secretKeyRef: { name: k8s-ai-llm, key: api_key, optional: true }
+                secretKeyRef: { name: aegisops-llm, key: api_key, optional: true }
           volumeMounts:
             - name: config
-              mountPath: /etc/k8s-ai
+              mountPath: /etc/aegisops
               readOnly: true
             # 可写区：/data 会话与审计落盘、/reports 报告导出。业务数据的权威存储是
             # MySQL，二进制对象落在对象存储后端，这几个卷默认都是临时卷。要不要换 PVC 看三态：
@@ -91,10 +91,10 @@ spec:
               mountPath: /reports
             - name: tmp
               mountPath: /tmp
-            # 镜像 ENV HOME=/home/k8sai：kubectl 把服务发现缓存写在 $HOME/.kube。
+            # 镜像 ENV HOME=/home/aegisops：kubectl 把服务发现缓存写在 $HOME/.kube。
             # 只读根文件系统下这个目录不挂可写卷，kubectl 会在运行期报缓存写入失败。
             - name: home
-              mountPath: /home/k8sai
+              mountPath: /home/aegisops
           readinessProbe:
             httpGet: { path: /readyz, port: http }
             initialDelaySeconds: 5
@@ -126,7 +126,7 @@ spec:
       volumes:
         - name: config
           configMap:
-            name: k8s-ai-config
+            name: aegisops-config
             defaultMode: 0444
         - name: data
           emptyDir: {}

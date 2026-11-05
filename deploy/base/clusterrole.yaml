@@ -8,9 +8,9 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: k8s-ai-readonly
+  name: aegisops-readonly
   labels:
-    app: k8s-ai
+    app: aegisops
     app.kubernetes.io/component: identity
 rules:
   - apiGroups: [""]

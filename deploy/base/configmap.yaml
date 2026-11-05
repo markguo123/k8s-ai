@@ -4,8 +4,8 @@
 # 七组动态键（model / skill / approval / memory / retention / mcp / ops）的唯一权威源
 # 是 DB settings 表，由 Web 配置中心维护并即时生效：刻意不出现在这里，也不回写文件。
 #
-# 敏感值一律不写 ConfigMap：admin 首启口令 K8S_AI_ADMIN_PASSWORD、凭据加密密钥
-# K8S_AI_ENC_KEY、模型密钥 K8S_AI_LLM_API_KEY、存储 DSN K8S_AI_PLATFORM_STORE_DSN
+# 敏感值一律不写 ConfigMap：admin 首启口令 AEGISOPS_ADMIN_PASSWORD、凭据加密密钥
+# AEGISOPS_ENC_KEY、模型密钥 AEGISOPS_LLM_API_KEY、存储 DSN AEGISOPS_PLATFORM_STORE_DSN
 # 全部经 Secret 注入（见 deploy/base/secret.example.yaml 与 deploy/allinone/deployment.yaml）。
 #
 # 环境专有值同样不进清单：模型服务地址在配置中心页面填，数据库地址在 DSN 里，
@@ -13,10 +13,10 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: k8s-ai-config
-  namespace: k8s-ai
+  name: aegisops-config
+  namespace: aegisops
   labels:
-    app: k8s-ai
+    app: aegisops
     app.kubernetes.io/component: config
 data:
   config.yaml: |
@@ -30,20 +30,20 @@ data:
           key_file: ""
       store:
         driver: mysql                    # 四期主存储；sqlite 为本地/单机兜底
-        sqlite_path: "/data/k8s-ai.db"   # 仅 driver=sqlite 使用，容器内必须落 PVC
-        dsn: ""                          # 只经 K8S_AI_PLATFORM_STORE_DSN（Secret）注入
+        sqlite_path: "/data/aegisops.db"   # 仅 driver=sqlite 使用，容器内必须落 PVC
+        dsn: ""                          # 只经 AEGISOPS_PLATFORM_STORE_DSN（Secret）注入
       blobs:                      # 二进制对象后端（P8.1 / D-32）：附件、报告产物、可选会话正文外置
         driver: db                # off | db | dir | s3；默认 db，未接对象存储时行为与四期前一致
-        prefix: k8sai             # 对象键首段，≤32 字符
+        prefix: aegisops             # 对象键首段，≤32 字符
         dir: ""                   # driver=dir 才用；容器内留空 = /data/blobs（须挂可写卷）
         endpoint: ""              # driver=s3 才用；现场地址属环境专有值，经 Secret/env 注入
         region: us-east-1         # 签名区域；MinIO 默认 us-east-1
         use_tls: false            # 集群内自建 MinIO 常见 false
         path_style: true          # MinIO/Ceph 必须 true
-        bucket: k8s-ai            # driver=s3 必填
-        access_key: ""            # 只经 K8S_AI_PLATFORM_BLOBS_ACCESS_KEY（Secret）注入
-        secret_key: ""            # 只经 K8S_AI_PLATFORM_BLOBS_SECRET_KEY（Secret）注入
-        tmp_dir: "/tmp/k8s-ai-blobs"  # driver=s3 的上传中转目录（P8.4）：先落盘算 sha256 再上传，
+        bucket: aegisops            # driver=s3 必填
+        access_key: ""            # 只经 AEGISOPS_PLATFORM_BLOBS_ACCESS_KEY（Secret）注入
+        secret_key: ""            # 只经 AEGISOPS_PLATFORM_BLOBS_SECRET_KEY（Secret）注入
+        tmp_dir: "/tmp/aegisops-blobs"  # driver=s3 的上传中转目录（P8.4）：先落盘算 sha256 再上传，
                                       # 镜像根文件系统只读，该目录必须在可写卷挂载点之下；留空回落 os.TempDir()。
         create_bucket: false      # 默认不在启动期建桶（P8.8）：生产桶由平台组预建并配好生命周期，
                                   # 运行账号只给对象读写权限。桶不存在时对象类 API 回 503、基础业务不受影响；

@@ -271,7 +271,7 @@ func TestInitTemplatesLoad(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "platform.store.dsn") {
 		t.Fatalf("缺 DSN 时应报 platform.store.dsn 错误，实际 %v", err)
 	}
-	t.Setenv("K8S_AI_PLATFORM_STORE_DSN", "k8sai:secret@tcp(db.internal:3306)/k8s_ai?charset=utf8mb4&parseTime=true")
+	t.Setenv("AEGISOPS_PLATFORM_STORE_DSN", "k8sai:secret@tcp(db.internal:3306)/k8s_ai?charset=utf8mb4&parseTime=true")
 	cfg, err := Load(LoadOptions{ConfigFile: serverPath})
 	if err != nil {
 		t.Fatalf("注入 Secret DSN 后应加载成功: %v", err)
@@ -425,7 +425,7 @@ func TestResolveConfigFileCLIFallback(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	dir := filepath.Join(home, ".k8s-ai")
+	dir := filepath.Join(home, ".aegisops")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -465,7 +465,7 @@ func TestLoadCLIUsesCLIFileWithFallback(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	dir := filepath.Join(home, ".k8s-ai")
+	dir := filepath.Join(home, ".aegisops")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}

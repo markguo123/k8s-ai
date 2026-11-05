@@ -20,7 +20,7 @@ const (
 	// HeaderAuthorization 认证请求头。
 	HeaderAuthorization = "Authorization"
 
-	cookieToken = "k8sai_token"
+	cookieToken = "aegisops_token"
 )
 
 type ctxKey int

@@ -1,7 +1,7 @@
 # Ingress（P6.2 形态 B）：同一域名按路径分流到两个后端。
 #
-#   /api/v1/*  → Service/k8s-ai-server:8080（平台 API + Chat SSE）
-#   其余路径    → Service/k8s-ai-web:80（Nginx 静态站点 + SPA fallback）
+#   /api/v1/*  → Service/aegisops-server:8080（平台 API + Chat SSE）
+#   其余路径    → Service/aegisops-web:80（Nginx 静态站点 + SPA fallback）
 #
 # 拆成两个 Ingress 是刻意的：SSE 需要关缓冲、放大超时，而静态资源希望保留缓冲，
 # 两者放在同一个 Ingress 上会互相将就。
@@ -11,10 +11,10 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: k8s-ai-api
-  namespace: k8s-ai
+  name: aegisops-api
+  namespace: aegisops
   labels:
-    app: k8s-ai
+    app: aegisops
     app.kubernetes.io/component: ingress
   annotations:
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
@@ -25,35 +25,35 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
-    - host: k8s-ai.example.com
+    - host: aegisops.example.com
       http:
         paths:
           - path: /api/v1
             pathType: Prefix
             backend:
               service:
-                name: k8s-ai-server
+                name: aegisops-server
                 port:
                   number: 8080
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: k8s-ai-web
-  namespace: k8s-ai
+  name: aegisops-web
+  namespace: aegisops
   labels:
-    app: k8s-ai
+    app: aegisops
     app.kubernetes.io/component: ingress
 spec:
   ingressClassName: nginx
   rules:
-    - host: k8s-ai.example.com
+    - host: aegisops.example.com
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: k8s-ai-web
+                name: aegisops-web
                 port:
                   number: 80

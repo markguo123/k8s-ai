@@ -1,4 +1,4 @@
-# k8s-ai API 接口契约设计
+# AegisOps API 接口契约设计
 
 - 版本：v4.0.0（企业平台）
 - 日期：2026-10-23（初版）/ 2026-11-03（发起体检契约收窄与报告三面登记，见 17-方案） / 2026-11-04（报告清单清理两面登记，见方案 15 v1.12；补体检发起面 v1.1：format 单选、阶段账、停止体检、报告总览、按需导出 Markdown）/ 2026-11-05（补结构化报告的 canonical 证据与诊断投影契约）
@@ -171,7 +171,7 @@ type Decision string // auto | require_approval | deny
 ## 8. HTTP API（服务端）
 
 实现于 `internal/server`，复用 `ScanService.Run`，任务注册表为内存实现，单次扫描并发限制。
-`k8s-ai server --addr :8080` 启动。历史差异（internal/history）按 Finding 指纹对比
+`aopsctl server --addr :8080` 启动。历史差异（internal/history）按 Finding 指纹对比
 新增/持续/恢复，写入 `latest.json` 的 history 字段。四期 P1.4-P1.6 在该层叠加了
 统一中间件与认证/权限门禁：
 
@@ -229,7 +229,7 @@ GET  /api/v1/storage/health     // 对象存储健康唯一可观测入口；需
 
 **报告清单清理（2026-11-04 契约冻结；P8.14 已实现，2026-11-05 按代码回写）**：`DELETE /api/v1/reports/{id}` 与 `POST /api/v1/reports/cleanup` 均登记为
 `AccessAuthenticated`，**不新增权限位**，归属在 handler 内判定（owner 删自己的、`system` 体检报告按 cluster 授权、admin 跨 owner 可删）。
-删除动作只删 `reports` 业务引用并在同一事务内 `Release`，**请求路径不删后端对象**，正文由 `k8s-ai blobs gc` 在宽限期后回收；
+删除动作只删 `reports` 业务引用并在同一事务内 `Release`，**请求路径不删后端对象**，正文由 `aopsctl blobs gc` 在宽限期后回收；
 `available=false`（已返回 410）的报告**仍然可删**，删除侧不复用下载侧的可用性闸门。每一条删除落 `report.delete` 审计，
 越权与 id 不存在同形 404。批量端点不构成第二条授权通道：它逐 id 复用同一套归属判定与同一条事务契约。
 口径见 `15-方案` **v1.13** §0 与 §13.1/§15/§18。

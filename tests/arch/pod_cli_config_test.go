@@ -9,7 +9,7 @@ import (
 
 // P8.12.5：容器内 CLI 示例必须带 --config。
 //
-// Pod 里没有默认的 $HOME/.k8s-ai/config.yaml，漏掉 --config 就回落到默认 sqlite（一个全新空库），
+// Pod 里没有默认的 $HOME/.aegisops/config.yaml，漏掉 --config 就回落到默认 sqlite（一个全新空库），
 // 报的是 platform schema is at version 0——运维会当成「真库没迁移」去跑 db migrate。真机踩过一次
 // （2026-11-03），源头是手册与示例里少写这个参数。
 

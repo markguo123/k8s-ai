@@ -31,7 +31,7 @@ func newBlobsEnv(t *testing.T, driver string) *blobsEnv {
 	env := &blobsEnv{
 		cfg:   defaultCfg(t),
 		root:  root,
-		store: filepath.Join(root, "k8s-ai.db"),
+		store: filepath.Join(root, "aegisops.db"),
 		blobs: filepath.Join(root, "blobs"),
 	}
 	env.cfg.Platform.Store.Driver = config.StoreDriverSQLite
@@ -66,7 +66,7 @@ func (e *blobsEnv) run(t *testing.T, args ...string) (string, error) {
 	return combined, err
 }
 
-// migrate 走真实入口建 schema：blobs 不替 k8s-ai db migrate 动 schema，测试也不能绕。
+// migrate 走真实入口建 schema：blobs 不替 aopsctl db migrate 动 schema，测试也不能绕。
 func (e *blobsEnv) migrate(t *testing.T) {
 	t.Helper()
 	if out, err := e.run(t, "db", "migrate"); err != nil {
@@ -105,7 +105,7 @@ func TestBlobsPutStatGetRoundTrip(t *testing.T) {
 		t.Fatalf("blobs put: %v\n%s", err, out)
 	}
 	key := field(t, out, "key=")
-	if !strings.HasPrefix(key, "k8sai/reports/c1/") || !strings.HasSuffix(key, ".md") {
+	if !strings.HasPrefix(key, "aegisops/reports/c1/") || !strings.HasSuffix(key, ".md") {
 		t.Fatalf("unexpected key layout %q", key)
 	}
 	if !strings.Contains(out, "state=orphaned") {
@@ -237,7 +237,7 @@ func TestBlobsRefusesToPretendUnmigratedObjectsAreGone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inventory after the switch: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, `content lives on "dir", run: k8s-ai blobs migrate --to db`) {
+	if !strings.Contains(out, `content lives on "dir", run: aopsctl blobs migrate --to db`) {
 		t.Fatalf("inventory must point at the migration command:\n%s", out)
 	}
 
@@ -259,7 +259,7 @@ func TestBlobsRefusesToPretendUnmigratedObjectsAreGone(t *testing.T) {
 	}
 }
 
-// TestBlobsSurvivesWholeDirectoryRelocation 是 §21 的 CLI 端到端：整个 ~/.k8s-ai 目录
+// TestBlobsSurvivesWholeDirectoryRelocation 是 §21 的 CLI 端到端：整个 ~/.aegisops 目录
 // （平台库 + dir 后端）搬到新位置之后，对象照样列得出、读得出。这是单机 appliance 的
 // 基本盘，也是「不破坏 CLI 现有行为」这条约束的具体形状。
 func TestBlobsSurvivesWholeDirectoryRelocation(t *testing.T) {
@@ -277,7 +277,7 @@ func TestBlobsSurvivesWholeDirectoryRelocation(t *testing.T) {
 	if err := os.Rename(env.root, dst); err != nil {
 		t.Fatalf("relocate home directory: %v", err)
 	}
-	env.cfg.Platform.Store.SQLitePath = filepath.Join(dst, "k8s-ai.db")
+	env.cfg.Platform.Store.SQLitePath = filepath.Join(dst, "aegisops.db")
 	env.cfg.Platform.Blobs.Dir = filepath.Join(dst, "blobs")
 	env.blobs = filepath.Join(dst, "blobs")
 
@@ -320,7 +320,7 @@ func TestBlobsAnswersWithoutABackend(t *testing.T) {
 	}
 
 	writes := [][]string{
-		{"blobs", "get", "k8sai/reports/c1/" + strings.Repeat("a", objectstore.SHA256HexLen) + ".md"},
+		{"blobs", "get", "aegisops/reports/c1/" + strings.Repeat("a", objectstore.SHA256HexLen) + ".md"},
 		{"blobs", "put", writeTempFile(t, "x.md", "content\n"), "--scope", "c1"},
 	}
 	for _, args := range writes {
@@ -335,7 +335,7 @@ func TestBlobsAnswersWithoutABackend(t *testing.T) {
 }
 
 // TestBlobsRefusesUnmigratedPlatformSchema 锁装配顺序：objects 表还没建就先读版本，
-// 报一句「跑 k8s-ai db migrate」，而不是把统计跑成空表或一句 SQL 错误。
+// 报一句「跑 aopsctl db migrate」，而不是把统计跑成空表或一句 SQL 错误。
 func TestBlobsRefusesUnmigratedPlatformSchema(t *testing.T) {
 	env := newBlobsEnv(t, config.BlobDriverDir)
 

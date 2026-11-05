@@ -17,15 +17,15 @@ type Dependencies struct {
 	NewChat    func(cfg *config.Config) service.ChatService
 }
 
-// NewRootCmd builds the k8s-ai command tree.
+// NewRootCmd builds the AegisOps command tree.
 func NewRootCmd(deps Dependencies) *cobra.Command {
 	root := &cobra.Command{
-		Use:           "k8s-ai",
-		Short:         "Kubernetes AI inspection and diagnosis tool",
+		Use:           "aopsctl",
+		Short:         "AegisOps cloud-native intelligent workbench",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.PersistentFlags().String("config", "", "config file (default ~/.k8s-ai/config.yaml)")
+	root.PersistentFlags().String("config", "", "config file (default ~/.aegisops/config.yaml)")
 	root.AddCommand(newVersionCmd(deps))
 	root.AddCommand(newMigrateCmd(deps))
 	root.AddCommand(newDBCmd(deps))
@@ -38,7 +38,7 @@ func NewRootCmd(deps Dependencies) *cobra.Command {
 }
 
 // loadOptionsFromFlags 组装一次配置加载入参。cli 为 true 时走终端直用面
-// （默认 ~/.k8s-ai/cli.yaml，缺失回退 config.yaml）；平台面（server/db）传 false。
+// （默认 ~/.aegisops/cli.yaml，缺失回退 config.yaml）；平台面（server/db）传 false。
 func loadOptionsFromFlags(cmd *cobra.Command, cli bool) config.LoadOptions {
 	overrides := map[string]any{}
 	flagKeys := []struct{ flag, key string }{

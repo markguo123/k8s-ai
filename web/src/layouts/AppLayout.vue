@@ -28,7 +28,7 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 
-const SIDEBAR_KEY = 'k8s_ai_sidebar_collapsed'
+const SIDEBAR_KEY = 'aegisops_sidebar_collapsed'
 const sidebarCollapsed = ref(localStorage.getItem(SIDEBAR_KEY) === '1')
 
 watch(sidebarCollapsed, (collapsed) => {
@@ -162,7 +162,7 @@ async function submitPasswordChange(): Promise<void> {
           <el-icon class="brand-mark"><Connection /></el-icon>
         </div>
         <div v-show="!sidebarCollapsed" class="brand-text">
-          <strong>K8S-AI</strong>
+          <strong>AegisOps</strong>
         </div>
       </div>
 
@@ -185,7 +185,7 @@ async function submitPasswordChange(): Promise<void> {
       </el-menu>
 
       <div class="sidebar-foot">
-        <span>K8S-AI · Operations Console</span>
+        <span>AegisOps · 云原生智能工作台</span>
       </div>
     </el-aside>
 

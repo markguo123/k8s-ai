@@ -7,7 +7,7 @@ import (
 )
 
 // TestBootstrapRequiresPasswordOnlyOnFirstStart 锁 P6.1 / U-09：首启判定以 users 表为准。
-// 空库缺口令必须启动失败；已有库重启不再要求 K8S_AI_ADMIN_PASSWORD。
+// 空库缺口令必须启动失败；已有库重启不再要求 AEGISOPS_ADMIN_PASSWORD。
 func TestBootstrapRequiresPasswordOnlyOnFirstStart(t *testing.T) {
 	st := newStore(t)
 	ctx := context.Background()

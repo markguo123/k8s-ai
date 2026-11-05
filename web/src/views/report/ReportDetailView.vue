@@ -500,7 +500,7 @@ function downloadJson(): void {
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
   anchor.href = url
-  anchor.download = `k8s-ai-report-${reportId.value}.json`
+  anchor.download = `aegisops-report-${reportId.value}.json`
   anchor.rel = 'noopener'
   anchor.style.display = 'none'
   document.body.appendChild(anchor)

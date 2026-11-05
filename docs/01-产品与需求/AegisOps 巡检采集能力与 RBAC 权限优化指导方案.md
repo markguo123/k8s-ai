@@ -1,4 +1,4 @@
-# k8s-ai 巡检采集能力与 RBAC 权限优化指导方案
+# AegisOps 巡检采集能力与 RBAC 权限优化指导方案
 
 > **实施状态（2026-11-04）**：本方案要求的采集/RBAC 闭环已落地。当前权威口径见
 > `docs/02-架构与设计/18-方案-体检诊断体系升级-四期.md` §16，数据字段见
@@ -91,20 +91,20 @@ Kubernetes API 返回 Forbidden
 ```
 subjects:
   - kind: ServiceAccount
-    name: k8s-ai
-    namespace: k8s-ai
+    name: AegisOps
+    namespace: aegisops
 
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: k8s-ai
+  name: AegisOps
 ```
 
 从 Kubernetes RBAC 资源结构来看，这种绑定方式是正确的。
 
 但需要确认以下约束：
 
-1. `ServiceAccount/k8s-ai` 必须真实存在于 `k8s-ai` Namespace。
+1. `ServiceAccount/aegisops` 必须真实存在于 `aegisops` Namespace。
 2. `roleRef.name` 必须与实际创建的 `ClusterRole` 名称完全一致。
 3. `roleRef.kind` 应为 `ClusterRole`，不能错误配置成 `Role`。
 4. 巡检需要覆盖整个集群时，应使用 `ClusterRoleBinding`，不能只使用某个 Namespace 下的 `RoleBinding`。
@@ -122,9 +122,9 @@ roleRef:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: k8s-ai
+  name: AegisOps
   labels:
-    app.kubernetes.io/name: k8s-ai
+    app.kubernetes.io/name: AegisOps
 rules:
   # Core API Group
   - apiGroups: [""]
@@ -234,17 +234,17 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: k8s-ai
+  name: AegisOps
   labels:
-    app.kubernetes.io/name: k8s-ai
+    app.kubernetes.io/name: AegisOps
 subjects:
   - kind: ServiceAccount
-    name: k8s-ai
-    namespace: k8s-ai
+    name: AegisOps
+    namespace: aegisops
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: k8s-ai
+  name: AegisOps
 ```
 
 对应的 ServiceAccount 应为：
@@ -253,14 +253,14 @@ roleRef:
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: k8s-ai
-  namespace: k8s-ai
+  name: AegisOps
+  namespace: aegisops
 ```
 
 这里有几个关键点：
 
 - ClusterRole 定义巡检所需的权限。
-- ClusterRoleBinding 将 ClusterRole 授权给运行 k8s-ai 的 ServiceAccount。
+- ClusterRoleBinding 将 ClusterRole 授权给运行 AegisOps 的 ServiceAccount。
 - ServiceAccount 的 Namespace 必须与实际工作负载使用的 ServiceAccount 一致。
 - ClusterRoleBinding 必须绑定正确的 ClusterRole 名称。
 - 由于巡检需要获取集群范围内的资源，因此应保持集群级授权关系。
@@ -418,27 +418,27 @@ RBAC 采集失败
 
 ```
 kubectl auth can-i list nodes \
-  --as=system:serviceaccount:k8s-ai:k8s-ai
+  --as=system:serviceaccount:aegisops:aegisops
 
 kubectl auth can-i list persistentvolumes \
-  --as=system:serviceaccount:k8s-ai:k8s-ai
+  --as=system:serviceaccount:aegisops:aegisops
 
 kubectl auth can-i list persistentvolumeclaims \
-  --as=system:serviceaccount:k8s-ai:k8s-ai
+  --as=system:serviceaccount:aegisops:aegisops
 
 kubectl auth can-i list horizontalpodautoscalers.autoscaling \
   --all-namespaces \
-  --as=system:serviceaccount:k8s-ai:k8s-ai
+  --as=system:serviceaccount:aegisops:aegisops
 
 kubectl auth can-i list poddisruptionbudgets.policy \
   --all-namespaces \
-  --as=system:serviceaccount:k8s-ai:k8s-ai
+  --as=system:serviceaccount:aegisops:aegisops
 
 kubectl auth can-i list clusterroles.rbac.authorization.k8s.io \
-  --as=system:serviceaccount:k8s-ai:k8s-ai
+  --as=system:serviceaccount:aegisops:aegisops
 
 kubectl auth can-i list clusterrolebindings.rbac.authorization.k8s.io \
-  --as=system:serviceaccount:k8s-ai:k8s-ai
+  --as=system:serviceaccount:aegisops:aegisops
 ```
 
 ### 8.3 实际巡检验收

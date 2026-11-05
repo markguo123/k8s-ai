@@ -11,8 +11,8 @@ import {
 /** API 前缀。下载类端点要自己拼 fetch（响应体不是 JSON），因此必须导出。 */
 export const API_BASE = '/api/v1'
 
-export const TOKEN_KEY = 'k8s_ai_token'
-export const USER_KEY = 'k8s_ai_user'
+export const TOKEN_KEY = 'aegisops_token'
+export const USER_KEY = 'aegisops_user'
 
 export interface RequestOptions {
   method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE'

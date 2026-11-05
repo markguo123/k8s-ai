@@ -75,7 +75,7 @@ func TestBuildKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildKey: %v", err)
 	}
-	if want := "k8sai/reports/cluster-1/scan-2/" + sum + ".md"; key != want {
+	if want := "aegisops/reports/cluster-1/scan-2/" + sum + ".md"; key != want {
 		t.Fatalf("BuildKey = %q, want %q", key, want)
 	}
 	if err := ValidateKey(key); err != nil {
@@ -127,7 +127,7 @@ func TestValidateListPrefix(t *testing.T) {
 }
 
 func TestNormalizePrefix(t *testing.T) {
-	for _, in := range []string{"", "   ", "k8sai/"} {
+	for _, in := range []string{"", "   ", "aegisops/"} {
 		got, err := NormalizePrefix(in)
 		if err != nil {
 			t.Fatalf("NormalizePrefix(%q): %v", in, err)
@@ -136,7 +136,7 @@ func TestNormalizePrefix(t *testing.T) {
 			t.Fatalf("NormalizePrefix(%q) = %q, want %q", in, got, DefaultPrefix)
 		}
 	}
-	if got, err := NormalizePrefix("k8s-ai-prod"); err != nil || got != "k8s-ai-prod" {
+	if got, err := NormalizePrefix("aegisops-prod"); err != nil || got != "aegisops-prod" {
 		t.Fatalf("NormalizePrefix = %q, %v", got, err)
 	}
 	if _, err := NormalizePrefix("bad prefix"); !errors.Is(err, ErrKeyInvalid) {

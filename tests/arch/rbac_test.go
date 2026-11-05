@@ -145,21 +145,21 @@ func TestRBACDefaultBinding(t *testing.T) {
 	}
 	if binding.RoleRef.APIGroup != "rbac.authorization.k8s.io" ||
 		binding.RoleRef.Kind != "ClusterRole" ||
-		binding.RoleRef.Name != "k8s-ai-readonly" {
-		t.Errorf("默认绑定 roleRef = %+v，期望 ClusterRole/k8s-ai-readonly", binding.RoleRef)
+		binding.RoleRef.Name != "aegisops-readonly" {
+		t.Errorf("默认绑定 roleRef = %+v，期望 ClusterRole/aegisops-readonly", binding.RoleRef)
 	}
 	if len(binding.Subjects) != 1 {
 		t.Fatalf("默认绑定 subjects 数量 = %d，期望 1", len(binding.Subjects))
 	}
 	subject := binding.Subjects[0]
-	if subject.Kind != "ServiceAccount" || subject.Name != "k8s-ai" || subject.Namespace != "k8s-ai" {
-		t.Errorf("默认绑定 subject = %+v，期望 ServiceAccount/k8s-ai/k8s-ai", subject)
+	if subject.Kind != "ServiceAccount" || subject.Name != "aegisops" || subject.Namespace != "aegisops" {
+		t.Errorf("默认绑定 subject = %+v，期望 ServiceAccount/aegisops/aegisops", subject)
 	}
 }
 
 // TestRBACWriteExample 解析 deploy/rbac-write.example.yaml（可选写权限示例，三期 R2.12）：
 // verbs 限于最小集合，不含通配符与 exec/portforward/attach 子资源；
-// secrets 只允许 create/patch/update（无 get/list/watch/delete）——k8s-ai 不读 Secret 内容值，
+// secrets 只允许 create/patch/update（无 get/list/watch/delete）——AegisOps 不读 Secret 内容值，
 // 也不删 Secret；创建通道（SSA）需要的 create 必须存在，否则示例无法支撑三期功能。
 func TestRBACWriteExample(t *testing.T) {
 	raw, err := os.ReadFile("../../deploy/rbac-write.example.yaml")

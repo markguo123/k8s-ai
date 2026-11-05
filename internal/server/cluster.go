@@ -14,7 +14,7 @@ import (
 // maxKubeconfigBody 限制 kubeconfig 提交体（1MB，防滥用且足够承载完整配置）。
 const maxKubeconfigBody = 1 << 20
 
-const clusterUnavailableMessage = "cluster service is not configured: set K8S_AI_ENC_KEY to a valid 32-byte hex or base64 key"
+const clusterUnavailableMessage = "cluster service is not configured: set AEGISOPS_ENC_KEY to a valid 32-byte hex or base64 key"
 
 // clusterService 是集群管理端点依赖的应用服务接口（cluster.Service 满足）。
 // Handler 只依赖该接口，不直接触碰 Store 或 Cipher（需求 v1.2 §24）。

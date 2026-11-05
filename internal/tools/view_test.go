@@ -47,7 +47,7 @@ func TestDisplayTypeExecutorResultIsTerminal(t *testing.T) {
 	data := executor.Result{
 		Command:  "kubectl -n test-complex get pods",
 		Stdout:   "NAME READY\napp 0/2",
-		Stderr:   "Forbidden: User \"system:serviceaccount:k8s-ai-test:k8s-ai\" cannot patch resource \"deployments\"",
+		Stderr:   "Forbidden: User \"system:serviceaccount:aegisops-test:k8s-ai\" cannot patch resource \"deployments\"",
 		ExitCode: 1,
 	}
 	if got := DisplayType(data); got != "terminal" {
@@ -58,7 +58,7 @@ func TestDisplayTypeExecutorResultIsTerminal(t *testing.T) {
 func TestPresentExecutorForbiddenIsDeniedFailure(t *testing.T) {
 	p := Present(ToolResult{Data: executor.Result{
 		Command:  "kubectl -n test-complex patch deployment/app-backend --type=json",
-		Stderr:   `Forbidden: User "system:serviceaccount:k8s-ai-test:k8s-ai" cannot patch resource "deployments"`,
+		Stderr:   `Forbidden: User "system:serviceaccount:aegisops-test:k8s-ai" cannot patch resource "deployments"`,
 		ExitCode: 1,
 	}})
 	if p.Ok {

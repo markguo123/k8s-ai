@@ -1,4 +1,6 @@
-# k8s-ai
+# AegisOps
+
+> 云原生智能工作台 · 运维伴侣
 
 > 当前版本：**v4.0.0-dev**（四期企业平台；版本约定见 [docs/VERSIONING.md](docs/VERSIONING.md)，变更见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）
 
@@ -7,7 +9,7 @@ namespace 授权、Agent Runtime、Skill、审批、审计、配置与 Web 工�
 
 ## 项目介绍
 
-k8s-ai 让运维人员执行一次 `k8s-ai scan`，就能快速知道集群哪里有问题、为什么、影响什么、应该怎么排查和怎么修：
+AegisOps 让运维人员执行一次 `aopsctl scan`，就能快速知道集群哪里有问题、为什么、影响什么、应该怎么排查和怎么修：
 
 - **全集群巡检**：Pod / Node / Workload / Storage / Network / 系统组件 / Events
 - **异常自动发现**：35 条内置规则（原有 23 条 + 新增 HPA 副本不匹配/目标缺失、PDB 阻断、RBAC 越权、ConfigRef 缺失、CronJob 挂起、默认拒绝网络策略、Ingress 主机冲突、超副本、存储卷挂载卡住、StorageClass 无 Provisioner、容器健康超时等 12 条）
@@ -21,11 +23,11 @@ k8s-ai 让运维人员执行一次 `k8s-ai scan`，就能快速知道集群哪�
 
 ```bash
 # 终端对话（交互 / 单发 / stdin / JSON）
-k8s-ai chat "为什么 payment-api 一直重启？"
-k8s-ai chat --format json "检查下集群健康状态"
+aopsctl chat "为什么 payment-api 一直重启？"
+aopsctl chat --format json "检查下集群健康状态"
 
 # 企业平台（认证 + 会话 + SSE + 审批 + 配置 + 用户权限）
-K8S_AI_ADMIN_PASSWORD='你的强密码' k8s-ai server --addr 127.0.0.1:8080
+AEGISOPS_ADMIN_PASSWORD='你的强密码' aopsctl server --addr 127.0.0.1:8080
 
 # 前端开发
 cd web && npm run dev
@@ -41,8 +43,8 @@ cd web && npm run dev
 - **批量审批**：LLM 一轮返回多个写操作时，合并为一次审批面板（逐条展示等效 kubectl 命令 + 风险等级），用户选一次→顺序执行→分别回传结果。借鉴 kubectl-ai
 - **安全执行闭环**：诊断 → 询问"需要我修复吗？" → 用户同意 → 写操作审批卡片（等效 kubectl 命令 + 变更说明 + 风险等级）→ 执行 → 验证
 - **拒绝闸门**：同一写操作被用户拒绝 2 次后自动硬拦截，要求 LLM 给出替代方案；kubectl 命令归一化（忽略 --force/--grace-period 等修饰性 flag），防止绕过
-- **会话持久化**：`--session` / `--new-session` / `--list-sessions` / `--delete-session`，落盘 `~/.k8s-ai/sessions`
-- **审计**：用户输入 / LLM / 工具调用 / 审批 / 执行全部留痕 `~/.k8s-ai/audit/<session>.jsonl`（脱敏）
+- **会话持久化**：`--session` / `--new-session` / `--list-sessions` / `--delete-session`，落盘 `~/.aegisops/sessions`
+- **审计**：用户输入 / LLM / 工具调用 / 审批 / 执行全部留痕 `~/.aegisops/audit/<session>.jsonl`（脱敏）
 - **MCP 预留**：Client 接口 + 注册表适配器（当前版本不连接外部服务器）
 
 > 写权限示例见 [deploy/rbac-write.example.yaml](deploy/rbac-write.example.yaml)（默认 clusterrole 保持只读）；安装部署见 [docs/INSTALLATION.md](docs/INSTALLATION.md)。
@@ -63,7 +65,7 @@ cd web && npm run dev
 
 ```bash
 make build
-./bin/k8s-ai version
+./bin/aopsctl version
 ```
 
 > `make build` 生成**当前操作系统**的原生二进制（Windows=.exe / Linux / macOS）；交叉编译 Linux amd64 用 `make build-linux`（或自行设置 GOOS/GOARCH）。
@@ -72,7 +74,7 @@ make build
 
 ```powershell
 .\__build.cmd      # CMD / PowerShell 通用，自动注入版本号
-.\bin\k8s-ai.exe version
+.\bin\aopsctl.exe version
 ```
 
 ### Docker 镜像
@@ -88,18 +90,18 @@ make docker VERSION=v4.0.0-dev
 ## 快速开始
 
 ```bash
-k8s-ai config init                       # 生成 ~/.k8s-ai/config.yaml
-k8s-ai config validate                   # 校验配置 + 集群连通性
-k8s-ai scan                              # 全集群巡检（写 reports/latest.md + latest.json）
-k8s-ai scan -n mysql                     # 只巡检 mysql 命名空间（终端直出）
-k8s-ai scan pod web-abc -n mysql         # 只诊断单个 Pod
-k8s-ai scan --report-mode daily          # 日报模式（追加时间戳文件）
-k8s-ai scan --fail-on HIGH              # 达到 HIGH 返回退出码 2（CI 用）
+aopsctl config init                       # 生成 ~/.aegisops/config.yaml
+aopsctl config validate                   # 校验配置 + 集群连通性
+aopsctl scan                              # 全集群巡检（写 reports/latest.md + latest.json）
+aopsctl scan -n mysql                     # 只巡检 mysql 命名空间（终端直出）
+aopsctl scan pod web-abc -n mysql         # 只诊断单个 Pod
+aopsctl scan --report-mode daily          # 日报模式（追加时间戳文件）
+aopsctl scan --fail-on HIGH              # 达到 HIGH 返回退出码 2（CI 用）
 ```
 
 ## 配置
 
-默认配置 `~/.k8s-ai/config.yaml`，优先级：CLI > 环境变量 > YAML > 默认。
+默认配置 `~/.aegisops/config.yaml`，优先级：CLI > 环境变量 > YAML > 默认。
 
 关键项：
 
@@ -120,7 +122,7 @@ k8s-ai scan --fail-on HIGH              # 达到 HIGH 返回退出码 2（CI 用
 | `agent.create.max_objects_per_call` / `max_manifest_bytes` | 3 / 8192                | 单次创建规模上限                                        |
 | `agent.secret.access`                          | `create_only`                    | `off` / `create_only`；`read_write` 未开放                |
 
-环境变量：`KUBECONFIG`、`K8S_AI_LLM_ENDPOINT`、`K8S_AI_LLM_API_KEY`、`K8S_AI_LLM_MODEL` 等。
+环境变量：`KUBECONFIG`、`AEGISOPS_LLM_ENDPOINT`、`AEGISOPS_LLM_API_KEY`、`AEGISOPS_LLM_MODEL` 等。
 
 ### LLM 模型选型
 
@@ -131,7 +133,7 @@ k8s-ai scan --fail-on HIGH              # 达到 HIGH 返回退出码 2（CI 用
 
 ## HTTP API
 
-`k8s-ai server --addr :8080` 提供企业平台 API：登录与权限、`/api/v1/sessions*` 会话与 SSE、
+`aopsctl server --addr :8080` 提供企业平台 API：登录与权限、`/api/v1/sessions*` 会话与 SSE、
 集群、Skill、配置、用户/角色、授权、审批与审计。所有 Session HTTP/SSE 请求都要求登录，
 并按 owner 隔离访问。详见平台 API 文档。
 

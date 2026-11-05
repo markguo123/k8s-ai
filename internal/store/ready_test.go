@@ -89,7 +89,7 @@ func TestOpenSQLiteUnusableDataPath(t *testing.T) {
 		name string
 		path string
 	}{
-		{"父目录不存在", filepath.Join(t.TempDir(), "pvc-missing", "k8s-ai.db")},
+		{"父目录不存在", filepath.Join(t.TempDir(), "pvc-missing", "aegisops.db")},
 		{"数据路径是目录", t.TempDir()},
 	}
 	for _, tc := range cases {

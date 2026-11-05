@@ -1,5 +1,5 @@
 // Package audit 实现事件式审计（设计逻辑借鉴 kubectl-ai 的 journal Recorder，
-// 按 k8s-ai 重新实现：JSONL 落盘、写入前脱敏）。
+// 按 AegisOps 重新实现：JSONL 落盘、写入前脱敏）。
 package audit
 
 import "time"

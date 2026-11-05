@@ -27,6 +27,20 @@ func TestBasePromptIncludesR6CreateProtocol(t *testing.T) {
 	}
 }
 
+func TestBasePromptUsesAegisOpsIdentity(t *testing.T) {
+	p := basePrompt()
+	for _, want := range []string{
+		"你是 AegisOps（云原生智能工作台）",
+		"你的云原生智能工作台与运维伴侣",
+		"必须自称 AegisOps",
+		"不得自称 k8s-ai",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("basePrompt 缺少产品身份约束 %q", want)
+		}
+	}
+}
+
 func TestBasePromptRoutesCreateIntentAwayFromKubectl(t *testing.T) {
 	p := basePrompt()
 	for _, want := range []string{

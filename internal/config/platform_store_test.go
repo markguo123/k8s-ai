@@ -102,7 +102,7 @@ func TestPlatformStoreDriverValidation(t *testing.T) {
 // 带进 Unmarshal，因此这条通道必须显式绑定，否则清单里注入的 Secret 会被静默忽略。
 func TestPlatformStoreDSNFromEnv(t *testing.T) {
 	const dsn = "root:pass@tcp(db.internal:3306)/k8s_ai?charset=utf8mb4&parseTime=true"
-	t.Setenv("K8S_AI_PLATFORM_STORE_DSN", dsn)
+	t.Setenv("AEGISOPS_PLATFORM_STORE_DSN", dsn)
 
 	cf := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(cf, []byte("platform:\n  store:\n    driver: mysql\n"), 0o600); err != nil {

@@ -311,7 +311,7 @@ func newChatInput(in io.Reader, out io.Writer) chatInput {
 			Stdin:        f,
 			Stdout:       out,
 			Stderr:       os.Stderr,
-			HistoryFile:  filepath.Join(os.TempDir(), "k8s-ai-history"),
+			HistoryFile:  filepath.Join(os.TempDir(), "aopsctl-history"),
 			HistoryLimit: 1000,
 		})
 		if err == nil {

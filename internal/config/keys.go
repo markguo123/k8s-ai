@@ -201,7 +201,7 @@ func Diagnostics(path string, mode ValidateMode) ([]string, error) {
 			if containsString(engineSections, section) {
 				warnings = append(warnings, fmt.Sprintf(
 					"%s: 段是终端直用引擎键，平台侧以配置中心与部署期环境变量为准；终端直用请放 %s",
-					section, "~/.k8s-ai/cli.yaml"))
+					section, "~/.aegisops/cli.yaml"))
 			}
 		case ValidateModeCLI:
 			if section == "platform" {
@@ -216,7 +216,7 @@ func Diagnostics(path string, mode ValidateMode) ([]string, error) {
 	}
 
 	if dsn, ok := leaves["platform.store.dsn"].(string); ok && strings.TrimSpace(dsn) != "" {
-		warnings = append(warnings, "platform.store.dsn 在配置文件里非空：DSN 含口令，应只经 K8S_AI_PLATFORM_STORE_DSN / Secret 注入")
+		warnings = append(warnings, "platform.store.dsn 在配置文件里非空：DSN 含口令，应只经 AEGISOPS_PLATFORM_STORE_DSN / Secret 注入")
 	}
 	warnings = append(warnings, blobsConfigWarnings(leaves)...)
 	return warnings, nil

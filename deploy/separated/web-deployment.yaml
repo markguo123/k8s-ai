@@ -2,7 +2,7 @@
 #
 # 形态 B 下前端由独立 Nginx 镜像托管 web/dist，后端只留 API（见
 # deploy/separated/deployment.yaml）；前后端各自发布与回滚。
-# 镜像构建：docker build -f deploy/separated/web.Dockerfile -t k8s-ai-web:<TAG> .
+# 镜像构建：docker build -f deploy/separated/web.Dockerfile -t aegisops-web:<TAG> .
 #
 # 端口说明：用 nginx-unprivileged 变体以非 root 身份运行，因此容器监听 8080
 # （非特权端口），由 Service 把 80 映射过来；这既满足 Pod Security restricted，
@@ -10,22 +10,22 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: k8s-ai-web
-  namespace: k8s-ai
+  name: aegisops-web
+  namespace: aegisops
   labels:
-    app: k8s-ai
+    app: aegisops
     component: web
     app.kubernetes.io/component: web
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: k8s-ai
+      app: aegisops
       component: web
   template:
     metadata:
       labels:
-        app: k8s-ai
+        app: aegisops
         component: web
     spec:
       # 纯静态站点：不需要 Kubernetes API 身份。
@@ -33,7 +33,7 @@ spec:
       containers:
         - name: web
           # 镜像地址由部署方提供（deploy/install.sh 的 IMAGE/TAG 参数）。
-          image: k8s-ai-web:latest
+          image: aegisops-web:latest
           ports:
             - name: http
               containerPort: 8080

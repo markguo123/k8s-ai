@@ -6,7 +6,7 @@ package service
 //
 // objects.driver 只有 db|dir|s3 三个值，「把一个 dir 目录换到另一个 dir 目录」在元数据层面没有
 // 意义（NewBlobMigrator 当场拒），因此可测方向只有 db 与 dir 之间两条；s3 的两个方向需要真机
-// 凭据（K8S_AI_TEST_S3_*），属人工门禁。
+// 凭据（AEGISOPS_TEST_S3_*），属人工门禁。
 
 import (
 	"context"

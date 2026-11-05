@@ -243,7 +243,7 @@ func (p *ReportPlatform) resolve(ctx context.Context, id string, scope ReportSco
 	if p.gw != nil && meta.Driver != p.gw.Driver() {
 		// 内容只是躺在别的后端里，不是丢了：这里绝不 MarkMissing，也不动 reports.available，
 		// 否则一次没跑 migrate 的配置切换就把历史报告判成永久丢失（方案 15 §10.3）。
-		return nil, nil, fmt.Errorf("%w: object is on driver %q, current driver is %q; run k8s-ai blobs migrate --to %q",
+		return nil, nil, fmt.Errorf("%w: object is on driver %q, current driver is %q; run aopsctl blobs migrate --to %q",
 			ErrObjectDriverMismatch, meta.Driver, p.gw.Driver(), p.gw.Driver())
 	}
 	return row, meta, nil

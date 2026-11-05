@@ -799,7 +799,7 @@ describe('ReportsView（P8.13 开始体检 / P8.14 清单清理）', () => {
     await new Promise((resolve) => window.setTimeout(resolve, 60))
     expect(pollCount(fetchMock)).toBe(pollsBefore)
     // 停止同样是终态：重挂标记一起清掉，刷新后不该把「已停止」的横幅再端回来。
-    expect(window.sessionStorage.getItem('k8s-ai.activeScan')).toBeNull()
+    expect(window.sessionStorage.getItem('aegisops.activeScan')).toBeNull()
   })
 
   it('确认框取消时不停止体检', async () => {
@@ -846,7 +846,7 @@ describe('ReportsView（P8.13 开始体检 / P8.14 清单清理）', () => {
     })
     // 模拟「上一趟点过开始体检，然后按了 F5」：id 与档位记在 sessionStorage 里。
     window.sessionStorage.setItem(
-      'k8s-ai.activeScan',
+      'aegisops.activeScan',
       JSON.stringify({ id: 'job-9', preset: 'quick' }),
     )
 
@@ -877,14 +877,14 @@ describe('ReportsView（P8.13 开始体检 / P8.14 清单清理）', () => {
       },
     })
     window.sessionStorage.setItem(
-      'k8s-ai.activeScan',
+      'aegisops.activeScan',
       JSON.stringify({ id: 'job-9', preset: 'standard' }),
     )
 
     const wrapper = mount(ReportsView)
     await flushPromises()
 
-    await vi.waitFor(() => expect(window.sessionStorage.getItem('k8s-ai.activeScan')).toBeNull())
+    await vi.waitFor(() => expect(window.sessionStorage.getItem('aegisops.activeScan')).toBeNull())
     expect(wrapper.find('.scan-banner').exists()).toBe(false)
   })
 

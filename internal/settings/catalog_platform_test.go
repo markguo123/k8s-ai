@@ -19,7 +19,7 @@ func TestCatalogExcludesPlatformKeys(t *testing.T) {
 }
 
 // TestEnvWhitelistExcludesBlobs 锁环境变量覆盖白名单：blob 后端与桶凭据只走部署期
-// 环境变量（K8S_AI_PLATFORM_BLOBS_*），不进 settings 的 env 覆盖面（ADR-040 v1.2 冻结
+// 环境变量（AEGISOPS_PLATFORM_BLOBS_*），不进 settings 的 env 覆盖面（ADR-040 v1.2 冻结
 // 为 LLM 四键 + ops 四键）。
 func TestEnvWhitelistExcludesBlobs(t *testing.T) {
 	for _, override := range EnvOverrideWhitelist {

@@ -116,7 +116,7 @@ func TestScanOk(t *testing.T) {
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(buf.String(), "未发现异常") || !strings.Contains(buf.String(), "k8s-ai scan") {
+	if !strings.Contains(buf.String(), "未发现异常") || !strings.Contains(buf.String(), "aopsctl scan") {
 		t.Fatalf("unexpected output: %q", buf.String())
 	}
 }

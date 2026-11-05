@@ -38,7 +38,7 @@ import (
 const (
 	adminUsername = "admin"
 	adminPassword = "platform-test-admin-pw"
-	// encKey 是测试用的 32 字节凭据加密密钥（等价生产 K8S_AI_ENC_KEY）。
+	// encKey 是测试用的 32 字节凭据加密密钥（等价生产 AEGISOPS_ENC_KEY）。
 	encKey = "0123456789abcdef0123456789abcdef"
 )
 

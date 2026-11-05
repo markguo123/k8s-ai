@@ -27,7 +27,7 @@ const (
 // 页面读取被覆盖的键时标注来源与档位，保存此类键时给显式提示，避免"页面改了但看起来
 // 没生效"的静默陷阱。
 type EnvVarOverride struct {
-	// Env 是环境变量名（不带 K8S_AI_ 前缀语义之外的含义，名字即字面量）。
+	// Env 是环境变量名（不带 AEGISOPS_ 前缀语义之外的含义，名字即字面量）。
 	Env string
 	// Group/Key 指向配置目录里的动态键，必须是 KindString 家族。
 	Group string
@@ -44,14 +44,14 @@ type EnvVarOverride struct {
 // config validate 与页面标注能覆盖全部真实来源。temperature/max_tokens/timeout 刻意不纳入
 // （KindFloat/KindInt/KindDuration 要多养三套类型转换分支，收益不划算，见 v1.51 ⑨）。
 var EnvOverrideWhitelist = []EnvVarOverride{
-	{Env: "K8S_AI_LLM_PROVIDER", Group: GroupModel, Key: "provider", Tier: EnvTierSeed, Desc: "模型提供方类型（首启种子值）"},
-	{Env: "K8S_AI_LLM_ENDPOINT", Group: GroupModel, Key: "base_url", Tier: EnvTierSeed, Desc: "模型接口地址（首启种子值）"},
-	{Env: "K8S_AI_LLM_API_KEY", Group: GroupModel, Key: "api_key", Tier: EnvTierSecret, Desc: "模型接口密钥（密钥态，恒优先）"},
-	{Env: "K8S_AI_LLM_MODEL", Group: GroupModel, Key: "model", Tier: EnvTierSeed, Desc: "模型名（首启种子值）"},
-	{Env: "K8S_AI_KUBECONFIG", Group: GroupOps, Key: "kubeconfig", Tier: EnvTierSeed, Desc: "kubeconfig 路径（首启种子值）"},
-	{Env: "K8S_AI_KUBE_CONTEXT", Group: GroupOps, Key: "context", Tier: EnvTierSeed, Desc: "默认 kube context（首启种子值）"},
-	{Env: "K8S_AI_NAMESPACE", Group: GroupOps, Key: "namespace", Tier: EnvTierSeed, Desc: "默认命名空间（首启种子值）"},
-	{Env: "K8S_AI_KUBECTL_PATH", Group: GroupOps, Key: "kubectl_path", Tier: EnvTierSeed, Desc: "kubectl 路径（首启种子值）"},
+	{Env: "AEGISOPS_LLM_PROVIDER", Group: GroupModel, Key: "provider", Tier: EnvTierSeed, Desc: "模型提供方类型（首启种子值）"},
+	{Env: "AEGISOPS_LLM_ENDPOINT", Group: GroupModel, Key: "base_url", Tier: EnvTierSeed, Desc: "模型接口地址（首启种子值）"},
+	{Env: "AEGISOPS_LLM_API_KEY", Group: GroupModel, Key: "api_key", Tier: EnvTierSecret, Desc: "模型接口密钥（密钥态，恒优先）"},
+	{Env: "AEGISOPS_LLM_MODEL", Group: GroupModel, Key: "model", Tier: EnvTierSeed, Desc: "模型名（首启种子值）"},
+	{Env: "AEGISOPS_KUBECONFIG", Group: GroupOps, Key: "kubeconfig", Tier: EnvTierSeed, Desc: "kubeconfig 路径（首启种子值）"},
+	{Env: "AEGISOPS_KUBE_CONTEXT", Group: GroupOps, Key: "context", Tier: EnvTierSeed, Desc: "默认 kube context（首启种子值）"},
+	{Env: "AEGISOPS_NAMESPACE", Group: GroupOps, Key: "namespace", Tier: EnvTierSeed, Desc: "默认命名空间（首启种子值）"},
+	{Env: "AEGISOPS_KUBECTL_PATH", Group: GroupOps, Key: "kubectl_path", Tier: EnvTierSeed, Desc: "kubectl 路径（首启种子值）"},
 }
 
 // envOverrideIndex 是 "group.key" → 覆盖定义的索引（init 里与目录做一次一致性校验）。

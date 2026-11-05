@@ -5,12 +5,12 @@ import { computed, ref } from 'vue'
  *
  * 约定：`<html data-theme="dark|light">` 承载应用令牌，同时同步 `<html class="dark">`
  * （Element Plus 深色变量）；模式为 light | dark | system，**默认 dark**，持久化键
- * `k8s_ai_theme_mode`。首屏由 `index.html` 内联脚本提前设置，本模块负责运行时切换。
+ * `aegisops_theme_mode`。首屏由 `index.html` 内联脚本提前设置，本模块负责运行时切换。
  */
 export type ThemeMode = 'light' | 'dark' | 'system'
 export type ResolvedTheme = 'light' | 'dark'
 
-export const THEME_STORAGE_KEY = 'k8s_ai_theme_mode'
+export const THEME_STORAGE_KEY = 'aegisops_theme_mode'
 export const DARK_MEDIA_QUERY = '(prefers-color-scheme: dark)'
 
 function readStoredMode(): ThemeMode {

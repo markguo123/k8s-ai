@@ -45,7 +45,7 @@ func TestConfigInitWritesKindTemplates(t *testing.T) {
 	}
 }
 
-// TestConfigInitCLIDefaultPath 锁 --cli 的默认落点 ~/.k8s-ai/cli.yaml（D-21）。
+// TestConfigInitCLIDefaultPath 锁 --cli 的默认落点 ~/.aegisops/cli.yaml（D-21）。
 func TestConfigInitCLIDefaultPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -58,7 +58,7 @@ func TestConfigInitCLIDefaultPath(t *testing.T) {
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := os.ReadFile(filepath.Join(home, ".k8s-ai", "cli.yaml"))
+	raw, err := os.ReadFile(filepath.Join(home, ".aegisops", "cli.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,11 +74,11 @@ func TestConfigValidateModeProfiles(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	if err := os.MkdirAll(filepath.Join(home, ".k8s-ai"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(home, ".aegisops"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	cliBody := "report:\n  directory: ./cli\nllm:\n  endpont: \"http://x/v1\"\n"
-	if err := os.WriteFile(filepath.Join(home, ".k8s-ai", "cli.yaml"), []byte(cliBody), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".aegisops", "cli.yaml"), []byte(cliBody), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

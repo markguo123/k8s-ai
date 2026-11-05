@@ -125,7 +125,7 @@ func TestNewBlobGatewayStartsDegradedOnBackendOutage(t *testing.T) {
 		cfg.Platform.Blobs.Driver = config.BlobDriverS3
 		// 本机已关闭的端口：连接立刻被拒，等价于桶/网络故障（真机 S3 门禁另见交付说明）。
 		cfg.Platform.Blobs.Endpoint = "127.0.0.1:1"
-		cfg.Platform.Blobs.Bucket = "k8s-ai-test"
+		cfg.Platform.Blobs.Bucket = "aegisops-test"
 		cfg.Platform.Blobs.AccessKey = "ak"
 		cfg.Platform.Blobs.SecretKey = "sk"
 		cfg.Platform.Blobs.PathStyle = true

@@ -36,7 +36,7 @@ type SourceReport struct {
 	Unmigratable []UnmigratedItem `json:"unmigratable,omitempty"`
 }
 
-// MigrateReport 是一次 `k8s-ai migrate` 的完整结果。
+// MigrateReport 是一次 `aopsctl migrate` 的完整结果。
 type MigrateReport struct {
 	Config   settings.ImportSummary `json:"config"`
 	Sessions SourceReport           `json:"sessions"`

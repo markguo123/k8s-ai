@@ -169,7 +169,7 @@ func TestMarkdownRenderPod(t *testing.T) {
 func TestRenderTerminal(t *testing.T) {
 	r := testResult()
 	s := RenderTerminal(r)
-	for _, want := range []string{"k8s-ai scan", "集群健康度", "█", "CRITICAL 1", "重点问题", "系统组件"} {
+	for _, want := range []string{"aopsctl scan", "集群健康度", "█", "CRITICAL 1", "重点问题", "系统组件"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("终端摘要缺少 %q", want)
 		}

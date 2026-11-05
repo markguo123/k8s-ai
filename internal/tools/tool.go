@@ -1,5 +1,5 @@
 // Package tools 定义二期 Tool 契约与注册表（设计逻辑借鉴 kubectl-ai，
-// 类型与安全语义按 k8s-ai 重新实现：富接口 IsReadOnly/Risk）。
+// 类型与安全语义按 AegisOps 重新实现：富接口 IsReadOnly/Risk）。
 package tools
 
 import (

@@ -20,7 +20,7 @@
   <!-- CLI Entry -->
   <rect x="50" y="80" width="180" height="70" rx="10" fill="url(#p1-grad1)" opacity="0.9"/>
   <text x="140" y="110" font-family="Arial, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="#fff">CLI 入口</text>
-  <text x="140" y="135" font-family="Arial, sans-serif" font-size="13" text-anchor="middle" fill="#fff">k8s-ai scan</text>
+  <text x="140" y="135" font-family="Arial, sans-serif" font-size="13" text-anchor="middle" fill="#fff">aopsctl scan</text>
 
   <!-- Config -->
   <rect x="280" y="80" width="180" height="70" rx="10" fill="#a29bfe" opacity="0.9"/>

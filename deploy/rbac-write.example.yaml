@@ -1,12 +1,12 @@
-# k8s-ai 二/三期：Agent 写操作与资源创建权限示例（RBAC）
+# AegisOps 二/三期：Agent 写操作与资源创建权限示例（RBAC）
 #
 # ⚠️ 说明：
 #   - 默认 deploy/base/clusterrole.yaml 保持只读（scan 巡检 + chat 只读调查）。
-#   - 仅当需要 k8s-ai chat 执行"修复操作"（patch/scale/restart/delete）时，
+#   - 仅当需要 aegisops chat 执行"修复操作"（patch/scale/restart/delete）时，
 #     才按需授予以下写权限；LLM 永远不是权限主体，真实边界来自 RBAC。
 #   - 三期创建通道（create_resource）用 Server-Side Apply 提交，需要 create + patch
 #     （覆盖已有对象时还需 update）；server dry run 同样按 create/patch 鉴权。
-#   - secrets 只授 create/patch/update：k8s-ai 不会读取 Secret 内容值
+#   - secrets 只授 create/patch/update：aegisops 不会读取 Secret 内容值
 #     （创建时只写 stringData 的 $GENERATE 占位符，由执行器生成随机值），
 #     因此这里刻意不给 secrets 的 get/list/watch，也不给 delete。
 #   - 建议按最小权限裁剪 resources/verbs（如不需要 delete 就删除）。
@@ -14,7 +14,7 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: k8s-ai-write
+  name: aegisops-write
 rules:
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
@@ -49,12 +49,12 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: k8s-ai-write
+  name: aegisops-write
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: k8s-ai-write
+  name: aegisops-write
 subjects:
   - kind: ServiceAccount
-    name: k8s-ai
-    namespace: k8s-ai
+    name: aegisops
+    namespace: aegisops

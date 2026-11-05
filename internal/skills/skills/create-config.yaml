@@ -2,7 +2,7 @@ name: create-config
 domain: config
 version: 3.0.0
 source: builtin
-author: k8s-ai
+author: AegisOps
 description: 创建配置类资源（ConfigMap/Secret）的方法论与风险提示
 kinds:
   - v1/ConfigMap

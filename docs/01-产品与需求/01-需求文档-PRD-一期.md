@@ -1,4 +1,4 @@
-# k8s-ai 一期需求文档（修订版）
+# AegisOps 一期需求文档（修订版）
 
 - 版本：v1.0.0
 - 日期：2026-08-12
@@ -21,7 +21,7 @@
 
 ## 2. 产品定位与安全原则
 
-- 一次 `k8s-ai scan` 得到：集群哪里有问题、为什么、影响什么、怎么排查、怎么修。
+- 一次 `aopsctl scan` 得到：集群哪里有问题、为什么、影响什么、怎么排查、怎么修。
 - 一期绝对只读，LLM 只分析、只生成命令文本，程序永不执行。
 - 四层只读保证：RBAC 只读动词 → 代码层只读门面 → 无 shell/exec 调用 → 只读行为测试。
 
@@ -31,21 +31,21 @@
 
 **FR-001 CLI 骨架**
 
-`k8s-ai scan`、`scan pod <name> -n <ns>`、`config init`、`config validate`、`version`。
+`aopsctl scan`、`scan pod <name> -n <ns>`、`config init`、`config validate`、`version`。
 
 验收：
 - `scan` 扫描全集群（`kubernetes.namespace` 为空时）或指定 namespace（非空时，系统组件探测除外）。
 - 通用 flag：`--kubeconfig`、`--context`、`--namespace`（支持 `-n` 简写）、`--format markdown|json|yaml`、`--report-mode none|latest|daily`、`--max-log-lines`、`--since`、`--fail-on`。
 - 报告目的地由场景默认：**全集群手动 scan 默认写 latest 报告；目标扫描（--namespace / scan pod）默认只打印终端不写文件；定时任务用 `--report-mode daily`**；均可显式覆盖。
-- 单 Pod 目标：`k8s-ai scan pod <name> -n <namespace>`（P9.1 提前实现），输出 `Kubernetes Pod 巡检报告：ns/name`（Scope 标注），仅含该 Pod 及其直接关联资源（Workload/Node/PVC/Service）的 Finding，命中需要日志的规则时自动取日志/历史日志。
+- 单 Pod 目标：`aopsctl scan pod <name> -n <namespace>`（P9.1 提前实现），输出 `Kubernetes Pod 巡检报告：ns/name`（Scope 标注），仅含该 Pod 及其直接关联资源（Workload/Node/PVC/Service）的 Finding，命中需要日志的规则时自动取日志/历史日志。
 - CLI 只做解析与装配，业务逻辑全部在 service 层。
 
 **FR-002 配置系统**
 
-优先级：CLI > ENV > YAML > 默认；默认配置 `~/.k8s-ai/config.yaml`。
+优先级：CLI > ENV > YAML > 默认；默认配置 `~/.aegisops/config.yaml`。
 
 验收：
-- 环境变量：`KUBECONFIG`、`K8S_AI_LLM_ENDPOINT`、`K8S_AI_LLM_API_KEY`、`K8S_AI_LLM_MODEL` 等 `K8S_AI_*` 均生效。
+- 环境变量：`KUBECONFIG`、`AEGISOPS_LLM_ENDPOINT`、`AEGISOPS_LLM_API_KEY`、`AEGISOPS_LLM_MODEL` 等 `AEGISOPS_*` 均生效。
 - 配置文件中的 `~` 路径自动展开。
 - `config init` 生成完整模板；`config validate` 校验配置合法性并测试集群连通性。
 - **删除原规范 `schedule:` 配置项**；调度由 Kubernetes CronJob 承担。
@@ -234,4 +234,4 @@
 - 每阶段 `go test ./...` 与 `go vet ./...` 全绿。
 - 无 TODO、无伪代码、无假实现；每个重要模块有测试。
 - 只读架构测试、RBAC 清单测试、泄密测试、请求量测试全部通过。
-- 核心链路可用：`k8s-ai scan` 一次跑通 采集→规则→证据→LLM→报告。
+- 核心链路可用：`aopsctl scan` 一次跑通 采集→规则→证据→LLM→报告。

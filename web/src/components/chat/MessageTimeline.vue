@@ -203,7 +203,7 @@ function summarizeRecord(tool: string, record: Record<string, unknown>): string 
 }
 
 function shortNameOf(tool: string, command: string): string {
-  const match = command.trim().match(/\b(?:kubectl|helm|k8sai|kubescape)\s+([\w-]+)/i)
+  const match = command.trim().match(/\b(?:kubectl|helm|aopsctl|kubescape)\s+([\w-]+)/i)
   if (match) {
     return match[1]
   }

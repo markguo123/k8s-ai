@@ -2,7 +2,7 @@ name: create-network
 domain: network
 version: 3.0.0
 source: builtin
-author: k8s-ai
+author: AegisOps
 description: 创建网络类资源（Service/Ingress/NetworkPolicy）的方法论与风险提示
 kinds:
   - v1/Service

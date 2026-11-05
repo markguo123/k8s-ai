@@ -29,7 +29,7 @@ import { addTokenUsage, sessionStateTone } from '@/utils/format'
 import { canDecideApproval, hasPermission, PERM, permissionsOf } from '@/utils/permission'
 import type { Skill } from '@/api/types'
 
-const ACTIVE_SESSION_KEY = 'k8s_ai_active_session'
+const ACTIVE_SESSION_KEY = 'aegisops_active_session'
 
 const sessions = ref<SessionSummary[]>([])
 const loading = ref(false)
@@ -42,7 +42,7 @@ const composerRef = ref<InstanceType<typeof ComposerBox> | null>(null)
 const auth = useAuthStore()
 const accessScope = ref<EffectiveScope | null>(null)
 
-const CONVERSATIONS_KEY = 'k8s_ai_conversations_collapsed'
+const CONVERSATIONS_KEY = 'aegisops_conversations_collapsed'
 const conversationsCollapsed = ref(localStorage.getItem(CONVERSATIONS_KEY) === '1')
 const mobileDrawerOpen = ref(false)
 watch(conversationsCollapsed, (collapsed) => {

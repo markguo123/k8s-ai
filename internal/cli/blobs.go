@@ -131,5 +131,5 @@ func reportDriverMismatch(logger *slog.Logger, ctx context.Context, st store.Sto
 	}
 	logger.Error("objects were written by another backend and are not readable right now",
 		"current_driver", driver, "objects", objects, "bytes", bytes, "by_driver", fmt.Sprint(others),
-		"fix", fmt.Sprintf("k8s-ai blobs migrate --to %s", driver))
+		"fix", fmt.Sprintf("aopsctl blobs migrate --to %s", driver))
 }

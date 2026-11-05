@@ -1,4 +1,4 @@
-# k8s-ai 四期需求规格（平台化）
+# AegisOps 四期需求规格（平台化）
 
 > 版本：v1.21
 > 日期：2026-10-30
@@ -256,7 +256,7 @@ Server 强校验；不设计与应用库平行运行的独立权限体系，也�
 最终架构：
 
 ```text
-                         k8s-ai
+                         AegisOps
                            │
              ┌─────────────┴─────────────┐
              │                           │
@@ -306,8 +306,8 @@ CLI 与 Web：
 CLI：
 
 ```text
-k8s-ai scan
-k8s-ai chat
+aopsctl scan
+aopsctl chat
 ...
 ```
 
@@ -861,18 +861,18 @@ Kubernetes
 
 # 15. 配置中心
 
-配置中心管理**平台运行时动态配置**，唯一权威源是 DB `settings` 表，与配置文件完全独立、互不覆盖：`config.yaml` 只承载静态/`platform:` 启动参数（由 `k8s-ai config init` 默认模板输出，最终形态经 K8s ConfigMap 挂载），CLI 直用配置独立为 `~/.k8s-ai/cli.yaml`（由 `k8s-ai config init --cli` 输出）。页面保存只写 DB（敏感值加密落库、读面脱敏），server 与 Chat/Agent 运行时统一从 Store 读取。
+配置中心管理**平台运行时动态配置**，唯一权威源是 DB `settings` 表，与配置文件完全独立、互不覆盖：`config.yaml` 只承载静态/`platform:` 启动参数（由 `aopsctl config init` 默认模板输出，最终形态经 K8s ConfigMap 挂载），CLI 直用配置独立为 `~/.aegisops/cli.yaml`（由 `aopsctl config init --cli` 输出）。页面保存只写 DB（敏感值加密落库、读面脱敏），server 与 Chat/Agent 运行时统一从 Store 读取。
 
-读取优先级（v1.16 明确、v1.18 修订，见 ADR-040 v1.2）：**DB `settings` 是动态键的唯一权威源与唯一写入目标**；环境变量只按两档注入——**密钥态**（`K8S_AI_LLM_API_KEY`、`K8S_AI_PLATFORM_STORE_DSN`）env/Secret 恒优先；**种子态**（seed-once）仅当该键在 DB 无值时生效，页面保存过就以 DB 为准。一句话口径：**页面配过的以页面为准，页面没配过的用部署变量兜底，密钥永远以 Secret 为准**。env 命中一律不回写 DB。
+读取优先级（v1.16 明确、v1.18 修订，见 ADR-040 v1.2）：**DB `settings` 是动态键的唯一权威源与唯一写入目标**；环境变量只按两档注入——**密钥态**（`AEGISOPS_LLM_API_KEY`、`AEGISOPS_PLATFORM_STORE_DSN`）env/Secret 恒优先；**种子态**（seed-once）仅当该键在 DB 无值时生效，页面保存过就以 DB 为准。一句话口径：**页面配过的以页面为准，页面没配过的用部署变量兜底，密钥永远以 Secret 为准**。env 命中一律不回写 DB。
 
-环境变量覆盖面**冻结为 LLM 四键 + ops 四键**：`K8S_AI_LLM_{PROVIDER,ENDPOINT,API_KEY,MODEL}` 与
-`K8S_AI_{KUBECONFIG,KUBE_CONTEXT,NAMESPACE,KUBECTL_PATH}`，其中 `api_key` 属密钥态、其余属种子态；
-`K8S_AI_PLATFORM_STORE_DSN` 属静态段环境变量绑定，不属动态键。`temperature` / `max_tokens` / `timeout` **不纳入**
+环境变量覆盖面**冻结为 LLM 四键 + ops 四键**：`AEGISOPS_LLM_{PROVIDER,ENDPOINT,API_KEY,MODEL}` 与
+`AEGISOPS_{KUBECONFIG,KUBE_CONTEXT,NAMESPACE,KUBECTL_PATH}`，其中 `api_key` 属密钥态、其余属种子态；
+`AEGISOPS_PLATFORM_STORE_DSN` 属静态段环境变量绑定，不属动态键。`temperature` / `max_tokens` / `timeout` **不纳入**
 环境变量覆盖，其余动态键只认 DB、不接受环境变量覆盖，键集合由测试锁定防止扩大。内置默认
 （`http://localhost:8000/v1` + `qwen-plus`）仅作最后兜底：容器内部署若 DB 与环境变量
 均未提供模型配置，Chat 必须返回明确可读的错误提示，不得静默失败或拿假默认值继续跑。
 
-页面保存仍只写 DB、不回写 `config.yaml`，保存后即时生效，不需要重启进程。凡当前生效值来自环境变量的键，页面必须标注来源（密钥态要说明「页面值暂不生效」），保存此类键时返回显式提示，不得静默成功；默认部署清单只注入 `K8S_AI_LLM_API_KEY`，非敏感覆盖只在 `deploy/example/` 演示。
+页面保存仍只写 DB、不回写 `config.yaml`，保存后即时生效，不需要重启进程。凡当前生效值来自环境变量的键，页面必须标注来源（密钥态要说明「页面值暂不生效」），保存此类键时返回显式提示，不得静默成功；默认部署清单只注入 `AEGISOPS_LLM_API_KEY`，非敏感覆盖只在 `deploy/example/` 演示。
 
 配置中心分组（固定为这 7 组，平台部署后由管理员在页面维护）：
 
@@ -905,7 +905,7 @@ timeout
 
 ### CLI 直用边界
 
-`k8s-ai chat / k8s-ai scan [resource]` 属于**终端二进制直用**入口：默认读取 CLI 直用配置 `~/.k8s-ai/cli.yaml`（由 `k8s-ai config init --cli` 生成，承载 llm/agent/scan/kubernetes 等全量引擎键与缺省，文件头注明仅 CLI 读取），以 `--config` / 环境变量 / 命令行 flag 作为覆盖输入，**不依赖平台 DB**；`cli.yaml` 缺失时回退读取旧的 `config.yaml` 兼容存量用户。`server` 读取的静态 `config.yaml` 与 CLI 的 `cli.yaml` 是两份独立文件；平台页面修改 7 组动态键只写 `settings` 表，不回写、不覆盖任何本地配置文件。按执行面隔离，不存在同一份活配置的双权威。
+`aopsctl chat / aopsctl scan [resource]` 属于**终端二进制直用**入口：默认读取 CLI 直用配置 `~/.aegisops/cli.yaml`（由 `aopsctl config init --cli` 生成，承载 llm/agent/scan/kubernetes 等全量引擎键与缺省，文件头注明仅 CLI 读取），以 `--config` / 环境变量 / 命令行 flag 作为覆盖输入，**不依赖平台 DB**；`cli.yaml` 缺失时回退读取旧的 `config.yaml` 兼容存量用户。`server` 读取的静态 `config.yaml` 与 CLI 的 `cli.yaml` 是两份独立文件；平台页面修改 7 组动态键只写 `settings` 表，不回写、不覆盖任何本地配置文件。按执行面隔离，不存在同一份活配置的双权威。
 
 ---
 
@@ -1335,9 +1335,9 @@ SQLite
 接口。含口令的 DSN 只经环境变量 / Secret 注入，YAML 中出现非空 `platform.store.dsn` 时 `config validate`
 必须告警。
 
-**数据库前置（v1.17 明确）**：产品**不执行** `CREATE DATABASE`。库、账号与权限由 DBA 预建，`server` 与 `k8s-ai db migrate` 只在已授权的库内建表与升级 schema。库默认字符集建议 utf8mb4；即使库默认是 utf8mb3，产品建表 DDL 也显式带 `DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`（`internal/store/dialect.go`），不依赖库默认。平台账号只授予该库的 DML 与建表/改表/索引/DROP，不需要 `SUPER`、`FILE` 等全局权限。
+**数据库前置（v1.17 明确）**：产品**不执行** `CREATE DATABASE`。库、账号与权限由 DBA 预建，`server` 与 `aopsctl db migrate` 只在已授权的库内建表与升级 schema。库默认字符集建议 utf8mb4；即使库默认是 utf8mb3，产品建表 DDL 也显式带 `DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`（`internal/store/dialect.go`），不依赖库默认。平台账号只授予该库的 DML 与建表/改表/索引/DROP，不需要 `SUPER`、`FILE` 等全局权限。
 
-**MySQL 门禁实跑（v1.17）**：`K8S_AI_TEST_MYSQL_DSN` 注入测试库后，连通、schema 迁移幂等、重启续用三类用例必须真实执行，不得长期停留在 skipped。门禁实例地址、端口与凭据只在本地或 CI 注入，严禁写入文档、清单与测试代码；`deploy/example/` 的 MySQL 清单属示例口径、非产品默认，只含占位值。
+**MySQL 门禁实跑（v1.17）**：`AEGISOPS_TEST_MYSQL_DSN` 注入测试库后，连通、schema 迁移幂等、重启续用三类用例必须真实执行，不得长期停留在 skipped。门禁实例地址、端口与凭据只在本地或 CI 注入，严禁写入文档、清单与测试代码；`deploy/example/` 的 MySQL 清单属示例口径、非产品默认，只含占位值。
 
 主 MySQL **不等于**解锁多副本：单副本的真因是内存态会话/Token、SSE 与审批 pending 通道，与数据库驱动无关。
 
@@ -1351,7 +1351,7 @@ SQLite
 | --- | --- | --- |
 | MySQL | 全部结构化业务数据（用户/角色/授权/集群凭据/设置/Skill/审批/审计/Turn/Step）、会话正文、**对象元数据** | **唯一权威源** |
 | S3 兼容对象存储 | 实际文件内容与大体积非结构化数据（巡检报告产物、会话附件、预留导出） | 内容权威；**不是任何业务对象的清单** |
-| 容器卷 / 本地目录 | 临时缓冲、报告现场副本、CLI 的 `~/.k8s-ai`、SQLite 兜底库文件 | **永不作事实源** |
+| 容器卷 / 本地目录 | 临时缓冲、报告现场副本、CLI 的 `~/.aegisops`、SQLite 兜底库文件 | **永不作事实源** |
 
 要求：
 
@@ -1359,7 +1359,7 @@ SQLite
 2. **配置面**：静态段 `platform.blobs.*`（`driver` 取 `off`/`db`/`dir`/`s3`，默认 `db`），与 `platform.store.dsn` 同级，**不登记进动态配置键白名单**、配置中心页面不展示。默认 `db` 后端行为与现状一致，零配置即可升级。`dir` 后端限制后端多副本横向扩容，`config validate` 与交付文档必须显式备注。CLI 可用后端只有 `off` 与 `dir`，二进制保持零配置直用（§29、ADR-031 v1.12）。
 3. **对象元数据与生命周期**：`objects` 元数据表恒定在 MySQL，含 `sha256/size/media_type/category/driver/ref_count/state/deleted_at/created_by`；状态机 `ready`/`orphaned`/`missing`/`deleting` + 逻辑删除，物理回收两段式且**先删元数据行、再删对象内容**；写顺序恒为「内容写成功 → 同事务写业务行 + 引用计数 +1」，因此只允许出现可回收的孤儿对象，**不允许出现悬空引用**。
 4. **故障隔离（验收级）**：对象存储故障**不得影响不依赖文件存储的基础业务**——Chat、审批、审计、扫描采集、设置、鉴权必须照常可用，`/readyz` 判据不含对象存储；启动期配置错误 fail-fast，运行期只让对象类端点返回明确 503，不做熔断、不做后台重试队列、不做写缓冲假装成功。
-5. **备份与一致性（验收级）**：备份顺序固定「**先 MySQL、后对象存储**」，GC 宽限期必须远大于备份窗口；提供 `k8s-ai blobs verify [--deep] [--strict]` 对账与恢复后准出门禁；`gc`/`verify` 幂等可重跑。附件与历史报告内容不可重算，其备份频率必须匹配业务的可追溯要求。
+5. **备份与一致性（验收级）**：备份顺序固定「**先 MySQL、后对象存储**」，GC 宽限期必须远大于备份窗口；提供 `aopsctl blobs verify [--deep] [--strict]` 对账与恢复后准出门禁；`gc`/`verify` 幂等可重跑。附件与历史报告内容不可重算，其备份频率必须匹配业务的可追溯要求。
 6. **会话正文四期不外置**：`platform.blobs.session_data` 保留但取值 `true` 必须被拒绝；行内正文由 `agent.session_max_bytes` 上限（默认 12MiB）保护，超限**明确拒绝并报错、不静默截断**，接近上限前给出一次性预警；会话列表一律不读取正文。
 7. **访问控制**：报告读取新增 `report.read` 权限位，普通用户仅能读自己触发的报告；附件跟随会话 owner（ADR-037），不新增权限位；下载强制 `Content-Disposition: attachment` 与 `X-Content-Type-Options: nosniff`；元数据在而对象缺 → 410，后端不可达 → 503，两者不得混用。
 
@@ -1539,7 +1539,7 @@ Agent 调了哪些 Tool？
 
 ## 形态 A：一体化部署（默认）
 
-Go 单二进制内嵌前端构建产物，由 `k8s-ai server` 在同一进程、同一端口提供：
+Go 单二进制内嵌前端构建产物，由 `aopsctl server` 在同一进程、同一端口提供：
 
 ```text
 /api/v1/**        平台 API（含 Chat SSE）
@@ -1569,9 +1569,9 @@ Go 单二进制内嵌前端构建产物，由 `k8s-ai server` 在同一进程、
 一体化形态本地直接启动：
 
 ```bash
-k8s-ai server \
+aopsctl server \
   --addr 0.0.0.0:8888 \
-  --config /etc/k8s-ai/config.yaml
+  --config /etc/aegisops/config.yaml
 ```
 
 开发阶段前端使用 Vite dev server，API 统一指向平台 `server`；生产使用形态 A 内嵌 SPA
@@ -1581,8 +1581,8 @@ k8s-ai server \
 
 ```text
 形态 A：Deployment（单容器，内嵌 SPA）+ Service + Ingress + ConfigMap + Secret + PVC + RBAC
-形态 B：Deployment k8s-ai-web（Nginx + dist）
-       + Deployment k8s-ai-server（纯 API）
+形态 B：Deployment aegisops-web（Nginx + dist）
+       + Deployment aegisops-server（纯 API）
        + 两个 Service + 一个 Ingress + ConfigMap + Secret + PVC + RBAC
 ```
 
@@ -1616,14 +1616,14 @@ Chat SSE 反代由服务端配合：SSE 响应带 `X-Accel-Buffering: no`，并�
 `auth.admin_username`、`auth.token_ttl`、`auth.session_store`），是一份可评审、可 diff、可回滚的部署描述；
 敏感值（admin 首启口令、LLM api_key、含口令的 DSN）只从环境变量 / Secret 注入，YAML 中不得出现明文。
 
-CLI 直用配置（ADR-031 v1.12 修订）：`k8s-ai chat / scan` 默认读取独立的 `~/.k8s-ai/cli.yaml`，由 `k8s-ai config init --cli` 生成，承载 llm/agent/scan/kubernetes 等全量引擎键与缺省，文件头注明仅 CLI 读取、平台不读取也不回写；`cli.yaml` 缺失时回退读取旧 `config.yaml` 兼容存量用户。`config init` 默认仍输出 server 静态 `config.yaml`（只含 `platform:` 段）。默认加载路径按命令面区分：`server` → `config.yaml`，`chat/scan` → `cli.yaml`，`--config` 均可覆盖。`config validate` 支持 `--mode server|cli` 分别校验静态段与全量引擎键。
+CLI 直用配置（ADR-031 v1.12 修订）：`aopsctl chat / scan` 默认读取独立的 `~/.aegisops/cli.yaml`，由 `aopsctl config init --cli` 生成，承载 llm/agent/scan/kubernetes 等全量引擎键与缺省，文件头注明仅 CLI 读取、平台不读取也不回写；`cli.yaml` 缺失时回退读取旧 `config.yaml` 兼容存量用户。`config init` 默认仍输出 server 静态 `config.yaml`（只含 `platform:` 段）。默认加载路径按命令面区分：`server` → `config.yaml`，`chat/scan` → `cli.yaml`，`--config` 均可覆盖。`config validate` 支持 `--mode server|cli` 分别校验静态段与全量引擎键。
 
 **7 组动态配置（model/skill/approval/memory/retention/mcp/ops）从 `config.yaml` 移出，唯一落在
 DB `settings` 表**：平台部署后由管理员在配置中心页面维护，server 启动只读 `platform:` 静态段，
 Chat/Agent/LLM 等运行时组件统一从 Store 读 DB；页面改动不会回写 `config.yaml`，改文件也不会覆盖
 DB 动态键；环境变量按两档注入（密钥态 `api_key`/DSN 恒优先、种子态 seed-once 在 DB 有值时让位），覆盖面冻结为 LLM 四键 + ops 四键（另 DSN 走静态段绑定）
-（见 §15、ADR-040）。平台 schema 升级入口是 `k8s-ai db migrate`（单向、幂等，可作 K8s Job 或
-initContainer），`server` 启动内保留同一迁移的幂等兜底；`k8s-ai migrate` 只承担三期旧配置的一次性导入，
+（见 §15、ADR-040）。平台 schema 升级入口是 `aopsctl db migrate`（单向、幂等，可作 K8s Job 或
+initContainer），`server` 启动内保留同一迁移的幂等兜底；`aopsctl migrate` 只承担三期旧配置的一次性导入，
 两者职责不混用。
 
 默认保持只读 RBAC。
@@ -1652,7 +1652,7 @@ deploy/install.sh
 IMAGE                  必填，脚本不内置默认仓库地址
 TAG                    必填
 BUILD                  是否由脚本构建并推送镜像，默认 true；无容器运行时自动降级为纯发布
-NAMESPACE              默认 k8s-ai
+NAMESPACE              默认 aegisops
 FORM                   allinone（形态 A，默认）/ separated（形态 B）
 IMAGE_WEB              形态 B 必填的前端镜像地址
 STORE_DRIVER           mysql（默认）/ sqlite
@@ -1689,7 +1689,7 @@ MINIO_STORAGE_SIZE
 密钥与口令语义（v1.16 冻结）：
 
 ```text
-K8S_AI_ENC_KEY   已存在则复用，绝不覆盖；缺失才生成，并在本地备份（权限 600）；
+AEGISOPS_ENC_KEY   已存在则复用，绝不覆盖；缺失才生成，并在本地备份（权限 600）；
                  轮换只走显式 --rotate，重跑脚本不会改密钥
 ADMIN_PASSWORD   缺省时随机生成，只在本次安装打印一次，不再重复输出
 ENABLE_WRITE     true 时显式 apply rbac-write.example.yaml 并二次确认
@@ -1704,8 +1704,8 @@ ENABLE_MINIO     默认 false；true 时装 MinIO，并隐含要求 BLOBS_BACKEN
 
 脚本必须幂等：重复执行不重置密钥、不轮换口令、不改已存在的 Secret 数据；执行前支持 `kubectl diff` 预演。
 
-LLM 只作**辅助安装**（D-34 / ADR-045）：脚本本体零 LLM、零外呼，可选的 `k8s-ai install doctor`（装后只读
-诊断）与 `k8s-ai install plan`（读集群实况产出 `install.env` 草稿）是独立子命令，不进安装关键路径；
+LLM 只作**辅助安装**（D-34 / ADR-045）：脚本本体零 LLM、零外呼，可选的 `aopsctl install doctor`（装后只读
+诊断）与 `aopsctl install plan`（读集群实况产出 `install.env` 草稿）是独立子命令，不进安装关键路径；
 **没有模型时，用户手改参数执行脚本也必须装通**。
 
 ---
@@ -1734,7 +1734,7 @@ LLM 只作**辅助安装**（D-34 / ADR-045）：脚本本体零 LLM、零外呼
     发起时确定性拒绝并提示联系管理员，不建审批、不阻塞等待。
 17. 自动审批仅限显式白名单「可自动」项，默认关闭 + 会话开关；白名单外至少自确认、
      高危类与 shell 永不自动，总开关不能覆盖高危类。
-18. `K8S_AI_ENC_KEY` 一旦丢失，已加密落库的凭据（模型 api_key、MCP env、kubeconfig）不可恢复；
+18. `AEGISOPS_ENC_KEY` 一旦丢失，已加密落库的凭据（模型 api_key、MCP env、kubeconfig）不可恢复；
     密钥必须有离线备份，轮换必须走显式流程并重新加密存量。
 19. 产品清单、镜像与安装脚本不得硬编码任何具体环境信息（IP、域名、存储类、镜像仓库地址），
     环境差异只允许由部署参数或占位符替换提供。
@@ -1748,7 +1748,7 @@ LLM 只作**辅助安装**（D-34 / ADR-045）：脚本本体零 LLM、零外呼
     才能进日志与错误响应（`X-Amz-Signature`/`X-Amz-Credential`/`Signature=` 等一律抹除）。
 23. 对象存储故障不得波及基础业务：对象存储不可达时 Chat、审批、审计、扫描采集、设置、鉴权必须照常可用，`/readyz` 判据不含
     对象存储；写路径失败必须显式报错，禁止用熔断器、后台重试队列或写缓冲制造「看起来成功、其实没落盘」的状态。
-24. 备份顺序固定「先 MySQL、后对象存储」，GC 宽限期必须远大于备份窗口；恢复后必须经 `k8s-ai blobs verify --strict` 准出。
+24. 备份顺序固定「先 MySQL、后对象存储」，GC 宽限期必须远大于备份窗口；恢复后必须经 `aopsctl blobs verify --strict` 准出。
     禁止把 MySQL 恢复点置于桶快照之后——那会造出不可修复的悬空引用（引用在库、内容不在桶）。
 
 ---
@@ -1770,9 +1770,9 @@ LLM 只作**辅助安装**（D-34 / ADR-045）：脚本本体零 LLM、零外呼
 
 无法迁移的数据必须明确说明。
 
-迁移入口（v1.16 明确，见 ADR-042）：schema 升级由 `k8s-ai db migrate` 承担，仅做 schema、单向且幂等，
+迁移入口（v1.16 明确，见 ADR-042）：schema 升级由 `aopsctl db migrate` 承担，仅做 schema、单向且幂等，
 可作 K8s Job 或 initContainer；`server` 启动内保留同一迁移的幂等兜底，Job 失败即阻塞启动。配置内容导入
-仍由 `k8s-ai migrate` 一次性显式执行，两个入口不混用。
+仍由 `aopsctl migrate` 一次性显式执行，两个入口不混用。
 
 ---
 
@@ -1938,7 +1938,7 @@ frontend build
 - SSE 事件流 mock 测试：session/turn/step 状态推进与事件字段完整性。
 - 前端路由权限与后端 API 越权测试（越权返回 401/403）。
 - kubeconfig 与 Secret 不进入审计、会话、记忆的红线专项测试。
-- 部署冒烟：K8s 两种形态各跑通登录→Chat→审批→创建→审计/E2E，默认单副本；形态 A 为 `k8s-ai server`（SPA + `/api/v1` + Chat SSE 同源）单 Deployment，形态 B 为「Nginx+dist 前端 + 纯 API 后端」双 Deployment；本地单进程作为辅助回归口径。
+- 部署冒烟：K8s 两种形态各跑通登录→Chat→审批→创建→审计/E2E，默认单副本；形态 A 为 `aopsctl server`（SPA + `/api/v1` + Chat SSE 同源）单 Deployment，形态 B 为「Nginx+dist 前端 + 纯 API 后端」双 Deployment；本地单进程作为辅助回归口径。
 
 Web：
 
@@ -2038,21 +2038,21 @@ Security Boundary Unchanged
 | v1.1 | 2026-09-30 | 架构基线：Agent Runtime / SSE / Approval v2 平台化 / Skill 非执行器 / Storage / 部署双轨 |
 | v1.2 | 2026-09-30 | 最终需求方案：双层安全边界、写工具统一受控通道、SSE 兼容迁移、镜像写执行方案、双驱动存储迁移、权限作用域、验收测试细化 |
 | v1.3 | 2026-10-13 | 审批与授权方案修订（见 `docs/02-架构与设计/13-方案-企业级身份权限与审批中心.md`）：角色收敛为 user/operator/admin；授权以 namespace 为唯一边界、零权限起步、admin 划分 namespace；销毁类仅 admin 并支持 operator 委派、未授权直接提示联系管理员；审批主体只有本人自确认或审批子 agent 自动；自动审批显式白名单（默认关闭+会话开关）；AuthzGrant 权威 + RBAC 派生对账 + 执行前 SAR；平台演进为多 Agent 编排并引入 Approval Agent；修正 P4.8 审批人约束 |
-| v1.4 | 2026-10-14 | 部署与交付口径修订（不改需求范围）：Kubernetes 为四期唯一生产形态，单进程运行降为三期兼容与本地开发调试口径；平台主进程 = `k8s-ai server`（`/api/v1` + Chat SSE + 内嵌 SPA 同源单端口），`k8s-ai web` 冻结为三期兼容入口；新增平台进程默认单副本约束与扩副本前置条件；见 ADR-029 / ADR-030。（**已被 v1.12 取代**：「唯一生产形态」改为「默认一体化 + 可选前后端分离」，见 ADR-036） |
+| v1.4 | 2026-10-14 | 部署与交付口径修订（不改需求范围）：Kubernetes 为四期唯一生产形态，单进程运行降为三期兼容与本地开发调试口径；平台主进程 = `aopsctl server`（`/api/v1` + Chat SSE + 内嵌 SPA 同源单端口），`aopsctl web` 冻结为三期兼容入口；新增平台进程默认单副本约束与扩副本前置条件；见 ADR-029 / ADR-030。（**已被 v1.12 取代**：「唯一生产形态」改为「默认一体化 + 可选前后端分离」，见 ADR-036） |
 | v1.5 | 2026-10-14 | 补两条协议级需求（不改范围，只补此前隐含的约束）：① §8 增补"事件顺序与展示语义"——分片不是展示单元、终态必须最后、增量统一脱敏、思考面板语义；② §26 增补四期配置面——`platform:` 段承载平台级非敏感参数、敏感值只走环境变量/Secret、`server` 支持 `--config`、`config init` 输出全量模板。见 ADR-031 / ADR-032、D-21 / D-22 |
 | v1.6 | 2026-10-15 | 增补前端体验基线需求（不改范围）：§10 指向《14-方案-前端体验优化-四期.md》，并固化两条硬约束——主题与令牌（data-theme + 默认深色 + 支持跟随系统 + 首屏防闪烁）与工具结果同源（`tool_result` 由后端计算并同时下发与落库）。见 ADR-033/ADR-034、D-23/D-24、任务 P7.1–P7.5 |
 | v1.7 | 2026-10-16 | Skill 双轨口径统一（不改需求范围，消除术语与设计矛盾）：Skill 拆为正交两维——`type`（structured / procedural）与 `source`（builtin / custom / third-party，只表达提供方、不再混用为类型）；structured 为资源创建类确定性规则（`create_resource` 消费 findings、Approval Risk 只升不降、custom/third-party 禁设 `risk.default`），procedural 为标准 Agent 技能（SKILL.md + frontmatter，聊天回合前意图检索后注入系统提示词、支持显式调用）；统一消费与安全边界（SKILL.md 正文为不可信文本上下文、技能包 `scripts/` 一律 inert 且平台不提供脚本执行引擎、方法论文本由 Agent 翻译为受信工具调用、交互式命令与 shell 审批红线及 Secret/kubeconfig 红线不变、能力缺失明确拒绝并记 `SKILL_RUN` 审计）；procedural 导入载体 v1 = 粘贴单/多篇 SKILL.md 文本 + 单个技能包 zip（assets 白名单 md/yaml/json/txt/csv，文件总大小/文件数/解压深度/路径穿越/符号链接有界校验），多技能 zip 与沙箱执行延后。见新增 §13.0 及 §13.1/§13.2、§4 非目标、《01-系统架构与技术方案》§11、开发计划-四期 P3.8.1–P3.8.4 |
 | v1.8 | 2026-10-16 | procedural 导入载体 v1 落地状态回写（不改需求范围）：§13.2 所述粘贴单/多篇 SKILL.md 文本导入、单个技能包 zip 导入与静态资产存储均已实现——文本导入前置扫描多文档边界、frontmatter `name/description` 强制解析、KnownFields 严格解码（`POST /api/v1/skills/import-procedural`，2MiB 上限）；zip 导入仅收根目录唯一 `SKILL.md` 主文、assets 走 md/yaml/json/txt/csv 白名单落库为元数据、`scripts/` 一律 `inert=true` 不执行，并带解压总大小/条目数/路径长度/深度/路径穿越/盘符/symlink 防御（`POST /api/v1/skills/import-zip`，32MiB 上限）；Chat 回合前意图检索注入已把 SKILL.md 渐进披露内容注入 Agent`SkillContext` 并记 `SKILL_RUN(retrieve)` 审计。见开发计划-四期 v1.30，代码尚未提交、待真机验证后入库 |
 | v1.9 | 2026-10-16 | procedural 导入兼容性收尾（不改范围）：修复两类真实导入报错——① 「直接压缩技能文件夹」的 zip（根目录无 SKILL.md、整包被单层目录包裹）在确认全部条目恰好归入唯一顶层目录后自动剥离该前缀再导入，多顶层目录整包拒绝；② SKILL.md 首行是代码围栏把 frontmatter 整个包起来的写法，按「围栏开行 + 下一行 `---`」识别并跳过开闭围栏。路径穿越/绝对路径/盘符/symlink/非白名单资产/总大小/条目数/深度限制全部保留并整包拒绝。见开发计划-四期 v1.31、§13.2，代码尚未提交、待真机验证后入库 |
 | v1.10 | 2026-10-16 | procedural 命中双场景与只读工具落地状态回写（不改需求范围）：§13.3 两种入口已实现——① 自动意图检索重写为三级匹配（整句精确名称 → 整句子串 → 长句关键词打分：名称 3 / 领域 2 / 描述 1，每词只计一次最高权重），单轮最多注入 2 篇（`hit=auto`）；② 显式 `@技能名` 指定，`ChatRequest.skills` 随 send-message 转发，逐个 `FindByName` 精确解析（大小写不敏感），任一未知名/未启用整批拒绝、不做静默降级、不叠加自动检索（`hit=explicit`）。Agent 侧新增只读工具 `list_skills` / `get_skill`（`IsReadOnly`、`RiskSafe`、Schema 标注 READ ONLY / SAFE / APPROVAL NOT REQUIRED），`get_skill` 正文按 96 KiB 截断并置 `truncated`、assets 仅元数据且脚本 `inert=true`、未知名技能返回工具级错误文本；命中同步 `RecordHit`（`hit_count`/`last_hit`）并落库 `SKILL_RUN`（operation=retrieve，`ResultSummary={"hit":"auto"|"explicit"}`）审计。Web Chat 前端 `@` 输入按 `skill.read` 权限弹出已启用的 procedural Skill 并回填，提交时把已匹配的 `@名` 从 query 剥离、仅转发有效技能名。见开发计划-四期 v1.32，代码未提交、待真机验证后入库 |
-| v1.11 | 2026-10-21 | 配置面口径修订（不改范围，拆离动态键权威源）：`config.yaml` 只承载静态/`platform:` 启动参数；7 组动态键（model/skill/approval/memory/retention/mcp/ops）唯一落 DB `settings` 表，由配置中心页面维护、server 与 Chat/Agent/LLM 运行时从 Store 读，不再每次启动自动导入；`config init` 模板只输出静态/platform 键与 CLI 直用缺省；`k8s-ai chat/scan` 终端直用仍读本地文件+env+flag、不依赖平台 DB。见 ADR-031 v1.11、§15/§26、P6.12 |
+| v1.11 | 2026-10-21 | 配置面口径修订（不改范围，拆离动态键权威源）：`config.yaml` 只承载静态/`platform:` 启动参数；7 组动态键（model/skill/approval/memory/retention/mcp/ops）唯一落 DB `settings` 表，由配置中心页面维护、server 与 Chat/Agent/LLM 运行时从 Store 读，不再每次启动自动导入；`config init` 模板只输出静态/platform 键与 CLI 直用缺省；`aopsctl chat/scan` 终端直用仍读本地文件+env+flag、不依赖平台 DB。见 ADR-031 v1.11、§15/§26、P6.12 |
 | v1.12 | 2026-10-22 | 部署架构口径统一（仅文档）：明确「前后端工程分离 + 单二进制一体化交付」，支持两种部署形态——形态 A 默认一体化（`go:embed web/dist` + SPA 同源单端口），形态 B 可选前后端分离（前端独立 Nginx 托管 `web/dist`、后端关闭静态路由只提供 API），两者共享同一 `/api/v1` 契约；分离模式默认同域路径分流、相对路径 `/api/v1`，不强制跨域/独立子域；允许独立发布/回滚并由 API 契约测试守住兼容面；维持单副本。见 ADR-029 / ADR-036、开发计划-四期 v1.38、部署手册 §4.9 |
 | v1.13 | 2026-10-23 | 企业平台权限分层与会话所有权口径冻结：平台 Permission、Session owner、namespace AuthzGrant 三层独立；user/operator 平台 Permission 默认零，登录与自有会话属于认证基础能力；会话 owner 创建后不可变，普通角色仅访问自己的会话，admin 对全部会话拥有完整读写与运行控制能力；operator 不自动跨 namespace；无权限平台管理入口隐藏且后端强校验。见 ADR-037、开发计划 v1.41 |
 | v1.14 | 2026-10-23 | 用户/权限复盘口径澄清：admin 对他人会话的读取、发送消息、运行控制和审批属于平台管理员例外能力，不建模为“为他人指定审批人”，但必须记录 admin 操作者并写审计；同步修正 §17/§18 中与 admin 全会话能力冲突的表述。停用账号 Token 即时失效、API Token 认证闭环、Grant 集群隔离/主体生命周期、组授权、admin 跨用户审计与销毁授权等遗留登记到开发计划 `U-01`–`U-10`，本轮保持现有行为。见开发计划 v1.44 |
-| v1.15 | 2026-10-26 | CLI 直用配置口径冻结：终端直用（`k8s-ai chat/scan`）默认读取独立 `~/.k8s-ai/cli.yaml`，由 `k8s-ai config init --cli` 输出，承载 llm/agent/scan/kubernetes 等全量引擎键与 CLI 直用缺省、文件头注明仅 CLI 读取；`cli.yaml` 缺失回退旧 `config.yaml` 兼容存量。`config init` 默认输出 server 静态 `config.yaml`（只含 `platform:` 段），server 与 CLI 配置为两份独立文件、完全独立、互不覆盖，7 组动态键唯一权威源仍为 DB `settings` 表；`config validate` 支持 `--mode server|cli`。仅文档口径修订、实现放 P6.12。见 ADR-031 v1.12、开发计划 v1.45 |
-| v1.16 | 2026-10-27 | P6 产品安装部署开工前口径冻结（见开发计划 v1.48、ADR-031 v1.13、ADR-040/041/042）：① 动态配置读取优先级定为**环境变量覆盖层 > DB `settings` > 内置默认**，env 覆盖面收窄为 `K8S_AI_LLM_*` 与 `K8S_AI_PLATFORM_STORE_DSN`，内置默认仅兜底且未配置时 Chat 显式报错，页面改动即时生效；② 平台主存储改为 **MySQL**，SQLite 降为本地/离线兜底，DSN 只经环境变量/Secret 注入，主 MySQL 不解锁多副本；③ schema 迁移入口拆出 `k8s-ai db migrate`（可作 Job/initContainer），server 启动保留幂等兜底，与 `k8s-ai migrate` 配置导入分工明确；④ 镜像构建默认走 Dockerfile node 阶段（干净检出可复现），`go:embed all:web/dist` + `web/dist/.gitkeep` 占位，离线走 BuildKit named build context，`dist` 空时静态路由明确提示，未知 `/api/v1/*` 回 JSON 404，SSE 带 `X-Accel-Buffering: no`；⑤ 首启 admin 口令仅空库必需，`/readyz` = Store 连通 + 迁移完成、`/healthz` 保持进程级；⑥ install.sh 密钥语义冻结（ENC_KEY 复用/缺失才生成并备份/`--rotate` 显式轮换、ADMIN_PASSWORD 随机一次性打印、ENABLE_WRITE 二次确认、幂等重跑）；⑦ 新增安全红线 18/19：ENC_KEY 丢失即凭据不可恢复、禁止在产品清单与脚本硬编码任何环境信息。 |
-| v1.17 | 2026-10-27 | P6-A 口径批注确认（见开发计划 v1.49、ADR-040/041/042 增补）：① §15 澄清 **DB `settings` 是动态键的默认唯一权威源与唯一写入目标**，env 仅对白名单键作部署期只读覆盖、命中不回写、页面标注覆盖态；② §22 补数据库前置——产品不执行 CREATE DATABASE，库与账号由 DBA 预建并建议 utf8mb4，表级 DDL 显式 utf8mb4，平台账号只授该库 DML 与建表改表索引权限；③ §26 明确**前后端两个独立 Dockerfile**（仓库根 Dockerfile 构建后端镜像、deploy/web.Dockerfile 构建前端 Nginx 镜像，互不依赖），并明确 SQLite 兜底数据目录必须挂 PVC、MySQL 主口径下 PVC 仅承载报告与导出；④ 新增 deploy/example MySQL 接入示例清单（非产品默认、不含现场地址与口令），MySQL 连通、迁移幂等、重启续用门禁实跑用例计入 P6.1/P6.5/P6.8 验收；⑤ 测试库名 `k8s_ai_test`、产品默认库名 `k8s_ai`，凭据严禁入库。需求条目与优先级不变。 |
-| v1.18 | 2026-10-27 | | **动态配置优先级口径修订（仅文档，签收方案 A）**：环境变量覆盖由「对白名单键一律最高优先」改为**两档语义**。① **密钥态**（`K8S_AI_LLM_API_KEY`、`K8S_AI_PLATFORM_STORE_DSN`）env/Secret 恒优先，密钥只走 Secret、页面永不回显，env 命中时页面值不生效但必须标注来源并在保存时给出提示；② **种子态 seed-once**（`K8S_AI_LLM_{PROVIDER,ENDPOINT,MODEL}` + ops 四键 `K8S_AI_{KUBECONFIG,KUBE_CONTEXT,NAMESPACE,KUBECTL_PATH}`）仅在 DB 该键无值时生效，页面保存过即以 DB 为准、env 不再覆盖；③ 覆盖面**冻结为 LLM 四键 + ops 四键**，`TEMPERATURE/MAX_TOKENS/TIMEOUT` 明确不纳入 env 覆盖（非字符串键，常驻类型转换分支收益不划算），键集合由测试锁定；④ 默认部署清单只注入 `K8S_AI_LLM_API_KEY`，非敏感覆盖只在 `deploy/example/` 演示。修订起因：页面保存路径不感知 env 覆盖，会出现「写库成功、页面显示已保存、运行时仍用 env 旧值」的静默陷阱。一句话口径：页面配过的以页面为准，页面没配过的用部署变量兜底，密钥永远以 Secret 为准。见 §15/§22、开发计划 v1.51、D-21/D-29 修订、ADR-031 v1.14、ADR-040 v1.2。需求条目与优先级不变。 |
+| v1.15 | 2026-10-26 | CLI 直用配置口径冻结：终端直用（`aopsctl chat/scan`）默认读取独立 `~/.aegisops/cli.yaml`，由 `aopsctl config init --cli` 输出，承载 llm/agent/scan/kubernetes 等全量引擎键与 CLI 直用缺省、文件头注明仅 CLI 读取；`cli.yaml` 缺失回退旧 `config.yaml` 兼容存量。`config init` 默认输出 server 静态 `config.yaml`（只含 `platform:` 段），server 与 CLI 配置为两份独立文件、完全独立、互不覆盖，7 组动态键唯一权威源仍为 DB `settings` 表；`config validate` 支持 `--mode server|cli`。仅文档口径修订、实现放 P6.12。见 ADR-031 v1.12、开发计划 v1.45 |
+| v1.16 | 2026-10-27 | P6 产品安装部署开工前口径冻结（见开发计划 v1.48、ADR-031 v1.13、ADR-040/041/042）：① 动态配置读取优先级定为**环境变量覆盖层 > DB `settings` > 内置默认**，env 覆盖面收窄为 `AEGISOPS_LLM_*` 与 `AEGISOPS_PLATFORM_STORE_DSN`，内置默认仅兜底且未配置时 Chat 显式报错，页面改动即时生效；② 平台主存储改为 **MySQL**，SQLite 降为本地/离线兜底，DSN 只经环境变量/Secret 注入，主 MySQL 不解锁多副本；③ schema 迁移入口拆出 `aopsctl db migrate`（可作 Job/initContainer），server 启动保留幂等兜底，与 `aopsctl migrate` 配置导入分工明确；④ 镜像构建默认走 Dockerfile node 阶段（干净检出可复现），`go:embed all:web/dist` + `web/dist/.gitkeep` 占位，离线走 BuildKit named build context，`dist` 空时静态路由明确提示，未知 `/api/v1/*` 回 JSON 404，SSE 带 `X-Accel-Buffering: no`；⑤ 首启 admin 口令仅空库必需，`/readyz` = Store 连通 + 迁移完成、`/healthz` 保持进程级；⑥ install.sh 密钥语义冻结（ENC_KEY 复用/缺失才生成并备份/`--rotate` 显式轮换、ADMIN_PASSWORD 随机一次性打印、ENABLE_WRITE 二次确认、幂等重跑）；⑦ 新增安全红线 18/19：ENC_KEY 丢失即凭据不可恢复、禁止在产品清单与脚本硬编码任何环境信息。 |
+| v1.17 | 2026-10-27 | P6-A 口径批注确认（见开发计划 v1.49、ADR-040/041/042 增补）：① §15 澄清 **DB `settings` 是动态键的默认唯一权威源与唯一写入目标**，env 仅对白名单键作部署期只读覆盖、命中不回写、页面标注覆盖态；② §22 补数据库前置——产品不执行 CREATE DATABASE，库与账号由 DBA 预建并建议 utf8mb4，表级 DDL 显式 utf8mb4，平台账号只授该库 DML 与建表改表索引权限；③ §26 明确**前后端两个独立 Dockerfile**（仓库根 Dockerfile 构建后端镜像、deploy/web.Dockerfile 构建前端 Nginx 镜像，互不依赖），并明确 SQLite 兜底数据目录必须挂 PVC、MySQL 主口径下 PVC 仅承载报告与导出；④ 新增 deploy/example MySQL 接入示例清单（非产品默认、不含现场地址与口令），MySQL 连通、迁移幂等、重启续用门禁实跑用例计入 P6.1/P6.5/P6.8 验收；⑤ 测试库名 `aegisops_test`、产品默认库名 `aegisops`，凭据严禁入库。需求条目与优先级不变。 |
+| v1.18 | 2026-10-27 | | **动态配置优先级口径修订（仅文档，签收方案 A）**：环境变量覆盖由「对白名单键一律最高优先」改为**两档语义**。① **密钥态**（`AEGISOPS_LLM_API_KEY`、`AEGISOPS_PLATFORM_STORE_DSN`）env/Secret 恒优先，密钥只走 Secret、页面永不回显，env 命中时页面值不生效但必须标注来源并在保存时给出提示；② **种子态 seed-once**（`AEGISOPS_LLM_{PROVIDER,ENDPOINT,MODEL}` + ops 四键 `AEGISOPS_{KUBECONFIG,KUBE_CONTEXT,NAMESPACE,KUBECTL_PATH}`）仅在 DB 该键无值时生效，页面保存过即以 DB 为准、env 不再覆盖；③ 覆盖面**冻结为 LLM 四键 + ops 四键**，`TEMPERATURE/MAX_TOKENS/TIMEOUT` 明确不纳入 env 覆盖（非字符串键，常驻类型转换分支收益不划算），键集合由测试锁定；④ 默认部署清单只注入 `AEGISOPS_LLM_API_KEY`，非敏感覆盖只在 `deploy/example/` 演示。修订起因：页面保存路径不感知 env 覆盖，会出现「写库成功、页面显示已保存、运行时仍用 env 旧值」的静默陷阱。一句话口径：页面配过的以页面为准，页面没配过的用部署变量兜底，密钥永远以 Secret 为准。见 §15/§22、开发计划 v1.51、D-21/D-29 修订、ADR-031 v1.14、ADR-040 v1.2。需求条目与优先级不变。 |
 | v1.19 | 2026-10-29 | 两条部署与存储口径统一（仅文档，不改需求范围）：① **存储边界**（D-32、ADR-043、方案《15-方案-存储边界与对象存储-四期.md》、开发计划 v1.52 新增主线 P8）——大载荷统一经 internal/blobstore 决定落点，新增静态段 platform.blobs.*（driver 取 off、db、dir、s3，默认 db，不入动态键白名单），默认后端行为与现状一致，s3 对接 S3 兼容对象存储且 MinIO 只是默认交付后端，MySQL 仍是会话唯一权威源，dir 后端限制多副本扩容须在文档与校验中备注，CLI 仅允许 off 与 dir；② **容器执行通道口径翻转**（D-33、ADR-044 v1.1、方案《16-方案-容器执行通道与镜像基座-四期.md》）——默认镜像运行阶段改 debian:bookworm-slim 并内置 bash、coreutils、jq、curl 与构建期校验下载的 kubectl，platform.exec.shell_enabled 默认 true，安全由 shell 必经真人审批、既有红线、集群 RBAC、脱敏与全量审计、Deployment 加固收口，保留 Dockerfile.distroless 无 shell 变体，取消 initContainer 投递 kubectl；§22/§26/§27/§28 同步回写，开发计划 v1.53、部署手册 §2.2 与 §4.16/§4.17 |
 | v1.20 | 2026-10-29 | 一键安装口径冻结（仅文档，不改需求范围，见开发计划 v1.56、D-34、ADR-045）：① **`STORAGE_CLASS` 语义修正**：由「为空则不创建 PVC」改为「为空即用集群默认存储类」，PVC 默认创建承载报告与导出，集群无默认存储类且未指定时前置检查失败并列出可选值；② **暴露层改可选**：`EXPOSE=nodeport/ingress` 且**默认 NodePort**（现场常无真实域名，Ingress 自定义域名要逐台改客户端 hosts），`NODE_PORT` 为空由集群分配并回显节点 URL，Ingress 仅在给出 `INGRESS_HOST` 时启用，且经核对无需改 Go 代码（token 走 `Authorization` 头、同源放行、SPA 相对路径），正式清单 Service 仍固定 ClusterIP；③ **脚本两段一体 + 九阶段 + 配置三层**（CLI flag > env > `install.env` > 内置默认），参数表补齐 BUILD/FORM/IMAGE_WEB/REPORT_STORAGE_SIZE/PERSIST_REPORTS/EXPOSE/NODE_PORT/INGRESS_CLASS/IMAGE_PULL_SECRET，渲染进临时目录并断言零占位符残留、不就地改写仓库 YAML，DSN 与口令经 stdin 注入；④ **LLM 仅辅助**：脚本本体零 LLM，可选 `install doctor`/`install plan` 子命令（开发计划 P6.14/P6.15）不进关键路径，无模型时纯参数必须装通。§26/§27 同步回写，部署手册 §4.4/§4.6/§4.10 与 `deploy/` 注释同步 |
 | v1.21 | 2026-10-30 | 存储边界与对象存储架构评审回写（仅文档，不改需求范围与优先级，见方案《15-方案-存储边界与对象存储-四期.md》v1.3、ADR-043 v1.1、新增 ADR-046、开发计划 v1.60）：① **双存储职责表冻结**——MySQL 是默认业务数据库并持有对象元数据与状态机，对象存储只承载实际文件内容与大体积非结构化数据；业务数据不迁桶，不因引入对象存储改变 MySQL 默认业务库定位。② **统一抽象改名**——抽象层包名定为 `internal/objectstore`（`internal/blobstore`、表名 `blob_objects` 为早期草案命名，落地时统一为 `objects`），业务模块禁止直接 import 厂商 SDK；配置面沿用已落地的 `platform.blobs.*` 静态段与 `BLOBS_*` 安装变量不改名，CLI 侧 `blobs gc`、`blobs verify` 命令名保留。③ **新增前置任务 P8.0 会话事实源收敛**（ADR-046）——现状 Web 会话权威源是容器内文件存储、MySQL 只写不读，且删除、清空、改名、置顶只写文件存储，导致库内残留已删会话整份正文（合规风险），对象存储接入前必须先让 Web 读写路径统一走平台库。④ **元数据与一致性**——`objects` 表 + `ready`、`orphaned`、`missing`、`deleting` 四态状态机 + 两段式 GC（先解除引用并落库，再删桶内内容），`internal/store` 新增 `WithTx` 事务入口（现状无任何事务边界）。⑤ **故障隔离写入验收级条款**——`/readyz` 判据不含对象存储，启动期配置错误 fail-fast、运行期只把对象端点降级为 503，桶不可达不得把整个进程打成不可用。⑥ **备份与恢复**——顺序固定「先 MySQL、后对象存储」，`gc_grace_period` 默认 168h 且必须远大于备份窗口，恢复后以 `blobs verify --strict` 为准出关口，并明确 ETag 不等于 sha256、不可用作完整性依据。⑦ **会话正文四期不外置**——`session_data` 不落桶，改为新增 `agent.session_max_bytes`（默认 12MiB、达 85% 预警）抑制单会话膨胀，`db` 后端单行超 8MiB 出 WARN。⑧ **安全口径**——红线 22 改写为对象引用与凭据脱敏的完整表述，新增红线 23（桶故障不得波及基础业务、禁止熔断器与写缓冲伪造成功）与红线 24（备份顺序与 verify 准出）。⑨ **落地约束登记**——新增权限位须同步权限注册表且注意内置角色权限每次启动由代码覆盖、页面改动不持久，新增静态配置键须登记进静态引擎键白名单，未登记的新 API 路由在权限网关默认 403。§22 整段改写、§7.1 增会话事实源条款、§28 红线同步；P8 工时由 7.50 调至 11.00 人日，附件上传通道 P8.7 延至 v4.2。 |

@@ -1,4 +1,4 @@
-// Package model defines the pure domain models for k8s-ai.
+// Package model defines the pure domain models for AegisOps.
 // It must not import any internal package (ADR-015).
 package model
 

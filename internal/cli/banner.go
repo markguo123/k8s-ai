@@ -14,7 +14,7 @@ const bannerInnerWidth = 46
 
 // printChatBanner 打印交互模式欢迎横幅：终端显示边框卡片，管道/测试降级纯文本。
 func printChatBanner(w io.Writer, cluster string) {
-	lines := []string{"k8s-ai · Kubernetes AI 助手", "版本 " + version.Version}
+	lines := []string{"AegisOps · 云原生智能工作台", "版本 " + version.Version}
 	if cluster != "" {
 		lines = append(lines, "集群 "+cluster)
 	}

@@ -105,8 +105,8 @@ func TestInstallScriptCoversRequiredBehavior(t *testing.T) {
 		{"PVC 延迟绑定模式识别（WaitForFirstConsumer）", "WaitForFirstConsumer"},
 		{"延迟绑定推迟到工作负载后校验", "pvc_verify_deferred_bind"},
 		{"PVC 存储类不可变对齐", "pvc_align_class"},
-		{"迁移 Job 等待完成", "wait --for=condition=complete job/k8s-ai-db-migrate"},
-		{"滚动升级等待", "rollout status deployment/k8s-ai-server"},
+		{"迁移 Job 等待完成", "wait --for=condition=complete job/aegisops-db-migrate"},
+		{"滚动升级等待", "rollout status deployment/aegisops-server"},
 		{"NodePort 形态", "type: NodePort"},
 		{"Ingress 可选", "ingressClassName"},
 		{"ENC_KEY 复用优先", "secret_exists"},
@@ -114,7 +114,7 @@ func TestInstallScriptCoversRequiredBehavior(t *testing.T) {
 		{"渲染产物占位残留断言", "assert_rendered_clean"},
 		{"失败三段式提示", "下一步"},
 		{"写权限 RBAC 需显式开启", "rbac-write.example.yaml"},
-		{"s3 上传中转目录下发", "K8S_AI_PLATFORM_BLOBS_TMP_DIR"},
+		{"s3 上传中转目录下发", "AEGISOPS_PLATFORM_BLOBS_TMP_DIR"},
 		{"启动期不建桶（生产桶预建）", "BLOBS_CREATE_BUCKET:=false"},
 		{"dir 后端必须落 PVC", "BLOBS_BACKEND=dir 必须持久化"},
 		{"换对象后端前的迁移闸门", "blobs_gate_backend_switch"},
@@ -122,11 +122,11 @@ func TestInstallScriptCoversRequiredBehavior(t *testing.T) {
 		// 闸门要比 driver 名字更进一步：先数旧后端还剩多少对象，空后端不该被当成数据搬迁
 		// （否则第一次接 S3 只能拿语义是「历史对象可弃」的绕行开关往前走）。
 		{"换后端闸门先数旧后端对象数", "blobs_current_object_count"},
-		{"闸门在容器里数对象走挂载配置", "POD_PLATFORM_CONFIG=/etc/k8s-ai/config.yaml"},
+		{"闸门在容器里数对象走挂载配置", "POD_PLATFORM_CONFIG=/etc/aegisops/config.yaml"},
 		// 闸门读「集群现在跑在哪个后端」的两条命门：env 要按变量名取（按容器名过滤永远取不到，
 		// 只会退化去读恒为 db 的 ConfigMap），且四个 driver 都得显式下发 driver（否则 s3 切回 db 读不到旧后端）。
-		{"闸门按 env 变量名读 driver", `containers[*].env[?(@.name=="K8S_AI_PLATFORM_BLOBS_DRIVER")]`},
-		{"db 后端也显式下发 driver", `db) out="${indent}- name: K8S_AI_PLATFORM_BLOBS_DRIVER`},
+		{"闸门按 env 变量名读 driver", `containers[*].env[?(@.name=="AEGISOPS_PLATFORM_BLOBS_DRIVER")]`},
+		{"db 后端也显式下发 driver", `db) out="${indent}- name: AEGISOPS_PLATFORM_BLOBS_DRIVER`},
 	}
 	for _, item := range required {
 		if !strings.Contains(body, item.needle) {
@@ -364,7 +364,7 @@ func shellFuncBody(t *testing.T, script, name string) string {
 // TestInstallScriptAppliesServicesBeforeWorkloads 锁阶段 6 内部的 apply 顺序：Service 先行。
 // 形态 B 的 Nginx 在读配置阶段就要解析 proxy_pass 的后端 Service，Service 缺席时 nginx 以
 // [emerg] host not found in upstream 退出、Pod 进 CrashLoopBackOff，而 stage_workloads
-// 紧接着就要等 k8s-ai-web Ready —— Service 若还留在 stage_expose，就是「前端等 Service、
+// 紧接着就要等 aegisops-web Ready —— Service 若还留在 stage_expose，就是「前端等 Service、
 // 脚本等前端」的自锁，安装必挂（现场实测过）。
 func TestInstallScriptAppliesServicesBeforeWorkloads(t *testing.T) {
 	body := readRepoFile(t, "deploy", "install.sh")
@@ -373,17 +373,17 @@ func TestInstallScriptAppliesServicesBeforeWorkloads(t *testing.T) {
 
 	svc := strings.Index(workloads, "apply_rendered base/service.yaml")
 	if svc < 0 {
-		t.Fatal("stage_workloads 必须在 apply 工作负载之前建 base/service.yaml：形态 B 的 Nginx 启动期要解析 k8s-ai-server")
+		t.Fatal("stage_workloads 必须在 apply 工作负载之前建 base/service.yaml：形态 B 的 Nginx 启动期要解析 aegisops-server")
 	}
 	webDep := strings.Index(workloads, webDeployment)
 	if webDep < 0 {
 		t.Fatalf("stage_workloads 里找不到 %q", webDeployment)
 	}
 	if svc > webDep {
-		t.Error("k8s-ai-server 的 Service 必须早于 web Deployment apply，否则前端容器起不来")
+		t.Error("aegisops-server 的 Service 必须早于 web Deployment apply，否则前端容器起不来")
 	}
 	if webSvc := strings.Index(workloads, "apply_rendered separated/web-service.yaml"); webSvc < 0 || webSvc > webDep {
-		t.Error("入口 Service（k8s-ai-web）同样要早于 web Deployment apply")
+		t.Error("入口 Service（aegisops-web）同样要早于 web Deployment apply")
 	}
 	for _, dep := range []string{"apply_rendered separated/deployment.yaml", "apply_rendered allinone/deployment.yaml"} {
 		if at := strings.Index(workloads, dep); at >= 0 && at < svc {
@@ -406,7 +406,7 @@ func TestInstallScriptNodePortPreflightIgnoresOwnRelease(t *testing.T) {
 }
 
 // TestInstallScriptBlocksSameHostIngressConflict 锁阶段 0 的同域名 Ingress 冲突自检。
-// 同一命名空间里形态 A 残留的 k8s-ai（/ → 后端）会挤掉形态 B 的 k8s-ai-web（/ → 前端）：
+// 同一命名空间里形态 A 残留的 k8s-ai（/ → 后端）会挤掉形态 B 的 aegisops-web（/ → 前端）：
 // Ingress 控制器对同一 host 的同一路径只认一个，被挤掉的那半静默 404。现场表现为「后端
 // /readyz 正常、页面打不开且返回 API 的 JSON 404」，很难联想到另一个 Ingress。
 func TestInstallScriptBlocksSameHostIngressConflict(t *testing.T) {
@@ -414,7 +414,7 @@ func TestInstallScriptBlocksSameHostIngressConflict(t *testing.T) {
 	if !strings.Contains(preflight, "get ingress") {
 		t.Fatal("stage_preflight 要枚举本命名空间的 Ingress：同域名路径冲突会让前端静默 404")
 	}
-	for _, needle := range []string{"k8s-ai-api k8s-ai-web", "delete ingress"} {
+	for _, needle := range []string{"aegisops-api aegisops-web", "delete ingress"} {
 		if !strings.Contains(preflight, needle) {
 			t.Errorf("同域名 Ingress 冲突自检缺少 %q：要先认出自己这一形态，再给出可复制的删除命令", needle)
 		}

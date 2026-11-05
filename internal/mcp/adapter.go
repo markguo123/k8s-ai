@@ -9,7 +9,7 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/tools"
 )
 
-// ToolAdapter 把 MCP 工具包装为 k8s-ai 的 tools.Tool。
+// ToolAdapter 把 MCP 工具包装为 AegisOps 的 tools.Tool。
 // 安全侧默认：非只读 + 风险 CRITICAL，必须经审批策略后才能执行。
 type ToolAdapter struct {
 	server string

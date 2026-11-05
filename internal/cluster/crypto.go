@@ -13,13 +13,13 @@ import (
 )
 
 // envCipherKey 是平台主进程读取凭据加密密钥的环境变量（P6.12：敏感值只从环境变量读取）。
-const envCipherKey = "K8S_AI_ENC_KEY"
+const envCipherKey = "AEGISOPS_ENC_KEY"
 
 // cipherPrefix 标识当前密文格式版本。
 const cipherPrefix = "v1:"
 
 // ErrCipherKeyRequired 表示未配置凭据加密密钥。
-var ErrCipherKeyRequired = errors.New("cluster: encryption key is required (set K8S_AI_ENC_KEY to a 32-byte hex or base64 key)")
+var ErrCipherKeyRequired = errors.New("cluster: encryption key is required (set AEGISOPS_ENC_KEY to a 32-byte hex or base64 key)")
 
 // Cipher 是凭据的 AES-256-GCM 加密/解密器（P3.1：kubeconfig 加密落库）。
 // 密钥永不落库、永不写日志；解密后的明文在调用方使用完毕后即丢弃。

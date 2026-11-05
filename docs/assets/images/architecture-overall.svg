@@ -14,16 +14,16 @@
     </marker>
   </defs>
 
-  <text x="500" y="32" font-size="24" font-weight="bold" text-anchor="middle" fill="#0f172a">k8s-ai 企业级 Kubernetes AI 智能运维 Agent 全景架构</text>
+  <text x="500" y="32" font-size="24" font-weight="bold" text-anchor="middle" fill="#0f172a">AegisOps 企业级 Kubernetes AI 智能运维 Agent 全景架构</text>
 
   <!-- ============ 用户交互层（双入口） ============ -->
   <rect x="40" y="52" width="920" height="92" rx="14" fill="#f8fafc" stroke="#cbd5e1"/>
   <text x="60" y="74" font-size="13" font-weight="bold" fill="#334155">用户交互层 · 双入口 · 同一 Agent 平台</text>
   <rect x="80" y="88" width="170" height="48" rx="8" fill="#1e293b" filter="url(#ao-shadow)"/>
-  <text x="165" y="111" font-size="15" font-weight="bold" text-anchor="middle" fill="#ffffff">k8s-ai chat</text>
+  <text x="165" y="111" font-size="15" font-weight="bold" text-anchor="middle" fill="#ffffff">aopsctl chat</text>
   <text x="165" y="129" font-size="11" text-anchor="middle" fill="#cbd5e1">终端 / 命令行 · 脚本友好</text>
   <rect x="280" y="88" width="170" height="48" rx="8" fill="#0f766e" filter="url(#ao-shadow)"/>
-  <text x="365" y="111" font-size="15" font-weight="bold" text-anchor="middle" fill="#ffffff">k8s-ai web</text>
+  <text x="365" y="111" font-size="15" font-weight="bold" text-anchor="middle" fill="#ffffff">aopsctl web</text>
   <text x="365" y="129" font-size="11" text-anchor="middle" fill="#99f6e4">浏览器 Web UI · 可视化</text>
   <rect x="560" y="88" width="380" height="48" rx="8" fill="#eef2ff" stroke="#6366f1" filter="url(#ao-shadow)"/>
   <text x="750" y="111" font-size="14" font-weight="bold" text-anchor="middle" fill="#312e81">统一服务接入</text>

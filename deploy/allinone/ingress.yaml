@@ -1,7 +1,7 @@
 # Ingress（P6.2 形态 A）：单域名单入口，SPA 与 /api/v1 同源同端口。
 #
 # 部署前必须替换两处现场值，本文件刻意不含任何真实环境信息：
-#   1) spec.rules[].host —— 占位 k8s-ai.example.com（deploy/install.sh 的 INGRESS_HOST）；
+#   1) spec.rules[].host —— 占位 aegisops.example.com（deploy/install.sh 的 INGRESS_HOST）；
 #   2) metadata.annotations 里的 ingressClassName —— 换成现场 IngressClass 名
 #      （kubectl get ingressclass）。
 #
@@ -12,10 +12,10 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: k8s-ai
-  namespace: k8s-ai
+  name: aegisops
+  namespace: aegisops
   labels:
-    app: k8s-ai
+    app: aegisops
     app.kubernetes.io/component: ingress
   annotations:
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
@@ -27,18 +27,18 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
-    - host: k8s-ai.example.com
+    - host: aegisops.example.com
       http:
         paths:
-          # 形态 A 全站只有一个后端：SPA、/api/v1、探针都由 k8s-ai-server 提供。
+          # 形态 A 全站只有一个后端：SPA、/api/v1、探针都由 aegisops-server 提供。
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: k8s-ai-server
+                name: aegisops-server
                 port:
                   number: 8080
   # 需要 HTTPS 时补：证书 Secret 与同一 host 同名（证书内容不进本仓库）
   # tls:
-  #   - hosts: [k8s-ai.example.com]
-  #     secretName: k8s-ai-tls
+  #   - hosts: [aegisops.example.com]
+  #     secretName: aegisops-tls

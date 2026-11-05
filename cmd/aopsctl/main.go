@@ -1,4 +1,4 @@
-// Command k8s-ai is the entrypoint of the Kubernetes AI inspector.
+// Command aopsctl is the entrypoint of the AegisOps cloud-native workbench.
 package main
 
 import (

@@ -30,8 +30,8 @@ func newConfigInitCmd() *cobra.Command {
 			"Default: the platform static config (config.yaml), which carries only the\n" +
 			"platform: launch section; the seven dynamic settings groups live in the\n" +
 			"database and are maintained in the web settings page.\n\n" +
-			"With --cli: the terminal config (~/.k8s-ai/cli.yaml) with the full engine\n" +
-			"keys for k8s-ai chat / k8s-ai scan. k8s-ai server never reads or writes it.",
+			"With --cli: the terminal config (~/.aegisops/cli.yaml) with the full engine\n" +
+			"keys for aopsctl chat / aopsctl scan. aopsctl server never reads or writes it.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			kind := config.TemplateServer
@@ -54,13 +54,13 @@ func newConfigInitCmd() *cobra.Command {
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "config written to %s\n", written)
 			if kind == config.TemplateCLI {
-				fmt.Fprintln(cmd.OutOrStdout(), "terminal config: read only by k8s-ai chat / k8s-ai scan; k8s-ai server neither reads nor writes it")
+				fmt.Fprintln(cmd.OutOrStdout(), "terminal config: read only by aopsctl chat / aopsctl scan; aopsctl server neither reads nor writes it")
 			}
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite an existing config file")
-	cmd.Flags().BoolVar(&useCLI, "cli", false, "write the terminal CLI config template (default path ~/.k8s-ai/cli.yaml)")
+	cmd.Flags().BoolVar(&useCLI, "cli", false, "write the terminal CLI config template (default path ~/.aegisops/cli.yaml)")
 	return cmd
 }
 

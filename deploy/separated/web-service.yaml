@@ -1,20 +1,20 @@
 # 前端静态站点 Service（P6.2 形态 B）。
-# 集群内 http://k8s-ai-web.k8s-ai.svc:80 → Nginx 8080。
-# 对外只经 Ingress 暴露：/assets/* 与 / 走本服务，/api/v1/* 走 k8s-ai-server，
+# 集群内 http://aegisops-web.aegisops.svc:80 → Nginx 8080。
+# 对外只经 Ingress 暴露：/assets/* 与 / 走本服务，/api/v1/* 走 aegisops-server，
 # 见 deploy/separated/ingress.yaml。
 apiVersion: v1
 kind: Service
 metadata:
-  name: k8s-ai-web
-  namespace: k8s-ai
+  name: aegisops-web
+  namespace: aegisops
   labels:
-    app: k8s-ai
+    app: aegisops
     component: web
     app.kubernetes.io/component: web
 spec:
   type: ClusterIP
   selector:
-    app: k8s-ai
+    app: aegisops
     component: web
   ports:
     - name: http

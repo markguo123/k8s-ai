@@ -122,19 +122,19 @@ describe('settings API（P3.9/P3.10 前端契约）', () => {
           value: null,
           hasValue: true,
           sensitive: true,
-          envOverride: 'K8S_AI_LLM_API_KEY',
+          envOverride: 'AEGISOPS_LLM_API_KEY',
           envOverrideTier: 'secret',
         },
       ],
-      warnings: ['api_key 已写入配置库，但当前运行值仍由部署密钥 K8S_AI_LLM_API_KEY 提供。'],
+      warnings: ['api_key 已写入配置库，但当前运行值仍由部署密钥 AEGISOPS_LLM_API_KEY 提供。'],
     })))
     vi.stubGlobal('fetch', fetchMock)
     localStorage.setItem(TOKEN_KEY, 'tok-demo')
 
     const view = await patchSettings('model', { api_key: 'sk-page' })
-    expect(view.items[0]?.envOverride).toBe('K8S_AI_LLM_API_KEY')
+    expect(view.items[0]?.envOverride).toBe('AEGISOPS_LLM_API_KEY')
     expect(view.items[0]?.envOverrideTier).toBe('secret')
     expect(view.warnings).toHaveLength(1)
-    expect(view.warnings?.[0]).toContain('K8S_AI_LLM_API_KEY')
+    expect(view.warnings?.[0]).toContain('AEGISOPS_LLM_API_KEY')
   })
 })

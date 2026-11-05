@@ -1,6 +1,6 @@
-# k8s-ai 文档中心
+# AegisOps 文档中心
 
-k8s-ai 是面向 Kubernetes 的智能巡检、故障诊断与自然语言运维 Agent 项目。本文档中心按「面向谁、解决什么」组织文档，正文一律 Markdown，可执行产物与静态素材统一放 `assets/`。
+AegisOps 是面向 Kubernetes 的智能巡检、故障诊断与自然语言运维 Agent 项目。本文档中心按「面向谁、解决什么」组织文档，正文一律 Markdown，可执行产物与静态素材统一放 `assets/`。
 
 ## 目录导航
 

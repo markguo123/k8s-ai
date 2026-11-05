@@ -263,7 +263,7 @@ func (m *BlobMigrator) stageContent(ctx context.Context, row *store.ObjectMeta, 
 	if err != nil {
 		if errors.Is(err, objectstore.ErrNotFound) {
 			res.Unreadable++
-			res.addFailure(fmt.Sprintf("%s: %s has no content to move; this row is broken, not just misplaced (run k8s-ai blobs verify)",
+			res.addFailure(fmt.Sprintf("%s: %s has no content to move; this row is broken, not just misplaced (run aopsctl blobs verify)",
 				key, m.src.Driver()))
 			return nil, false, nil
 		}

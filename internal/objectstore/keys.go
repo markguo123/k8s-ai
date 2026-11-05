@@ -9,7 +9,7 @@ import (
 // key 规则（§5）：{prefix}/{category}/{scope...}/{sha256}{ext}
 const (
 	// DefaultPrefix 是 key 的顶层命名空间，也是 platform.blobs.prefix 的默认值。
-	DefaultPrefix = "k8sai"
+	DefaultPrefix = "aegisops"
 	// MaxKeyLength 沿用 colText 约定：MySQL 渲染成 VARCHAR(191)，utf8mb4 老行格式
 	// 下 191*4=764 字节不踩 767 字节索引上限。超长直接拒绝，不做哈希截断。
 	MaxKeyLength = 191
@@ -237,7 +237,7 @@ func extOfKey(key string) string {
 }
 
 // NormalizePrefix 规范化并校验对象 key 的顶层 prefix：空取 DefaultPrefix，容忍首尾空白
-// 与误写的尾随斜杠（"k8sai/" 拼出的 key 会带空段，必须在这里而不是拼接处拒掉）。
+// 与误写的尾随斜杠（AegisOps 前缀拼出的 key 会带空段，必须在这里而不是拼接处拒掉）。
 func NormalizePrefix(prefix string) (string, error) {
 	prefix = strings.Trim(strings.TrimSpace(prefix), "/")
 	if prefix == "" {
@@ -251,7 +251,7 @@ func NormalizePrefix(prefix string) (string, error) {
 
 // ValidateListPrefix 校验 List 的前缀参数。
 //
-// 它不能复用 ValidateKey：合法前缀天然是「半个 key」（"k8sai"、"k8sai/reports" 都要能
+// 它不能复用 ValidateKey：合法前缀天然是「半个 key」（"aegisops"、"aegisops/reports" 都要能
 // 列），拿完整 key 规则去卡会把它们一律拒掉。但防穿越那条红线一点不能松：字符集、
 // 段内不得是纯点、总长上限全部沿用，否则目录后端的前缀扫描就是现成的穿越入口。
 // 允许一个尾随斜杠（按目录前缀列）。

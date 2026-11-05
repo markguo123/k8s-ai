@@ -80,7 +80,7 @@ func IsReady(ctx context.Context, st Store) error {
 		return fmt.Errorf("%w: schema version: %v", ErrNotReady, err)
 	}
 	if applied < expected {
-		return fmt.Errorf("%w: schema version %d < expected %d (run k8s-ai db migrate)", ErrNotReady, applied, expected)
+		return fmt.Errorf("%w: schema version %d < expected %d (run aopsctl db migrate)", ErrNotReady, applied, expected)
 	}
 	return nil
 }

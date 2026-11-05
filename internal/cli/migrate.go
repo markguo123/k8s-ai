@@ -70,7 +70,7 @@ func newMigrateCmd(deps Dependencies) *cobra.Command {
 				Force:      forceSessions,
 			}
 			// P3.9：config 迁移的敏感键（api_key/kubeconfig/mcp）同样走静态加密，
-			// 与 cluster 共用 K8S_AI_ENC_KEY。未配置时 config 里若含非默认敏感键，
+			// 与 cluster 共用 AEGISOPS_ENC_KEY。未配置时 config 里若含非默认敏感键，
 			// 导入整批报错，绝不落明文。
 			if cipher, err := cluster.NewCipherFromEnv(); err == nil {
 				opts.Cipher = cipher
@@ -92,7 +92,7 @@ func newMigrateCmd(deps Dependencies) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&dbPath, "db", "~/.k8s-ai/k8s-ai.db", "SQLite database path")
+	cmd.Flags().StringVar(&dbPath, "db", "~/.aegisops/aegisops.db", "SQLite database path")
 	cmd.Flags().StringVar(&sessionsDir, "sessions-dir", "", "Phase-3 session directory (default from config agent.session_dir)")
 	cmd.Flags().StringVar(&auditDir, "audit-dir", "", "Phase-3 audit directory (default from config agent.audit_dir)")
 	cmd.Flags().StringVar(&reportsDir, "reports-dir", "", "Phase-3 report directory (default from config report.directory)")

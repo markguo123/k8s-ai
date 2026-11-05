@@ -27,7 +27,7 @@ function makeSkill(name: string): Record<string, unknown> {
   return {
     name,
     spec: {
-      author: 'k8s-ai',
+      author: 'AegisOps',
       description: `${name} 方法论`,
       name,
       domain: 'ops',

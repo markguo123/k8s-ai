@@ -231,8 +231,8 @@ func TestSettingsCipherErrorIsActionable(t *testing.T) {
 		t.Fatalf("未配置加密密钥应 501, got %d: %s", resp.StatusCode, raw)
 	}
 	text := string(raw)
-	if !strings.Contains(text, "K8S_AI_ENC_KEY") {
-		t.Fatalf("错误提示应说明需要 K8S_AI_ENC_KEY: %s", text)
+	if !strings.Contains(text, "AEGISOPS_ENC_KEY") {
+		t.Fatalf("错误提示应说明需要 AEGISOPS_ENC_KEY: %s", text)
 	}
 	if strings.Contains(text, "encryption cipher is required") {
 		t.Fatalf("错误提示不得暴露内部实现: %s", text)

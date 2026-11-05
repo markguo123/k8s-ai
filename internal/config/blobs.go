@@ -39,16 +39,16 @@ var blobPrefixPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 // 因此刻意不登记进 settings 动态键白名单、配置中心页面也不展示（方案 15 §8）：
 // v1.51 已把动态键的环境变量覆盖面冻结为 LLM 四键 + ops 四键（ADR-040 v1.2）。
 //
-// 环境变量沿用既有机制（SetEnvPrefix("K8S_AI") + "."→"_" + AutomaticEnv），
-// 实际名字是 K8S_AI_PLATFORM_BLOBS_DRIVER 这一族；每个键都有默认值，viper 才能在
+// 环境变量沿用既有机制（SetEnvPrefix("AEGISOPS") + "."→"_" + AutomaticEnv），
+// 实际名字是 AEGISOPS_PLATFORM_BLOBS_DRIVER 这一族；每个键都有默认值，viper 才能在
 // Unmarshal 时把只来自环境的值合并进来（与 platform.store.dsn 同一结论）。
 type PlatformBlobsConfig struct {
 	// Driver 是后端选择：off | db | dir | s3，默认 db。
 	Driver string `mapstructure:"driver"`
-	// Prefix 是对象键首段（e.g. k8sai），参与 key 拼接，≤32 字符。
+	// Prefix 是对象键首段（e.g. aegisops），参与 key 拼接，≤32 字符。
 	Prefix string `mapstructure:"prefix"`
 	// Dir 是 driver=dir 的根目录；留空由使用方按场景取默认（容器 /data/blobs、
-	// CLI ~/.k8s-ai/blobs），配置面不猜这个默认值。
+	// CLI ~/.aegisops/blobs），配置面不猜这个默认值。
 	Dir string `mapstructure:"dir"`
 	// TmpDir 是上传落盘的中转目录（driver=s3 先把正文流式落到这里算摘要，再单次 PUT，
 	// 方案 15 §14）。留空取 os.TempDir()：容器里 /tmp 已是 emptyDir，显式键是为现场把
@@ -120,7 +120,7 @@ func (b PlatformBlobsConfig) Validate() error {
 		} {
 			if strings.TrimSpace(field.value) == "" {
 				key := strings.ToUpper(strings.SplitN(field.key, ".", 3)[2])
-				return fmt.Errorf("%s is required when platform.blobs.driver=s3 (inject it via Secret, e.g. K8S_AI_PLATFORM_BLOBS_%s)",
+				return fmt.Errorf("%s is required when platform.blobs.driver=s3 (inject it via Secret, e.g. AEGISOPS_PLATFORM_BLOBS_%s)",
 					field.key, key)
 			}
 		}
@@ -218,7 +218,7 @@ func blobsConfigWarnings(leaves map[string]any) []string {
 	for _, key := range []string{"platform.blobs.access_key", "platform.blobs.secret_key"} {
 		if value, ok := leaves[key].(string); ok && strings.TrimSpace(value) != "" {
 			warnings = append(warnings, fmt.Sprintf(
-				"%s 在配置文件里非空：blob 凭据应只经 K8S_AI_PLATFORM_%s / Secret 注入",
+				"%s 在配置文件里非空：blob 凭据应只经 AEGISOPS_PLATFORM_%s / Secret 注入",
 				key, strings.ToUpper(strings.SplitN(key, ".", 3)[2])))
 		}
 	}

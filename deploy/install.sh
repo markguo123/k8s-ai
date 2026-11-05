@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# k8s-ai 四期一键安装脚本（开发计划 P6.4）
+# AegisOps 四期一键安装脚本（开发计划 P6.4）
 #
 # 一句话：把「构建镜像 → 前置检查 → 基础资源 → Secret → PVC → 迁移 Job →
 # 工作负载 → 对外暴露 → 写权限 → 验收摘要」串成一条可重复执行的命令，
@@ -26,7 +26,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 RUN_TS="$(date +%Y%m%d-%H%M%S)"
 LOG_FILE="${PWD}/install-${RUN_TS}.log"
-RENDER_DIR="$(mktemp -d "${TMPDIR:-/tmp}/k8s-ai-install.XXXXXX")"
+RENDER_DIR="$(mktemp -d "${TMPDIR:-/tmp}/aegisops-install.XXXXXX")"
 KEEP_RENDER=0
 
 # 进入脚本时环境里已有的变量名。必须在下面赋内置默认值之前抓快照：内置默认值只是普通
@@ -49,11 +49,11 @@ key_from_cli() { [[ "$CLI_SET_KEYS" == *" $1 "* ]]; }
 : "${BUILD:=true}"
 : "${PUSH:=true}"
 : "${LOAD_TAR:=}"
-: "${NAMESPACE:=k8s-ai}"
+: "${NAMESPACE:=aegisops}"
 : "${FORM:=allinone}"
 : "${STORE_DRIVER:=mysql}"
 : "${MYSQL_DSN:=}"
-: "${SQLITE_PATH:=/data/k8s-ai.db}"
+: "${SQLITE_PATH:=/data/aegisops.db}"
 : "${STORAGE_CLASS:=}"
 : "${REPORT_STORAGE_SIZE:=5Gi}"
 : "${PERSIST_REPORTS:=true}"
@@ -83,7 +83,7 @@ key_from_cli() { [[ "$CLI_SET_KEYS" == *" $1 "* ]]; }
 : "${MINIO_STORAGE_SIZE:=20Gi}"
 : "${ALLOW_DRIVER_MISMATCH:=false}"
 : "${ENC_KEY:=}"
-: "${ENC_KEY_BACKUP_DIR:=${HOME}/.k8s-ai/keys}"
+: "${ENC_KEY_BACKUP_DIR:=${HOME}/.aegisops/keys}"
 : "${GOPROXY:=}"
 : "${KUBECTL_VERSION:=v1.28.13}"
 # 与仓库 Dockerfile 默认值一致：公共镜像加速地址；内网用 --KUBECTL_DOWNLOAD_BASE 覆盖。
@@ -121,12 +121,12 @@ WEB_URL=""
 ACTUAL_NODE_PORT=""
 PULLED_SECRET_NAME=""
 
-SEC_STORE=k8s-ai-store
-SEC_ENC=k8s-ai-enc
-SEC_ADMIN=k8s-ai-admin
-SEC_LLM=k8s-ai-llm
-SEC_BLOBS=k8s-ai-blobs
-PVC_NAME=k8s-ai-data
+SEC_STORE=aegisops-store
+SEC_ENC=aegisops-enc
+SEC_ADMIN=aegisops-admin
+SEC_LLM=aegisops-llm
+SEC_BLOBS=aegisops-blobs
+PVC_NAME=aegisops-data
 PVC_DEFER_BIND=0   # WaitForFirstConsumer 存储类：把 Bound 校验推迟到工作负载就绪之后
 
 # --- 输出与日志 --------------------------------------------------------------
@@ -230,7 +230,7 @@ backup_key() {
 # --- 使用帮助 ----------------------------------------------------------------
 usage() {
   cat <<'EOF'
-k8s-ai 四期一键安装脚本（P6.4）：构建镜像 + 发布服务，一条命令装完，不需要手改 YAML。
+AegisOps 四期一键安装脚本（P6.4）：构建镜像 + 发布服务，一条命令装完，不需要手改 YAML。
 
 用法：
   deploy/install.sh [参数...] [模式开关]
@@ -241,7 +241,7 @@ k8s-ai 四期一键安装脚本（P6.4）：构建镜像 + 发布服务，一条
   --diff              渲染后走 kubectl diff 预演，不做任何写入
   -v, --verbose       展开各阶段原始 kubectl / docker 输出
   -y, --yes           无人值守：不提问（写权限等危险动作仍要求显式参数）
-  --rotate            仅轮换 K8S_AI_ENC_KEY（非交互模式下直接拒绝）
+  --rotate            仅轮换 AEGISOPS_ENC_KEY（非交互模式下直接拒绝）
   -h, --help          本帮助
 
 参数写法（三种等价，优先级 CLI > 环境变量 > env 文件 > 内置默认）：
@@ -250,17 +250,17 @@ k8s-ai 四期一键安装脚本（P6.4）：构建镜像 + 发布服务，一条
   写进 --env-file    KEY=VALUE 文件，每行一个；值可以带成对引号，脚本会去掉
 
 参数（★ = 必填，缺失即拒绝，脚本不猜默认值）：
-  IMAGE★                后端镜像地址，不含标签，例 registry.local/k8s-ai
+  IMAGE★                后端镜像地址，不含标签，例 registry.local/aegisops
   TAG★                  镜像标签，例 4.0.0
   IMAGE_WEB             前端镜像地址（FORM=separated 必填），不含标签
   BUILD                 是否由脚本构建镜像，默认 true（探测不到容器运行时自动降级为只发布）
   PUSH                  构建后是否推送，默认 true
   LOAD_TAR              离线导入：docker load -i <tar> 后按 IMAGE:TAG 发布，跳过构建
-  NAMESPACE             命名空间，默认 k8s-ai
+  NAMESPACE             命名空间，默认 aegisops
   FORM                  allinone（形态 A 一体化，默认）/ separated（形态 B 前后端分离）
   STORE_DRIVER          mysql（默认）/ sqlite（单机兜底，必须配 PVC）
   MYSQL_DSN★            STORE_DRIVER=mysql 时必填；只写进 Secret，不进 ConfigMap
-  SQLITE_PATH           sqlite 库文件路径，默认 /data/k8s-ai.db（/data 必须落 PVC）
+  SQLITE_PATH           sqlite 库文件路径，默认 /data/aegisops.db（/data 必须落 PVC）
   STORAGE_CLASS         空 = 使用集群默认存储类（不是不建 PVC）；给了名字就用它
   REPORT_STORAGE_SIZE   数据/报告 PVC 容量，默认 5Gi
   PERSIST_REPORTS       默认 true；false 时 /reports 退化 emptyDir（重启即清）
@@ -277,13 +277,13 @@ k8s-ai 四期一键安装脚本（P6.4）：构建镜像 + 发布服务，一条
   BLOBS_BACKEND         off / db（默认）/ dir / s3（P8 对象存储边界）
   BLOBS_ENDPOINT        s3 必填，host:port 形式
   BLOBS_BUCKET          s3 必填，桶名
-  BLOBS_ACCESS_KEY      s3 必填，只落 Secret/k8s-ai-blobs，不进清单明文
+  BLOBS_ACCESS_KEY      s3 必填，只落 Secret/aegisops-blobs，不进清单明文
   BLOBS_SECRET_KEY      s3 必填，同上；留空会被 validate 拒绝
   BLOBS_USE_TLS         默认 false（集群内自建 MinIO 常见 http）
   BLOBS_CREATE_BUCKET   默认 false：生产桶由平台组预建，运行账号不给建桶权限；确认有建桶
                         权限的测试环境才置 true。桶不存在时对象类 API 回 503，基础业务不受影响
-  BLOBS_TMP_DIR         s3 上传中转目录，留空用配置默认 /tmp/k8s-ai-blobs；给了值必须是绝对路径
-  BLOBS_PREFIX          对象键首段，留空用配置默认 k8sai
+  BLOBS_TMP_DIR         s3 上传中转目录，留空用配置默认 /tmp/aegisops-blobs；给了值必须是绝对路径
+  BLOBS_PREFIX          对象键首段，留空用配置默认 aegisops
   BLOBS_REGION          默认 us-east-1；MinIO 等自建填 us-east-1 即可
   BLOBS_PATH_STYLE      默认 true（MinIO/自建需要路径式寻址）
   ENABLE_MINIO          默认 false；自带 MinIO 清单未交付（MinIO AGPLv3 法务未确认，方案 15 §23.3），
@@ -291,16 +291,16 @@ k8s-ai 四期一键安装脚本（P6.4）：构建镜像 + 发布服务，一条
   MINIO_STORAGE_SIZE    自带 MinIO 容量，默认 20Gi
   ALLOW_DRIVER_MISMATCH 默认 false；置 true 才允许「换了对象后端但没先 blobs migrate」时继续
                         apply（历史对象会读不到，只在确认历史数据可弃时使用）
-  ENC_KEY               显式指定 K8S_AI_ENC_KEY（64 位 hex）；缺省复用集群已有值或新生成
-  ENC_KEY_BACKUP_DIR    新生成密钥的本地备份目录，默认 ~/.k8s-ai/keys（权限 600）
-  GOPROXY               构建用 Go 代理；留空则读 ~/.k8s-ai/goproxy.txt 或用内置默认
+  ENC_KEY               显式指定 AEGISOPS_ENC_KEY（64 位 hex）；缺省复用集群已有值或新生成
+  ENC_KEY_BACKUP_DIR    新生成密钥的本地备份目录，默认 ~/.aegisops/keys（权限 600）
+  GOPROXY               构建用 Go 代理；留空则读 ~/.aegisops/goproxy.txt 或用内置默认
   KUBECTL_VERSION       内置进镜像的 kubectl 版本，空 = 不内置（保留 shell 工具层）
   KUBECTL_DOWNLOAD_BASE kubectl 下载地址前缀，内网 mirror 用（目录结构同 dl.k8s.io/release）
   WAIT_TIMEOUT          rollout / wait 超时秒数，默认 300
 
 示例：
   # 最小可用：一条命令装完（NodePort 暴露、PVC 走集群默认存储类、只读 RBAC）
-  IMAGE=registry.local/k8s-ai TAG=4.0.0 MYSQL_DSN='user:pass@tcp(db:3306)/k8s_ai' deploy/install.sh
+  IMAGE=registry.local/aegisops TAG=4.0.0 MYSQL_DSN='user:pass@tcp(db:3306)/aegisops' deploy/install.sh
 
   # 反复重跑：参数写进 install.env
   deploy/install.sh --env-file install.env
@@ -374,7 +374,7 @@ parse_args() {
         ENV_FILE="$2"; shift ;;
       --env-file=*) ENV_FILE="${arg#*=}" ;;
       --load-tar)
-        [[ $# -ge 2 ]] || die "--load-tar 缺少取值" "例：--load-tar ./k8s-ai-4.0.0.tar"
+        [[ $# -ge 2 ]] || die "--load-tar 缺少取值" "例：--load-tar ./aegisops-4.0.0.tar"
         LOAD_TAR="$2"; shift ;;
       --load-tar=*) LOAD_TAR="${arg#*=}" ;;
       --*=*)
@@ -474,7 +474,7 @@ validate_config() {
   if [[ -n "$BLOBS_TMP_DIR" ]]; then
     case "$BLOBS_TMP_DIR" in
       /*) ;;
-      *) die "BLOBS_TMP_DIR 必须是绝对路径，当前值：${BLOBS_TMP_DIR}" "镜像根文件系统只读，只能落在可写卷挂载点下，例 /tmp/k8s-ai-blobs；留空则用配置默认" ;;
+      *) die "BLOBS_TMP_DIR 必须是绝对路径，当前值：${BLOBS_TMP_DIR}" "镜像根文件系统只读，只能落在可写卷挂载点下，例 /tmp/aegisops-blobs；留空则用配置默认" ;;
     esac
   fi
   if [[ "$BLOBS_BACKEND" == "s3" ]]; then
@@ -551,7 +551,7 @@ managed_secret_yaml() { # managed_secret_yaml <name> <key> <base64value> [<key> 
   local name="$1"
   shift
   printf 'apiVersion: v1\nkind: Secret\nmetadata:\n  name: "%s"\n  namespace: "%s"\n' "$name" "$NAMESPACE"
-  printf '  annotations:\n    k8s-ai/install-managed: "true"\ntype: Opaque\ndata:\n'
+  printf '  annotations:\n    aegisops/install-managed: "true"\ntype: Opaque\ndata:\n'
   while [[ $# -ge 2 ]]; do
     printf '  "%s": "%s"\n' "$1" "$2"
     shift 2
@@ -563,7 +563,7 @@ managed_secret_yaml() { # managed_secret_yaml <name> <key> <base64value> [<key> 
 # 不留这份副本，也顺手接管运维手工建好的同名 Secret。--force-conflicts 是接管别的 field manager
 # （含手工创建时的 before-first-apply）时必需的，本脚本就是这些 Secret 的权威写入方。
 apply_secret_yaml() {
-  "$KUBECTL_BIN" apply --server-side --force-conflicts --field-manager k8s-ai-install -f - >/dev/null
+  "$KUBECTL_BIN" apply --server-side --force-conflicts --field-manager aegisops-install -f - >/dev/null
 }
 
 create_secret_from_stdin() {
@@ -587,24 +587,24 @@ END {
     l = lines[i]; skip = 0
 
     # 锚点 1：命名空间（含 ClusterRoleBinding 的 subject namespace）
-    if (l ~ /^[ \t]*namespace:[ \t]*k8s-ai[ \t]*$/) {
+    if (l ~ /^[ \t]*namespace:[ \t]*aegisops[ \t]*$/) {
       p = l; sub(/namespace:.*$/, "", p); l = p "namespace: " NS
     }
     # 锚点 2：namespace.yaml 里的资源名（只在这个文件里改，Ingress 同名资源不受影响）
-    if (base == "namespace.yaml" && l ~ /^  name:[ \t]*k8s-ai[ \t]*$/) l = "  name: " NS
+    if (base == "namespace.yaml" && l ~ /^  name:[ \t]*aegisops[ \t]*$/) l = "  name: " NS
 
     # 锚点 3：镜像地址与拉取策略
-    if (l ~ /image:[ \t]*k8s-ai-web:latest/) {
-      p = l; sub(/image:[ \t]*k8s-ai-web:latest.*$/, "", p); l = p "image: " WEBREF
-    } else if (l ~ /image:[ \t]*k8s-ai:latest/) {
-      p = l; sub(/image:[ \t]*k8s-ai:latest.*$/, "", p); l = p "image: " IMGREF
+    if (l ~ /image:[ \t]*aegisops-web:latest/) {
+      p = l; sub(/image:[ \t]*aegisops-web:latest.*$/, "", p); l = p "image: " WEBREF
+    } else if (l ~ /image:[ \t]*aegisops:latest/) {
+      p = l; sub(/image:[ \t]*aegisops:latest.*$/, "", p); l = p "image: " IMGREF
     }
     if (l ~ /^[ \t]*imagePullPolicy:/) {
       p = l; sub(/imagePullPolicy:.*$/, "", p); l = p "imagePullPolicy: " POLICY
     }
 
     # 锚点 4：Ingress host 与 class（host 注释里的示例域名一并替换，保证零残留）
-    if (HOST != "") gsub(/k8s-ai\.example\.com/, HOST, l)
+    if (HOST != "") gsub(/aegisops\.example\.com/, HOST, l)
     if (CLASS != "" && l ~ /^[ \t]*ingressClassName:/) {
       p = l; sub(/ingressClassName:.*$/, "", p); l = p "ingressClassName: " CLASS
     }
@@ -642,7 +642,7 @@ END {
       print p "  - name: " PULLSEC
     }
 
-    # 锚点 7：额外 env（BLOBS_* → K8S_AI_PLATFORM_BLOBS_* 等，密钥项只走 Secret 引用）
+    # 锚点 7：额外 env（BLOBS_* → AEGISOPS_PLATFORM_BLOBS_* 等，密钥项只走 Secret 引用）
     if (EXTRAENV != "" && base == "deployment.yaml" && blobs == 0 && l ~ /^[ \t]*env:[ \t]*$/) {
       blobs = 1
       print l
@@ -693,31 +693,31 @@ extra_env_block() {
   case "$BLOBS_BACKEND" in
     # 四个 driver 一律显式下发 driver：换后端闸门要靠 Deployment env 认出「集群现在跑在哪个后端」，
     # 只读 ConfigMap 会永远拿到模板默认值 db（见 blobs_current_backend）。
-    db) out="${indent}- name: K8S_AI_PLATFORM_BLOBS_DRIVER${NL}${vi}value: \"db\"" ;;
+    db) out="${indent}- name: AEGISOPS_PLATFORM_BLOBS_DRIVER${NL}${vi}value: \"db\"" ;;
     off)
-      out+="${indent}- name: K8S_AI_PLATFORM_BLOBS_DRIVER${NL}${vi}value: \"off\"" ;;
+      out+="${indent}- name: AEGISOPS_PLATFORM_BLOBS_DRIVER${NL}${vi}value: \"off\"" ;;
     dir)
-      out+="${indent}- name: K8S_AI_PLATFORM_BLOBS_DRIVER${NL}${vi}value: \"dir\""
-      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_DIR${NL}${vi}value: \"/data/blobs\"" ;;
+      out+="${indent}- name: AEGISOPS_PLATFORM_BLOBS_DRIVER${NL}${vi}value: \"dir\""
+      out+="@@${indent}- name: AEGISOPS_PLATFORM_BLOBS_DIR${NL}${vi}value: \"/data/blobs\"" ;;
     s3)
-      out+="${indent}- name: K8S_AI_PLATFORM_BLOBS_DRIVER${NL}${vi}value: \"s3\""
-      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_ENDPOINT${NL}${vi}value: \"${BLOBS_ENDPOINT}\""
-      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_BUCKET${NL}${vi}value: \"${BLOBS_BUCKET}\""
-      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_REGION${NL}${vi}value: \"${BLOBS_REGION}\""
-      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_USE_TLS${NL}${vi}value: \"${BLOBS_USE_TLS}\""
-      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_PATH_STYLE${NL}${vi}value: \"${BLOBS_PATH_STYLE}\""
-      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_CREATE_BUCKET${NL}${vi}value: \"${BLOBS_CREATE_BUCKET}\""
-      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_TMP_DIR${NL}${vi}value: \"${BLOBS_TMP_DIR:-/tmp/k8s-ai-blobs}\""
-      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_ACCESS_KEY${NL}${vi}valueFrom:${NL}${si}secretKeyRef: { name: ${SEC_BLOBS}, key: access_key }"
-      out+="@@${indent}- name: K8S_AI_PLATFORM_BLOBS_SECRET_KEY${NL}${vi}valueFrom:${NL}${si}secretKeyRef: { name: ${SEC_BLOBS}, key: secret_key }" ;;
+      out+="${indent}- name: AEGISOPS_PLATFORM_BLOBS_DRIVER${NL}${vi}value: \"s3\""
+      out+="@@${indent}- name: AEGISOPS_PLATFORM_BLOBS_ENDPOINT${NL}${vi}value: \"${BLOBS_ENDPOINT}\""
+      out+="@@${indent}- name: AEGISOPS_PLATFORM_BLOBS_BUCKET${NL}${vi}value: \"${BLOBS_BUCKET}\""
+      out+="@@${indent}- name: AEGISOPS_PLATFORM_BLOBS_REGION${NL}${vi}value: \"${BLOBS_REGION}\""
+      out+="@@${indent}- name: AEGISOPS_PLATFORM_BLOBS_USE_TLS${NL}${vi}value: \"${BLOBS_USE_TLS}\""
+      out+="@@${indent}- name: AEGISOPS_PLATFORM_BLOBS_PATH_STYLE${NL}${vi}value: \"${BLOBS_PATH_STYLE}\""
+      out+="@@${indent}- name: AEGISOPS_PLATFORM_BLOBS_CREATE_BUCKET${NL}${vi}value: \"${BLOBS_CREATE_BUCKET}\""
+      out+="@@${indent}- name: AEGISOPS_PLATFORM_BLOBS_TMP_DIR${NL}${vi}value: \"${BLOBS_TMP_DIR:-/tmp/aegisops-blobs}\""
+      out+="@@${indent}- name: AEGISOPS_PLATFORM_BLOBS_ACCESS_KEY${NL}${vi}valueFrom:${NL}${si}secretKeyRef: { name: ${SEC_BLOBS}, key: access_key }"
+      out+="@@${indent}- name: AEGISOPS_PLATFORM_BLOBS_SECRET_KEY${NL}${vi}valueFrom:${NL}${si}secretKeyRef: { name: ${SEC_BLOBS}, key: secret_key }" ;;
   esac
   if [[ -n "$BLOBS_PREFIX" ]]; then
     if [[ -n "$out" ]]; then out+="@@"; fi
-    out+="${indent}- name: K8S_AI_PLATFORM_BLOBS_PREFIX${NL}${vi}value: \"${BLOBS_PREFIX}\""
+    out+="${indent}- name: AEGISOPS_PLATFORM_BLOBS_PREFIX${NL}${vi}value: \"${BLOBS_PREFIX}\""
   fi
   if [[ -n "$ADMIN_USERNAME" ]]; then
     if [[ -n "$out" ]]; then out+="@@"; fi
-    out+="${indent}- name: K8S_AI_PLATFORM_AUTH_ADMIN_USERNAME${NL}${vi}value: \"${ADMIN_USERNAME}\""
+    out+="${indent}- name: AEGISOPS_PLATFORM_AUTH_ADMIN_USERNAME${NL}${vi}value: \"${ADMIN_USERNAME}\""
   fi
   printf '%s' "$out"
 }
@@ -744,7 +744,7 @@ assert_rendered_clean() {
   local f hits bad=0
   while IFS= read -r f; do
     [[ -n "$f" ]] || continue
-    if hits="$(grep -n -E 'REPLACE_|k8s-ai\.example\.com' "$f" 2>/dev/null)"; then
+    if hits="$(grep -n -E 'REPLACE_|aegisops\.example\.com' "$f" 2>/dev/null)"; then
       bad=1
       warn "$(basename "$f") 仍有占位符残留："
       printf '%s\n' "$hits" >&2
@@ -910,14 +910,14 @@ stage_secrets() {
   fi
 
   if [[ -n "$REGISTRY_SECRET_FROM_FILE" ]]; then
-    if secret_exists "k8s-ai-registry"; then
-      ok "Secret/k8s-ai-registry 已存在，复用"
+    if secret_exists "aegisops-registry"; then
+      ok "Secret/aegisops-registry 已存在，复用"
     else
-      "$KUBECTL_BIN" -n "$NAMESPACE" create secret generic k8s-ai-registry \
+      "$KUBECTL_BIN" -n "$NAMESPACE" create secret generic aegisops-registry \
         "--from-file=.dockerconfigjson=${REGISTRY_SECRET_FROM_FILE}" \
         --type=kubernetes.io/dockerconfigjson --dry-run=client -o yaml | "$KUBECTL_BIN" apply -f - >/dev/null ||
-        die "写入 Secret/k8s-ai-registry 失败" "确认文件是 docker config.json 格式（含 auths 段）"
-      ok "私有仓库拉取凭据已写入 Secret/k8s-ai-registry"
+        die "写入 Secret/aegisops-registry 失败" "确认文件是 docker config.json 格式（含 auths 段）"
+      ok "私有仓库拉取凭据已写入 Secret/aegisops-registry"
     fi
   fi
   stage_done
@@ -1027,11 +1027,11 @@ stage_migrate() {
     stage_done; return 0
   fi
   # Job 的 spec 不可变：先删同名旧 Job（只删任务对象，不动数据）。
-  "$KUBECTL_BIN" -n "$NAMESPACE" delete job k8s-ai-db-migrate --ignore-not-found >/dev/null 2>&1 || true
+  "$KUBECTL_BIN" -n "$NAMESPACE" delete job aegisops-db-migrate --ignore-not-found >/dev/null 2>&1 || true
   apply_rendered base/db-migrate-job.yaml
   info "等待迁移 Job 完成（最多 ${WAIT_TIMEOUT}s）"
-  if ! "$KUBECTL_BIN" -n "$NAMESPACE" wait --for=condition=complete job/k8s-ai-db-migrate --timeout="${WAIT_TIMEOUT}s" >/dev/null 2>&1; then
-    _emit "$("$KUBECTL_BIN" -n "$NAMESPACE" logs job/k8s-ai-db-migrate --tail=50 2>&1 || true)"
+  if ! "$KUBECTL_BIN" -n "$NAMESPACE" wait --for=condition=complete job/aegisops-db-migrate --timeout="${WAIT_TIMEOUT}s" >/dev/null 2>&1; then
+    _emit "$("$KUBECTL_BIN" -n "$NAMESPACE" logs job/aegisops-db-migrate --tail=50 2>&1 || true)"
     die "迁移 Job 未成功完成" "上面是容器日志最后 50 行（多为 DSN 不通/账号无建表权限）；修好后原地重跑本脚本"
   fi
   ok "平台库结构已升级到当前版本"
@@ -1054,11 +1054,11 @@ diagnose_rollout() {
 # --- 阶段 6：工作负载 --------------------------------------------------------
 stage_workloads() {
   stage "阶段 6/9 工作负载（形态 ${FORM}）"
-  local deps=(k8s-ai-server) d
+  local deps=(aegisops-server) d
   # Service 必须先于工作负载落地：形态 B 的 Nginx 在「读配置」阶段就要把
-  # proxy_pass http://k8s-ai-server:8080 解析成地址，Service 还不存在时 nginx 直接
+  # proxy_pass http://aegisops-server:8080 解析成地址，Service 还不存在时 nginx 直接
   # [emerg] host not found in upstream 退出，Pod 进 CrashLoopBackOff。而本阶段又在等
-  # k8s-ai-web Ready，服务却排在下一阶段才建 —— 前端等 Service、脚本等前端，安装自锁。
+  # aegisops-web Ready，服务却排在下一阶段才建 —— 前端等 Service、脚本等前端，安装自锁。
   apply_rendered base/service.yaml
   if [[ "$FORM" == "allinone" ]]; then
     apply_rendered allinone/deployment.yaml
@@ -1066,7 +1066,7 @@ stage_workloads() {
     apply_rendered separated/web-service.yaml
     apply_rendered separated/deployment.yaml
     apply_rendered separated/web-deployment.yaml
-    deps+=(k8s-ai-web)
+    deps+=(aegisops-web)
   fi
   for d in "${deps[@]}"; do
     info "等待 ${d} 就绪（最多 ${WAIT_TIMEOUT}s）"
@@ -1110,14 +1110,14 @@ stage_write() {
     info "保持只读（默认口径）：Agent 的写操作会被 RBAC 拒绝，读排查不受影响"
     stage_done; return 0
   fi
-  _emit "  即将给 ServiceAccount ${NAMESPACE}/k8s-ai 授予集群写权限（delete/patch/apply 等）。"
+  _emit "  即将给 ServiceAccount ${NAMESPACE}/aegisops 授予集群写权限（delete/patch/apply 等）。"
   _emit "  人工审批闸门仍在应用层，但 RBAC 一放开，误批一次就会真的改动集群。"
   if ! confirm "确认授予写权限 RBAC？"; then
     warn "已跳过写权限授予，保持只读"
     stage_done; return 0
   fi
   apply_rendered rbac-write.example.yaml
-  ok "写权限 RBAC 已生效；回收：kubectl delete clusterrolebinding k8s-ai-write && kubectl delete clusterrole k8s-ai-write"
+  ok "写权限 RBAC 已生效；回收：kubectl delete clusterrolebinding aegisops-write && kubectl delete clusterrole aegisops-write"
   stage_done
 }
 
@@ -1188,9 +1188,9 @@ run_rotate() {
   local new_backup; new_backup="$(backup_key enc-key.new "$new")"
   create_secret_from_stdin "$SEC_ENC" key "$new" || die "更新 Secret/${SEC_ENC} 失败" "确认 secrets 写权限；旧密钥备份仍在 ${ENC_KEY_BACKUP_PATH}"
   info "滚动重启后端使新密钥生效"
-  "$KUBECTL_BIN" -n "$NAMESPACE" rollout restart deployment/k8s-ai-server >/dev/null ||
-    die "重启 deployment/k8s-ai-server 失败" "kubectl -n ${NAMESPACE} rollout restart deploy/k8s-ai-server"
-  "$KUBECTL_BIN" -n "$NAMESPACE" rollout status deployment/k8s-ai-server --timeout="${WAIT_TIMEOUT}s" >/dev/null ||
+  "$KUBECTL_BIN" -n "$NAMESPACE" rollout restart deployment/aegisops-server >/dev/null ||
+    die "重启 deployment/aegisops-server 失败" "kubectl -n ${NAMESPACE} rollout restart deploy/aegisops-server"
+  "$KUBECTL_BIN" -n "$NAMESPACE" rollout status deployment/aegisops-server --timeout="${WAIT_TIMEOUT}s" >/dev/null ||
     die "滚动重启未在 ${WAIT_TIMEOUT}s 内完成" "kubectl -n ${NAMESPACE} get pods；旧密钥备份仍在 ${ENC_KEY_BACKUP_PATH}，必要时回滚 Secret"
   _emit ""
   ok "轮换完成。新密钥备份：${new_backup}"
@@ -1202,7 +1202,7 @@ run_rotate() {
 main() {
   parse_args "$@"
   # 全程 tee：失败也留完整现场。放在参数解析之后，--help 不会留下空日志文件。
-  if [[ "${K8S_AI_INSTALL_NO_TEE:-0}" != "1" ]]; then
+  if [[ "${AEGISOPS_INSTALL_NO_TEE:-0}" != "1" ]]; then
     exec > >(tee -a "$LOG_FILE") 2>&1
   fi
   validate_config
@@ -1253,14 +1253,14 @@ compute_derived() {
   if [[ "$BLOBS_BACKEND" == "dir" ]]; then DATA_ON_PVC=true; fi
 
   EXPOSED_SVC="__none__"
-  ENTRY_SERVICE="k8s-ai-server"
+  ENTRY_SERVICE="aegisops-server"
   ENTRY_PORT=8080
   if [[ "$EXPOSE" == "nodeport" ]]; then
     if [[ "$FORM" == "allinone" ]]; then
-      EXPOSED_SVC="service.yaml"; ENTRY_SERVICE="k8s-ai-server"; ENTRY_PORT=8080
+      EXPOSED_SVC="service.yaml"; ENTRY_SERVICE="aegisops-server"; ENTRY_PORT=8080
     else
       # 形态 B 的对外入口是前端 Nginx：/api/v1 由它在集群内转发给后端。
-      EXPOSED_SVC="web-service.yaml"; ENTRY_SERVICE="k8s-ai-web"; ENTRY_PORT=80
+      EXPOSED_SVC="web-service.yaml"; ENTRY_SERVICE="aegisops-web"; ENTRY_PORT=80
     fi
   fi
 
@@ -1269,15 +1269,15 @@ compute_derived() {
   if [[ -n "$IMAGE_PULL_SECRET" ]]; then
     if [[ -f "$IMAGE_PULL_SECRET" ]]; then
       REGISTRY_SECRET_FROM_FILE="$IMAGE_PULL_SECRET"
-      PULLED_SECRET_NAME="k8s-ai-registry"
+      PULLED_SECRET_NAME="aegisops-registry"
     else
       PULLED_SECRET_NAME="$IMAGE_PULL_SECRET"
     fi
   fi
 
-  if [[ -z "$GOPROXY" && -f "${HOME}/.k8s-ai/goproxy.txt" ]]; then
-    GOPROXY="$(head -n1 "${HOME}/.k8s-ai/goproxy.txt" | tr -d ' \r\n')"
-    [[ -n "$GOPROXY" ]] && detail "GOPROXY 取自 ~/.k8s-ai/goproxy.txt"
+  if [[ -z "$GOPROXY" && -f "${HOME}/.aegisops/goproxy.txt" ]]; then
+    GOPROXY="$(head -n1 "${HOME}/.aegisops/goproxy.txt" | tr -d ' \r\n')"
+    [[ -n "$GOPROXY" ]] && detail "GOPROXY 取自 ~/.aegisops/goproxy.txt"
   fi
   [[ -n "$GOPROXY" ]] || GOPROXY="https://proxy.golang.org,direct"
 
@@ -1286,7 +1286,7 @@ compute_derived() {
 
 banner() {
   _emit ""
-  _emit "${C_BLU}k8s-ai 四期一键安装${C_OFF}  形态=${FORM}  命名空间=${NAMESPACE}  存储=${STORE_DRIVER}"
+  _emit "${C_BLU}AegisOps 四期一键安装${C_OFF}  形态=${FORM}  命名空间=${NAMESPACE}  存储=${STORE_DRIVER}"
   _emit "  镜像      ：${IMAGE_REF}${WEB_IMAGE_REF:+ / ${WEB_IMAGE_REF}}   拉取策略=${IMAGE_PULL_POLICY}"
   _emit "  暴露方式  ：${EXPOSE}${INGRESS_HOST:+ + ingress(${INGRESS_HOST})}${NODE_PORT:+  nodePort=${NODE_PORT}(空=随机)}"
   _emit "  持久化    ：PVC=${PERSIST_REPORTS} 容量=${REPORT_STORAGE_SIZE} 存储类=${STORAGE_CLASS:-<集群默认>}"
@@ -1357,11 +1357,11 @@ can_i() { # $1=verb $2=resource $3=extra(如 -n ns)
 # 注意不能直接取 config.yaml 里第一个 driver——那是 platform.store.driver。
 blobs_current_backend() {
   local out="" cm=""
-  out="$("$KUBECTL_BIN" -n "$NAMESPACE" get deploy k8s-ai-server \
-    -o jsonpath='{.spec.template.spec.containers[*].env[?(@.name=="K8S_AI_PLATFORM_BLOBS_DRIVER")].value}' 2>/dev/null || true)"
+  out="$("$KUBECTL_BIN" -n "$NAMESPACE" get deploy aegisops-server \
+    -o jsonpath='{.spec.template.spec.containers[*].env[?(@.name=="AEGISOPS_PLATFORM_BLOBS_DRIVER")].value}' 2>/dev/null || true)"
   out="${out//[[:space:]]/}"
   if [[ -n "$out" ]]; then printf '%s' "$out"; return 0; fi
-  cm="$("$KUBECTL_BIN" -n "$NAMESPACE" get configmap k8s-ai-config \
+  cm="$("$KUBECTL_BIN" -n "$NAMESPACE" get configmap aegisops-config \
     -o jsonpath='{.data.config\.yaml}' 2>/dev/null || true)"
   if [[ -n "$cm" ]]; then
     printf '%s\n' "$cm" | awk '
@@ -1386,18 +1386,18 @@ blobs_current_backend() {
   return 0
 }
 
-# POD_PLATFORM_CONFIG：容器里平台配置的路径（平台 ConfigMap 挂在 /etc/k8s-ai）。
+# POD_PLATFORM_CONFIG：容器里平台配置的路径（平台 ConfigMap 挂在 /etc/aegisops）。
 # Pod 的 HOME 是 emptyDir，容器内跑 CLI 漏掉 --config 就落到一个全新空 sqlite，
 # 数出来的对象数恒为 0，闸门会形同虚设（2026-11-03 真机栽在同一个坑上）。
-POD_PLATFORM_CONFIG=/etc/k8s-ai/config.yaml
+POD_PLATFORM_CONFIG=/etc/aegisops/config.yaml
 
 # blobs_current_object_count 数「集群现在跑着的那个后端」里已有多少对象。
 # 换后端到底要不要迁移，取决于这个数，而不是取决于 driver 名字变没变。
 # 只能在 server 容器里数：那里才有平台配置，也才知道旧后端连的是 db 还是 s3。
 # 数不到（后端没就绪 / 配置读不了 / 输出格式变了）就输出空串，由调用方按最保守处理。
 blobs_current_object_count() {
-  "$KUBECTL_BIN" -n "$NAMESPACE" exec "deploy/k8s-ai-server" -- \
-    k8s-ai --config "$POD_PLATFORM_CONFIG" blobs stat 2>/dev/null |
+  "$KUBECTL_BIN" -n "$NAMESPACE" exec "deploy/aegisops-server" -- \
+    aopsctl --config "$POD_PLATFORM_CONFIG" blobs stat 2>/dev/null |
     awk '/^total objects=/ { v = $0; sub(/^total objects=/, "", v); sub(/[^0-9].*$/, "", v); print v; exit }' || true
   return 0
 }
@@ -1431,10 +1431,10 @@ blobs_gate_backend_switch() {
   # 数不出对象数就按「有历史对象」处理：宁可多挡一次，也不能让历史报告静默打不开。
   if [[ -z "$count" ]]; then
     die "要把对象存储后端从 ${cur} 换成 ${BLOBS_BACKEND}，但在 server 容器里数不出旧后端的对象数" \
-      "先确认后端就绪：kubectl -n ${NAMESPACE} rollout status deploy/k8s-ai-server；再手工跑 kubectl -n ${NAMESPACE} exec deploy/k8s-ai-server -- k8s-ai --config ${POD_PLATFORM_CONFIG} blobs stat 看它报什么；确认 ${cur} 里的历史对象可弃，就加 --allow-driver-mismatch 重跑本脚本"
+      "先确认后端就绪：kubectl -n ${NAMESPACE} rollout status deploy/aegisops-server；再手工跑 kubectl -n ${NAMESPACE} exec deploy/aegisops-server -- aopsctl --config ${POD_PLATFORM_CONFIG} blobs stat 看它报什么；确认 ${cur} 里的历史对象可弃，就加 --allow-driver-mismatch 重跑本脚本"
   fi
   die "对象存储后端要从 ${cur} 换成 ${BLOBS_BACKEND}，但旧后端里还有 ${count} 个历史对象没迁移" \
-    "先在 server 容器里带配置跑：k8s-ai --config ${POD_PLATFORM_CONFIG} blobs migrate --to ${BLOBS_BACKEND} --dry-run 看清单，再去掉 --dry-run 真迁，最后同配置跑 blobs verify --strict 退出码 0 才重跑本脚本；确认 ${cur} 里的历史对象可弃，就加 --allow-driver-mismatch 重跑"
+    "先在 server 容器里带配置跑：aopsctl --config ${POD_PLATFORM_CONFIG} blobs migrate --to ${BLOBS_BACKEND} --dry-run 看清单，再去掉 --dry-run 真迁，最后同配置跑 blobs verify --strict 退出码 0 才重跑本脚本；确认 ${cur} 里的历史对象可弃，就加 --allow-driver-mismatch 重跑"
 }
 
 stage_preflight() {
@@ -1494,9 +1494,9 @@ stage_preflight() {
     # （形态 A 的 / 指向后端，形态 B 的 / 指向前端，正好互斥），所以这里先挡住。
     local own_ingress conflict_ingress ing_name ing_hosts
     if [[ "$FORM" == "allinone" ]]; then
-      own_ingress=" k8s-ai "
+      own_ingress=" aegisops "
     else
-      own_ingress=" k8s-ai-api k8s-ai-web "
+      own_ingress=" aegisops-api aegisops-web "
     fi
     conflict_ingress=""
     while read -r ing_name ing_hosts; do

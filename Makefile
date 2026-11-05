@@ -1,7 +1,7 @@
 MODULE := github.com/k8s-ai/k8s-ai
-BINARY := k8s-ai
+BINARY := aopsctl
 BUILD_DIR := bin
-IMAGE ?= k8s-ai
+IMAGE ?= aegisops
 
 VERSION ?= DEV-v4.0.0
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
@@ -15,11 +15,11 @@ LDFLAGS := -s -w \
 .PHONY: build build-linux test test-race vet lint docker clean
 
 build:
-	go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY) ./cmd/k8s-ai
+	go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY) ./cmd/aopsctl
 
 # 交叉编译 Linux amd64（Windows 上可直接使用，纯 Go 无需 gcc）
 build-linux:
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY)-linux-amd64 ./cmd/k8s-ai
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY)-linux-amd64 ./cmd/aopsctl
 
 test:
 	go test ./...

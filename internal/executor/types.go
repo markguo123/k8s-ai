@@ -56,7 +56,7 @@ type Options struct {
 	Dynamic dynamic.Interface
 	// Mapper GVK→GVR/scope 解析器；测试注入用，nil 且 RESTConfig 非空时用 discovery 构造。
 	Mapper meta.RESTMapper
-	// FieldManager Server-Side Apply 的 fieldManager；空取 "k8s-ai"。
+	// FieldManager Server-Side Apply 的 fieldManager；空取 "aegisops"。
 	FieldManager string
 }
 

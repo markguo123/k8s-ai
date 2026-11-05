@@ -15,14 +15,14 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: k8s-ai-egress
-  namespace: k8s-ai
+  name: aegisops-egress
+  namespace: aegisops
   labels:
-    app: k8s-ai
+    app: aegisops
 spec:
   podSelector:
     matchLabels:
-      app: k8s-ai
+      app: aegisops
   policyTypes:
     - Egress
   egress:

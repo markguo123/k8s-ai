@@ -249,7 +249,7 @@ func warnLegacySessionFiles(dir string) {
 		}
 	}
 	if legacy > 0 {
-		slog.Info("chat: 会话目录里的历史文件不再被读取（平台模式会话事实源是平台库），如需保留历史请执行 k8s-ai migrate --platform --sessions-dir",
+		slog.Info("chat: 会话目录里的历史文件不再被读取（平台模式会话事实源是平台库），如需保留历史请执行 aopsctl migrate --platform --sessions-dir",
 			"dir", dir, "files", legacy)
 	}
 }
@@ -974,7 +974,7 @@ func (a *chatApprover) confirm(ctx context.Context, prompt string, options []age
 // 返回值只存在于内存与本次工具调用，不进事件流、会话文件与审计日志。
 func (a *chatApprover) RequestSecretValue(ctx context.Context, prompt string) (string, error) {
 	if a.skip || a.autoApprove {
-		return "", errors.New("非交互模式下无法向用户索取 Secret 值，请改用 $GENERATE 由 k8s-ai 随机生成")
+		return "", errors.New("非交互模式下无法向用户索取 Secret 值，请改用 $GENERATE 由 AegisOps 随机生成")
 	}
 	a.events <- ChatEvent{Type: ChatEventChoice, Choice: &ChatChoice{Prompt: prompt, Secret: true}}
 	if a.sink != nil {

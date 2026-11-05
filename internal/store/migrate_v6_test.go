@@ -11,7 +11,7 @@ import (
 // IF NOT EXISTS。整步重跑失败的话，现场只会看到一个起不来的 Pod 和一句迁移错误。
 //
 // 只断言 SQLite：MySQL 的 1060/1061 错误识别由 dialect 用例锁定，整步重放要走
-// K8S_AI_TEST_MYSQL_DSN 真机门禁（与既有 MySQL 集成用例同一入口）。
+// AEGISOPS_TEST_MYSQL_DSN 真机门禁（与既有 MySQL 集成用例同一入口）。
 func TestMigrateV6ReappliesCleanly(t *testing.T) {
 	s, err := OpenSQLite("file:migrate-v6-" + randID() + "?mode=memory&cache=shared")
 	if err != nil {

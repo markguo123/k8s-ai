@@ -1,24 +1,24 @@
 # 平台库结构升级 Job（P6.5 / D-31）。
 #
-# 职责边界：`k8s-ai db migrate` 只做 schema 升级，幂等可重跑；它不建库、不建账号
-# （库与账号由 DBA 预建，建议 utf8mb4），也不导入三期历史数据（那是顶层 `k8s-ai migrate`）。
+# 职责边界：`aegisops db migrate` 只做 schema 升级，幂等可重跑；它不建库、不建账号
+# （库与账号由 DBA 预建，建议 utf8mb4），也不导入三期历史数据（那是顶层 `aegisops migrate`）。
 # server 启动时也带同样的幂等兜底，所以本 Job 是「升级前置闸」而不是唯一入口：
 # 先跑 Job 成功，再放行 Deployment，可避免多副本同时改表。
 #
 # 用 MySQL 兜底 SQLite 时也走同一份清单（DSN 换成不注入、改用 sqlite_path + PVC）。
 #
 # 重跑提示：Job 的 spec 不可变。第二次升级要先删掉旧 Job：
-#   kubectl -n k8s-ai delete job k8s-ai-db-migrate --ignore-not-found
-#   kubectl -n k8s-ai apply -f deploy/base/db-migrate-job.yaml
-#   kubectl -n k8s-ai wait --for=condition=complete job/k8s-ai-db-migrate --timeout=300s
+#   kubectl -n aegisops delete job aegisops-db-migrate --ignore-not-found
+#   kubectl -n aegisops apply -f deploy/base/db-migrate-job.yaml
+#   kubectl -n aegisops wait --for=condition=complete job/aegisops-db-migrate --timeout=300s
 # deploy/install.sh 就是按这个顺序做的。
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: k8s-ai-db-migrate
-  namespace: k8s-ai
+  name: aegisops-db-migrate
+  namespace: aegisops
   labels:
-    app: k8s-ai
+    app: aegisops
     app.kubernetes.io/component: migration
 spec:
   # 失败留痕：保留完成的 Job 一天，便于回看日志。
@@ -28,7 +28,7 @@ spec:
   template:
     metadata:
       labels:
-        app: k8s-ai
+        app: aegisops
         app.kubernetes.io/component: migration
     spec:
       restartPolicy: Never
@@ -37,15 +37,15 @@ spec:
       containers:
         - name: db-migrate
           # 与后端同一个镜像、同一个 TAG；升级时两者一起换。
-          image: k8s-ai:latest
-          args: ["db", "migrate", "--config", "/etc/k8s-ai/config.yaml"]
+          image: aegisops:latest
+          args: ["db", "migrate", "--config", "/etc/aegisops/config.yaml"]
           env:
-            - name: K8S_AI_PLATFORM_STORE_DSN
+            - name: AEGISOPS_PLATFORM_STORE_DSN
               valueFrom:
-                secretKeyRef: { name: k8s-ai-store, key: dsn }
+                secretKeyRef: { name: aegisops-store, key: dsn }
           volumeMounts:
             - name: config
-              mountPath: /etc/k8s-ai
+              mountPath: /etc/aegisops
               readOnly: true
             - name: tmp
               mountPath: /tmp
@@ -68,7 +68,7 @@ spec:
       volumes:
         - name: config
           configMap:
-            name: k8s-ai-config
+            name: aegisops-config
             defaultMode: 0444
         - name: tmp
           emptyDir: {}

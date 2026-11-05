@@ -275,7 +275,7 @@ export interface SettingsItem {
 /** GET /api/v1/settings/{group} 的 data（后端 settings.GroupView）。 */
 export interface SettingsGroupView {
   group: string
-  /** 服务端是否已配置 K8S_AI_ENC_KEY；false 时敏感配置只能读状态不能保存。 */
+  /** 服务端是否已配置 AEGISOPS_ENC_KEY；false 时敏感配置只能读状态不能保存。 */
   encryptionAvailable?: boolean
   items: SettingsItem[]
   /** 仅 PATCH 返回：本次写入的键里有被部署期变量覆盖的项，逐条说明实际生效来源。 */

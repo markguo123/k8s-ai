@@ -52,19 +52,19 @@ func newServerCmd(deps Dependencies) *cobra.Command {
 				return err
 			}
 			defer func() { _ = st.Close() }()
-			// 迁移主路径是 k8s-ai db migrate（升级 Job/initContainer，P6.5）；这里是
+			// 迁移主路径是 aopsctl db migrate（升级 Job/initContainer，P6.5）；这里是
 			// 幂等兜底，让单机 sqlite 部署一条命令即可启动。
 			if err := st.Migrate(cmd.Context()); err != nil {
 				return fmt.Errorf("migrate store: %w", err)
 			}
 			authSvc := auth.New(st.Users(), st.Roles())
-			if err := authSvc.BootstrapWithName(cmd.Context(), cfg.Platform.Auth.AdminUsername, os.Getenv("K8S_AI_ADMIN_PASSWORD")); err != nil {
+			if err := authSvc.BootstrapWithName(cmd.Context(), cfg.Platform.Auth.AdminUsername, os.Getenv("AEGISOPS_ADMIN_PASSWORD")); err != nil {
 				return fmt.Errorf("bootstrap admin: %w", err)
 			}
 			// 四期平台底座：配置中心与系统事件审计由同一 Store 装配（P1.10/P1.11）。
 			auditSvc := service.NewAuditService(st)
 			// P3.1-P3.9：凭据加密密钥只从环境变量读取（P6.12 约定），
-			// 集群与配置中心共用同一 cipher。未配置 K8S_AI_ENC_KEY 时：
+			// 集群与配置中心共用同一 cipher。未配置 AEGISOPS_ENC_KEY 时：
 			// 集群端点返回 501；配置中心包含敏感键的写入整批拒绝（501），
 			// 非敏感配置仍可正常读写，其余平台能力不受影响。
 			var clusterSvc *cluster.Service
@@ -156,7 +156,7 @@ func newServerCmd(deps Dependencies) *cobra.Command {
 				Handler:           handler,
 				ReadHeaderTimeout: 10 * time.Second,
 			}
-			logger.Info("k8s-ai server listening",
+			logger.Info("aopsctl server listening",
 				"addr", listenAddr, "store", target, "static_enabled", staticEnabled, "tls", tls.Enabled)
 			errCh := make(chan error, 1)
 			go func() {
@@ -181,7 +181,7 @@ func newServerCmd(deps Dependencies) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&addr, "addr", "", "listen address override (default from config platform.server.addr, e.g. :8080)")
-	cmd.Flags().StringVar(&dbPath, "db", "", "SQLite database path override (sqlite driver only; first start reads K8S_AI_ADMIN_PASSWORD)")
+	cmd.Flags().StringVar(&dbPath, "db", "", "SQLite database path override (sqlite driver only; first start reads AEGISOPS_ADMIN_PASSWORD)")
 	return cmd
 }
 

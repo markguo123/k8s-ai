@@ -61,10 +61,10 @@ describe('buildSessionMarkdown（P7.5 导出）', () => {
 })
 
 describe('markdownFileName', () => {
-  it('生成 k8s-ai-<会话名>-<时间>.md 并过滤非法字符', () => {
+  it('生成 aegisops-<会话名>-<时间>.md 并过滤非法字符', () => {
     expect(markdownFileName('default 体检 / prod:01', new Date('2026-10-15T09:05:00'))).toBe(
-      'k8s-ai-default-体检-prod-01-20261015-0905.md',
+      'aegisops-default-体检-prod-01-20261015-0905.md',
     )
-    expect(markdownFileName('', new Date('2026-10-15T09:05:00'))).toBe('k8s-ai-session-20261015-0905.md')
+    expect(markdownFileName('', new Date('2026-10-15T09:05:00'))).toBe('aegisops-session-20261015-0905.md')
   })
 })

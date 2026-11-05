@@ -26,9 +26,9 @@ import (
 func s3TestConfig(t *testing.T) objectstore.S3Config {
 	t.Helper()
 	return objectstore.S3Config{
-		Endpoint:   "minio.k8s-ai.svc.cluster.local:9000",
+		Endpoint:   "minio.aegisops.svc.cluster.local:9000",
 		Region:     "us-east-1",
-		Bucket:     "k8s-ai-objects",
+		Bucket:     "aegisops-objects",
 		AccessKey:  "ak-test",
 		SecretKey:  "sk-test",
 		PathStyle:  true,
@@ -167,7 +167,7 @@ func TestS3PresignWorksOffline(t *testing.T) {
 	if !strings.Contains(signed, "X-Amz-Expires=300") {
 		t.Errorf("ttl=0 应取配置值 5m，got %s", signed)
 	}
-	for _, want := range []string{"minio.k8s-ai.svc.cluster.local:9000", "k8s-ai-objects", key, "X-Amz-Signature="} {
+	for _, want := range []string{"minio.aegisops.svc.cluster.local:9000", "aegisops-objects", key, "X-Amz-Signature="} {
 		if !strings.Contains(signed, want) {
 			t.Errorf("预签名 URL 缺少 %q: %s", want, signed)
 		}
@@ -608,7 +608,7 @@ func TestS3NoSuchBucketIsUnavailable(t *testing.T) {
 // 空转；LIST 是带 XML body 的 GET，服务端那句带凭据的 <Message> 才真的进得了错误串。
 func TestS3DeniedMessageRedactsPresignedURL(t *testing.T) {
 	ctx := context.Background()
-	secret := "https://minio.local/k8s-ai-objects/k?X-Amz-Signature=deadbeefcafe1234" +
+	secret := "https://minio.local/aegisops-objects/k?X-Amz-Signature=deadbeefcafe1234" +
 		"&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20261030%2Fus-east-1%2Fs3%2Faws4_request" +
 		"&AWSAccessKeyId=AKIAIOSFODNN7EXAMPLE"
 	st, _ := openFakeS3(t, func(_ *objectstore.S3Config, f *fakeS3) {
@@ -645,21 +645,21 @@ func TestS3DeniedMessageRedactsPresignedURL(t *testing.T) {
 // 跑完只清对象不清桶（Store 接口没有 DeleteBucket，为一条测试加接口不值得）：桶名带
 // 固定前缀，现场用一条生命周期规则就能收干净。
 func TestS3BackendContract(t *testing.T) {
-	endpoint := os.Getenv("K8S_AI_TEST_S3_ENDPOINT")
-	baseBucket := os.Getenv("K8S_AI_TEST_S3_BUCKET")
-	accessKey := os.Getenv("K8S_AI_TEST_S3_ACCESS_KEY")
-	secretKey := os.Getenv("K8S_AI_TEST_S3_SECRET_KEY")
+	endpoint := os.Getenv("AEGISOPS_TEST_S3_ENDPOINT")
+	baseBucket := os.Getenv("AEGISOPS_TEST_S3_BUCKET")
+	accessKey := os.Getenv("AEGISOPS_TEST_S3_ACCESS_KEY")
+	secretKey := os.Getenv("AEGISOPS_TEST_S3_SECRET_KEY")
 	if endpoint == "" || baseBucket == "" || accessKey == "" || secretKey == "" {
-		t.Skip("未配置 K8S_AI_TEST_S3_ENDPOINT/BUCKET/ACCESS_KEY/SECRET_KEY，跳过 s3 真机 contract")
+		t.Skip("未配置 AEGISOPS_TEST_S3_ENDPOINT/BUCKET/ACCESS_KEY/SECRET_KEY，跳过 s3 真机 contract")
 	}
-	region := envOr("K8S_AI_TEST_S3_REGION", "us-east-1")
-	useTLS, err := strconv.ParseBool(envOr("K8S_AI_TEST_S3_USE_TLS", "false"))
+	region := envOr("AEGISOPS_TEST_S3_REGION", "us-east-1")
+	useTLS, err := strconv.ParseBool(envOr("AEGISOPS_TEST_S3_USE_TLS", "false"))
 	if err != nil {
-		t.Fatalf("K8S_AI_TEST_S3_USE_TLS: %v", err)
+		t.Fatalf("AEGISOPS_TEST_S3_USE_TLS: %v", err)
 	}
-	pathStyle, err := strconv.ParseBool(envOr("K8S_AI_TEST_S3_PATH_STYLE", "true"))
+	pathStyle, err := strconv.ParseBool(envOr("AEGISOPS_TEST_S3_PATH_STYLE", "true"))
 	if err != nil {
-		t.Fatalf("K8S_AI_TEST_S3_PATH_STYLE: %v", err)
+		t.Fatalf("AEGISOPS_TEST_S3_PATH_STYLE: %v", err)
 	}
 
 	const maxBytes = 1 << 20

@@ -317,7 +317,7 @@ func (c *objectContent) Probe(ctx context.Context) error {
 func (c *objectContent) pingTable(ctx context.Context) error {
 	if _, err := c.s.db.ExecContext(ctx, `SELECT blob_key FROM objects LIMIT 1`); err != nil {
 		if isMissingTable(err) {
-			return fmt.Errorf("objects table missing: run k8s-ai db migrate (%w)", err)
+			return fmt.Errorf("objects table missing: run aopsctl db migrate (%w)", err)
 		}
 		return fmt.Errorf("probe objects table: %w", err)
 	}

@@ -15,6 +15,20 @@ P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会�
 与授权架构修订（见
 `docs/02-架构与设计/13-方案-企业级身份权限与审批中心.md`，计划回写 v1.12/v1.13）。
 
+### Changed（2026-11-05，品牌迁移：k8s-ai → AegisOps）
+
+- 对外产品品牌统一为 **AegisOps**（副标题：云原生智能工作台）；Web UI、Agent 系统提示词、
+  自我介绍口径、报告标题与导出文件名不再使用 `k8s-ai`。
+- CLI 主命令与二进制改为 `aopsctl`；构建脚本、Dockerfile 入口与容器内路径同步调整。
+- 默认部署资源统一为 `aegisops`：命名空间、Service、Deployment、Job、PVC、Secret、
+  ConfigMap、Ingress host、镜像仓库与前端镜像；环境变量前缀统一为 `AEGISOPS_*`。
+- 运行期数据目录与默认配置路径改为 `~/.aegisops`、`/etc/aegisops`、`aegisops.db`；
+  对象存储默认前缀改为 `aegisops`。
+- 迁移边界：不自动迁移旧 `k8s-ai` 命名空间；旧 `K8S_AI_*` 环境变量不再生效，需在
+  `install.env` 中改用 `AEGISOPS_*`；浏览器 `localStorage`/Cookie 键改名后，已有登录态与
+  前端偏好会重置。
+- Go module 路径 `github.com/k8s-ai/k8s-ai` 作为内部技术标识保留，不随对外品牌变更。
+
 ### Added（2026-11-04，体检 RBAC 采集与权限分析闭环）
 
 - 体检采集补齐 `Role`、`RoleBinding`、`ClusterRole`、`ClusterRoleBinding` 四类只读元数据，统一落到
@@ -95,8 +109,8 @@ P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会�
   键级元数据，明确 ConfigMap data / Secret 内容值不采集。
 - 产品与操作：`05-巡检功能优化.md` 补最终根因模型、报告处置框、Markdown/命令渲染、canonical 证据
   与退出码 0 场景；技术手册将当前规则数更新为 35、资源口径更新为 24 类 list + Namespaces + Events。
-- 原始建议文档：`k8s-ai 巡检报告渲染优化建议.md` 与
-  `k8s-ai 巡检采集能力与 RBAC 权限优化指导方案.md` 顶部增加实施状态，明确其“现有缺陷”段落是
+- 原始建议文档：`AegisOps 巡检报告渲染优化建议.md` 与
+  `AegisOps 巡检采集能力与 RBAC 权限优化指导方案.md` 顶部增加实施状态，明确其“现有缺陷”段落是
   实施前分析，当前权威口径以方案 18 为准。
 - 开发计划升 v1.77；P9.14 任务数与工时不变。本轮不新增功能，只消除同实现不同文档口径。
 - 新增 **ADR-047**，正式记录“保留 Scanner、证据引用全局化、最终 Diagnosis 单一事实源、
@@ -111,7 +125,7 @@ P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会�
 - 版本号重复前缀渲染成 `vv1.28.13`：前缀统一由 `serverVersionLabel()`（`internal/service/stages.go`）判定，
   阶段账与 Markdown 正文同为 `v1.28.13`。
 - 阶段标题在窄容器里被截断：`.stage-title` 允许换行，真机核对无一条溢出。
-- 刷新页面丢进度：进行中的体检 id 与档位写入 `sessionStorage`（`k8s-ai.activeScan`），重进页面自动重挂横幅
+- 刷新页面丢进度：进行中的体检 id 与档位写入 `sessionStorage`（`aegisops.activeScan`），重进页面自动重挂横幅
   与阶段清单，且不会重复发起。
 - 阶段清单缺首末三步：`stageSpec` 只登记架构图里的分析阶段，`connect` / `write` / `archive` 靠插入序兜底，
   导致「连接集群」排到第 11 步；补齐 spec 首末并保留未登记阶段的兜底追加。**阶段账口径由「十阶段」修正为
@@ -119,7 +133,7 @@ P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会�
 - 从未 start 过的跳过阶段直接露英文 id（`evidence` / `llm` / `write`）：`skip()` 改走 `stageTitle()` 查 spec 取名。
 - 跳过证据采集的说明写死「快速档」，标准档也显示同样的话：改为只陈述 `collect_logs=false` 这一事实。
 - 验证：`go vet ./...` 干净、`go test ./...` 全绿；`web` 侧 `npm run test` 30 文件 201 用例全绿、
-  `npm run build` 通过；`bin/k8s-ai.exe` 按 Makefile 的 `-s -w` 口径重编，运行体与代码一致。
+  `npm run build` 通过；`bin/aopsctl.exe` 按 Makefile 的 `-s -w` 口径重编，运行体与代码一致。
 
 ### Added（2026-11-04，四期 P9.10–P9.13 页面体检体验：术语收口、格式单选、停止体检、实时进度）
 
@@ -150,7 +164,7 @@ P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会�
   `01-系统架构与技术方案.md` 新增 §6.1 正式架构图与 5 条读图口径、§6.2 分层与包映射，§7 数据流按十段流水线重画；`07-采集与扫描流程.md` 升 v2.0（§1 九段流水线 + mermaid、
   §7 采集完整性三条定死规则与 60 / 85 / 满分-1 封顶、§8 整段替换为「确定性诊断、LLM 增强与结果校验」）；`03-API接口文档.md` 登记结构化报告端点与契约；
   `09-测试方案.md` 新增 §3.4 质量测试体系与六指标。
-- **正式架构图**：`docs/assets/images/k8s-ai Kubernetes 体检诊断总体架构图.png` 定为项目官方总体架构图，嵌入方案 18 §1 与系统架构 §6.1。
+- **正式架构图**：`docs/assets/images/aegisops Kubernetes 体检诊断总体架构图.png` 定为项目官方总体架构图，嵌入方案 18 §1 与系统架构 §6.1。
 - 关系与故障层：`internal/relations`（OwnerReferences / EndpointSlice / Ingress 后端 / PVC-PV-StorageClass / Pod-Node 调度 / ConfigMap·Secret·ServiceAccount 引用，
   全走只读门面，Secret 仅键名）；`internal/incident/causal.go`（散点 Finding 沿关系边聚成 Incident、生成 CausalEdge，输出 impactChain / evidenceGaps / alternativeCauses，根因唯一）。
 - 确定性诊断：`internal/deterministic` 24 个诊断器覆盖 Pod 7 / 工作负载 6 / 节点 2 / 存储 4 / 网络 4 / 平台 1，输出根因、置信度依据、证据链与调查、处置、验证建议，
@@ -242,10 +256,10 @@ P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会�
   Agent 工具执行前按 namespace / 集群级 scope 强制校验，越界不执行、不弹审批，
   返回 `SCOPE_DENIED` 并写审计。修复角色 `permissions:null` 导致的角色页渲染崩溃，
   Store 空权限统一返回 `[]`，前端追加防御。
-- **集群端点断连修复（2026-10-23）**：修复 `K8S_AI_ENC_KEY` 缺失时
+- **集群端点断连修复（2026-10-23）**：修复 `AEGISOPS_ENC_KEY` 缺失时
   `*cluster.Service(nil)` 装入接口形成 typed nil、导致 `/api/v1/clusters` 与
   `/api/v1/clusters/current` 请求被 panic 断开的问题。可选集群服务现在按“未装配”
-  处理并返回 501 JSON，消息明确提示配置有效 `K8S_AI_ENC_KEY`；新增 GET 两类端点
+  处理并返回 501 JSON，消息明确提示配置有效 `AEGISOPS_ENC_KEY`；新增 GET 两类端点
   不重置连接的回归测试，前端将 501 归一为可执行的中文平台提示。
 - **用户/权限复盘与本地分支文档收口（2026-10-23，仅文档）**：确认三角色、零权限基线、
   管理页隐藏与后端 403、Session owner 隔离、admin 全会话操作、Scope-aware Agent、独立
@@ -277,7 +291,7 @@ P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会�
 - **`config init` 模板收敛**：只输出静态/`platform:` 键与 CLI 直用缺省，不再输出全量引擎键（P6.12）。
 - **`migrate` 只显式一次性迁移**：三期旧 config.yaml 动态键仅经显式迁移导入 settings，导入后以 DB 为权威，
   不随启动自动导入。
-- **终端二进制不受影响**：`k8s-ai chat / k8s-ai scan` 仍以本地 config.yaml + env + flags 静态输入运行，
+- **终端二进制不受影响**：`aopsctl chat / aopsctl scan` 仍以本地 config.yaml + env + flags 静态输入运行，
   不依赖平台 DB，与平台配置中心执行面隔离。
 - 口径同步：PRD v1.11（§15/§26）、ADR-031 v1.11、开发计划 v1.37、部署手册 §3/§4.9/§8、项目状态。
 
@@ -285,7 +299,7 @@ P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会�
 
 - **敏感字段静态加密（P3.9）**：`internal/settings` 新增 `SecretCipher`/`ErrCipherRequired`/`WithCipher`，
   `model.api_key`/`mcp.servers`/`ops.kubeconfig` 等敏感键加密落库、读接口不回明文（`value:null`/`hasValue`），
-  未配置 `K8S_AI_ENC_KEY` 时 PATCH 写敏感键返回 501；`k8s-ai migrate` 与 web 装配注入同一 cipher。
+  未配置 `AEGISOPS_ENC_KEY` 时 PATCH 写敏感键返回 501；`aopsctl migrate` 与 web 装配注入同一 cipher。
 - **配置中心前端（P3.10）**：新增 `SettingsView.vue` 真实页面（7 分组 Tab：model/skill/approval/memory/
   retention/mcp/ops，敏感键不回显、PATCH 局部保存、清理/JSON/list 控件、`settings.read`/`settings.write`
   权限门禁），`web/src/api/settings.ts` 契约类型与方法、`settings.spec.ts` 契约测试同步落地。
@@ -298,7 +312,7 @@ P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会�
 - **ToolCallCard（P2.8）**：工具名/短名/命令摘要/风险/耗时/复制 + 结构化结果渲染（列表表格、对象键值、事件表、YAML、日志、原始 JSON 折叠），结果到达即展开并保持；新增 `maskSensitiveValues` 前端兜底遮蔽（password/token/secret/apiKey/kubeconfig 等键的值在结构化视图与原始 JSON 中都不回显，键名保留），对象字段不再渲染成 `[object Object]`。
 - **ApprovalCard（P2.9）**：风险等级标签、Tool、参数摘要、目标资源、命中策略/原因 + 批准/拒绝/本次会话都允许 + Secret 占位输入（值仅本次提交、提交后清空、不入历史流）；新增 `web/src/utils/permission.ts`（Permission 常量与段通配判定同后端 `internal/permission` 语义），只读角色隐藏审批按钮并提示联系管理员——前端隐藏不是安全机制，后端仍独立强校验。
 - **Composer 与发送流程（P2.10）**：多行输入（Enter 发送 / Shift+Enter 换行）、空白与禁用态不发送、运行中切换为「停止」并回传 cancel、模型与 Secret 策略提示、底部提示「Shell 语法命令需人工审批 · Secret 值不会进入会话与审计」；发送后由 SSE 事件驱动状态，每轮步进器与执行状态随回合重置。
-- **会话 Token 用量持久化与展示（P2.13）**：`session.TokenUsage.Add/IsZero`、`store.TurnStore.SumTokensBySession`（会话级 SQL 汇总）、`service.SessionTokenizer` 可选能力（三期服务未实现时退化为零值，不破坏既有实现与测试桩）、webui 历史快照与会话列表下发 `token`/`model`（无记录时显式为 null/缺省，不伪造 0）；`k8s-ai web --db` 装配 SQLite Store（会话与 token 落库，数据库不可用仅告警并退回三期内存态）；`TokenUsageBadge` 改为右下角会话级统计（历史快照 + 本连接内逐轮累加，快照即断点不重复计数），刷新/重开会话仍可读。
+- **会话 Token 用量持久化与展示（P2.13）**：`session.TokenUsage.Add/IsZero`、`store.TurnStore.SumTokensBySession`（会话级 SQL 汇总）、`service.SessionTokenizer` 可选能力（三期服务未实现时退化为零值，不破坏既有实现与测试桩）、webui 历史快照与会话列表下发 `token`/`model`（无记录时显式为 null/缺省，不伪造 0）；`aopsctl web --db` 装配 SQLite Store（会话与 token 落库，数据库不可用仅告警并退回三期内存态）；`TokenUsageBadge` 改为右下角会话级统计（历史快照 + 本连接内逐轮累加，快照即断点不重复计数），刷新/重开会话仍可读。
 - **前端测试与构建门禁（P2.12）**：引入 vitest + @vue/test-utils + jsdom 与 `tsconfig.vitest.json`、`src/test/setup.ts`；新增 12 个测试文件 59 个用例（SSE 帧解析与旧事件映射、useChatStream 连接/切换/退避重连/停止、MessageTimeline 回合聚合与工具卡去重、ToolCallCard 脱敏与展开、ApprovalCard 权限显隐与 Secret 输入、ComposerBox、auth store、路由守卫、ChatView 全链路冒烟）；`package.json` 增加 `test`/`test:watch`/`test:coverage`。
 - **视觉对齐与前端核验工具**：`styles/index.css` 设计令牌与 `docs/02-架构与设计/prototype/index.html` 同源（含 `html.dark` 覆盖，使 Element Plus 组件走品牌 indigo 而不是默认蓝），聊天区（会话栏/回合/思考面板/工具卡/审批卡/报告/composer/Token 浮标）与登录页逐项对齐原型；新增 `web/tools/mock-backend.mjs`（复刻 webui 会话端点与 SSE 帧的联调 mock）与 `web/tools/visual-check.mjs`（原型 vs SPA 逐项比对 18 个关键视觉量并输出截图，当前差异 0）、`web/tools/screenshot.mjs`（无头 Edge/Chrome 截图）。
 
@@ -354,7 +368,7 @@ P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会�
 - **API Client 与分页类型（P2.3）**：新增 `web/src/api`（`types.ts` 与后端 `internal/server/response.go`/`auth.go` 一一对应的统一信封、分页、错误码、认证契约；`request.ts` 基于 fetch 的 `/api/v1` 客户端，Bearer 认证头、`page`/`page_size` 分页序列化、信封解析、错误码归一，401 清除会话并跳登录；`auth.ts` 登录/登出/me 端点）；`stores/auth.ts` 接入真实 `/api/v1/auth/login|logout|me`，应用启动经 `/me` 恢复会话并校正角色；登录页显性展示统一错误。`npm run lint`/`typecheck`/`build` 通过。
 - **统一 Store（P1.2/P1.3）**：`internal/store` 统一 `Store` 接口 + SQLite 驱动 + MySQL 方言层 + 幂等迁移（schemaVersion=2），覆盖 11 类平台模型 CRUD 与双方言等价测试。
 - **HTTP 基础中间件（P1.4）**：request_id 生成/透传（X-Request-ID）、统一响应信封（request_id/timestamp/data/error/pagination）、分页解析（page/page_size，兼容 pageSize）、CORS（放行 localhost:5173）、认证占位（仅注入上下文不拒请求）；含中间件与信封单测。
-- **用户/角色与登录认证（P1.5）**：argon2id 密码哈希、内存 Session Token（24h）、`POST/GET /api/v1/auth/login|logout|me`、`server` 命令 SQLite 首次引导（`K8S_AI_ADMIN_PASSWORD` 初始化 admin 角色与用户）；含认证服务与 handler 单测。
+- **用户/角色与登录认证（P1.5）**：argon2id 密码哈希、内存 Session Token（24h）、`POST/GET /api/v1/auth/login|logout|me`、`server` 命令 SQLite 首次引导（`AEGISOPS_ADMIN_PASSWORD` 初始化 admin 角色与用户）；含认证服务与 handler 单测。
 - **Permission Middleware（P1.6）**：`internal/permission` Role→Permission→Policy 判定（精确 / `*` / 段通配）+ `internal/server` 权限门禁（未登录 401、越权 403、`/api/v1` 未登记路由默认 403）；默认路由权限对齐标准 Permission 常量，越权门禁测试通过。
 - **Session/Turn/Step 模型与存储（P1.7）**：`internal/session/turn.go` 状态机（Turn 6 态 / Step 4 态 + token 用量）；Store 增加 `Turns()`/`Steps()` 与对应 CRUD/List，schemaVersion 2 新增 `turns`/`steps` 表与索引，写前脱敏与可空时间字段落地；含状态机与双方言 CRUD 单测。
 - **Agent Runtime 生命周期接入（P1.8）**：`internal/agent` 新增 `Tracer` 观察者接口，每轮 Chat 创建 Turn 并广播 Reason/Tool/Observe/Approval/Response Step 全生命周期，Turn 终态（done/fail）统一收尾；`internal/service` 新增 `NewChatWithStore`（旧 `NewChat` 签名兼容）经 `persistTracer` 落 SQLite，写库失败仅告警不阻塞 Agent；含生命周期时序与持久化断言单测。
@@ -380,7 +394,7 @@ P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会�
 ### Added
 
 - **`create_resource` Tool**：`internal/tools/create.go` 提供 `manifest` / `mode` / `verify` / `timeout_seconds` 参数；dry-run 产出会话级提案，apply 需通过 `proposal_id` 或同指纹 manifest。
-- **Executor 创建能力**：`internal/executor/apply.go` 基于 client-go dynamic + Server-Side Apply（fieldManager=`k8s-ai`），支持 server-side dry-run、存在性检查、创建后 verify；写入路径仍只在 Executor。
+- **Executor 创建能力**：`internal/executor/apply.go` 基于 client-go dynamic + Server-Side Apply（fieldManager=`aegisops`），支持 server-side dry-run、存在性检查、创建后 verify；写入路径仍只在 Executor。
 - **创建安全门禁**：`internal/approval/codeguard.go` / `create_risk.go` 提供 kind 黑白名单、cluster 授权闸门、命名空间存在性、未 dry-run 拒绝、未知 Kind/危险字段风险升档。
 - **Secret 创建通道**：`agent.secret.access=create_only`；只允许 `stringData` 使用 `$GENERATE` / `$ASK`，明文值走审批带外传入，审计只记录键名/长度/SHA-256/来源。
 - **内置 Skill 元数据**：`internal/skills/` 冻结 Skill/Rule/RiskClause/RiskRule/Check/Source/Registry 契约，go:embed 内置 workload/config/storage/network/rbac 五域 YAML，Skill 模型无执行动作字段。
@@ -390,7 +404,7 @@ P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会�
 
 ### Changed
 
-- `k8s-ai-test.yaml`、`docs/INSTALLATION.md` 增加 `agent.create.*` 与 `agent.secret.access` 配置样例。
+- `aopsctl-test.yaml`、`docs/INSTALLATION.md` 增加 `agent.create.*` 与 `agent.secret.access` 配置样例。
 - `docs/E2E_SMOKE.md` 增加资源创建、Secret 审计与失败路径冒烟场景。
 - `docs/RESOURCE_CREATE_DESIGN.md` 实现状态标注为三期已落地。
 - `internal/webui/server.go` 新增 `POST /api/sessions/{id}/cancel` 取消当前 Chat 运行（按 session 记录 `context.CancelFunc`，删除会话时同步取消）；发送区新增停止按钮，运行状态改由停止按钮标识，移除原旋转 spinner；新增 `TestCancelActiveRun` 覆盖取消接口与无活动运行冲突提示。
@@ -743,7 +757,7 @@ Web UI 会话重命名功能 + chat 终端横幅美化与工具调用缩进输�
 
 - Web 会话侧栏：会话删除按钮前新增重命名按钮（✎），点击后 prompt 输入新名称；空名或未变更时不发请求；失败在聊天区提示错误，成功后刷新会话列表。
   - 后端接口：复用 `POST /api/sessions/{id}/rename`（server.go + chatService.RenameSession 既有），零后端改动。
-- chat 终端欢迎横幅（internal/cli/banner.go）：带边框的 ASCII 风格横幅，显示「k8s-ai」产品名 + 版本 + 集群信息；下方展示 3 条精简能力介绍和 exit/clear/Ctrl+C 退出提示；非 TTY（管道/测试）自动降级为无框纯文本。
+- chat 终端欢迎横幅（internal/cli/banner.go）：带边框的 ASCII 风格横幅，显示「AegisOps」产品名 + 版本 + 集群信息；下方展示 3 条精简能力介绍和 exit/clear/Ctrl+C 退出提示；非 TTY（管道/测试）自动降级为无框纯文本。
 - 工具调用行格式优化（chat.go emit）：带缩进箭头 `  ↳ [Tool] 工具名 (参数)`，最终回答前插入空行分隔。
 
 ## [v2.0.4] - 2026-08-28
@@ -764,8 +778,8 @@ Web UI 支持集群下拉切换本机 ~/.kube/config context；会话模型新�
 
 ### Added
 
-- **终端 Markdown 渲染**（internal/cli/chat.go）：`k8s-ai chat` 交互模式最终回答经 glamour 渲染（表格/列表/代码块）；`WithAutoStyle` 在管道/非 TTY 自动去样式，`--format json` 不受影响。
-- **readline 交互输入**（internal/cli/chat.go）：终端输入走 chzyer/readline（历史记录文件 `k8s-ai-history`、Ctrl+C/Ctrl+D 优雅退出）；非 TTY（管道/测试）自动回退 bufio，行为与原先一致。
+- **终端 Markdown 渲染**（internal/cli/chat.go）：`aopsctl chat` 交互模式最终回答经 glamour 渲染（表格/列表/代码块）；`WithAutoStyle` 在管道/非 TTY 自动去样式，`--format json` 不受影响。
+- **readline 交互输入**（internal/cli/chat.go）：终端输入走 chzyer/readline（历史记录文件 `aopsctl-history`、Ctrl+C/Ctrl+D 优雅退出）；非 TTY（管道/测试）自动回退 bufio，行为与原先一致。
 - **流式命令超时采样**（internal/executor）：`logs -f` / `get -w` 不再在解析层拒绝，改由 executor 套固定超时（默认 7s，`Options.StreamTimeout` 可配）捕获部分输出并标记 `Result.StreamTimeout`，超时不视为错误，不阻塞 Agent Loop。交互式流（attach/exec -it）仍被拒绝。
 - **kubectl 动词分类表扩充**（internal/approval/risk.go + internal/executor/parse.go）：
   - `rollout history` / `rollout status` 归为只读（SAFE，自动执行）；
@@ -787,8 +801,8 @@ Web UI 支持集群下拉切换本机 ~/.kube/config context；会话模型新�
 
 ### Added
 
-- **`k8s-ai chat`**：交互 / 单发 / stdin / `--format json`；会话管理（--session/--new-session/--list-sessions/--delete-session）；`clear`/`exit` 元命令。
-- **`k8s-ai web`**：浏览器 chat（REST + SSE 流式 + 会话侧栏 + Markdown 渲染 + 审批卡片 + 工具执行过程 Show output）。
+- **`aopsctl chat`**：交互 / 单发 / stdin / `--format json`；会话管理（--session/--new-session/--list-sessions/--delete-session）；`clear`/`exit` 元命令。
+- **`aopsctl web`**：浏览器 chat（REST + SSE 流式 + 会话侧栏 + Markdown 渲染 + 审批卡片 + 工具执行过程 Show output）。
 - **Agent 核心**（internal/agent）：消息总线/状态机、native + shim + auto 双模式 Tool Calling、max_iterations/max_tool_calls/timeout、单轮上下文预算、ToolResult 截断/脱敏/不可信定界。
 - **工具集**（internal/tools + tools/k8s）：19 个只读工具、5 个诊断工具（复用一期 ScanService.Run）、7 个写工具（kubectl/scale/patch_deployment/patch_configmap/restart_rollout/label/delete_pod）；`CommandDescriber` 审批可读化。
 - **审批与执行**（internal/approval + internal/executor）：SAFE..CRITICAL 风险分级、deny_ops、require_approval、--skip-permissions；kubectl argv 直调（无 shell）+ client-go 结构化写；执行后验证（Deployment 状态核对）。
@@ -841,7 +855,7 @@ Web UI 支持集群下拉切换本机 ~/.kube/config context；会话模型新�
 - 上一版本 v1.0.2 中，修复命令推荐为 `kubectl edit configmap`（交互式、不可复制执行）的问题；现在会被命令校验过滤并要求 LLM 给出 patch/apply 非交互版本。
 - **诊断修复退化为纯只读**：当 LLM 只给出 `get cm -o yaml` 等只读命令（被 §三十五 要求丢弃 edit/exec -it 后，常见"只给确认步骤"）时，remediation 列表最终全是只读命令，未满足 §三十五「至少一条写入操作命令」的硬性要求。现由 `ensureRemediation` + `fallbackWriteCommands` 规则级兜底，按 Finding.Rule / Kind 自动补齐 create/patch/apply/set/scale/rollout restart 等写入类命令（带 `<待确认>` 占位），保证每条诊断都能"下一步真正动起来"。同样兜底也应用于 `degraded` 降级路径。
 - **Spinner 刷屏（非 TTY）**：`useSpinner` 此前只检查报告格式（markdown 且非 verbose），未检测 stdout 是否真正是交互式终端；当输出被管道/重定向时 `\r` 覆盖退化为逐行打印，80ms/帧 × 数十秒产生数百行垃圾。现由 `isTerminal(os.Stdout)` 用 `os.ModeCharDevice` 零依赖检测，管道/重定向自动退化为单行日志模式。
-- **健康度标签写死"集群健康"**：`k8s-ai scan -n xxx` 扫描的是命名空间，`k8s-ai scan pod xxx` 扫描的是 Pod，但摘要头始终打印"集群健康"。现按 scope 动态显示：cluster →"集群健康"、namespace →"命名空间健康"、pod →"Pod 健康度"。
+- **健康度标签写死"集群健康"**：`aopsctl scan -n xxx` 扫描的是命名空间，`aopsctl scan pod xxx` 扫描的是 Pod，但摘要头始终打印"集群健康"。现按 scope 动态显示：cluster →"集群健康"、namespace →"命名空间健康"、pod →"Pod 健康度"。
 
 ## [v1.0.2] - 2026-08-19
 

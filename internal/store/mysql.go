@@ -13,7 +13,7 @@ import (
 //
 // DSN 示例（必须带 parseTime=true 才能把 TIMESTAMP 扫描为 time.Time）：
 //
-//	user:pass@tcp(127.0.0.1:3306)/k8s_ai?parseTime=true&charset=utf8mb4&collation=utf8mb4_unicode_ci
+//	user:pass@tcp(127.0.0.1:3306)/aegisops?parseTime=true&charset=utf8mb4&collation=utf8mb4_unicode_ci
 func OpenMySQL(dsn string, opts ...Option) (Store, error) {
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {

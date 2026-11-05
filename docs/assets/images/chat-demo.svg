@@ -17,13 +17,13 @@
   <circle cx="15" cy="15" r="6" fill="#ff5f56"/>
   <circle cx="35" cy="15" r="6" fill="#ffbd2e"/>
   <circle cx="55" cy="15" r="6" fill="#27c93f"/>
-  <text x="450" y="20" font-family="Arial" font-size="13" fill="#cccccc" text-anchor="middle">Terminal - k8s-ai chat</text>
+  <text x="450" y="20" font-family="Arial" font-size="13" fill="#cccccc" text-anchor="middle">Terminal - aopsctl chat</text>
 
   <!-- Terminal Content -->
-  <text x="20" y="55" class="terminal-text info">$ k8s-ai chat</text>
+  <text x="20" y="55" class="terminal-text info">$ aopsctl chat</text>
 
   <text x="20" y="80" class="terminal-text header">╔═══════════════════════════════════════════════════════════╗</text>
-  <text x="20" y="100" class="terminal-text header">║  k8s-ai AI Kubernetes Assistant                        ║</text>
+  <text x="20" y="100" class="terminal-text header">║  AegisOps AI Kubernetes Assistant                        ║</text>
   <text x="20" y="120" class="terminal-text header">║  Connected cluster: production-cluster                   ║</text>
   <text x="20" y="140" class="terminal-text header">╚═══════════════════════════════════════════════════════════╝</text>
 

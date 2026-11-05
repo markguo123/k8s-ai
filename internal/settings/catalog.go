@@ -5,7 +5,7 @@
 // 安全边界（AGENTS.md + P3.9）：Sensitive 键（API Key、kubeconfig 路径、MCP env）
 // 只在写接口接收，读接口一律不回明文，只回"是否已配置"；CONFIG_CHANGE 审计只
 // 记录变更了哪些键，不记录值。P3.9 起敏感键在落库前由注入的 SecretCipher 静态
-// 加密，密钥只从环境变量读取（K8S_AI_ENC_KEY），永不落库、不再存明文。
+// 加密，密钥只从环境变量读取（AEGISOPS_ENC_KEY），永不落库、不再存明文。
 package settings
 
 import (
@@ -148,8 +148,8 @@ var catalog = map[string][]Definition{
 		{Key: "agent_result_max_bytes", Kind: KindInt, Default: 8192, Min: 1, Source: "agent.result_max_bytes", Desc: "工具结果字节上限"},
 		{Key: "agent_turn_max_bytes", Kind: KindInt, Default: 32768, Min: 1, Source: "agent.turn_max_bytes", Desc: "单轮上下文字节上限"},
 		{Key: "agent_history_turns", Kind: KindInt, Default: 20, Min: 1, Source: "agent.history_turns", Desc: "携带历史轮数"},
-		{Key: "agent_session_dir", Kind: KindString, Default: "~/.k8s-ai/sessions", Example: "~/.k8s-ai/sessions", Source: "agent.session_dir", Desc: "会话目录（旧数据兼容）"},
-		{Key: "agent_audit_dir", Kind: KindString, Default: "~/.k8s-ai/audit", Example: "~/.k8s-ai/audit", Source: "agent.audit_dir", Desc: "审计文件目录"},
+		{Key: "agent_session_dir", Kind: KindString, Default: "~/.aegisops/sessions", Example: "~/.aegisops/sessions", Source: "agent.session_dir", Desc: "会话目录（旧数据兼容）"},
+		{Key: "agent_audit_dir", Kind: KindString, Default: "~/.aegisops/audit", Example: "~/.aegisops/audit", Source: "agent.audit_dir", Desc: "审计文件目录"},
 		{Key: "agent_disabled_tools", Kind: KindStringList, Default: []string{}, Example: "kubectl_exec, port_forward", Source: "agent.disabled_tools", Desc: "停用的工具"},
 		{Key: "webui_addr", Kind: KindString, Default: "127.0.0.1:8081", Example: "127.0.0.1:8081", Source: "webui.addr", Desc: "Web 终端监听地址"},
 	},

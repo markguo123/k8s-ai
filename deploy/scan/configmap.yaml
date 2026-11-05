@@ -1,19 +1,19 @@
 # 每日巡检（scan）专用配置（P6.2）。
 #
-# 为什么单独一份：k8s-ai scan 是终端直用通道，读的是「引擎键」
+# 为什么单独一份：aegisops scan 是终端直用通道，读的是「引擎键」
 # （kubernetes / llm / scan / report / agent / rules）；deploy/base/configmap.yaml 里的
-# k8s-ai-config 是平台进程静态配置，只有 platform: 段 + 落盘目录，scan 读不到引擎键。
+# aegisops-config 是平台进程静态配置，只有 platform: 段 + 落盘目录，scan 读不到引擎键。
 # 两份配置各自独立，不要合并、也不要互相引用。
 #
-# 与 k8s-ai config init --cli 生成的 ~/.k8s-ai/cli.yaml 同形状，可按现场需要增删键。
-# 敏感值不进 ConfigMap：模型密钥经 K8S_AI_LLM_API_KEY（Secret）注入。
+# 与 aegisops config init --cli 生成的 ~/.aegisops/cli.yaml 同形状，可按现场需要增删键。
+# 敏感值不进 ConfigMap：模型密钥经 AEGISOPS_LLM_API_KEY（Secret）注入。
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: k8s-ai-scan-config
-  namespace: k8s-ai
+  name: aegisops-scan-config
+  namespace: aegisops
   labels:
-    app: k8s-ai
+    app: aegisops
     app.kubernetes.io/component: scan-config
 data:
   config.yaml: |
@@ -29,7 +29,7 @@ data:
     llm:
       enabled: true           # 改 false = 只出规则结论，不调模型
       endpoint: "http://REPLACE_WITH_LLM_HOST:8000/v1"  # OpenAI Compatible 基础地址，必填（换成真实 host）
-      api_key: ""             # 只经 K8S_AI_LLM_API_KEY 注入
+      api_key: ""             # 只经 AEGISOPS_LLM_API_KEY 注入
       model: "REPLACE_WITH_MODEL_NAME"       # 建议非思考型快模型
       temperature: 0.1
       max_tokens: 4096
