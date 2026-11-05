@@ -984,7 +984,7 @@ defineExpose({
                     class="evidence"
                   >
                     <div class="evidence-head">
-                      <span class="ev-id mono" :title="`诊断结论引用号 ${entry.ref}`">{{ entry.ref }}</span>
+                      <span class="ev-id mono" :title="`根因分析引用号 ${entry.ref}`">{{ entry.ref }}</span>
                       <span class="pill mute">{{ entry.evidence.kind }}</span>
                       <span class="mono faint ellipsis">{{ entry.evidence.key }}</span>
                       <span v-if="entry.evidence.redacted" class="pill warn">含脱敏字段</span>

@@ -39,7 +39,7 @@ const allMenuGroups = [
   {
     title: '工作区',
     items: [
-      { index: '/app/chat', title: '聊天', icon: ChatDotRound },
+      { index: '/app/chat', title: '问诊', icon: ChatDotRound },
       { index: '/app/cluster', title: '集群', icon: Connection },
       // 报告不设权限位：可见范围由后端按 owner + 集群授权判定（三角色都能看见自己该看见的）。
       { index: '/app/report', title: '体检', icon: Files },

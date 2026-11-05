@@ -30,7 +30,7 @@ describe('AppLayout 权限菜单', () => {
   it.each(['user', 'operator'] as const)('%s 不展示配置中心和用户权限', async (role) => {
     const wrapper = await mountLayout(role)
     const menu = wrapper.find('.app-menu').text()
-    expect(menu).toContain('聊天')
+    expect(menu).toContain('问诊')
     expect(menu).not.toContain('配置中心')
     expect(menu).not.toContain('用户与权限')
   })

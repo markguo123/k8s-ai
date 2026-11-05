@@ -21,7 +21,7 @@ const routes: RouteRecordRaw[] = [
         path: 'chat',
         name: 'chat',
         component: () => import('@/views/chat/ChatView.vue'),
-        meta: { title: '聊天' },
+        meta: { title: '问诊' },
       },
       {
         path: 'cluster',
@@ -35,7 +35,7 @@ const routes: RouteRecordRaw[] = [
         path: 'report',
         name: 'report',
         component: () => import('@/views/report/ReportsView.vue'),
-        meta: { title: '智能诊断中心' },
+        meta: { title: '智能体检中心' },
       },
       {
         // 报告详情（P9）：同样不带 permission。可见性由后端按 owner/集群授权判定，

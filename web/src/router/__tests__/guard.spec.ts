@@ -23,7 +23,7 @@ describe('路由守卫（P2.2 未登录不可访问业务页）', () => {
     expect(decodeURIComponent(path)).toContain('/app/approval')
   })
 
-  it('已登录访问 /login 回到聊天页，业务页保持可达', async () => {
+  it('已登录访问 /login 回到问诊页，业务页保持可达', async () => {
     localStorage.setItem(TOKEN_KEY, 'tok-1')
     localStorage.setItem(USER_KEY, JSON.stringify({ userId: 'u1', username: 'admin', role: 'admin' }))
     setActivePinia(createPinia())

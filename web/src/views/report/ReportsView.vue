@@ -782,8 +782,8 @@ onBeforeUnmount(stopPolling)
 <template>
   <section class="report-page">
     <div class="page-head">
-      <h2 class="title">智能诊断中心</h2>
-      <span class="desc"> 开始体检并查看诊断结论、故障链与证据；报告正文按需从对象存储取回 </span>
+      <h2 class="title">智能体检中心</h2>
+      <span class="desc"> 开始体检并查看根因分析、故障关联分析与证据；报告正文按需从对象存储取回 </span>
       <span
         v-if="canSeeStorage && health"
         class="pill"
