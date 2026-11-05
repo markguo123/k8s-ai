@@ -21,9 +21,10 @@ type Config struct {
 	Scan       ScanConfig       `mapstructure:"scan"`
 	Report     ReportConfig     `mapstructure:"report"`
 	Rules      RulesConfig      `mapstructure:"rules"`
-	Agent      AgentConfig      `mapstructure:"agent"` // 二期 Agent
-	WebUI      WebUIConfig      `mapstructure:"webui"` // 二期 Web UI
-	MCP        MCPConfig        `mapstructure:"mcp"`   // 二期 MCP 预留
+	Agent      AgentConfig      `mapstructure:"agent"`    // 二期 Agent
+	WebUI      WebUIConfig      `mapstructure:"webui"`    // 二期 Web UI
+	MCP        MCPConfig        `mapstructure:"mcp"`      // 二期 MCP 预留
+	Platform   PlatformConfig   `mapstructure:"platform"` // 四期平台静态启动基线（P6.12）
 }
 
 // KubernetesConfig controls cluster access (FR-003).
@@ -98,9 +99,19 @@ type AgentConfig struct {
 	HistoryTurns    int           `mapstructure:"history_turns"`
 	SessionDir      string        `mapstructure:"session_dir"`
 	AuditDir        string        `mapstructure:"audit_dir"`
-	DisabledTools   []string      `mapstructure:"disabled_tools"`
-	Create          CreateConfig  `mapstructure:"create"`
-	Secret          SecretConfig  `mapstructure:"secret"`
+	// SessionMaxBytes caps one session body as it is written to the platform store
+	// (P8.6, ADR-046). Session bodies stay in MySQL: externalizing them to the object
+	// store would just move the write amplification into the bucket, so growth is
+	// bounded here instead. Zero or negative falls back to DefaultSessionMaxBytes.
+	SessionMaxBytes int64 `mapstructure:"session_max_bytes"`
+	// AuditFileCopy keeps the per-session audit JSONL file in addition to the
+	// platform audit table (P8.0). The platform DB is the source of truth; the
+	// file is an optional copy. Default true keeps existing deployments intact,
+	// and CLI mode (no platform store) always writes it.
+	AuditFileCopy bool         `mapstructure:"audit_file_copy"`
+	DisabledTools []string     `mapstructure:"disabled_tools"`
+	Create        CreateConfig `mapstructure:"create"`
+	Secret        SecretConfig `mapstructure:"secret"`
 }
 
 // CreateConfig controls the Phase 3 resource-creation capability
@@ -153,16 +164,123 @@ type MCPServerConfig struct {
 	URL     string            `mapstructure:"url"`
 }
 
+// PlatformConfig 是四期平台运行时的静态启动基线（P6.12）。
+// 口径：动态业务配置（model/skill/approval/memory/retention/mcp/ops）的
+// 唯一事实来源是 DB settings 表；本段只承载"这台实例想跑成什么样"的启动参数
+// （监听地址/存储/管理员账号），修改需改配置文件并重启服务生效。
+type PlatformConfig struct {
+	Server PlatformServerConfig `mapstructure:"server"`
+	Store  PlatformStoreConfig  `mapstructure:"store"`
+	// Blobs 是二进制对象后端（附件/报告产物/可选会话正文外置，P8.1 / D-32）。
+	Blobs PlatformBlobsConfig `mapstructure:"blobs"`
+	Auth  PlatformAuthConfig  `mapstructure:"auth"`
+	Exec  PlatformExecConfig  `mapstructure:"exec"`
+}
+
+// PlatformExecConfig 控制命令执行通道（P6.3 / D-33 / ADR-044 v1.1）。
+// 它是静态启动参数：改它要改配置文件并重启，不进配置中心页面（7 组动态键不含它）。
+type PlatformExecConfig struct {
+	// ShellEnabled 决定含 shell 构造（管道、串联、重定向、命令替换、heredoc）的
+	// kubectl 命令能否进入执行。默认 true，与本地 CLI 的执行能力对齐：安全不靠
+	// "镜像里没有 shell"，而靠 shell 命令必须经真人审批、且不被 --skip-permissions
+	// 免除（AGENTS.md）。
+	// 部署在无 shell 镜像变体（Dockerfile.distroless）时置 false：executor 在构造
+	// exec.Cmd **之前**拒绝并返回可指导文案，argv 直调与 client-go 写通道不受影响，
+	// 也不会再把 "bash: executable file not found" 这类环境错误抛给模型。
+	ShellEnabled bool `mapstructure:"shell_enabled"`
+}
+
+// PlatformServerConfig 控制平台 HTTP 服务监听参数。
+type PlatformServerConfig struct {
+	Addr string            `mapstructure:"addr"`
+	TLS  PlatformTLSConfig `mapstructure:"tls"`
+	// StaticEnabled 控制是否由本进程托管内嵌前端产物（P6.1/P6.11，D-26）：
+	// true = 形态 A 一体化（单端口同时提供 SPA 与 API）；false = 形态 B 纯 API
+	// （静态资源交给独立前端镜像/Nginx）。
+	StaticEnabled bool `mapstructure:"static_enabled"`
+}
+
+// PlatformTLSConfig 控制平台服务 HTTPS 监听。
+type PlatformTLSConfig struct {
+	Enabled  bool   `mapstructure:"enabled"`
+	CertFile string `mapstructure:"cert_file"`
+	KeyFile  string `mapstructure:"key_file"`
+}
+
+// PlatformStoreConfig 控制平台持久化存储（P6.1 / D-31）。
+// 主路径是 mysql（DSN 经 Secret 注入）；sqlite 作为单机/离线兜底，
+// 兜底时 sqlite_path 必须落在持久卷上，禁止使用容器可写层。
+type PlatformStoreConfig struct {
+	Driver     string `mapstructure:"driver"`
+	SQLitePath string `mapstructure:"sqlite_path"`
+	// DSN 是 mysql 驱动的 go-sql-driver 连接串，必须带 parseTime=true
+	// （TIMESTAMP 需要扫描为 time.Time）。口令等敏感值只经环境变量/Secret 注入，
+	// 不写入配置文件与日志。
+	DSN string `mapstructure:"dsn"`
+}
+
+// 存储驱动取值（platform.store.driver）。
+const (
+	StoreDriverSQLite = "sqlite"
+	StoreDriverMySQL  = "mysql"
+)
+
+// IsMySQL 报告当前配置是否使用 MySQL 驱动（空值按兜底驱动 sqlite 处理）。
+func (p PlatformStoreConfig) IsMySQL() bool {
+	return strings.EqualFold(strings.TrimSpace(p.Driver), StoreDriverMySQL)
+}
+
+// PlatformAuthConfig 控制平台内建账号与登录会话参数。
+type PlatformAuthConfig struct {
+	AdminUsername string        `mapstructure:"admin_username"`
+	TokenTTL      time.Duration `mapstructure:"token_ttl"`
+	SessionStore  string        `mapstructure:"session_store"` // memory（本期）
+}
+
 // LoadOptions controls a single Load call.
 type LoadOptions struct {
 	ConfigFile string         // explicit --config path
 	Overrides  map[string]any // CLI values, highest precedence
 	NoEnv      bool           // skip environment merging (test isolation)
+	CLI        bool           // 终端直用面（chat/scan）：默认读 cli.yaml，缺失回退 config.yaml
 }
 
 // DefaultConfigFile returns the default config path (~/.k8s-ai/config.yaml).
 func DefaultConfigFile() (string, error) {
 	return expandHome("~/.k8s-ai/config.yaml")
+}
+
+// DefaultCLIConfigFile 返回终端直用配置的默认路径（~/.k8s-ai/cli.yaml，D-21）。
+// 它与平台静态 config.yaml 是两份独立文件：由 `config init --cli` 生成，只有
+// k8s-ai chat / scan 读取，server 既不读取也不回写。
+func DefaultCLIConfigFile() (string, error) {
+	return expandHome("~/.k8s-ai/cli.yaml")
+}
+
+// ResolveConfigFile 解析实际生效的配置文件路径（显式 --config 优先）。终端直用面
+// 先取 cli.yaml，缺失时回退旧 config.yaml 以兼容存量部署；都没有时返回空串，
+// 表示只用默认值与环境变量。
+func ResolveConfigFile(explicit string, cli bool) (string, error) {
+	if explicit != "" {
+		return expandHome(explicit)
+	}
+	if cli {
+		cliPath, err := DefaultCLIConfigFile()
+		if err != nil {
+			return "", err
+		}
+		if fileExists(cliPath) {
+			return cliPath, nil
+		}
+	}
+	def, err := DefaultConfigFile()
+	if err != nil {
+		return "", err
+	}
+	if fileExists(def) {
+		return def, nil
+	}
+	return "", nil
 }
 
 // Load merges defaults, file, environment and overrides in that order.
@@ -177,7 +295,7 @@ func Load(opts LoadOptions) (*Config, error) {
 		v.AutomaticEnv()
 	}
 
-	path, err := resolveConfigPath(opts.ConfigFile)
+	path, err := ResolveConfigFile(opts.ConfigFile, opts.CLI)
 	if err != nil {
 		return nil, err
 	}
@@ -250,6 +368,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("agent.history_turns", 20)
 	v.SetDefault("agent.session_dir", "~/.k8s-ai/sessions")
 	v.SetDefault("agent.audit_dir", "~/.k8s-ai/audit")
+	v.SetDefault("agent.session_max_bytes", defaultSessionMaxBytes())
+	v.SetDefault("agent.audit_file_copy", true)
 
 	// Phase 3 resource creation (RESOURCE_CREATE_DESIGN.md / DEVELOPMENT_PLAN_三期.md).
 	v.SetDefault("agent.create.enabled", true)
@@ -263,20 +383,41 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("webui.addr", "127.0.0.1:8081")
 
 	v.SetDefault("mcp.enabled", false)
-}
 
-func resolveConfigPath(explicit string) (string, error) {
-	if explicit != "" {
-		return expandHome(explicit)
-	}
-	def, err := DefaultConfigFile()
-	if err != nil {
-		return "", err
-	}
-	if fileExists(def) {
-		return def, nil
-	}
-	return "", nil
+	// 四期平台静态启动基线（P6.12）。
+	v.SetDefault("platform.server.addr", ":8080")
+	v.SetDefault("platform.server.static_enabled", true)
+	v.SetDefault("platform.server.tls.enabled", false)
+	v.SetDefault("platform.server.tls.cert_file", "")
+	v.SetDefault("platform.server.tls.key_file", "")
+	v.SetDefault("platform.store.driver", StoreDriverSQLite)
+	v.SetDefault("platform.store.sqlite_path", "~/.k8s-ai/k8s-ai.db")
+	v.SetDefault("platform.store.dsn", "")
+	// 二进制对象后端（P8.1 / D-32）：默认 db，未配置的环境升级即无感。每个键都必须
+	// 有默认值，viper 才能在 Unmarshal 时合并只来自环境变量（Secret）注入的取值。
+	v.SetDefault("platform.blobs.driver", BlobDriverDB)
+	v.SetDefault("platform.blobs.prefix", "k8sai")
+	v.SetDefault("platform.blobs.dir", "")
+	// tmp_dir 留空时由 objectstore 取 os.TempDir()（方案 15 §14）：装配层决定回落值，
+	// 配置面不猜，避免 validate 在有无临时卷的不同环境下结论不一致。
+	v.SetDefault("platform.blobs.tmp_dir", "")
+	v.SetDefault("platform.blobs.endpoint", "")
+	v.SetDefault("platform.blobs.region", "us-east-1")
+	v.SetDefault("platform.blobs.use_tls", false)
+	v.SetDefault("platform.blobs.path_style", true)
+	v.SetDefault("platform.blobs.bucket", "k8s-ai")
+	v.SetDefault("platform.blobs.access_key", "")
+	v.SetDefault("platform.blobs.secret_key", "")
+	v.SetDefault("platform.blobs.create_bucket", true)
+	v.SetDefault("platform.blobs.presign_ttl", 15*time.Minute)
+	v.SetDefault("platform.blobs.max_object_size", "32MiB")
+	v.SetDefault("platform.blobs.session_data", false)
+	v.SetDefault("platform.blobs.gc_grace_period", 168*time.Hour)
+	v.SetDefault("platform.auth.admin_username", "admin")
+	v.SetDefault("platform.auth.token_ttl", 24*time.Hour)
+	v.SetDefault("platform.auth.session_store", "memory")
+	// 执行通道默认开启（D-33）：关闭是给无 shell 镜像变体的现场用的。
+	v.SetDefault("platform.exec.shell_enabled", true)
 }
 
 func expandHome(path string) (string, error) {
@@ -314,6 +455,26 @@ func expandHomePaths(cfg *Config) error {
 		return err
 	}
 	cfg.Agent.AuditDir = auditDir
+	sqlitePath, err := expandHome(cfg.Platform.Store.SQLitePath)
+	if err != nil {
+		return err
+	}
+	cfg.Platform.Store.SQLitePath = sqlitePath
+	blobsDir, err := expandHome(cfg.Platform.Blobs.Dir)
+	if err != nil {
+		return err
+	}
+	cfg.Platform.Blobs.Dir = blobsDir
+	certFile, err := expandHome(cfg.Platform.Server.TLS.CertFile)
+	if err != nil {
+		return err
+	}
+	cfg.Platform.Server.TLS.CertFile = certFile
+	keyFile, err := expandHome(cfg.Platform.Server.TLS.KeyFile)
+	if err != nil {
+		return err
+	}
+	cfg.Platform.Server.TLS.KeyFile = keyFile
 	return nil
 }
 
@@ -408,6 +569,9 @@ func (c *Config) Validate() error {
 	if c.Agent.HistoryTurns <= 0 {
 		return fmt.Errorf("agent.history_turns must be > 0")
 	}
+	if c.Agent.SessionMaxBytes < 0 {
+		return fmt.Errorf("agent.session_max_bytes must be > 0 (omit it or set %s to keep the default)", defaultSessionMaxBytesText)
+	}
 	if c.Agent.SessionDir == "" || c.Agent.AuditDir == "" {
 		return fmt.Errorf("agent.session_dir and agent.audit_dir must not be empty")
 	}
@@ -424,7 +588,84 @@ func (c *Config) Validate() error {
 	if c.WebUI.Addr == "" {
 		return fmt.Errorf("webui.addr must not be empty")
 	}
+	if err := c.Platform.Validate(); err != nil {
+		return err
+	}
 	return nil
+}
+
+// Validate 校验平台静态启动基线（P6.12/P6.1）：监听地址、TLS 成对、
+// 存储驱动与连接参数、管理员账号、会话 Token 时长与存储。
+func (p PlatformConfig) Validate() error {
+	if strings.TrimSpace(p.Server.Addr) == "" {
+		return fmt.Errorf("platform.server.addr must not be empty")
+	}
+	if p.Server.TLS.Enabled {
+		if strings.TrimSpace(p.Server.TLS.CertFile) == "" || strings.TrimSpace(p.Server.TLS.KeyFile) == "" {
+			return fmt.Errorf("platform.server.tls requires both cert_file and key_file")
+		}
+	}
+	switch p.Store.Driver {
+	case "", StoreDriverSQLite:
+		if strings.TrimSpace(p.Store.SQLitePath) == "" {
+			return fmt.Errorf("platform.store.sqlite_path must not be empty")
+		}
+	case StoreDriverMySQL:
+		if err := validateMySQLDSN(p.Store.DSN); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("platform.store.driver must be %s or %s", StoreDriverSQLite, StoreDriverMySQL)
+	}
+	if strings.TrimSpace(p.Auth.AdminUsername) == "" {
+		return fmt.Errorf("platform.auth.admin_username must not be empty")
+	}
+	if p.Auth.TokenTTL <= 0 {
+		return fmt.Errorf("platform.auth.token_ttl must be > 0")
+	}
+	switch p.Auth.SessionStore {
+	case "", "memory":
+	default:
+		return fmt.Errorf("platform.auth.session_store must be memory (persistent store not supported this phase)")
+	}
+	// blob 后端放在最后校验：存储驱动与密钥的错误更靠近「服务起不来」的根因，
+	// 先报它们能让现场少绕一圈。
+	if err := p.Blobs.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateMySQLDSN 校验 MySQL 连接串：非空且参数段带 parseTime=true。
+// go-sql-driver 的 DSN 不是 URL，不能整体交给 url.Parse；这里只按驱动
+// 约定切出 "/" 之后的参数段做键值校验，避免把口令当路径误解析。
+func validateMySQLDSN(dsn string) error {
+	dsn = strings.TrimSpace(dsn)
+	if dsn == "" {
+		return fmt.Errorf("platform.store.dsn must not be empty when platform.store.driver is %s", StoreDriverMySQL)
+	}
+	idx := strings.LastIndex(dsn, "/")
+	if idx < 0 {
+		return fmt.Errorf("platform.store.dsn must include a database name (user:pass@tcp(host:port)/dbname)")
+	}
+	dbName, params, hasParams := strings.Cut(dsn[idx+1:], "?")
+	if strings.TrimSpace(dbName) == "" {
+		return fmt.Errorf("platform.store.dsn must include a database name (user:pass@tcp(host:port)/dbname)")
+	}
+	if !hasParams {
+		return fmt.Errorf("platform.store.dsn must set parseTime=true (got no query parameters)")
+	}
+	for _, pair := range strings.Split(params, "&") {
+		k, v, _ := strings.Cut(pair, "=")
+		if !strings.EqualFold(strings.TrimSpace(k), "parseTime") {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true", "1":
+			return nil
+		}
+	}
+	return fmt.Errorf("platform.store.dsn must set parseTime=true")
 }
 
 // validateSecretAccess enforces the Phase 3 Secret channel gate (D-12/R4.7):

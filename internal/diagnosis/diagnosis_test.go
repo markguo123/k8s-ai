@@ -59,7 +59,7 @@ func TestDiagnoseSuccess(t *testing.T) {
 	if len(ds) != 1 || !ds[0].LLMUsed || ds[0].RootCause == "" {
 		t.Fatalf("diagnoses = %+v", ds)
 	}
-	if ds[0].EvidenceChain[0] != "E1" {
+	if ds[0].EvidenceChain[0] != "f1#E1" {
 		t.Fatalf("evidence chain = %v", ds[0].EvidenceChain)
 	}
 	if summary.Calls != 1 || summary.Failed != 0 || summary.Degraded != 0 {
@@ -228,9 +228,9 @@ func refOfTest(f model.Finding) model.FindingRef {
 	return model.FindingRef{ID: f.ID, Rule: f.Rule, Severity: f.Severity, Title: f.Title, Resource: f.Resource}
 }
 
-// TestRemediationDirectionFallback LLM 未给修复命令时，工具侧按根因规则兜底修复方向。
+// TestRemediationDirectionFallback LLM 明确缺少改写参数时，保留完整文字方案且不伪造写命令。
 func TestRemediationDirectionFallback(t *testing.T) {
-	f := &fakeLLM{responses: []string{`{"summary":"s","rootCause":"r","confidence":0.8,"confidenceLevel":"CONFIRMED","causalChain":"c","evidenceChain":["E1"],"impact":"i","possibleCauses":[],"investigation":["kubectl -n prod get pod web-0"],"remediation":[],"verification":[],"risk":"MEDIUM"}`}}
+	f := &fakeLLM{responses: []string{`{"summary":"s","rootCause":"r","confidence":0.8,"confidenceLevel":"CONFIRMED","causalChain":"c","evidenceChain":["E1"],"impact":"i","possibleCauses":[],"investigation":["kubectl -n prod get pod web-0"],"remediation":[],"remediationText":"**修复目标**：先确认外部依赖，再重建 Pod。\n\n**预期结果**：Pod 恢复 Ready。","remediationDirection":"当前无法确认外部依赖的精确配置，不生成写入命令。","verification":["kubectl -n prod get pod web-0"],"risk":"MEDIUM"}`}}
 	ds, _, err := New(diagOpts()).Diagnose(context.Background(), []model.Finding{testFinding()}, f)
 	if err != nil {
 		t.Fatal(err)
@@ -238,40 +238,12 @@ func TestRemediationDirectionFallback(t *testing.T) {
 	if len(ds) != 1 || ds[0].RemediationDirection == "" {
 		t.Fatalf("缺少修复方向兜底: %+v", ds)
 	}
-	if len(ds[0].Remediation) == 0 {
-		t.Fatalf("remediation 应至少一条可执行命令: %+v", ds[0])
+	if len(ds[0].Remediation) != 0 {
+		t.Fatalf("修改参数未确认时不得伪造写命令: %+v", ds[0].Remediation)
 	}
-	// remediationText 必须兜底为修复方向文字，保证"文字+命令"永不缺失。
-	if ds[0].RemediationText == "" || ds[0].RemediationText != ds[0].RemediationDirection {
-		t.Fatalf("remediationText 应兜底为修复方向: %+v", ds[0])
-	}
-}
-
-// TestDetectWorkloadOwner 验证 Workload owner 命名启发式：
-// Deployment 三段名、StatefulSet 数字序号名可识别；两段式（DS/RS/Job）不猜测。
-func TestDetectWorkloadOwner(t *testing.T) {
-	cases := []struct {
-		kind, name string
-		wantHas    bool
-		wantKind   string
-		wantName   string
-	}{
-		{"Deployment", "web", true, "deployment", "web"},
-		{"StatefulSet", "db", true, "statefulset", "db"},
-		{"Pod", "nginx-deployment-7c67df8d79-rhsxx", true, "deployment", "nginx-deployment"},
-		{"Pod", "web-0", true, "statefulset", "web"},
-		{"Pod", "web-prod-1", true, "statefulset", "web-prod"},
-		{"Pod", "ds-abcde", false, "", ""}, // DaemonSet/RS/Job 两段式：不猜测
-		{"Pod", "web-0-7c67df8d79-rhsxx", true, "deployment", "web-0"},
-		{"Service", "web-svc", false, "", ""},
-	}
-	for _, tc := range cases {
-		gotHas, gotKind, gotName := detectWorkloadOwner(model.Finding{
-			Resource: model.ResourceRef{Kind: tc.kind, Namespace: "prod", Name: tc.name},
-		})
-		if gotHas != tc.wantHas || gotKind != tc.wantKind || gotName != tc.wantName {
-			t.Errorf("detectWorkloadOwner(%s/%s) = (%v,%s,%s), want (%v,%s,%s)",
-				tc.kind, tc.name, gotHas, gotKind, gotName, tc.wantHas, tc.wantKind, tc.wantName)
-		}
+	if !strings.Contains(ds[0].RemediationText, "修复目标") ||
+		!strings.Contains(ds[0].RemediationText, "预期结果") ||
+		ds[0].RemediationDirection == "" {
+		t.Fatalf("完整文字方案与前置条件都必须保留: %+v", ds[0])
 	}
 }

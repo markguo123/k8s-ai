@@ -1,0 +1,695 @@
+/* P7.3 登录页：径向渐变 / 细网格 / 低透明光感 / 玻璃拟态卡片（来源为未入库的前端原型草稿，见方案 §8） */
+
+@property --lx-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
+.login-ep {
+  --bg: #05070c;
+  --surface: rgba(15, 19, 29, 0.72);
+  --border: rgba(125, 145, 185, 0.16);
+  --text: #e8ecf5;
+  --muted: #8b96ad;
+  --faint: #5a6478;
+  --accent: #6366f1;
+  --accent-2: #22d3ee;
+  --accent-3: #a855f7;
+}
+
+.login-ep,
+.login-ep * {
+  box-sizing: border-box;
+}
+.login-ep {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family:
+    Inter,
+    -apple-system,
+    'Segoe UI',
+    system-ui,
+    'PingFang SC',
+    'Microsoft YaHei',
+    sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ══════════ 背景场景 ══════════ */
+.login-ep .scene {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+.login-ep #net {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.login-ep .glow {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(90px);
+  opacity: 0.55;
+}
+.login-ep .glow-a {
+  width: 640px;
+  height: 640px;
+  left: -14%;
+  top: -20%;
+  background: radial-gradient(circle, rgba(99, 102, 241, 0.55), transparent 68%);
+  animation: lx-drift1 22s ease-in-out infinite alternate;
+}
+.login-ep .glow-b {
+  width: 560px;
+  height: 560px;
+  right: -12%;
+  top: 4%;
+  background: radial-gradient(circle, rgba(34, 211, 238, 0.32), transparent 68%);
+  animation: lx-drift2 26s ease-in-out infinite alternate;
+}
+.login-ep .glow-c {
+  width: 720px;
+  height: 720px;
+  left: 30%;
+  bottom: -46%;
+  background: radial-gradient(circle, rgba(168, 85, 247, 0.24), transparent 70%);
+  animation: lx-drift1 30s ease-in-out infinite alternate-reverse;
+}
+@keyframes lx-drift1 {
+  to {
+    transform: translate3d(64px, 42px, 0) scale(1.12);
+  }
+}
+@keyframes lx-drift2 {
+  to {
+    transform: translate3d(-72px, 52px, 0) scale(1.08);
+  }
+}
+
+/* 透视网格地面（向前推进的速度感） */
+.login-ep .grid-plane {
+  position: absolute;
+  left: -60%;
+  right: -60%;
+  bottom: -6%;
+  height: 62vh;
+  background-image:
+    linear-gradient(to right, rgba(99, 102, 241, 0.17) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(99, 102, 241, 0.17) 1px, transparent 1px);
+  background-size: 64px 64px;
+  transform: perspective(520px) rotateX(74deg);
+  transform-origin: 50% 100%;
+  -webkit-mask-image: linear-gradient(to top, #000 0%, rgba(0, 0, 0, 0.35) 45%, transparent 88%);
+  mask-image: linear-gradient(to top, #000 0%, rgba(0, 0, 0, 0.35) 45%, transparent 88%);
+  animation: lx-gridRun 5s linear infinite;
+}
+@keyframes lx-gridRun {
+  to {
+    background-position: 0 64px;
+  }
+}
+
+/* 扫描光束 */
+.login-ep .beam {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 200px;
+  background: linear-gradient(to bottom, transparent, rgba(34, 211, 238, 0.055), transparent);
+  animation: lx-beamMove 11s linear infinite;
+}
+@keyframes lx-beamMove {
+  0% {
+    transform: translateY(-220px);
+  }
+  100% {
+    transform: translateY(102vh);
+  }
+}
+
+/* 扫描线 + 暗角 */
+.login-ep .scanlines {
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.022) 0 1px,
+    transparent 1px 3px
+  );
+  opacity: 0.65;
+}
+.login-ep .vignette {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(120% 92% at 50% 44%, transparent 34%, rgba(0, 0, 0, 0.74) 100%);
+}
+
+/* ══════════ 登录卡片 ══════════ */
+.login-ep .auth {
+  position: relative;
+  z-index: 1;
+  animation: lx-rise 0.85s cubic-bezier(0.2, 0.7, 0.3, 1) backwards;
+}
+
+.login-ep .card {
+  position: relative;
+  width: min(420px, calc(100vw - 32px));
+  padding: 30px 28px 24px;
+  border-radius: 20px;
+  background: linear-gradient(180deg, rgba(22, 27, 40, 0.84), rgba(10, 13, 21, 0.88));
+  border: 1px solid var(--border);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  backdrop-filter: blur(20px) saturate(150%);
+  box-shadow:
+    0 34px 90px -24px rgba(0, 0, 0, 0.95),
+    0 0 0 1px rgba(255, 255, 255, 0.03) inset,
+    0 1px 0 rgba(255, 255, 255, 0.06) inset;
+  overflow: hidden;
+}
+
+/* 沿边框旋转的能量线 */
+.login-ep .card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: conic-gradient(
+    from var(--lx-angle),
+    transparent 0deg 250deg,
+    rgba(34, 211, 238, 0) 265deg,
+    rgba(34, 211, 238, 0.85) 305deg,
+    rgba(168, 85, 247, 0.95) 335deg,
+    transparent 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  animation: lx-spin 6s linear infinite;
+  pointer-events: none;
+}
+@keyframes lx-spin {
+  to {
+    --lx-angle: 360deg;
+  }
+}
+
+/* 跟随鼠标的内部辉光 */
+.login-ep .card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(
+    340px circle at var(--mx, 50%) var(--my, 0%),
+    rgba(99, 102, 241, 0.16),
+    transparent 68%
+  );
+  opacity: 0;
+  transition: opacity 0.35s ease;
+}
+.login-ep .card:hover::after {
+  opacity: 1;
+}
+
+/* 底部能量条 */
+.login-ep .card-line {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+  width: 56%;
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(34, 211, 238, 0.9),
+    rgba(168, 85, 247, 0.9),
+    transparent
+  );
+  filter: blur(0.4px);
+}
+
+/* —— 头部 —— */
+.login-ep .card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 26px;
+}
+.login-ep .brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.login-ep .logo {
+  width: 42px;
+  height: 42px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: rgba(99, 102, 241, 0.09);
+  border: 1px solid rgba(99, 102, 241, 0.28);
+  box-shadow:
+    0 0 22px -6px rgba(99, 102, 241, 0.75),
+    inset 0 0 18px -8px rgba(34, 211, 238, 0.7);
+}
+.login-ep .logo svg {
+  width: 26px;
+  height: 26px;
+  display: block;
+}
+.login-ep .brand-text strong {
+  display: block;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  background: linear-gradient(90deg, #e8ecf5, #a5b4fc 60%, #67e8f9);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.login-ep .brand-text span {
+  display: block;
+  font-size: 11px;
+  color: var(--faint);
+  letter-spacing: 0.08em;
+}
+
+.login-ep .status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(34, 211, 238, 0.22);
+  background: rgba(34, 211, 238, 0.06);
+}
+.login-ep .status i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #22d3ee;
+  box-shadow: 0 0 0 0 rgba(34, 211, 238, 0.7);
+  animation: lx-pulse 2s ease-out infinite;
+}
+@keyframes lx-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(34, 211, 238, 0.65);
+  }
+  70% {
+    box-shadow: 0 0 0 7px rgba(34, 211, 238, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(34, 211, 238, 0);
+  }
+}
+
+/* —— 标题 —— */
+.login-ep .card-title {
+  margin-bottom: 24px;
+}
+.login-ep .card-title h1 {
+  margin: 0 0 6px;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.login-ep .card-title p {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+/* —— 表单 —— */
+.login-ep .form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.login-ep .field-label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: var(--faint);
+}
+.login-ep .field-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 50px;
+  padding: 0 14px;
+  border-radius: 12px;
+  background: rgba(8, 11, 18, 0.72);
+  border: 1px solid rgba(125, 145, 185, 0.14);
+  transition:
+    border-color 0.25s,
+    box-shadow 0.3s,
+    background 0.25s;
+}
+.login-ep .field-box:hover {
+  border-color: rgba(125, 145, 185, 0.3);
+}
+.login-ep .field-box:focus-within {
+  border-color: rgba(99, 102, 241, 0.72);
+  background: rgba(99, 102, 241, 0.07);
+  box-shadow:
+    0 0 0 3px rgba(99, 102, 241, 0.14),
+    0 0 26px -6px rgba(99, 102, 241, 0.85);
+}
+.login-ep .field-box .icon {
+  width: 17px;
+  height: 17px;
+  flex: none;
+  color: var(--faint);
+  transition: color 0.25s;
+}
+.login-ep .field-box:focus-within .icon {
+  color: var(--accent-2);
+}
+.login-ep .field-box input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  background: none;
+  border: 0;
+  outline: 0;
+  color: var(--text);
+  font-size: 14px;
+  font-family: inherit;
+  letter-spacing: 0.02em;
+}
+.login-ep .field-box input::placeholder {
+  color: var(--faint);
+  opacity: 0.75;
+}
+.login-ep .field-box input::selection {
+  background: rgba(99, 102, 241, 0.4);
+}
+
+/* —— 选项行 —— */
+.login-ep .row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 2px;
+  font-size: 12.5px;
+}
+.login-ep .check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.login-ep .check input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.login-ep .check .box {
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  flex: none;
+  border: 1px solid rgba(125, 145, 185, 0.35);
+  display: grid;
+  place-items: center;
+  transition: 0.22s;
+}
+.login-ep .check .box::after {
+  content: '';
+  width: 7px;
+  height: 4px;
+  border-left: 1.6px solid #fff;
+  border-bottom: 1.6px solid #fff;
+  transform: rotate(-45deg) scale(0.4);
+  opacity: 0;
+  transition: 0.22s;
+  margin-top: -2px;
+}
+.login-ep .check input:checked + .box {
+  background: linear-gradient(135deg, var(--accent), var(--accent-3));
+  border-color: transparent;
+  box-shadow: 0 0 12px -2px rgba(99, 102, 241, 0.9);
+}
+.login-ep .check input:checked + .box::after {
+  opacity: 1;
+  transform: rotate(-45deg) scale(1);
+}
+.login-ep .check input:focus-visible + .box {
+  outline: 2px solid var(--accent-2);
+  outline-offset: 2px;
+}
+
+.login-ep .link {
+  color: var(--muted);
+  text-decoration: none;
+  transition: color 0.2s;
+  position: relative;
+}
+.login-ep .link::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -2px;
+  height: 1px;
+  background: linear-gradient(90deg, var(--accent-2), var(--accent-3));
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.28s ease;
+}
+.login-ep .link:hover {
+  color: var(--text);
+}
+.login-ep .link:hover::after {
+  transform: scaleX(1);
+}
+
+/* —— 主按钮 —— */
+.login-ep .btn {
+  position: relative;
+  width: 100%;
+  height: 50px;
+  margin-top: 8px;
+  border: 0;
+  border-radius: 12px;
+  cursor: pointer;
+  overflow: hidden;
+  isolation: isolate;
+  font-family: inherit;
+  font-size: 14.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  color: #fff;
+  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 42%, #7c3aed 100%);
+  box-shadow:
+    0 12px 34px -10px rgba(99, 102, 241, 0.95),
+    0 0 0 1px rgba(255, 255, 255, 0.1) inset,
+    0 1px 0 rgba(255, 255, 255, 0.28) inset;
+  transition:
+    transform 0.18s cubic-bezier(0.2, 0.7, 0.3, 1),
+    box-shadow 0.28s;
+}
+.login-ep .btn:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 20px 46px -12px rgba(99, 102, 241, 1),
+    0 0 0 1px rgba(255, 255, 255, 0.14) inset,
+    0 0 30px -6px rgba(34, 211, 238, 0.6),
+    0 1px 0 rgba(255, 255, 255, 0.34) inset;
+}
+.login-ep .btn:active {
+  transform: translateY(0) scale(0.988);
+}
+.login-ep .btn:focus-visible {
+  outline: 2px solid var(--accent-2);
+  outline-offset: 3px;
+}
+
+/* 掠光 */
+.login-ep .btn::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    100deg,
+    transparent 28%,
+    rgba(255, 255, 255, 0.5) 50%,
+    transparent 72%
+  );
+  transform: translateX(-140%);
+  animation: lx-sheen 3.6s ease-in-out infinite;
+}
+@keyframes lx-sheen {
+  0%,
+  52% {
+    transform: translateX(-140%);
+  }
+  86%,
+  100% {
+    transform: translateX(140%);
+  }
+}
+
+.login-ep .btn-text {
+  position: relative;
+  z-index: 1;
+  transition: opacity 0.2s;
+}
+.login-ep .spinner {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.28);
+  border-top-color: #fff;
+  opacity: 0;
+  transition: opacity 0.2s;
+  animation: lx-rot 0.7s linear infinite;
+}
+@keyframes lx-rot {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.login-ep .btn.is-loading {
+  pointer-events: none;
+}
+.login-ep .btn.is-loading .btn-text {
+  opacity: 0;
+}
+.login-ep .btn.is-loading .spinner {
+  opacity: 1;
+}
+
+/* —— 底部提示 —— */
+.login-ep .foot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 16px;
+  font-size: 11px;
+  color: var(--faint);
+  letter-spacing: 0.04em;
+}
+.login-ep .foot svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* —— HUD 状态栏 —— */
+.login-ep .hud {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  margin-top: 16px;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+  animation: lx-rise 0.85s 0.35s cubic-bezier(0.2, 0.7, 0.3, 1) backwards;
+}
+.login-ep .hud b {
+  color: var(--muted);
+  font-weight: 500;
+}
+.login-ep .hud span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.login-ep .hud .dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #34d399;
+  box-shadow: 0 0 8px rgba(52, 211, 153, 0.9);
+}
+
+/* —— 入场 —— */
+@keyframes lx-rise {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.login-ep .card > * {
+  animation: lx-rise 0.6s cubic-bezier(0.2, 0.7, 0.3, 1) backwards;
+}
+.login-ep .card > *:nth-child(1) {
+  animation-delay: 0.08s;
+}
+.login-ep .card > *:nth-child(2) {
+  animation-delay: 0.14s;
+}
+.login-ep .card > *:nth-child(3) {
+  animation-delay: 0.2s;
+}
+.login-ep .card > *:nth-child(4) {
+  animation-delay: 0.26s;
+}
+.login-ep .card > *:nth-child(5) {
+  animation-delay: 0.32s;
+}
+
+@media (max-width: 420px) {
+  .login-ep .card {
+    padding: 26px 20px 20px;
+    border-radius: 16px;
+  }
+  .login-ep .card-title h1 {
+    font-size: 19px;
+  }
+}
+@media (max-height: 660px) {
+  .login-ep {
+    overflow-y: auto;
+    padding: 24px 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-ep *,
+  .login-ep *::before,
+  .login-ep *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

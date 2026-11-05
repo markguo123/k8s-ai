@@ -76,6 +76,10 @@ func TestRunFindsCrashLoop(t *testing.T) {
 	if result.HealthScore.Score >= 100 {
 		t.Fatalf("存在 Finding 时评分应低于 100，got %d", result.HealthScore.Score)
 	}
+	if result.DiagnosisSummary == nil || result.DiagnosisSummary.RuleFindings != len(result.Findings) {
+		t.Fatalf("诊断账 RuleFindings 必须等于本次 Finding 数：summary=%+v findings=%d",
+			result.DiagnosisSummary, len(result.Findings))
+	}
 	if len(result.ReportPaths) != 2 {
 		t.Fatalf("latest 模式应写 2 个文件，got %d", len(result.ReportPaths))
 	}
@@ -86,6 +90,63 @@ func TestRunFindsCrashLoop(t *testing.T) {
 		default:
 			t.Fatalf("只读违规: %s %s", a.GetVerb(), a.GetResource().Resource)
 		}
+	}
+}
+
+func TestSummaryFromSnapshotCountsRBAC(t *testing.T) {
+	snap := &model.ClusterSnapshot{
+		Roles:               make([]model.RoleInfo, 3),
+		RoleBindings:        make([]model.RoleBindingInfo, 4),
+		ClusterRoles:        make([]model.ClusterRoleInfo, 5),
+		ClusterRoleBindings: make([]model.ClusterRoleBindingInfo, 6),
+	}
+	got := summaryFromSnapshot(snap, model.ScanOptions{})
+	if got.Roles != 3 || got.RoleBindings != 4 || got.ClusterRoles != 5 || got.ClusterRoleBindings != 6 {
+		t.Fatalf("RBAC 汇总不完整：%+v", got)
+	}
+}
+
+func TestSummaryFromSnapshotKeepsBusinessScanScope(t *testing.T) {
+	snap := &model.ClusterSnapshot{
+		Namespaces: []model.NamespaceInfo{
+			{Ref: model.ResourceRef{Kind: "Namespace", Name: "team-a"}},
+			{Ref: model.ResourceRef{Kind: "Namespace", Name: "team-b"}},
+		},
+		Pods:  make([]model.PodInfo, 7),
+		Nodes: make([]model.NodeInfo, 3),
+		Storage: []model.StorageInfo{
+			{Ref: model.ResourceRef{Kind: "PVC", Namespace: "team-a", Name: "data"}},
+			{Ref: model.ResourceRef{Kind: "PV", Name: "pv-a"}},
+			{Ref: model.ResourceRef{Kind: "StorageClass", Name: "fast"}},
+			{Ref: model.ResourceRef{Kind: "VolumeAttachment", Name: "va-a"}},
+		},
+		Roles:               make([]model.RoleInfo, 2),
+		RoleBindings:        make([]model.RoleBindingInfo, 1),
+		ClusterRoles:        make([]model.ClusterRoleInfo, 5),
+		ClusterRoleBindings: make([]model.ClusterRoleBindingInfo, 6),
+		Components:          make([]model.ComponentInfo, 2),
+	}
+
+	got := summaryFromSnapshot(snap, model.ScanOptions{Namespace: "team-a"})
+	if got.Namespaces != 1 || got.Nodes != 0 || got.Storage != 1 {
+		t.Fatalf("命名空间体检的资源计数必须限定在可见范围：%+v", got)
+	}
+	if got.ClusterRoles != 0 || got.ClusterRoleBindings != 0 || got.Components != 0 {
+		t.Fatalf("命名空间体检不得把集群级采集量塞进报告汇总：%+v", got)
+	}
+	if got.Roles != 2 || got.RoleBindings != 1 {
+		t.Fatalf("命名空间级 RBAC 计数应保留：%+v", got)
+	}
+}
+
+func TestSummaryFromSnapshotPodTargetCountsOnlyTargetPod(t *testing.T) {
+	snap := &model.ClusterSnapshot{
+		Pods:       make([]model.PodInfo, 7),
+		Namespaces: make([]model.NamespaceInfo, 2),
+	}
+	got := summaryFromSnapshot(snap, model.ScanOptions{Namespace: "team-a", PodTarget: "web-0"})
+	if got.Namespaces != 1 || got.Pods != 1 {
+		t.Fatalf("单 Pod 报告的汇总必须是 1 个命名空间 / 1 个 Pod：%+v", got)
 	}
 }
 
@@ -337,7 +398,7 @@ func TestRunEvidenceIDConsistent(t *testing.T) {
 	}
 	found := false
 	for _, ref := range rootDiag.EvidenceChain {
-		if ref == "E2" {
+		if ref == podFinding.ID+"#E2" {
 			found = true
 		}
 	}

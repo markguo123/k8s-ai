@@ -3,6 +3,7 @@ package skills
 import (
 	"embed"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -12,6 +13,15 @@ import (
 
 //go:embed skills/*.yaml
 var builtinFS embed.FS
+
+// intentMaxHits 是单轮意图检索最多同时注入的 procedural Skill 数（P3.8.4 优化）：
+// 防止整句子串命中把多篇长正文一次灌入 system prompt 撑爆上下文。显式 @name 不受
+// 此限制（单篇、最高优先级）。
+const intentMaxHits = 2
+
+// intentTermRe 提取检索用关键词：ASCII 字母数字串 + 中文 1-2 字（贪婪、不重叠）。
+// 中文按 2 字切分（如 “故障排查” → 故障/排查），既能匹配名词又能容忍停用词噪音。
+var intentTermRe = regexp.MustCompile(`[a-z0-9]+|[\p{Han}]{1,2}`)
 
 type registry struct {
 	skills  []Skill
@@ -66,9 +76,29 @@ func (r *registry) List() []Skill {
 	return out
 }
 
+// FindByName 按名称精确查找（大小写不敏感），返回是否命中。显式 @name 指定与
+// get_skill 工具都用它解析，保证只命中已启用（registry 内）的 Skill。
+func FindByName(reg Registry, name string) (Skill, bool) {
+	needle := strings.ToLower(strings.TrimSpace(name))
+	if needle == "" {
+		return Skill{}, false
+	}
+	for _, s := range reg.List() {
+		if strings.ToLower(s.Name) == needle {
+			return s, true
+		}
+	}
+	return Skill{}, false
+}
+
 func (r *registry) ForGVK(gvk schema.GroupVersionKind) []Skill {
 	var out []Skill
 	for _, s := range r.skills {
+		// P3.8：只有 structured（声明式规则）Skill 参与资源创建 GVK 命中；
+		// procedural Skill 走聊天意图检索（MatchIntent）注入，不在这里匹配。
+		if s.Type != TypeStructured {
+			continue
+		}
 		for _, filter := range s.Kinds {
 			if matchKindFilter(filter, gvk) {
 				out = append(out, s)
@@ -80,18 +110,127 @@ func (r *registry) ForGVK(gvk schema.GroupVersionKind) []Skill {
 }
 
 func (r *registry) MatchIntent(intent string) []Skill {
-	if strings.TrimSpace(intent) == "" {
+	query := strings.TrimSpace(intent)
+	if query == "" {
 		return nil
 	}
-	needle := strings.ToLower(strings.TrimSpace(intent))
-	var out []Skill
+	needle := strings.ToLower(query)
+	// 快路径 1：整句与某个启用的 procedural Skill 名称完全一致（大小写不敏感）。
+	// 显式名称调用不依赖正文/描述子串，避免名称歧义被检索漏掉。
 	for _, s := range r.skills {
-		if strings.Contains(strings.ToLower(s.Domain), needle) ||
-			strings.Contains(strings.ToLower(s.Name), needle) {
-			out = append(out, s)
+		if s.Type != TypeProcedural {
+			continue
+		}
+		if strings.ToLower(s.Name) == needle {
+			return []Skill{s}
 		}
 	}
+	// 快路径 2：整句作为子串命中某个 Skill 的 名称/描述/domain（短而明确的问题，
+	// 例如 “mysql” 或 “database 故障排查”）。按名称排序保证结果稳定。
+	var sub []Skill
+	for _, s := range r.skills {
+		if s.Type != TypeProcedural {
+			continue
+		}
+		if strings.Contains(strings.ToLower(s.Name), needle) ||
+			strings.Contains(strings.ToLower(s.Description), needle) ||
+			strings.Contains(strings.ToLower(s.Domain), needle) {
+			sub = append(sub, s)
+		}
+	}
+	sort.SliceStable(sub, func(i, j int) bool { return sub[i].Name < sub[j].Name })
+	if len(sub) > 0 {
+		if len(sub) > intentMaxHits {
+			sub = sub[:intentMaxHits]
+		}
+		return sub
+	}
+	// 打分路径：长自然语言句按关键词打分（名称 > domain > 描述加权），
+	// 覆盖“我这边有个 mysql 服务的 pod 一直在重启”这类不整句命中描述的提问。
+	terms := intentTerms(query)
+	if len(terms) == 0 {
+		return nil
+	}
+	type scored struct {
+		skill Skill
+		score int
+	}
+	var scoredList []scored
+	for _, s := range r.skills {
+		if s.Type != TypeProcedural {
+			continue
+		}
+		score := intentScore(s, terms)
+		if score > 0 {
+			scoredList = append(scoredList, scored{skill: s, score: score})
+		}
+	}
+	sort.SliceStable(scoredList, func(i, j int) bool {
+		if scoredList[i].score != scoredList[j].score {
+			return scoredList[i].score > scoredList[j].score
+		}
+		return scoredList[i].skill.Name < scoredList[j].skill.Name
+	})
+	max := len(scoredList)
+	if max > intentMaxHits {
+		max = intentMaxHits
+	}
+	out := make([]Skill, 0, max)
+	for _, it := range scoredList[:max] {
+		out = append(out, it.skill)
+	}
 	return out
+}
+
+// intentTerms 把用户意图切成检索关键词：空格/标点/驼峰/连字符天然拆分 ASCII 词，
+// 中文按 2 字切分。返回去重、有序的 term 列表。
+func intentTerms(intent string) []string {
+	matches := intentTermRe.FindAllString(strings.ToLower(intent), -1)
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range matches {
+		// 过滤单字符 ASCII 噪音（中文字符单独成词时保留，如 “图”）。
+		if !containsHan(m) && len(m) < 2 {
+			continue
+		}
+		if seen[m] {
+			continue
+		}
+		seen[m] = true
+		out = append(out, m)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// intentScore 计算单个 Skill 与关键词的重合度：名称命中 3 分、domain 命中 2 分、
+// 描述命中 1 分，每个关键词只计一次最高权重。
+func intentScore(s Skill, terms []string) int {
+	name := strings.ToLower(s.Name)
+	domain := strings.ToLower(s.Domain)
+	desc := strings.ToLower(s.Description)
+	score := 0
+	for _, t := range terms {
+		switch {
+		case strings.Contains(name, t):
+			score += 3
+		case strings.Contains(domain, t):
+			score += 2
+		case strings.Contains(desc, t):
+			score++
+		}
+	}
+	return score
+}
+
+// containsHan 判断字符串是否包含中文字符。
+func containsHan(s string) bool {
+	for _, r := range s {
+		if r >= 0x4E00 && r <= 0x9FFF {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *registry) Register(s Skill) error {
@@ -104,6 +243,9 @@ func (r *registry) Register(s Skill) error {
 	item := s
 	if item.Source == "" {
 		item.Source = SourceBuiltin
+	}
+	if item.Type == "" {
+		item.Type = TypeStructured
 	}
 	r.skills = append(r.skills, item)
 	r.byNames[item.Name] = true

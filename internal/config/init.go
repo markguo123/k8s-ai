@@ -6,84 +6,198 @@ import (
 	"path/filepath"
 )
 
-// DefaultTemplate is written by `k8s-ai config init`.
-const DefaultTemplate = `# k8s-ai configuration
+// TemplateKind 选择 `k8s-ai config init` 输出的模板种类（D-21 / ADR-031 v1.12）。
+// server 静态模板与 CLI 直用模板是两份完全独立的文件，互不覆盖。
+type TemplateKind string
+
+const (
+	// TemplateServer 是平台进程静态模板（config.yaml）：platform: 启动段 + 落盘目录键。
+	TemplateServer TemplateKind = "server"
+	// TemplateCLI 是终端直用模板（~/.k8s-ai/cli.yaml）：承载全量引擎键与 CLI 缺省。
+	TemplateCLI TemplateKind = "cli"
+)
+
+// ServerTemplate is written by `k8s-ai config init` (platform static config).
+const ServerTemplate = `# k8s-ai configuration
+# 仅承载“这台实例想跑成什么样”的静态启动参数（P6.12 / P6.2）。
+# 内容分两部分：platform: 平台服务启动段，以及 report / agent 的落盘目录段
+# （容器里根文件系统只读，报告和会话/审计必须显式指向可写卷）。deploy/base/configmap.yaml
+# 就是本模板在容器部署下的实例，两者形状由测试锁定，不会各写各的。
+#
+# 动态业务配置（模型/Skill/审批/记忆/保留/MCP/集群运维）统一在 Web
+# 配置中心（settings 表）维护并即时生效；本文件刻意不出现这些动态键，
+# 避免“文件 vs 页面”双配置源漂移。k8s-ai chat / k8s-ai scan 等终端命令
+# 读的是另一份文件 ~/.k8s-ai/cli.yaml（见 k8s-ai config init --cli），
+# 与本平台配置文件互不覆盖。
+#
+# 敏感值约定：admin 口令、LLM API Key、存储 DSN、场景凭据只经环境变量
+# / Kubernetes Secret 注入，config.yaml 永不写明文。Web 页面里模型 key、
+# kubeconfig、MCP env 属动态敏感配置，落库前由服务端用 K8S_AI_ENC_KEY 加密。
+
+# 平台服务监听（启动参数，修改需重启服务生效）
+platform:
+  server:
+    addr: ":8080"             # 监听地址（e.g. :8080 / 0.0.0.0:8080 / 127.0.0.1:8080）
+    static_enabled: true      # 形态 A：内嵌 SPA 静态托管；形态 B（独立前端）置 false
+    tls:
+      enabled: false          # true 时启用 HTTPS，需同时配置 cert_file/key_file
+      cert_file: ""           # TLS 证书路径（可 ~/ 展开），仅 enabled=true 时要求
+      key_file: ""            # TLS 私钥路径（可 ~/ 展开），仅 enabled=true 时要求
+  store:
+    driver: mysql             # 四期主存储 MySQL；sqlite 为本地/单机兜底
+    sqlite_path: "~/.k8s-ai/k8s-ai.db"  # driver=sqlite 时的库文件（容器内须挂 PVC）
+    dsn: ""                   # 只经 K8S_AI_PLATFORM_STORE_DSN / Secret 注入；YAML 留空
+  blobs:                      # 二进制对象后端：附件、报告产物、可选的会话正文外置（P8.1 / D-32）
+    driver: db                # off | db | dir | s3；默认 db（正文进 DB），老环境升级零行为变化
+    prefix: k8sai             # 对象键首段，≤32 字符，只允许小写字母数字与 - _
+    dir: ""                   # driver=dir 的根目录；留空由进程按场景取默认（容器内 /data/blobs）
+    tmp_dir: ""               # driver=s3 的上传落盘中转目录；留空取进程临时目录（容器里即 /tmp）
+    endpoint: ""              # driver=s3 才用：host:port，不含 scheme（环境专有值，别提交进仓库）
+    region: us-east-1         # 签名区域；MinIO 默认 us-east-1
+    use_tls: false            # 自签 MinIO 常见 false；生产建议挂证书后改 true
+    path_style: true          # MinIO/Ceph 必须 true（虚拟主机寻址会解析不到桶名）
+    bucket: k8s-ai            # driver=s3 必填
+    access_key: ""            # 只经 K8S_AI_PLATFORM_BLOBS_ACCESS_KEY / Secret 注入；YAML 留空
+    secret_key: ""            # 只经 K8S_AI_PLATFORM_BLOBS_SECRET_KEY / Secret 注入；YAML 留空
+    create_bucket: true       # 启动期幂等建桶；无建桶权限的现场置 false 并预先建桶
+    presign_ttl: 15m          # 预签名下载链接有效期，≤24h
+    max_object_size: 32MiB    # 单对象上限，≤256MiB，超限直接拒绝（不截断）
+    session_data: false       # 会话正文外置：本期定死不启用（validate 硬拒 true，方案 15 §8.4），
+                              # 单会话体积靠 agent.session_max_bytes 约束
+    gc_grace_period: 168h     # GC 宽限期：未引用对象超过该时长才回收
+  auth:
+    admin_username: "admin"   # 首次初始化内置管理员用户名
+    token_ttl: 24h            # 登录会话 Token 有效期（> 0）
+    session_store: memory     # 本期固定内存态；扩副本前需先支持持久化会话
+  exec:
+    shell_enabled: true       # 含管道/串联/重定向的 shell 命令通道（D-33）：默认开启，
+                              # 且这类命令一律经真人审批；仅无 shell 镜像变体
+                              # （Dockerfile.distroless）部署时置 false
+
+# 落盘目录（静态键，非动态配置）：本机运行保持默认；容器部署换成可写卷挂载点。
+report:
+  directory: "./reports"      # 报告目录（容器内 e.g. /reports）
+  format: markdown            # markdown | json | yaml
+agent:
+  session_dir: "~/.k8s-ai/sessions"  # 会话落盘（容器内 e.g. /data/sessions）
+  audit_dir: "~/.k8s-ai/audit"       # 审计落盘（容器内 e.g. /data/audit）
+  audit_file_copy: true              # 会话审计 jsonl 副本：审计事实源是平台库 audit_events，
+                                     # 置 false 只写库、不再产生文件副本（P8.0）
+  session_max_bytes: 12582912        # 单会话正文上限（字节，默认 12MiB，P8.6）：达 85% 发可读
+                                     # 预警，超上限拒写本轮会话保存（不静默截断）。会话正文不外置
+                                     # 到对象桶，需要更大会话就调这里或挂 PVC，不要改 platform.blobs.*
+`
+
+// CLITemplate is written by `k8s-ai config init --cli`（终端直用全量引擎键）。
+const CLITemplate = `# k8s-ai CLI 直用配置
+# 本文件只供终端命令读取：k8s-ai chat / k8s-ai scan 直接消费下列引擎键，
+# 不依赖平台数据库。k8s-ai server（企业平台进程）不读取也不回写本文件，
+# 平台侧模型/Skill/审批/记忆/保留/MCP/集群运维配置唯一落 DB settings 表，
+# 由 Web 配置中心维护；平台静态启动参数在 config.yaml 的 platform: 段（见
+# k8s-ai config init）。
+#
+# 优先级：CLI flag > 环境变量 > 本文件 > 内置默认。
+# 敏感值（LLM api_key）建议只经 K8S_AI_LLM_API_KEY 注入，本文件不留明文。
+
 kubernetes:
-  # 留空则使用 KUBECONFIG 环境变量或默认 ~/.kube/config
-  kubeconfig: ""
-  context: ""
-  namespace: ""          # 空 = 全集群；非空 = 仅该 namespace（系统组件探测除外）
-  timeout: 30s
-  qps: 20
-  burst: 40
+  kubeconfig: ""              # 留空 = 使用 KUBECONFIG 环境变量或默认 ~/.kube/config
+  context: ""                 # kubeconfig 上下文；留空用当前
+  namespace: ""               # 留空 = 全集群；非空 = 默认只扫该命名空间
+  kubectl_path: ""            # kubectl 二进制路径（留空 = PATH 查找；无 kubectl 只走 client-go）
+  timeout: 30s                # 单次 API 请求超时
+  qps: 20                     # API Server 访问 QPS 上限
+  burst: 40                   # 突发上限
 
 llm:
-  enabled: true
-  endpoint: "http://localhost:8000/v1"
-  api_key: ""
-  model: "qwen-plus"      # 建议：巡检诊断用更快的非思考型模型（如 qwen-turbo/flash）；思考型大模型（如 Qwen3.5-397B）较慢，可留二期 chat
+  enabled: true               # 关闭则只出规则结论
+  endpoint: "http://localhost:8000/v1"  # OpenAI Compatible 基础地址（自动拼 /chat/completions）
+  api_key: ""                 # 也可用环境变量 K8S_AI_LLM_API_KEY 注入
+  model: "qwen-plus"          # 建议：快速非思考型模型；思考型大模型较慢
   temperature: 0.1
   max_tokens: 4096
-  max_input_tokens: 8192
-  max_total_tokens: 32768
-  max_findings: 30
-  timeout: 120s
-  stream: true              # Web chat 需要通过 SSE 接收 reasoning_content 并实时展示在“分析过程”面板
+  max_input_tokens: 8192      # 单 Finding 上下文上限
+  max_total_tokens: 32768     # 诊断阶段总预算
+  max_findings: 30            # 最多送诊 Finding 数
+  timeout: 120s               # 单次 LLM 调用超时
+  stream: true                # chat 流式输出（true = SSE 逐 token 推送到终端）
   thinking:
-    type: enabled           # 标准思考参数：enabled | disabled
+    type: enabled             # 标准思考参数：enabled | disabled
+  reasoning_fields: []        # 可选：SSE delta 中的思考字段名
 
 scan:
-  concurrency: 8
-  phase2_concurrency: 4
+  concurrency: 8              # Phase1 并发
+  phase2_concurrency: 4       # Phase2 日志采集并发
   thinking:
-    type: enabled           # 一期 Scan 思考控制：enabled | disabled
+    type: enabled             # 一期 Scan 思考控制：enabled | disabled
   collect_logs: true
   collect_previous_logs: true
   collect_events: true
-  max_log_lines: 500
-  max_log_bytes: 65536
-  max_log_line_bytes: 1024
-  pod_logs_timeout: 30s
-  timeout: 5m
+  max_log_lines: 500          # 每容器日志行数上限
+  max_log_bytes: 65536        # 单容器日志字节上限
+  max_log_line_bytes: 1024    # 单行截断
+  pod_logs_timeout: 30s       # 单 Pod 日志超时
+  timeout: 10m                # 整次扫描超时（LLM 场景建议 10m）
 
 report:
-  directory: "./reports"
-  format: markdown
+  directory: "./reports"      # 报告目录（集群内 CronJob 用 /reports）
+  format: markdown            # markdown | json | yaml
 
-# 二期 Agent 配置（chat / web 模式）
 agent:
-  max_iterations: 15          # LLM 往返上限
+  max_iterations: 15          # Agent 往返上限
   max_tool_calls: 20          # 单轮工具调用上限
   timeout: 5m                 # Agent 单次会话超时
   tool_calling: native        # native | shim | auto（auto 先 native，不支持时降级 shim）
+  approval_mode: strict       # strict | smart（smart 需显式开启）
   require_approval: true      # 写操作必须人工确认（false 仅用于 --skip-permissions 场景）
   skip_permissions: false     # true 时跳过审批（非交互自动化，慎用）
-  result_max_bytes: 8192      # 单个工具结果截断上限
-  turn_max_bytes: 32768       # 单轮上下文截断上限
-  cmd_max_bytes: 65536        # kubectl 命令输出截断上限
-  history_turns: 20           # 保留的历史对话轮数
   session_dir: "~/.k8s-ai/sessions"
   audit_dir: "~/.k8s-ai/audit"
-  deny_ops: []                # 硬拒绝动词列表（如 ["delete","edit"]），默认空
-  disabled_tools: []          # 禁用的工具名列表
-
-# Web UI 配置（k8s-ai web）
-webui:
-  addr: "127.0.0.1:8081"      # 监听地址（非回环地址会输出安全警告）
-
-# MCP 预留（二期 v1 不连接外部服务器）
-mcp:
-  enabled: false
-  servers: []
+  create:
+    enabled: true             # create_resource 开关
+    deny_kinds: []            # 黑名单，默认空
+    allow_kinds: []           # 白名单，默认空
+    cluster_kinds: []         # cluster-scoped 授权白名单，默认空即禁止集群级资源
+    max_objects_per_call: 3   # 单次最多对象数（1-10）
+    max_manifest_bytes: 8192  # 单次 manifest 最大字节数（1KiB-1MiB）
+  secret:
+    access: create_only       # off | create_only（read_write 未开放：读取 Secret 内容仍是红线）
 
 rules:
-  enabled: []
-  disabled: []
+  enabled: []                 # 非空则只启用这些规则
+  disabled: []                # 禁用指定规则
+
+# 二进制产物本地目录（P8.1 / D-32）：终端直用只允许 off | dir 两档；桶与凭据
+# 键（endpoint/bucket/access_key/secret_key 等）属平台形态，写在 cli.yaml 里会被
+# k8s-ai config validate --mode cli 点名告警；driver 写 s3 会在构造后端时被拒绝
+# （写 db 按 dir 等价处理并提示），见方案 15 §11。
+platform:
+  blobs:
+    driver: dir               # off | dir
+    dir: "~/.k8s-ai/blobs"    # 与 cli.yaml/k8s-ai.db/sessions/audit 同处，整目录可拷走
 `
 
-// Init writes the default config template to path. force overwrites an
-// existing file.
-func Init(path string, force bool) (string, error) {
+// DefaultTemplate 保留为 server 静态模板的别名（三期调用方兼容）。
+const DefaultTemplate = ServerTemplate
+
+// TemplateFor 返回 kind 对应的模板内容。
+func TemplateFor(kind TemplateKind) (string, error) {
+	switch kind {
+	case "", TemplateServer:
+		return ServerTemplate, nil
+	case TemplateCLI:
+		return CLITemplate, nil
+	default:
+		return "", fmt.Errorf("unknown config template %q (server|cli)", string(kind))
+	}
+}
+
+// Init writes the template for kind to path. force overwrites an existing
+// file.
+func Init(path string, kind TemplateKind, force bool) (string, error) {
+	tmpl, err := TemplateFor(kind)
+	if err != nil {
+		return "", err
+	}
 	p, err := expandHome(path)
 	if err != nil {
 		return "", err
@@ -94,7 +208,7 @@ func Init(path string, force bool) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return "", fmt.Errorf("create config directory: %w", err)
 	}
-	if err := os.WriteFile(p, []byte(DefaultTemplate), 0o600); err != nil {
+	if err := os.WriteFile(p, []byte(tmpl), 0o600); err != nil {
 		return "", fmt.Errorf("write config: %w", err)
 	}
 	return p, nil

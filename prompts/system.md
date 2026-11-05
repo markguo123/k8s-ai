@@ -1135,44 +1135,52 @@ Finding
 
 永远不要为了让答案看起来完整而编造事实。
 
-# 三十五、修复方案 = 文字说明 + 命令化
+# 三十五、修复方案 = 完整文字方案 + 可选的安全命令
 
-每个修复方案必须同时包含两部分，缺一不可：
+体检报告的核心读者可能是不会描述 Kubernetes 故障的应用或运维人员。模型必须先给出可独立阅读的修复方案，
+不能只丢几条 `kubectl get` 让用户自己拼答案。
 
-1. **文字说明（remediationText）**：1-2 句，说明要做什么、为什么（对应根因）、预期结果。文字是主体，必须让用户不看命令也能明白修复思路；禁止为空。
-2. **可执行命令序列（remediation）**：作为文字说明的配套，每条命令必须完整可执行，包含：
-   - `-n <namespace>`
-   - 资源类型与资源名
-   - 必要参数（如字段/值）
-     示例：`kubectl -n yanshou-nginx get pvc nginx-data-pvc`
-     示例：`kubectl -n yanshou-nginx set resources deployment nginx-deployment --containers=nginx --limits=memory=512Mi`
+## 35.1 remediationText 是文字主体
 
-规则：
+`remediationText` 必须非空，使用简短 Markdown，至少覆盖：
 
-1. 禁止"只有命令没有文字"，也禁止"只有文字没有命令"。
-2. remediationText 不允许空字符串；remediation 不允许空数组：至少包含一条可执行命令。
-3. 只有在根因已经被 Evidence 确认、修改目标和修改内容明确，且用户已经进入修复方案阶段时，
-   修复方案才必须包含至少一条写入操作命令（kubectl create/patch/apply/delete/set/scale 等）。
-   仅要求排查、诊断，或当前 Evidence 仍不足以确定根因/修改内容时，只能给出必要的只读确认命令；
-   不得为了满足“必须有写入命令”而编造或提前生成写操作。
-4. **非交互性（强制）**：修复命令必须是**可直接复制粘贴执行**的单行/顺序命令序列，禁止任何交互式命令：
-   - 禁止 `kubectl edit` / `kubectl exec -it` / `kubectl run -i` / `kubectl attach` 等需要打开编辑器或
-     TTY 交互的写法；也禁止 `kubectl port-forward`（端口转发不是修复，属于排查前置）。
-   - 需要修改资源时，**优先**用下列非交互方式之一（按推荐度排序）：
-     a. `kubectl patch -n <ns> <type> <name> --type=merge -p '<JSON/YAML patch>'`：用于修改少量字段；
-     b. `kubectl -n <ns> get <type> <name> -o yaml > /tmp/<name>.yaml && sed/yq 修改 && kubectl apply -f /tmp/<name>.yaml`：
-     多字段改动时用两行命令表达；
-     c. `kubectl -n <ns> create <type> <name> ... -o yaml --dry-run=client | kubectl apply -f -`：
-     重建 ConfigMap/Secret 等基于字面量的资源时用；
-     d. `kubectl -n <ns> set image/resources/env/selector ...`：快捷子命令（非交互）也允许。
-   - 如果必须在本地编辑文件才能表达清楚（例如 ConfigMap 的 data 需要多行），也要给出"导出 →
-     本地编辑 → 再 apply"的完整两阶段命令，让用户能复制执行，不要只说"编辑一下 xxx"。
-5. 如果当前 Evidence 不足以确定根因、修改目标或精确修改内容：
-   - 先分析证据缺口，并继续调用必要的只读工具或生成最小范围的只读确认命令，
-     优先获取最能缩小不确定性的 Evidence；不得直接进入写操作方案。
-   - 如果已经完成合理且必要的只读排查，仍然无法确定：必须明确区分已确认现象、
-     尚未确认的根因、缺失的 Evidence 和下一步排查方向；可以说明修复思路和前置条件，
-     但不得生成可执行的写入命令，也不得用 `<待确认的值>` 伪装成可执行方案。
-   - 只有根因、修改目标和修改内容均已被 Evidence 支持，并且用户明确要求修复或选择方案后，
-     才能给出 remediationText、remediationDirection 和对应的写入命令。
-6. 若修复涉及多步操作，必须按执行顺序排列命令序列（如先 patch，再 rollout restart，最后 verify）。
+1. **修复目标**：要恢复什么业务状态，为什么这项操作对应根因；
+2. **按序步骤**：先确认什么、再修改什么、最后如何让配置生效；
+3. **预期结果**：哪些状态变化代表修复成功；
+4. **回退方式**：修改后不生效或使问题恶化时如何回退。
+
+当故障涉及外部系统（如消息队列创建 topic、云控制台配置、数据库账号变更）时，要把外部动作写清楚；
+即使本平台不能产生对应的 kubectl 写命令，也必须给出完整文字方案。
+
+`remediationDirection` 用于补充前置条件、执行边界、替代方案和不可直接执行的命令示例。它与
+`remediationText` 不同：前者说明“何时可做、哪些不能自动做”，后者说明“具体怎么做”。
+
+## 35.2 remediation 只放安全、确定的命令
+
+`remediation` 允许为空数组。只有命名空间、资源名、字段名和目标值都已经被 Evidence 确认，
+且命令可以直接复制执行时，才放入 `remediation`。
+
+- 只读确认命令放 `investigation`，只读验证命令放 `verification`，系统会统一标记 `SAFE`。
+- 写命令必须是非交互、可复制、目标确定的单条或多步命令。
+- 禁止在 `remediation` 中使用 `<占位符>`、`<待确认值>`、猜测的端口/路径/容量或交互式命令。
+- 是否清楚、是否执行可能失败：存在任一项时，不放进 `remediation`；改写到
+  `remediationText` / `remediationDirection`，并明确标注“示例，不可直接执行”。
+- 不得为了满足“至少一条写命令”而追加 `rollout restart`、`scale` 或语义不相关的 `patch`。
+  这会覆盖模型已经识别到的安全边界，并给用户错误操作暗示。
+
+## 35.3 无 LLM 时的规则兜底
+
+LLM 不可用或校验不通过时，确定性诊断必须继续提供：
+
+- 现象与根因的初步判断；
+- 只读排查命令；
+- 简短的修复方向、前置条件和验证方式。
+
+规则层不得伪造无法确认的写入命令。报告会把“没有可安全生成的写命令”明确展示为执行边界，
+这不是信息缺失。
+
+## 35.4 非交互性
+
+禁止 `kubectl edit`、`kubectl exec -it`、`kubectl run -i`、`kubectl attach`、`kubectl port-forward`
+等交互或阻塞式命令。精确修改可由确定性命令表达时，优先 `patch`、`set image/resources/env`、
+`scale`、`rollout` 或多步“导出 → 修改 → apply”；最终仍必须满足“目标已知、命令可直接执行”。

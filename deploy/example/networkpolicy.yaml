@@ -1,0 +1,58 @@
+# 可选：容器出站白名单样例（P6.3 / D-33 §4.5 加固项）
+#
+# 为什么建议启用：默认交付镜像里带了 bash/curl/ping（换来的是容器内排障能力与本地 CLI 对齐），
+# 代价是进程被滥用后的横向移动面变大。把出站收敛到"平台真正要访问的目标"是这条风险的主要
+# 处置手段：本集群 API Server、LLM 网关、MySQL，外加一条 DNS。
+#
+# 用之前先看两条前提：
+#   1. 集群 CNI 必须真正执行 NetworkPolicy（Calico / Cilium / kube-router 等）。Flannel 纯模式
+#      下 apply 成功但完全不生效，别把它当成已加固。
+#   2. 下面 ipBlock 用的是文档保留地址（TEST-NET 192.0.2.0/24）占位，必须换成现场真实地址再
+#      apply；清单里刻意不写现场地址。托管集群的 API Server 地址请查控制平面 Endpoint。
+#
+# 收紧顺序建议：先只保留 DNS + 集群内两条跑通（确认 /readyz 仍是 200、Chat 正常），
+# 再逐条把真实地址加进来、最后删掉宽放行那条。只声明 Egress，入站方向不受影响。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: k8s-ai-egress
+  namespace: k8s-ai
+  labels:
+    app: k8s-ai
+spec:
+  podSelector:
+    matchLabels:
+      app: k8s-ai
+  policyTypes:
+    - Egress
+  egress:
+    # DNS：CoreDNS 解析（服务名、外部域名都要用它）。
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    # 本集群 API Server：平台走 in-cluster 凭据访问，端口换成现场 API Server 端口。
+    - to:
+        - ipBlock: { cidr: 192.0.2.10/32 } # REPLACE: API Server 地址
+      ports:
+        - { protocol: TCP, port: 6443 }
+    # LLM 网关（llm.endpoint 指向的地址与端口）。
+    - to:
+        - ipBlock: { cidr: 192.0.2.20/32 } # REPLACE: LLM 网关地址
+      ports:
+        - { protocol: TCP, port: 8080 }
+    # MySQL（platform.store.dsn 指向的地址与端口）。
+    - to:
+        - ipBlock: { cidr: 192.0.2.30/32 } # REPLACE: MySQL 地址
+      ports:
+        - { protocol: TCP, port: 3306 }
+    # 集群内其它后端（对象存储/MinIO 9000、镜像内工具要访问的集群内服务等）。
+    # 确认平台只访问上面三类外部目标时，删掉这条即可再收紧一档。
+    - to:
+        - namespaceSelector: {}

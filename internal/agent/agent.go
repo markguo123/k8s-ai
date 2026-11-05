@@ -17,6 +17,20 @@ type Approver interface {
 	Confirm(ctx context.Context, prompt string, options []UserChoiceOption) (string, error)
 }
 
+// ApprovalRequest 是结构化审批请求。Prompt 保留给 CLI/旧客户端；
+// Web 审批卡优先消费 Plan 中的目标、变更、命令和验证条件。
+type ApprovalRequest struct {
+	Prompt  string
+	Options []UserChoiceOption
+	Plan    tools.ApprovalPlan
+}
+
+// StructuredApprover 是 Approver 的可选能力。未实现时 Agent 回退普通 Confirm，
+// 保证 CLI 与既有测试桩不需要跟着改造。
+type StructuredApprover interface {
+	ConfirmStructured(ctx context.Context, req ApprovalRequest) (string, error)
+}
+
 // SecretValueApprover 是 Approver 的可选接口：审批通过后向用户索取单个 Secret 明文值
 // （三期 R4.5）。值只在内存与一次提交里存在，绝不写进会话、审计与 LLM 请求。
 type SecretValueApprover interface {
@@ -31,6 +45,15 @@ type Options struct {
 	Session  *session.Session
 	Approver Approver
 	Recorder audit.Recorder
+	// Tracer 观察 Agent 运行生命周期（P1.8），service 层用它持久化 Turn/Step；nil 时跳过。
+	Tracer Tracer
+	// TurnUserID 记录本轮 Turn 归属的产品内用户（P1.5），可为空。
+	TurnUserID string
+	// AccessScope 是本次运行的 Kubernetes 资源授权范围，工具执行前强制校验。
+	AccessScope *tools.AccessScope
+	// SkillContext 是命中用户自定义 procedural Skill 的方法论附录（P3.8.4），
+	// 由 service 层意图检索后注入 system prompt，正文视为不可信文本只作文本参考。
+	SkillContext string
 	// ApprovalPolicy 是统一的写操作审批决策；nil 时采用 strict + 要求审批（等价 v1）。
 	ApprovalPolicy *approval.Policy
 
@@ -59,6 +82,10 @@ type Agent struct {
 	Approver       Approver
 	Recorder       audit.Recorder
 	ApprovalPolicy *approval.Policy
+	Tracer         Tracer
+	TurnUserID     string
+	AccessScope    *tools.AccessScope
+	SkillContext   string
 
 	MaxIterations  int
 	MaxToolCalls   int
@@ -67,6 +94,10 @@ type Agent struct {
 	ResultMaxBytes int
 	TurnMaxBytes   int
 	HistoryTurns   int
+
+	// turn 是当前聊天轮的运行轨迹（P1.8），Chat 执行期间非 nil。
+	turn    *session.Turn
+	stepSeq int
 }
 
 // New 创建 Agent 实例并应用默认值。
@@ -82,6 +113,10 @@ func New(opts Options) *Agent {
 		Approver:       opts.Approver,
 		Recorder:       opts.Recorder,
 		ApprovalPolicy: opts.ApprovalPolicy,
+		Tracer:         opts.Tracer,
+		TurnUserID:     opts.TurnUserID,
+		AccessScope:    opts.AccessScope,
+		SkillContext:   opts.SkillContext,
 		MaxIterations:  opts.MaxIterations,
 		MaxToolCalls:   opts.MaxToolCalls,
 		Timeout:        opts.Timeout,

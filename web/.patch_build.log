@@ -1,0 +1,31 @@
+
+> k8s-ai-web@0.1.0 build
+> vue-tsc -b && vite build
+
+vite v6.4.4 building for production...
+transforming...
+✓ 1709 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                               0.41 kB │ gzip:   0.28 kB
+dist/assets/PagePlaceholder-B-vlmMMW.css      0.61 kB │ gzip:   0.26 kB
+dist/assets/LoginView-DCalbcAJ.css            0.76 kB │ gzip:   0.38 kB
+dist/assets/ChatView-DKOtKarX.css            27.14 kB │ gzip:   4.70 kB
+dist/assets/index-BwKjdNLV.css              371.52 kB │ gzip:  50.55 kB
+dist/assets/AdminView-Bn0c9v2_.js             0.27 kB │ gzip:   0.27 kB
+dist/assets/UsersView-CbonOnia.js             0.28 kB │ gzip:   0.26 kB
+dist/assets/ClusterView-D_VzEKCj.js           0.28 kB │ gzip:   0.27 kB
+dist/assets/AuditView-DU17ExiQ.js             0.28 kB │ gzip:   0.28 kB
+dist/assets/ApprovalView-CeLO5T5R.js          0.29 kB │ gzip:   0.28 kB
+dist/assets/SkillView-Bni4ex1-.js             0.29 kB │ gzip:   0.28 kB
+dist/assets/SettingsView-DW0KH-gH.js          0.29 kB │ gzip:   0.28 kB
+dist/assets/PagePlaceholder-r9sCmmgZ.js       0.63 kB │ gzip:   0.45 kB
+dist/assets/LoginView-e98ea0D-.js             1.67 kB │ gzip:   0.94 kB
+dist/assets/ChatView-BLiJE_0a.js            128.97 kB │ gzip:  43.62 kB
+dist/assets/index-DpUvkLvG.js             1,077.65 kB │ gzip: 355.22 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 13.40s

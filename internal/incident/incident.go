@@ -35,7 +35,9 @@ func (d *dsu) union(a, b int) {
 }
 
 // touchKeys 返回 Finding 涉及的所有资源 key（用于按故障链合并）。
-// 规则：Pod↔owner/Node/Service/PVC；Workload↔其 Pod；Service↔匹配 Pod；Node↔其上 Pod；PVC↔使用它的 Pod。
+// 规则：Pod↔owner/Node/Service/PVC；Workload↔其 Pod；Service↔匹配 Pod；
+// Node↔其上 Pod；PVC↔使用它的 Pod；PV↔绑定它的 PVC 及其 Pod；
+// StorageClass↔使用它的 PVC/PV 及其 Pod。
 func touchKeys(idx *model.CorrelationIndex, f model.Finding) map[string]bool {
 	keys := map[string]bool{f.Resource.Key(): true}
 	switch f.Resource.Kind {
@@ -62,6 +64,18 @@ func touchKeys(idx *model.CorrelationIndex, f model.Finding) map[string]bool {
 		for _, p := range idx.PodsOfService(f.Resource.Key()) {
 			keys[p.Ref.Key()] = true
 		}
+		// 入口侧同理：后端 Service 坏了，挂在它上面的 Ingress 不是另一起独立故障。
+		for _, ing := range idx.IngressesOfService(f.Resource.Key()) {
+			keys[ing.Ref.Key()] = true
+		}
+	case "Ingress":
+		// Ingress 唯一可信的下级就是 spec 里写明的后端 Service（不存在后端也照引用聚合，
+		// 因为「后端根本不存在」本身就是这条链的成因）。
+		if ing := idx.Ingresses[f.Resource.Key()]; ing != nil {
+			for _, be := range ing.BackendRefs() {
+				keys[be.Key()] = true
+			}
+		}
 	case "Node":
 		for _, p := range idx.PodsOfNode(f.Resource.Name) {
 			keys[p.Ref.Key()] = true
@@ -69,6 +83,26 @@ func touchKeys(idx *model.CorrelationIndex, f model.Finding) map[string]bool {
 	case "PVC":
 		for _, p := range idx.PodsOfPVC(f.Resource.Key()) {
 			keys[p.Ref.Key()] = true
+		}
+	case "PV", "StorageClass":
+		// PV / StorageClass 既没有 ownerReferences 也没有 selector，只靠「谁用了它」
+		// 把自己接进故障链：不这么做的话，存储底座故障永远是一条孤立记录，
+		// 报告里看不出它拖垮了哪些 PVC 和 Pod，也就给不出「先修存储」的结论。
+		for _, st := range idx.Storage {
+			used := false
+			switch f.Resource.Kind {
+			case "PV":
+				used = st.Kind == "PVC" && st.VolumeName != "" && st.VolumeName == f.Resource.Name
+			case "StorageClass":
+				used = st.StorageClassName != "" && st.StorageClassName == f.Resource.Name
+			}
+			if !used {
+				continue
+			}
+			keys[st.Ref.Key()] = true
+			for _, p := range idx.PodsOfPVC(st.Ref.Key()) {
+				keys[p.Ref.Key()] = true
+			}
 		}
 	}
 	return keys
@@ -128,9 +162,42 @@ func Build(findings []model.Finding, idx *model.CorrelationIndex) []model.Incide
 	return out
 }
 
-// pickRoot 选择故障链的最底层可证实原因：
-// 存储异常 > 节点异常 > Pod 启动/运行类 > Workload > Service。
+// pickRoot 选择故障链的最底层可证实原因。
+//
+// 两步走：先按域优先级（存储 > 节点 > Pod > Workload > Service）选一个候选，
+// 再沿 causalCauses「已知成因」表往下走，直到链上找不到更底层的成因。
+// 第二步不能省：同一条链里症状和成因经常同时命中（Pod 既 Pending 又镜像拉不到、
+// 既 OOMKilled 又 CrashLoopBackOff），只按域顺序取第一条会写出倒因为果的根因，
+// 而根因写错比不写更糟——它会把人往错误的排查方向上带走。
 func pickRoot(fs []model.Finding) model.Finding {
+	best := pickRootByDomain(fs)
+	seen := map[string]bool{best.Rule: true}
+	for hop := 0; hop < maxCausalHops+1; hop++ {
+		cause, ok := presentCause(fs, best.Rule, seen)
+		if !ok {
+			break
+		}
+		seen[cause.Rule] = true
+		best = cause
+	}
+	return best
+}
+
+// presentCause 在链里找一个已存在、且能解释 effect 规则的成因 Finding。
+func presentCause(fs []model.Finding, effect string, seen map[string]bool) (model.Finding, bool) {
+	for _, causeRule := range causalCauses[effect] {
+		if seen[causeRule] {
+			continue
+		}
+		if f, ok := findByRule(fs, causeRule); ok {
+			return f, true
+		}
+	}
+	return model.Finding{}, false
+}
+
+// pickRootByDomain 按域优先级选出根因候选。
+func pickRootByDomain(fs []model.Finding) model.Finding {
 	for _, r := range []string{"PVCPending"} {
 		if f, ok := findByRule(fs, r); ok {
 			return f

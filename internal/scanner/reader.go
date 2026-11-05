@@ -43,7 +43,10 @@ type Reader interface {
 	ListNetworkPolicies(ctx context.Context, namespace string) ([]networkingv1.NetworkPolicy, error)
 	ListHPA(ctx context.Context, namespace string) ([]autoscalingv2.HorizontalPodAutoscaler, error)
 	ListPDB(ctx context.Context, namespace string) ([]policyv1.PodDisruptionBudget, error)
+	ListRoles(ctx context.Context, namespace string) ([]rbacv1.Role, error)
+	ListRoleBindings(ctx context.Context, namespace string) ([]rbacv1.RoleBinding, error)
 	ListClusterRoles(ctx context.Context) ([]rbacv1.ClusterRole, error)
+	ListClusterRoleBindings(ctx context.Context) ([]rbacv1.ClusterRoleBinding, error)
 	ListEvents(ctx context.Context, namespace string) ([]corev1.Event, error)
 
 	// Targeted reads are reserved for Phase 2 tools; Phase 1 does not use them.

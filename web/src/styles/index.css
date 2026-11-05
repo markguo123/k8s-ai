@@ -1,0 +1,207 @@
+:root {
+  /* 平台深色底座：取值与 docs/02-架构与设计/prototype/index.html 的 :root 一一对应，
+     保证四期 Web Shell 与原型视觉同源（前端视觉对齐原型的硬性验收项）。 */
+  --app-bg: #0f1115;
+  --app-surface: #161a22;
+  --app-surface-2: #1b212c;
+  --app-text: #e6e8ee;
+  --app-strong: #ffffff;
+  --app-muted: #8b93a3;
+  --app-faint: #5b6372;
+  --app-border: #272e3b;
+  --app-sidebar: #12151b;
+  --app-sidebar-text: #c9cdd4;
+  --app-sidebar-muted: #5f6673;
+  --app-brand: #8b90ff;
+  --app-accent: #6366f1;
+  --app-accent-2: #818cf8;
+  --app-accent-soft: rgba(99, 102, 241, 0.14);
+  --app-radius: 10px;
+  --app-radius-sm: 7px;
+  --app-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  --app-scroll-thumb: rgba(255, 255, 255, 0.14);
+  --app-scroll-thumb-hover: rgba(255, 255, 255, 0.26);
+
+  /* Semantic（与原型 --ok/--warn/--err/--info 及其 soft 变体同值） */
+  --app-success: #34d399;
+  --app-success-soft: rgba(52, 211, 153, 0.13);
+  --app-danger: #f87171;
+  --app-danger-soft: rgba(248, 113, 113, 0.13);
+  --app-danger-border: rgba(248, 113, 113, 0.3);
+  --app-warning: #fbbf24;
+  --app-warning-soft: rgba(251, 191, 36, 0.13);
+  --app-info: #60a5fa;
+  --app-info-soft: rgba(96, 165, 250, 0.13);
+
+  /* 等宽字体（原型 --mono） */
+  --app-mono: 'JetBrains Mono', Consolas, 'SF Mono', Menlo, monospace;
+
+  /* Element Plus 主色跟随品牌（indigo），保持深色对比度 */
+  --el-color-primary: #6366f1;
+  --el-color-primary-light-3: #818cf8;
+  --el-color-primary-light-5: #6366f1;
+  --el-color-primary-light-7: #4f52d9;
+  --el-color-primary-light-8: #3f42b8;
+  --el-color-primary-light-9: rgba(99, 102, 241, 0.14);
+  --el-color-primary-dark-2: #8b90ff;
+  --el-color-success: #34d399;
+  --el-color-warning: #fbbf24;
+  --el-color-danger: #f87171;
+  --el-color-error: #f87171;
+  --el-color-info: #8b93a3;
+}
+
+/*
+ * Element Plus dark 主题变量挂在 `html.dark` 上，比 `:root` 优先级更高，
+ * 因此需要在同一选择器下再覆盖一次，否则组件库会回落到默认蓝而不是原型品牌色。
+ */
+html.dark {
+  --el-color-primary: #6366f1;
+  --el-color-primary-light-3: #818cf8;
+  --el-color-primary-light-5: #6366f1;
+  --el-color-primary-light-7: #4f52d9;
+  --el-color-primary-light-8: #3f42b8;
+  --el-color-primary-light-9: rgba(99, 102, 241, 0.14);
+  --el-color-primary-dark-2: #8b90ff;
+  --el-color-success: #34d399;
+  --el-color-warning: #fbbf24;
+  --el-color-danger: #f87171;
+  --el-color-error: #f87171;
+  --el-color-info: #8b93a3;
+  --el-bg-color: #161a22;
+  --el-bg-color-overlay: #1b212c;
+  --el-border-color: #272e3b;
+  --el-border-color-light: #272e3b;
+  --el-border-color-lighter: #272e3b;
+  --el-fill-color-blank: #161a22;
+  --el-text-color-primary: #e6e8ee;
+  --el-text-color-regular: #e6e8ee;
+  --el-text-color-secondary: #8b93a3;
+  --el-text-color-placeholder: #5b6372;
+  --el-mask-color: rgba(15, 17, 21, 0.8);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  color: var(--app-text);
+  background: var(--app-bg);
+  font-family:
+    'Inter',
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    system-ui,
+    sans-serif;
+  font-size: 14px;
+  line-height: 1.6; /* P7.1：正文字号行高基线，提升可读性与留白感 */
+  -webkit-font-smoothing: antialiased;
+}
+
+/*
+ * P7.1 亮色主题令牌：与深色同名同义，仅取值不同。
+ * 组件一律引用变量，禁止写死色值，否则亮色下会出现"局部永远深色"的残留。
+ */
+html[data-theme='light'] {
+  --app-bg: #f5f6f9;
+  --app-surface: #ffffff;
+  --app-surface-2: #eef0f4;
+  --app-text: #1f2430;
+  --app-strong: #0b0e14;
+  --app-muted: #5c6472;
+  --app-faint: #8b93a3;
+  --app-border: #e2e5ec;
+  --app-sidebar: #ffffff;
+  --app-sidebar-text: #3a4150;
+  --app-sidebar-muted: #8b93a3;
+  --app-brand: #4f46e5;
+  --app-accent: #4f46e5;
+  --app-accent-2: #6366f1;
+  --app-accent-soft: rgba(79, 70, 229, 0.1);
+  --app-shadow: 0 6px 20px rgba(16, 24, 40, 0.08);
+  --app-success: #0d9f6e;
+  --app-success-soft: rgba(13, 159, 110, 0.12);
+  --app-danger: #d92d20;
+  --app-danger-soft: rgba(217, 45, 32, 0.1);
+  --app-danger-border: rgba(217, 45, 32, 0.26);
+  --app-warning: #b45309;
+  --app-warning-soft: rgba(180, 83, 9, 0.12);
+  --app-info: #2563eb;
+  --app-info-soft: rgba(37, 99, 235, 0.1);
+  --app-scroll-thumb: rgba(16, 24, 40, 0.18);
+  --app-scroll-thumb-hover: rgba(16, 24, 40, 0.32);
+
+  /* Element Plus 亮色变量：品牌主色沿用 indigo（浅底上用更深的档位保证对比度） */
+  --el-color-primary: #4f46e5;
+  --el-color-primary-light-3: #6366f1;
+  --el-color-primary-light-5: #818cf8;
+  --el-color-primary-light-7: #c7c9fb;
+  --el-color-primary-light-8: #dcddfd;
+  --el-color-primary-light-9: #eeeefe;
+  --el-color-primary-dark-2: #4338ca;
+  --el-color-success: #0d9f6e;
+  --el-color-warning: #b45309;
+  --el-color-danger: #d92d20;
+  --el-color-error: #d92d20;
+  --el-color-info: #5c6472;
+  --el-bg-color: #ffffff;
+  --el-bg-color-overlay: #ffffff;
+  --el-border-color: #e2e5ec;
+  --el-border-color-light: #e9ebf1;
+  --el-border-color-lighter: #eef0f4;
+  --el-fill-color-blank: #ffffff;
+  --el-text-color-primary: #1f2430;
+  --el-text-color-regular: #1f2430;
+  --el-text-color-secondary: #5c6472;
+  --el-text-color-placeholder: #8b93a3;
+  --el-mask-color: rgba(15, 17, 21, 0.3);
+}
+
+/* P7.1：滚动条走令牌（纤细、无白底、hover 显影），杜绝系统白色滚动条 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--app-scroll-thumb) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--app-scroll-thumb);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--app-scroll-thumb-hover);
+  background-clip: content-box;
+}
+
+/* P7.6：深色下悬浮给蓝色光晕，明确"这条能拖"；亮色沿用令牌不发光 */
+html[data-theme='dark'] ::-webkit-scrollbar-thumb:hover {
+  box-shadow: 0 0 8px rgba(99, 102, 241, 0.55);
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.dark .el-popover.el-popper,
+.dark .el-dropdown__popper.el-popper {
+  background: var(--app-surface);
+  border-color: var(--app-border);
+  color: var(--app-text);
+}

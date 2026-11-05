@@ -3,10 +3,11 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/k8s-ai/k8s-ai/internal/agent"
 	"github.com/k8s-ai/k8s-ai/internal/approval"
@@ -20,6 +21,8 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/scanner"
 	"github.com/k8s-ai/k8s-ai/internal/session"
 	"github.com/k8s-ai/k8s-ai/internal/skills"
+	"github.com/k8s-ai/k8s-ai/internal/sse"
+	"github.com/k8s-ai/k8s-ai/internal/store"
 	"github.com/k8s-ai/k8s-ai/internal/tools"
 	k8stools "github.com/k8s-ai/k8s-ai/internal/tools/k8s"
 )
@@ -51,6 +54,14 @@ type ChatToolCallView struct {
 	Ok        *bool          `json:"ok,omitempty"` // nil=旧客户端/旧会话无此字段，前端回退正则兜底
 	Truncated bool           `json:"truncated,omitempty"`
 	Data      any            `json:"data,omitempty"` // 结构化结果（仅 UI 回放展示，不参与 LLM 载荷）
+	// P7.4：工具结果同源（ADR-034），随 tool-response 一并下发（旧客户端兼容）。
+	DurationMs  int64  `json:"durationMs,omitempty"`
+	DisplayType string `json:"displayType,omitempty"`
+	Command     string `json:"command,omitempty"`
+	Stdout      string `json:"stdout,omitempty"`
+	Stderr      string `json:"stderr,omitempty"`
+	ExitCode    int    `json:"exitCode,omitempty"`
+	ErrorCode   string `json:"errorCode,omitempty"`
 }
 
 // ChatChoiceOption 是审批/选择项。
@@ -61,8 +72,9 @@ type ChatChoiceOption struct {
 
 // ChatChoice 是审批请求（写操作确认）。
 type ChatChoice struct {
-	Prompt  string             `json:"prompt"`
-	Options []ChatChoiceOption `json:"options"`
+	Prompt   string             `json:"prompt"`
+	Options  []ChatChoiceOption `json:"options"`
+	Approval *sse.ApprovalData  `json:"approval,omitempty"`
 	// Secret 为 true 时该请求要收集 Secret 值：前端用密码框，值不回显、不入会话与审计。
 	Secret bool `json:"secret,omitempty"`
 }
@@ -81,8 +93,17 @@ type ChatEvent struct {
 type ChatRequest struct {
 	SessionID string
 	Query     string
+	// UserID 是发起本轮的产品内用户，用于 Turn/审计归属。
+	UserID string
+	// AllowAnySession 仅由具备 chat.manage.all 的管理员请求设置。
+	AllowAnySession bool
 	// SkipPermissions 非交互自动化显式放行写操作（等效 kubectl-ai --skip-permissions）。
 	SkipPermissions bool
+	// Skills 用户显式 @ 指定的 Skill 名称（P3.8.4）：非空时不走自动意图检索，
+	// 只注入这些已启用的 Skill；任一名字不存在/未启用则整批拒绝。
+	Skills []string
+	// AccessScope 是当前用户本轮可访问的 Kubernetes 资源范围；nil 仅用于 CLI/测试。
+	AccessScope *tools.AccessScope
 }
 
 // ChatService 是二期 Agent 应用服务（CLI/Web 复用）。
@@ -91,10 +112,46 @@ type ChatService interface {
 	Chat(ctx context.Context, req ChatRequest, respond <-chan string) (<-chan ChatEvent, error)
 	// GetOrCreateSession 获取或创建会话。
 	GetOrCreateSession(id, namespace, model string) (*session.Session, error)
+	// GetSession 只读取已有会话，不自动创建。
+	GetSession(id string) (*session.Session, error)
+	// GetOrCreateSessionForUser 按登录用户建立会话所有权。
+	GetOrCreateSessionForUser(id, userID, namespace, model string) (*session.Session, error)
 	ListSessions() ([]session.Session, error)
+	// ListSessionsForUser 只返回指定用户的会话。
+	ListSessionsForUser(userID string) ([]session.Session, error)
 	DeleteSession(id string) error
 	ClearSession(id string) error
 	RenameSession(id, name string) error
+	// PinSession 置顶/取消置顶会话（P7.5）。置顶状态随会话落库，列表置顶优先。
+	PinSession(id string, pinned bool) error
+}
+
+// SessionTokenizer 是 ChatService 的可选能力（P2.13）：返回会话级 token 用量合计。
+// 单独成接口而不是并入 ChatService，是为了让三期实现与其测试桩无需跟着变更；
+// 调用方用类型断言探测，未实现时按"未持久化"退化为不展示统计。
+type SessionTokenizer interface {
+	SessionTokenUsage(ctx context.Context, sessionID string) (session.TokenUsage, error)
+}
+
+// SkillPlatformBinder 是 ChatService 的可选能力（P3.8）：把四期 Skill 平台
+// （P3.5）的实时 registry 挂到 create_resource 路径。未实现时工具路径回退
+// 内置 Skill；Web/CLI 组合根在装配 Store 后调用 SetSkillPlatform 即可让导入与
+// 启停即时生效。单独成接口是为了不让既有聊天测试桩背负 Skill 平台依赖。
+type SkillPlatformBinder interface {
+	SetSkillPlatform(p *SkillPlatform)
+}
+
+// RuntimeConfigResolver 解析一轮对话的生效配置（P6.1 / D-29）。实现方按
+// "环境变量白名单覆盖 > DB settings > 文件与内置默认"的顺序叠加，并在模型未配置时
+// 返回明确错误。
+type RuntimeConfigResolver func(ctx context.Context) (*config.Config, error)
+
+// RuntimeConfigBinder 是 ChatService 的可选能力（P6.1）：注入运行时配置解析器后，
+// 每轮 Chat 的工具装配、审批策略、LLM 参数与 Agent 限额都按配置中心当前值生效，
+// 配置页面改完下一轮立即生效，不需要重启进程。未注入时沿用启动基线（CLI 直用仍走
+// config.yaml）。单独成接口是为了不让既有聊天测试桩背负配置中心依赖。
+type RuntimeConfigBinder interface {
+	SetRuntimeConfigResolver(RuntimeConfigResolver)
 }
 
 type chatService struct {
@@ -107,15 +164,44 @@ type chatService struct {
 	// proposals 跨轮次保存创建提案指纹：每轮 Chat 都会重建工具实例，
 	// dry run 与 apply 通常不在同一轮，所以缓存必须挂在服务上。
 	proposals *tools.ProposalStore
+	// store 是四期 SQLite/MySQL 统一持久化门面：非空时把 Turn/Step 生命周期记录落库（P1.8）。
+	store store.Store
+	// sessionsInStore 表示会话事实源已是平台库（P8.0 / ADR-046）：会话读写经
+	// store.NewDatabaseSessionStore 直接进 sessions 表，fileStore 只留给终端直用
+	// （无平台库）模式，因此聊天主流程不再对同一行做第二次写。
+	sessionsInStore bool
+	// skillsPlat 是四期 Skill 平台应用服务（P3.5），非空时 create_resource 的
+	// dry-run / apply 消费其实时 registry（custom/third-party 与启停即时生效）。
+	skillsPlat *SkillPlatform
+	// sink 非空时把统一 SSE 事件（P1.9 事件路由）实时广播给会话客户端；
+	// 三期 ChatEvent 事件流原样保留（D-08：迁移期旧事件继续可消费）。
+	sink func(sse.Event)
+	// resolveCfg 非空时每轮 Chat 用它取生效配置（P6.1，配置中心 + env 覆盖）。
+	resolveCfg RuntimeConfigResolver
 }
 
 // NewChat 创建二期 Agent 服务。
 func NewChat(cfg *config.Config, newReader func() (scanner.Reader, error), llmFactory func(llm.Options) llm.LLMClient, scanFactory func() tools.ScanRunner, newWriteRunner func() (tools.WriteRunner, error)) ChatService {
-	var store session.Store
-	store, err := session.NewFileStore(cfg.Agent.SessionDir)
-	if err != nil {
-		slog.Warn("chat: 会话目录不可用，回退内存存储", "dir", cfg.Agent.SessionDir, "error", err)
-		store = session.NewMemoryStore()
+	return newChat(cfg, newReader, llmFactory, scanFactory, newWriteRunner, nil)
+}
+
+func newChat(cfg *config.Config, newReader func() (scanner.Reader, error), llmFactory func(llm.Options) llm.LLMClient, scanFactory func() tools.ScanRunner, newWriteRunner func() (tools.WriteRunner, error), st store.Store) ChatService {
+	// 会话事实源分流（P8.0）：装配了平台库就一律读写平台库——容器卷上的会话目录
+	// 不作事实源（清卷即丢历史正文；删除只落文件还会在库里留下已删会话的整份正文）。
+	var sessStore session.Store
+	sessionsInStore := false
+	if st != nil {
+		sessStore = store.NewDatabaseSessionStore(st.Sessions())
+		sessionsInStore = true
+		warnLegacySessionFiles(cfg.Agent.SessionDir)
+	} else {
+		fileStore, err := session.NewFileStore(cfg.Agent.SessionDir)
+		if err != nil {
+			slog.Warn("chat: 会话目录不可用，回退内存存储", "dir", cfg.Agent.SessionDir, "error", err)
+			sessStore = session.NewMemoryStore()
+		} else {
+			sessStore = fileStore
+		}
 	}
 	if llmFactory == nil {
 		llmFactory = func(o llm.Options) llm.LLMClient { return llm.New(o) }
@@ -127,14 +213,102 @@ func NewChat(cfg *config.Config, newReader func() (scanner.Reader, error), llmFa
 		newWriteRunner = func() (tools.WriteRunner, error) { return chatWriteRunner(cfg) }
 	}
 	return &chatService{
-		cfg:            cfg,
-		sessions:       session.NewManager(store),
-		llmFactory:     llmFactory,
-		newReader:      newReader,
-		scanFactory:    scanFactory,
-		newWriteRunner: newWriteRunner,
-		proposals:      tools.NewProposalStore(),
+		cfg:             cfg,
+		sessions:        session.NewManager(sessStore),
+		sessionsInStore: sessionsInStore,
+		llmFactory:      llmFactory,
+		newReader:       newReader,
+		scanFactory:     scanFactory,
+		newWriteRunner:  newWriteRunner,
+		proposals:       tools.NewProposalStore(),
+		store:           st,
 	}
+}
+
+// NewChatWithStore 用 Store 持久化创建四期 Agent 服务（P1.8）：非空 store 时把每轮
+// Session/Turn 及其 Reason/Tool/Observe/Approval/Response Step 记录入库，与三期文件会话并存。
+func NewChatWithStore(cfg *config.Config, newReader func() (scanner.Reader, error), llmFactory func(llm.Options) llm.LLMClient, scanFactory func() tools.ScanRunner, newWriteRunner func() (tools.WriteRunner, error), st store.Store) ChatService {
+	return newChat(cfg, newReader, llmFactory, scanFactory, newWriteRunner, st)
+}
+
+// warnLegacySessionFiles 平台模式启动时点名会话目录里残留的历史文件（P8.0 / ADR-046）。
+// 平台模式下这些文件不再被读取，升级现场如果没人告知，只会看到「历史会话全没了」，
+// 容易被当成数据丢失故障；这里明说补救办法（一次性导入）而不是静默忽略。
+func warnLegacySessionFiles(dir string) {
+	if dir == "" {
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	legacy := 0
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+			legacy++
+		}
+	}
+	if legacy > 0 {
+		slog.Info("chat: 会话目录里的历史文件不再被读取（平台模式会话事实源是平台库），如需保留历史请执行 k8s-ai migrate --platform --sessions-dir",
+			"dir", dir, "files", legacy)
+	}
+}
+
+// NewChatWithSink 创建四期 Agent 服务：保留三期事件流，并通过 sink 实时广播统一 SSE 事件（P1.9）。
+// 无 Store 参与，仅做事件路由广播。
+func NewChatWithSink(cfg *config.Config, newReader func() (scanner.Reader, error), llmFactory func(llm.Options) llm.LLMClient, scanFactory func() tools.ScanRunner, newWriteRunner func() (tools.WriteRunner, error), sink func(sse.Event)) ChatService {
+	svc := newChat(cfg, newReader, llmFactory, scanFactory, newWriteRunner, nil).(*chatService)
+	svc.sink = sink
+	return svc
+}
+
+// NewChatWithStoreAndSink 创建四期 Agent 服务：同时做 Store 持久化（P1.8）与统一 SSE 事件广播（P1.9）。
+func NewChatWithStoreAndSink(cfg *config.Config, newReader func() (scanner.Reader, error), llmFactory func(llm.Options) llm.LLMClient, scanFactory func() tools.ScanRunner, newWriteRunner func() (tools.WriteRunner, error), st store.Store, sink func(sse.Event)) ChatService {
+	svc := newChat(cfg, newReader, llmFactory, scanFactory, newWriteRunner, st).(*chatService)
+	svc.sink = sink
+	return svc
+}
+
+// SetRuntimeConfigResolver 实现 RuntimeConfigBinder（P6.1）。
+func (s *chatService) SetRuntimeConfigResolver(fn RuntimeConfigResolver) { s.resolveCfg = fn }
+
+// effectiveConfig 返回本轮 Chat 的生效配置。装配了解析器时以其结果为准，解析失败
+// 直接向上报错——绝不静默回落到启动基线或内置默认模型地址（P6.1 验收口径）。
+// 生效范围是一轮 Chat 的装配面（工具/审批/LLM/Agent 限额）；会话默认 context 与
+// 三期审计目录属静态启动参数，仍沿用启动基线。
+func (s *chatService) effectiveConfig(ctx context.Context) (*config.Config, error) {
+	if s.resolveCfg == nil {
+		return s.cfg, nil
+	}
+	cfg, err := s.resolveCfg(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// SetSkillPlatform 挂载 Skill 平台底座（P3.8）：导入/启停后 create_resource 的
+// dry-run 实时消费平台 registry。组合根在装配 Store 后调用。
+func (s *chatService) SetSkillPlatform(p *SkillPlatform) {
+	s.skillsPlat = p
+}
+
+// liveSkillRegistry 返回 create_resource 消费的实时 Skill registry（P3.8）：
+// 组合根装配 Skill 平台后返回其内存 registry（导入/启停即时生效）；未装配时
+// 回退内置 registry，避免 CLI 与测试桩受影响。
+func (s *chatService) liveSkillRegistry() skills.Registry {
+	if s.skillsPlat != nil {
+		return s.skillsPlat.Registry()
+	}
+	if b, err := skills.NewBuiltin(); err == nil {
+		return b
+	}
+	return skills.New()
+}
+
+// SetSink 挂载统一 SSE 事件广播（P1.9 事件路由入口，Web 用可选接口断言注入）。
+func (s *chatService) SetSink(sink func(sse.Event)) {
+	s.sink = sink
 }
 
 // chatReader 从配置构建只读 Kubernetes 门面（chat 用）。
@@ -151,6 +325,12 @@ func chatReader(cfg *config.Config) (scanner.Reader, error) {
 // NewChatWithConfig 用完整配置创建 Agent 服务（main/CLI 组合根入口）。
 func NewChatWithConfig(cfg *config.Config) ChatService {
 	return NewChat(cfg, func() (scanner.Reader, error) { return chatReader(cfg) }, nil, nil, nil)
+}
+
+// NewChatWithStoreAndConfig 用完整配置 + 四期 Store 创建 Agent 服务（Web/Server 组合根入口）：
+// 既保留三期事件流，又把 Session/Turn/Step 与 token 用量落库（P1.8/P2.13）。
+func NewChatWithStoreAndConfig(cfg *config.Config, st store.Store) ChatService {
+	return NewChatWithStore(cfg, func() (scanner.Reader, error) { return chatReader(cfg) }, nil, nil, nil, st)
 }
 
 // chatWriteRunner 从配置构建写执行器（kubectl argv + client-go，仅 executor 包内）。
@@ -186,9 +366,12 @@ func chatWriteRunner(cfg *config.Config) (tools.WriteRunner, error) {
 		Kubeconfig: cfg.Kubernetes.Kubeconfig,
 		MaxBytes:   cfg.Agent.CmdMaxBytes,
 		DenyOps:    cfg.Agent.DenyOps,
-		Clientset:  cs,
-		Namespace:  cfg.Kubernetes.Namespace,
-		RESTConfig: restConfig,
+		// shell 通道开关来自静态配置（platform.exec.shell_enabled，默认开启）：
+		// Options 的零值是关闭，装配方必须显式传，别让默认镜像丢掉管道排障能力。
+		ShellEnabled: cfg.Platform.Exec.ShellEnabled,
+		Clientset:    cs,
+		Namespace:    cfg.Kubernetes.Namespace,
+		RESTConfig:   restConfig,
 	}), nil
 }
 
@@ -254,16 +437,26 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 	if err != nil {
 		return nil, err
 	}
+	if req.UserID != "" && !req.AllowAnySession && sess.UserID != req.UserID {
+		return nil, fmt.Errorf("%w: session %s", session.ErrForbidden, req.SessionID)
+	}
+	// P6.1：本轮装配统一用生效配置，配置中心改模型后下一轮立即生效。
+	cfg, err := s.effectiveConfig(ctx)
+	if err != nil {
+		return nil, err
+	}
 	reader, err := s.newReader()
 	if err != nil {
 		return nil, err
 	}
+	// 本轮运行的 turn/step 作用域要在工具装配前创建：Skill 观测回调要用它补关联字段。
+	scope := &runScope{sessID: sess.ID}
 	reg := tools.NewRegistry()
 	if err := k8stools.RegisterAll(reg, reader); err != nil {
 		return nil, err
 	}
 	// 诊断 Tool 复用一期 ScanService（P3）。
-	for _, dt := range tools.NewDiagnosisTools(s.scanFactory(), chatScanOptions(s.cfg)) {
+	for _, dt := range tools.NewDiagnosisTools(s.scanFactory(), chatScanOptions(cfg)) {
 		if err := reg.Register(dt); err != nil {
 			return nil, err
 		}
@@ -280,47 +473,71 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 	}
 	// 三期创建通道（R3）：结构化 create_resource，注册在 disabled_tools 之前，
 	// 这样 agent.disabled_tools 里写 create_resource 就能摘掉它。
-	if s.cfg.Agent.Create.Enabled {
+	// liveReg 复用于 create_resource 的 Skill registry 与 procedural 意图检索，
+	// 保证导入/启停即时生效两端一致。
+	liveReg := s.liveSkillRegistry()
+	if cfg.Agent.Create.Enabled {
 		if runner, ok := writeRunner.(tools.CreateRunner); ok {
-			opts := createToolOptions(s.cfg)
-			skillReg, err := skills.NewBuiltin()
-			if err != nil {
-				return nil, err
-			}
-			opts.Skills = skillReg
+			opts := createToolOptions(cfg)
+			opts.Skills = liveReg
+			opts.OnSkillRun = s.skillRunAuditor(ctx, sess, scope)
 			if err := reg.Register(tools.NewCreateTool(opts, runner, s.proposals, sess.ID)); err != nil {
 				return nil, err
 			}
 		}
 	}
-	for _, name := range s.cfg.Agent.DisabledTools {
+	// P3.8.4：Skill 只读工具（list_skills/get_skill）装配，注册在 disabled_tools
+	// 之前，配置里同样可摘掉。正文永不执行，仅作文本参考。
+	for _, st := range tools.NewSkillsTools(liveReg) {
+		if err := reg.Register(st); err != nil {
+			return nil, err
+		}
+	}
+	for _, name := range cfg.Agent.DisabledTools {
 		reg.Remove(strings.TrimSpace(name))
 	}
 	events := make(chan ChatEvent, 64)
 	pol := approval.Policy{
-		Mode:            approval.Mode(s.cfg.Agent.ApprovalMode),
-		RequireApproval: s.cfg.Agent.RequireApproval,
-		SkipPermissions: req.SkipPermissions || s.cfg.Agent.SkipPermissions,
-		DenyOps:         s.cfg.Agent.DenyOps,
+		Mode:            approval.Mode(cfg.Agent.ApprovalMode),
+		RequireApproval: cfg.Agent.RequireApproval,
+		SkipPermissions: req.SkipPermissions || cfg.Agent.SkipPermissions,
+		DenyOps:         cfg.Agent.DenyOps,
 	}
+	// P1.9: 生命周期观察器同时负责 Store 持久化与统一事件广播，approver 复用同一
+	// runScope 给 approval.required 补全关联字段。
+	tracer := s.chatTracer(ctx, sess, scope)
 	approver := &chatApprover{
-		events:      events,
-		respond:     respond,
-		skip:        false,
-		autoApprove: false,
+		events:  events,
+		respond: respond,
+		sink:    s.sink,
+		scope:   scope,
 	}
 	client := s.llmFactory(llm.Options{
-		Endpoint:        s.cfg.LLM.Endpoint,
-		APIKey:          s.cfg.LLM.APIKey,
-		Model:           s.cfg.LLM.Model,
-		Temperature:     s.cfg.LLM.Temperature,
-		MaxTokens:       s.cfg.LLM.MaxTokens,
-		Timeout:         s.cfg.LLM.Timeout,
-		Thinking:        s.cfg.LLM.Thinking,
-		ReasoningFields: s.cfg.LLM.ReasoningFields,
-		DisableStream:   !s.cfg.LLM.Stream, // llm.stream=false：ChatStream 退化为非流式
+		Endpoint:        cfg.LLM.Endpoint,
+		APIKey:          cfg.LLM.APIKey,
+		Model:           cfg.LLM.Model,
+		Temperature:     cfg.LLM.Temperature,
+		MaxTokens:       cfg.LLM.MaxTokens,
+		Timeout:         cfg.LLM.Timeout,
+		Thinking:        cfg.LLM.Thinking,
+		ReasoningFields: cfg.LLM.ReasoningFields,
+		DisableStream:   !cfg.LLM.Stream, // llm.stream=false：ChatStream 退化为非流式
 	})
-	recorder := s.newAuditRecorder(sess.ID)
+	recorder := s.newAuditRecorder(sess, scope)
+	// P1.9: 会话创建即广播 session.created；后续 Turn/Step 生命周期由 Tracer 转发。
+	if s.sink != nil {
+		s.sink(sse.New(sess.ID, "", "", sse.EventSessionCreated, sse.SessionData{State: sess.State}))
+	}
+	// P3.8.4：procedural 自定义 Skill 装配（显式 @ 指定或自动意图检索），命中正文
+	// 拼接为不可信方法论附录注入 Agent system prompt，并记录命中统计与 SKILL_RUN
+	// retrieve 审计。显式指定时任一名字无效整批拒绝，不做静默降级。
+	skillCtx, skillHits, err := s.buildSkillContext(ctx, sess, scope, liveReg, req.Query, req.Skills)
+	if err != nil {
+		return nil, err
+	}
+	for _, h := range skillHits {
+		events <- ChatEvent{Type: ChatEventProgress, Text: fmt.Sprintf("已注入 Skill：%s（%s）", h.name, h.mode)}
+	}
 	ag := agent.New(agent.Options{
 		LLM:            client,
 		Tools:          reg,
@@ -328,50 +545,138 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 		Approver:       approver,
 		ApprovalPolicy: &pol,
 		Recorder:       recorder,
-		MaxIterations:  s.cfg.Agent.MaxIterations,
-		MaxToolCalls:   s.cfg.Agent.MaxToolCalls,
-		Timeout:        s.cfg.Agent.Timeout,
-		ToolCalling:    s.cfg.Agent.ToolCalling,
-		ResultMaxBytes: s.cfg.Agent.ResultMaxBytes,
-		TurnMaxBytes:   s.cfg.Agent.TurnMaxBytes,
-		HistoryTurns:   s.cfg.Agent.HistoryTurns,
+		Tracer:         tracer,
+		SkillContext:   skillCtx,
+		MaxIterations:  cfg.Agent.MaxIterations,
+		MaxToolCalls:   cfg.Agent.MaxToolCalls,
+		Timeout:        cfg.Agent.Timeout,
+		ToolCalling:    cfg.Agent.ToolCalling,
+		ResultMaxBytes: cfg.Agent.ResultMaxBytes,
+		TurnMaxBytes:   cfg.Agent.TurnMaxBytes,
+		HistoryTurns:   cfg.Agent.HistoryTurns,
+		TurnUserID:     req.UserID,
+		AccessScope:    req.AccessScope,
 	})
-	go s.runChat(ctx, ag, sess, req, events, recorder)
+	go s.runChat(ctx, ag, sess, req, events, recorder, s.sink, scope)
 	return events, nil
 }
 
-// newAuditRecorder 为会话创建 JSONL 审计记录器（目录不存在自动创建；失败回退日志记录器）。
-func (s *chatService) newAuditRecorder(sessionID string) audit.Recorder {
-	path := filepath.Join(s.cfg.Agent.AuditDir, sessionID+".jsonl")
-	r, err := audit.NewFileRecorder(path)
-	if err != nil {
-		slog.Warn("chat: 审计文件不可用，回退日志记录器", "path", path, "error", err)
-		return &audit.LogRecorder{}
+// chatTracer 装配生命周期观察器：统一事件广播器（P1.9）+ Store 持久化（P1.8），
+// 两者共用调用方创建的 runScope（当前 turn/step 作用域）。
+// 数据库不可用时不阻塞聊天，仅回退为不持久化。
+func (s *chatService) chatTracer(ctx context.Context, sess *session.Session, scope *runScope) agent.Tracer {
+	var persist agent.Tracer
+	if s.store != nil {
+		if s.sessionsInStore {
+			// 会话行已由 session.Store 适配器在建会话时写入（P8.0），这里不再补写一次。
+			persist = &persistTracer{store: s.store}
+		} else if err := s.store.Sessions().Create(ctx, sess); err != nil && !errors.Is(err, store.ErrExists) {
+			slog.Warn("chat: 四期会话初始化失败，本轮跳过 Turn/Step 持久化", "session", sess.ID, "error", err)
+		} else {
+			persist = &persistTracer{store: s.store}
+		}
 	}
-	return r
+	if s.sink == nil && persist == nil {
+		return nil
+	}
+	return &fanOutTracer{scope: scope, persist: persist, sink: s.sink}
 }
 
-func (s *chatService) runChat(ctx context.Context, ag *agent.Agent, sess *session.Session, req ChatRequest, events chan<- ChatEvent, recorder audit.Recorder) {
+// persistTracer 把 Agent 生命周期回调写入四期 Store（P1.8）。落库前由 Store 侧统一脱敏，
+// 回调为观察性质，所有写失败只记日志、不中断 Agent 主循环。
+type persistTracer struct {
+	store store.Store
+}
+
+func (t *persistTracer) TurnStarted(ctx context.Context, turn *session.Turn) {
+	if err := t.store.Turns().Create(ctx, turn); err != nil {
+		slog.Warn("chat: Turn 写入失败", "turn", turn.ID, "error", err)
+	}
+}
+
+func (t *persistTracer) TurnUpdated(ctx context.Context, turn *session.Turn) {
+	if err := t.store.Turns().Update(ctx, turn); err != nil {
+		slog.Warn("chat: Turn 更新失败", "turn", turn.ID, "error", err)
+	}
+}
+
+func (t *persistTracer) StepStarted(ctx context.Context, step *session.Step) {
+	if err := t.store.Steps().Create(ctx, step); err != nil {
+		slog.Warn("chat: Step 写入失败", "turn", step.TurnID, "step", step.ID, "error", err)
+	}
+}
+
+func (t *persistTracer) StepUpdated(ctx context.Context, step *session.Step) {
+	if err := t.store.Steps().Update(ctx, step); err != nil {
+		slog.Warn("chat: Step 更新失败", "turn", step.TurnID, "step", step.ID, "error", err)
+	}
+}
+
+// newAuditRecorder 为会话创建审计记录器（目录不存在自动创建；失败回退日志记录器）。
+// 装配了四期 Store 时同一事件同时落 AuditStore（P1.11），关联字段取自会话与本轮 turn/step。
+func (s *chatService) newAuditRecorder(sess *session.Session, scope *runScope) audit.Recorder {
+	var inner audit.Recorder
+	if s.auditFileCopyEnabled() {
+		path := filepath.Join(s.cfg.Agent.AuditDir, sess.ID+".jsonl")
+		fileRecorder, err := audit.NewFileRecorder(path)
+		if err != nil {
+			slog.Warn("chat: 审计文件不可用，回退日志记录器", "path", path, "error", err)
+			inner = &audit.LogRecorder{}
+		} else {
+			inner = fileRecorder
+		}
+	} else {
+		// 副本已关闭（agent.audit_file_copy=false）：审计事实源是平台库 audit_events，
+		// 会话目录里不再产生第二份可含事件负载的落盘文件（P8.0）。
+		inner = audit.NopRecorder{}
+	}
+	if s.store == nil {
+		return inner
+	}
+	return newStoreAuditRecorder(inner, s.store, scope, AuditScope{
+		SessionID: sess.ID,
+		UserID:    sess.UserID,
+		ClusterID: sess.Cluster,
+	})
+}
+
+// auditFileCopyEnabled 判断本轮是否还写会话审计 jsonl 副本（P8.0）：
+// 终端直用（无平台库）恒为 true——文件就是审计唯一出口；平台模式下由
+// agent.audit_file_copy 决定，默认 true 保持既有部署行为不变。
+func (s *chatService) auditFileCopyEnabled() bool {
+	if s.store == nil {
+		return true
+	}
+	return s.cfg == nil || s.cfg.Agent.AuditFileCopy
+}
+
+func (s *chatService) runChat(ctx context.Context, ag *agent.Agent, sess *session.Session, req ChatRequest, events chan<- ChatEvent, recorder audit.Recorder, sink func(sse.Event), scope *runScope) {
 	defer close(events)
 	defer func() { _ = recorder.Close() }()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		var pendingAnswer strings.Builder
-		var reasoning strings.Builder
 		hadToolCall := false
+		// 分片序号按 role 各自计数：reasoning 与 assistant 共用一个计数器会让
+		// 报告的“第几段”被思考分片推高，消费方无法据此排序。
+		reasoningIndex := 0
+		answerIndex := 0
 		for m := range ag.Output {
 			if ev, ok := translateEvent(m); ok {
 				switch ev.Type {
 				case ChatEventReasoningDelta:
-					reasoning.WriteString(ev.Text)
 					events <- ev
+					emitMessageDelta(sink, scope, "reasoning", ev.Text, reasoningIndex)
+					reasoningIndex++
 				case ChatEventProgress:
 					events <- ev
 				case ChatEventAnswerDelta, ChatEventDelta:
 					// 先缓存回答增量。若后续发现本轮实际包含工具调用，
 					// 这段内容只能是工具前的中间说明，不能提前展示为报告。
 					pendingAnswer.WriteString(ev.Text)
+					emitMessageDelta(sink, scope, "assistant", ev.Text, answerIndex)
+					answerIndex++
 				case ChatEventToolCall:
 					if progress := summarizeToolPrelude(pendingAnswer.String()); progress != "" {
 						events <- ChatEvent{Type: ChatEventProgress, Text: progress}
@@ -391,44 +696,129 @@ func (s *chatService) runChat(ctx context.Context, ag *agent.Agent, sess *sessio
 		if !hadToolCall && pendingAnswer.Len() > 0 {
 			events <- ChatEvent{Type: ChatEventAnswerDelta, Text: pendingAnswer.String()}
 		}
-		if reasoning.Len() > 0 {
-			persistReasoning(sess, reasoning.String())
-		}
 	}()
 	answer, usage, chatErr := ag.Chat(ctx, req.Query)
 	sess.State = string(ag.State)
-	// 关闭 Agent 输出通道，让事件转发协程结束。
+	// 先关通道并等转发协程收尾，再发终态事件。事件顺序必须是
+	// message.delta… → message.completed（权威全文）→ session.completed / failed；
+	// 否则最后一段正文会落在终态之后，被前端当成新分片并永久停在“正在生成…”。
 	close(ag.Output)
 	<-done
-	if err := s.sessions.Update(sess); err != nil {
-		slog.Warn("chat: 保存会话失败", "session", sess.ID, "error", err)
+	if sink != nil {
+		if answer != "" {
+			sink(sse.New(sess.ID, scope.turn(), "", sse.EventMessageCompleted, sse.MessageData{
+				Role: "assistant", Delta: store.RedactJSONPayload(answer),
+			}))
+		}
+		if chatErr != nil {
+			sink(sse.New(sess.ID, scope.turn(), "", sse.EventSessionFailed, sse.SessionData{
+				State: sess.State, Reason: chatErr.Error(),
+			}))
+		} else {
+			sink(sse.New(sess.ID, scope.turn(), "", sse.EventSessionCompleted, sse.SessionData{State: sess.State}))
+		}
 	}
+	// 会话落库 + 容量闸门反馈（P8.6）：预警与超限都必须走到用户眼前。真机上出过 MySQL
+	// 「Data too long」把整轮对话静默吞掉的事故——用户看到的是「回复正常，历史里没有」，
+	// 服务端日志里那行 Warn 没人看得见。
+	capacityWarn, capacityFail := s.persistTurnSession(ctx, sess)
 	events <- ChatEvent{Type: ChatEventAnswer, Text: answer, Usage: &usage}
 	if chatErr != nil {
 		events <- ChatEvent{Type: ChatEventError, Text: chatErr.Error()}
 	}
+	// 容量提示放在答案之后：它不影响本轮回复内容，抢在答案前面会把用户注意力从结果上挪走。
+	if capacityWarn != "" {
+		events <- ChatEvent{Type: ChatEventProgress, Text: capacityWarn}
+	}
+	if capacityFail != "" {
+		events <- ChatEvent{Type: ChatEventError, Text: capacityFail}
+	}
 }
 
-func persistReasoning(sess *session.Session, text string) {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return
+// persistTurnSession 在一轮对话结束时保存会话，并返回两句可读提示：接近上限的预警、
+// 以及超限导致本轮未保存的说明（空串表示没有该问题）。
+//
+// 容量判定本身在持久化层（internal/store 的写入漏斗），这里只负责把它翻译成用户看得懂的
+// 话。session.Store 用可选能力 session.SizedStore 上报容量，文件/内存后端没有闸门，
+// 断言失败就退回普通 Update，行为与改动前一致。
+func (s *chatService) persistTurnSession(ctx context.Context, sess *session.Session) (warning, failure string) {
+	warning, failure = s.saveSession(sess)
+	// 会话事实源已是平台库时，上一步就是落库，不再重复写同一行（正文可达 MiB 级）。
+	if s.store == nil || s.sessionsInStore {
+		return warning, failure
 	}
-	message := session.Message{Role: "assistant", Type: "reasoning", Content: text}
-	insertAt := -1
-	for i, existing := range sess.Messages {
-		if existing.Role == "assistant" && existing.Type == "text" {
-			insertAt = i
+	mirrorWarn, mirrorFail := s.saveSessionMirror(ctx, sess)
+	return joinCapacityNotice(warning, mirrorWarn), joinCapacityNotice(failure, mirrorFail)
+}
+
+// saveSession 写会话事实源（session.Store），有容量回报时一并换算成提示。
+func (s *chatService) saveSession(sess *session.Session) (warning, failure string) {
+	rep, err := s.sessions.UpdateSized(sess)
+	return sessionCapacityNotices(rep, err, sess.ID)
+}
+
+// saveSessionMirror 写平台库镜像（会话事实源仍在文件目录的历史形态）。
+func (s *chatService) saveSessionMirror(ctx context.Context, sess *session.Session) (warning, failure string) {
+	if sized, ok := s.store.Sessions().(store.SessionSizeStore); ok {
+		rep, err := sized.UpdateSized(ctx, sess)
+		return sessionCapacityNotices(storeSizeReport(rep), err, sess.ID)
+	}
+	if err := s.store.Sessions().Update(ctx, sess); err != nil {
+		_, failure = sessionCapacityNotices(session.SizeReport{}, err, sess.ID)
+		return "", failure
+	}
+	return "", ""
+}
+
+// joinCapacityNotice 合并事实源与镜像两侧的提示，避免一侧的告警被另一侧覆盖。
+func joinCapacityNotice(a, b string) string {
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	default:
+		return a + " " + b
+	}
+}
+
+// storeSizeReport 把 store 侧的容量回报换成 session 侧同名字段（两包各自定义，避免
+// session 反向依赖 store）。
+func storeSizeReport(rep store.SessionSizeReport) session.SizeReport {
+	return session.SizeReport{Size: rep.Size, Limit: rep.Limit, Warning: rep.Warning}
+}
+
+// sessionCapacityNotices 把一次容量回报换成两句用户可见文案。非容量错误仍只进日志：
+// 数据库抖动不该伪装成「会话太大」，那会把用户引向完全错误的处置方向。
+func sessionCapacityNotices(rep session.SizeReport, err error, id string) (warning, failure string) {
+	if err != nil {
+		slog.Warn("chat: 保存会话失败", "session", id, "error", err)
+		if !errors.Is(err, store.ErrSessionTooLarge) {
+			return "", ""
 		}
+		return "", fmt.Sprintf(
+			"本轮回复没有存进会话：会话正文 %s 已超过上限 %s（配置键 agent.session_max_bytes）。"+
+				"回复内容本身已完成，请新建会话继续，或由管理员调大该上限。",
+			store.FormatBytes(rep.Size), store.FormatBytes(rep.Limit))
 	}
-	if insertAt >= 0 {
-		sess.Messages = append(sess.Messages, session.Message{})
-		copy(sess.Messages[insertAt+1:], sess.Messages[insertAt:])
-		sess.Messages[insertAt] = message
-		sess.LastModified = time.Now()
+	if !rep.Warning {
+		return "", ""
+	}
+	return fmt.Sprintf(
+		"会话正文已用到 %s，接近上限 %s：再积累几轮就可能无法继续保存，建议新开会话。",
+		store.FormatBytes(rep.Size), store.FormatBytes(rep.Limit)), ""
+}
+
+// emitMessageDelta 通过 sink 广播统一 message.delta 事件（携带当前 turn/step 作用域）。
+// 增量与终态走同一套脱敏（sse 包约定：写入事件流的内容在封装前必须脱敏），
+// 避免同一段正文在流式过程中与 message.completed 里呈现不同内容。
+func emitMessageDelta(sink func(sse.Event), scope *runScope, role, delta string, index int) {
+	if sink == nil {
 		return
 	}
-	sess.AddMessage(message)
+	sink(sse.New(scope.session(), scope.turn(), scope.step(), sse.EventMessageDelta, sse.MessageData{
+		Role: role, Delta: store.RedactJSONPayload(delta), Index: index,
+	}))
 }
 
 // summarizeToolPrelude 保留工具调用前的短进度说明，避免把真正的诊断文本直接丢掉。
@@ -469,12 +859,20 @@ func translateEvent(m agent.Message) (ChatEvent, bool) {
 			return ChatEvent{
 				Type: ChatEventToolResponse,
 				Tool: &ChatToolCallView{
-					Name:      toString(mm["name"]),
-					Result:    toString(mm["text"]),
-					Summary:   toString(mm["summary"]),
-					Ok:        boolPtr(mm["ok"]),
-					Truncated: toBool(mm["truncated"]),
-					Data:      mm["data"],
+					Name:        toString(mm["name"]),
+					Result:      toString(mm["text"]),
+					Summary:     toString(mm["summary"]),
+					Ok:          boolPtr(mm["ok"]),
+					Truncated:   toBool(mm["truncated"]),
+					Data:        mm["data"],
+					Risk:        toString(mm["risk"]),
+					DurationMs:  toInt64(mm["durationMs"]),
+					DisplayType: toString(mm["displayType"]),
+					Command:     toString(mm["command"]),
+					Stdout:      toString(mm["stdout"]),
+					Stderr:      toString(mm["stderr"]),
+					ExitCode:    int(toInt64(mm["exitCode"])),
+					ErrorCode:   toString(mm["errorCode"]),
 				},
 			}, true
 		}
@@ -488,9 +886,64 @@ type chatApprover struct {
 	respond     <-chan string
 	skip        bool
 	autoApprove bool
+	// sink 非空时以统一事件顺带广播审批请求（P1.9）。
+	sink  func(sse.Event)
+	scope *runScope
 }
 
 func (a *chatApprover) Confirm(ctx context.Context, prompt string, options []agent.UserChoiceOption) (string, error) {
+	return a.confirm(ctx, prompt, options, nil)
+}
+
+// ConfirmStructured 在保留 CLI/旧事件 prompt 的同时，向统一 SSE 下发结构化审批事实。
+func (a *chatApprover) ConfirmStructured(ctx context.Context, req agent.ApprovalRequest) (string, error) {
+	data := approvalDataFromPlan(req)
+	return a.confirm(ctx, req.Prompt, req.Options, &data)
+}
+
+func approvalDataFromPlan(req agent.ApprovalRequest) sse.ApprovalData {
+	plan := req.Plan
+	data := sse.ApprovalData{
+		Title:        plan.Title,
+		Tool:         plan.Tool,
+		Operation:    plan.Operation,
+		Risk:         plan.Risk,
+		Summary:      plan.Summary,
+		Command:      plan.Command,
+		Prompt:       req.Prompt,
+		Options:      sseChoiceOptions(req.Options),
+		Verification: append([]string(nil), plan.Verification...),
+	}
+	if plan.Target != (tools.ApprovalTarget{}) {
+		data.Target = &sse.ApprovalTarget{
+			Cluster: plan.Target.Cluster, Namespace: plan.Target.Namespace,
+			Group: plan.Target.Group, Version: plan.Target.Version,
+			Kind: plan.Target.Kind, Name: plan.Target.Name,
+		}
+	}
+	for _, change := range plan.Changes {
+		data.Changes = append(data.Changes, sse.ApprovalChange{
+			Path: change.Path, Operation: change.Operation, Before: change.Before,
+			After: change.After, Description: change.Description,
+		})
+	}
+	for _, check := range plan.Checks {
+		data.Checks = append(data.Checks, sse.ApprovalCheck{
+			Name: check.Name, Status: check.Status, Message: check.Message,
+		})
+	}
+	return data
+}
+
+func sseChoiceOptions(options []agent.UserChoiceOption) []sse.ChoiceOption {
+	out := make([]sse.ChoiceOption, 0, len(options))
+	for _, o := range options {
+		out = append(out, sse.ChoiceOption{Label: o.Label, Value: o.Value})
+	}
+	return out
+}
+
+func (a *chatApprover) confirm(ctx context.Context, prompt string, options []agent.UserChoiceOption, approvalData *sse.ApprovalData) (string, error) {
 	if a.skip || a.autoApprove {
 		return agent.ChoiceYes, nil
 	}
@@ -498,7 +951,17 @@ func (a *chatApprover) Confirm(ctx context.Context, prompt string, options []age
 	for _, o := range options {
 		opts = append(opts, ChatChoiceOption{Label: o.Label, Value: o.Value})
 	}
-	a.events <- ChatEvent{Type: ChatEventChoice, Choice: &ChatChoice{Prompt: prompt, Options: opts}}
+	a.events <- ChatEvent{Type: ChatEventChoice, Choice: &ChatChoice{Prompt: prompt, Options: opts, Approval: approvalData}}
+	if a.sink != nil {
+		data := sse.ApprovalData{Prompt: prompt}
+		if approvalData != nil {
+			data = *approvalData
+			data.Prompt = prompt
+		} else {
+			data.Options = sseChoiceOptions(options)
+		}
+		a.sink(sse.New(a.scope.session(), a.scope.turn(), a.scope.step(), sse.EventApprovalRequired, data))
+	}
 	select {
 	case <-ctx.Done():
 		return "", ctx.Err()
@@ -514,6 +977,12 @@ func (a *chatApprover) RequestSecretValue(ctx context.Context, prompt string) (s
 		return "", errors.New("非交互模式下无法向用户索取 Secret 值，请改用 $GENERATE 由 k8s-ai 随机生成")
 	}
 	a.events <- ChatEvent{Type: ChatEventChoice, Choice: &ChatChoice{Prompt: prompt, Secret: true}}
+	if a.sink != nil {
+		// 只下发 secret=true 标记，明文值从不进入事件流（AGENTS.md 红线）。
+		a.sink(sse.New(a.scope.session(), a.scope.turn(), a.scope.step(), sse.EventApprovalRequired, sse.ApprovalData{
+			Prompt: prompt, Secret: true,
+		}))
+	}
 	select {
 	case <-ctx.Done():
 		return "", ctx.Err()
@@ -536,8 +1005,30 @@ func (s *chatService) GetOrCreateSession(id, namespace, model string) (*session.
 	return s.sessions.NewSession(id, s.cfg.Kubernetes.Context, namespace, model)
 }
 
+// GetSession 只读取已有会话，不存在时返回 session.ErrNotFound。
+func (s *chatService) GetSession(id string) (*session.Session, error) {
+	return s.sessions.Get(id)
+}
+
+// GetOrCreateSessionForUser 将 Web 会话绑定到当前登录用户。
+func (s *chatService) GetOrCreateSessionForUser(id, userID, namespace, model string) (*session.Session, error) {
+	return s.sessions.GetOrCreateSessionForUser(id, userID, namespace, model)
+}
+
 func (s *chatService) ListSessions() ([]session.Session, error) {
 	list, err := s.sessions.List()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]session.Session, 0, len(list))
+	for _, sess := range list {
+		out = append(out, *sess)
+	}
+	return out, nil
+}
+
+func (s *chatService) ListSessionsForUser(userID string) ([]session.Session, error) {
+	list, err := s.sessions.ListForUser(userID)
 	if err != nil {
 		return nil, err
 	}
@@ -570,6 +1061,26 @@ func (s *chatService) RenameSession(id, name string) error {
 	return s.sessions.Update(sess)
 }
 
+// PinSession 置顶/取消置顶会话（P7.5）。
+func (s *chatService) PinSession(id string, pinned bool) error {
+	sess, err := s.sessions.Get(id)
+	if err != nil {
+		return err
+	}
+	sess.Pinned = pinned
+	return s.sessions.Update(sess)
+}
+
+// SessionTokenUsage 汇总会话内各轮 token 用量（P2.13）。
+// 未装配四期 Store（三期运行模式）时返回零值：Web 右下角统计自动隐藏，
+// 而不是把"未持久化"误报成 0 tokens。
+func (s *chatService) SessionTokenUsage(ctx context.Context, sessionID string) (session.TokenUsage, error) {
+	if s.store == nil || sessionID == "" {
+		return session.TokenUsage{}, nil
+	}
+	return s.store.Turns().SumTokensBySession(ctx, sessionID)
+}
+
 func toString(v any) string {
 	if v == nil {
 		return ""
@@ -583,6 +1094,19 @@ func toString(v any) string {
 func toBool(v any) bool {
 	b, _ := v.(bool)
 	return b
+}
+
+func toInt64(v any) int64 {
+	switch n := v.(type) {
+	case int64:
+		return n
+	case int:
+		return int64(n)
+	case float64:
+		return int64(n)
+	default:
+		return 0
+	}
 }
 
 // boolPtr 返回 *bool：字段缺失（旧客户端/旧会话无 ok 键）时为 nil，前端据此回退正则兜底。

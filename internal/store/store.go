@@ -1,0 +1,245 @@
+package store
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/k8s-ai/k8s-ai/internal/objectstore"
+	"github.com/k8s-ai/k8s-ai/internal/session"
+)
+
+// ErrNotFound 表示记录不存在。
+var ErrNotFound = errors.New("store: not found")
+
+// ErrExists 表示记录已存在（主键/唯一约束冲突）。
+var ErrExists = errors.New("store: already exists")
+
+// Store 是四期统一的持久化门面（D-04：业务层只依赖该接口）。
+//
+// 实现约定：SQLite/MySQL 共用同一套逻辑迁移版本；所有写路径在进入前都应
+// 对敏感字段（Secret 值 / kubeconfig / API Key）做处理，读路径按各子 Store
+// 语义返回脱敏或不含敏感内容的数据。
+type Store interface {
+	Users() UserStore
+	Roles() RoleStore
+	Sessions() SessionStore
+	Turns() TurnStore
+	Steps() StepStore
+	Audit() AuditStore
+	Settings() SettingsStore
+	Skills() SkillStore
+	Approvals() ApprovalStore
+	Memories() MemoryStore
+	Retention() RetentionStore
+	Clusters() ClusterStore
+	Credentials() CredentialStore
+	AuthzGrants() AuthzGrantStore
+	ApiTokens() ApiTokenStore
+
+	// Objects 返回对象元数据登记表（objects 表）入口（P8.2，方案 15 §6.5）。
+	// 引用计数只能经 WithTx 的 Tx 改，这里给的是读面、登记与 GC 生命周期动作。
+	Objects() ObjectStore
+	// Reports 返回报告业务行的读面（P8.5，方案 15 §6.2/§12.3）：可见性判定下推到 SQL，
+	// 写面只在 WithTx 的 Tx.InsertReport。
+	Reports() ReportStore
+	// ObjectContent 返回 driver="db" 的对象内容后端（兼容/兜底后端，正文放
+	// objects.payload，体积上限见 ObjectContentLimit）。对象存储故障不影响基础业务，
+	// 因此它不进 /readyz（方案 15 §11.1），装配层拿 objectstore.Probe 单独上报。
+	ObjectContent(prefix string, maxBytes int64) (objectstore.Store, error)
+	// WithTx 在一个数据库事务内执行 fn（P8.2）：对象引用计数与引用它的业务行必须
+	// 同事务提交，否则「行提交了、引用没加」会留下永久孤儿，「引用加了、行回滚」会
+	// 让对象永远回收不掉。
+	WithTx(ctx context.Context, fn func(*Tx) error) error
+
+	// Migrate 将 schema 升级到最新版本（幂等）。
+	Migrate(ctx context.Context) error
+	Close() error
+	// Ping 校验数据库连通性，供 /readyz 使用（P6.1）：不建表、不写数据。
+	Ping(ctx context.Context) error
+	// MigrationStatus 返回已应用的 schema 版本与期望版本（P6.1）：迁移表缺失时
+	// applied 为 0 且不报错，让调用方把"还没跑过迁移"当成未就绪而不是错误。
+	MigrationStatus(ctx context.Context) (applied int, expected int, err error)
+}
+
+// ErrNotReady 表示持久化层尚未进入可服务状态（P6.1 /readyz 判据）。
+var ErrNotReady = errors.New("store: not ready")
+
+// IsReady 报告存储是否可服务：能连通且 schema 已升到当前版本（P6.1/P6.5）。
+// 迁移未完成时返回包装了 ErrNotReady 的错误，错误里带上 applied/expected 版本，
+// 便于容器里直接从探针响应看出"迁移 Job 还没跑完"。
+func IsReady(ctx context.Context, st Store) error {
+	if st == nil {
+		return fmt.Errorf("%w: store is not wired", ErrNotReady)
+	}
+	if err := st.Ping(ctx); err != nil {
+		return fmt.Errorf("%w: store ping: %v", ErrNotReady, err)
+	}
+	applied, expected, err := st.MigrationStatus(ctx)
+	if err != nil {
+		return fmt.Errorf("%w: schema version: %v", ErrNotReady, err)
+	}
+	if applied < expected {
+		return fmt.Errorf("%w: schema version %d < expected %d (run k8s-ai db migrate)", ErrNotReady, applied, expected)
+	}
+	return nil
+}
+
+// UserStore 管理产品内用户（P1.5）。
+type UserStore interface {
+	Create(ctx context.Context, u *User) error
+	Get(ctx context.Context, id string) (*User, error)
+	GetByUsername(ctx context.Context, username string) (*User, error)
+	Update(ctx context.Context, u *User) error
+	List(ctx context.Context) ([]*User, error)
+	Delete(ctx context.Context, id string) error
+}
+
+// RoleStore 管理产品内角色与权限（P1.5/P3.11）。
+type RoleStore interface {
+	Create(ctx context.Context, r *Role) error
+	Get(ctx context.Context, id string) (*Role, error)
+	Update(ctx context.Context, r *Role) error
+	List(ctx context.Context) ([]*Role, error)
+	Delete(ctx context.Context, id string) error
+}
+
+// SessionStore 持久化 Agent Session / Turn / Step（P1.7，兼容三期）。
+// 复用 session.Session 作为数据模型，避免重复造类型。
+type SessionStore interface {
+	Create(ctx context.Context, s *session.Session) error
+	Get(ctx context.Context, id string) (*session.Session, error)
+	Update(ctx context.Context, s *session.Session) error
+	List(ctx context.Context) ([]*session.Session, error)
+	Delete(ctx context.Context, id string) error
+}
+
+// TurnStore 持久化 Agent 单轮 Turn（P1.7，多轮可回放）。
+// Input/Output/Error 在落库前脱敏。
+type TurnStore interface {
+	Create(ctx context.Context, t *session.Turn) error
+	Get(ctx context.Context, id string) (*session.Turn, error)
+	Update(ctx context.Context, t *session.Turn) error
+	ListBySession(ctx context.Context, sessionID string) ([]*session.Turn, error)
+	// SumTokensBySession 返回会话内各轮 token 用量合计（P2.13 会话级 Token 统计）。
+	SumTokensBySession(ctx context.Context, sessionID string) (session.TokenUsage, error)
+	Delete(ctx context.Context, id string) error
+}
+
+// StepStore 持久化 Turn 内的 Step（P1.7），按 seq 顺序回放。
+// Params/Result/Error 在落库前脱敏。
+type StepStore interface {
+	Create(ctx context.Context, s *session.Step) error
+	Get(ctx context.Context, id string) (*session.Step, error)
+	Update(ctx context.Context, s *session.Step) error
+	ListByTurn(ctx context.Context, turnID string) ([]*session.Step, error)
+	Delete(ctx context.Context, id string) error
+}
+
+// AuditStore 写入/查询带全链路关联的结构化审计事件（P1.11/P4.7）。
+type AuditStore interface {
+	Write(ctx context.Context, e *AuditEvent) error
+	Get(ctx context.Context, id int64) (*AuditEvent, error)
+	List(ctx context.Context) ([]*AuditEvent, error)
+}
+
+// SettingsStore 是配置中心通用键值存取（P1.10）。
+type SettingsStore interface {
+	Set(ctx context.Context, s *Settings) error
+	Get(ctx context.Context, group, key string) (*Settings, error)
+	ListByGroup(ctx context.Context, group string) ([]*Settings, error)
+	Delete(ctx context.Context, group, key string) error
+}
+
+// SkillStore 管理内置/自定义/第三方 Skill 元数据（P3.5）。
+type SkillStore interface {
+	Upsert(ctx context.Context, s *Skill) error
+	Get(ctx context.Context, name string) (*Skill, error)
+	List(ctx context.Context) ([]*Skill, error)
+	Delete(ctx context.Context, name string) error
+}
+
+// ApprovalStore 记录审批状态与决策依据（P4.1/P4.3/P4.4）。
+type ApprovalStore interface {
+	Create(ctx context.Context, a *Approval) error
+	Get(ctx context.Context, id string) (*Approval, error)
+	Update(ctx context.Context, a *Approval) error
+	List(ctx context.Context) ([]*Approval, error)
+	Delete(ctx context.Context, id string) error
+}
+
+// MemoryStore 存取按作用域隔离的长期记忆（P5.2/P5.3）。
+type MemoryStore interface {
+	Create(ctx context.Context, m *Memory) error
+	Get(ctx context.Context, id string) (*Memory, error)
+	Update(ctx context.Context, m *Memory) error
+	List(ctx context.Context) ([]*Memory, error)
+	Delete(ctx context.Context, id string) error
+}
+
+// RetentionStore 管理各数据类的保留/归档策略（P5.4）。
+type RetentionStore interface {
+	Upsert(ctx context.Context, p *RetentionPolicy) error
+	Get(ctx context.Context, name string) (*RetentionPolicy, error)
+	List(ctx context.Context) ([]*RetentionPolicy, error)
+	Delete(ctx context.Context, name string) error
+}
+
+// ClusterStore 管理受管集群（P3.1-P3.3）。
+type ClusterStore interface {
+	Create(ctx context.Context, c *Cluster) error
+	Get(ctx context.Context, id string) (*Cluster, error)
+	Update(ctx context.Context, c *Cluster) error
+	List(ctx context.Context) ([]*Cluster, error)
+	Delete(ctx context.Context, id string) error
+}
+
+// CredentialStore 管理与集群分离的凭据（P3.1，加密存储）。
+type CredentialStore interface {
+	Create(ctx context.Context, c *Credential) error
+	Get(ctx context.Context, id string) (*Credential, error)
+	GetByCluster(ctx context.Context, clusterID string) (*Credential, error)
+	Update(ctx context.Context, c *Credential) error
+	Delete(ctx context.Context, id string) error
+}
+
+// AuthzGrantStore 管理 namespace 授权委派（P3.11）。以 namespace 为唯一
+// 授权边界；Permissions 为被委派动作集合。JSON 数组以字符串原样落库。
+type AuthzGrantStore interface {
+	Create(ctx context.Context, g *AuthzGrant) error
+	Get(ctx context.Context, id string) (*AuthzGrant, error)
+	Update(ctx context.Context, g *AuthzGrant) error
+	List(ctx context.Context) ([]*AuthzGrant, error)
+	ListByPrincipal(ctx context.Context, principalType, principalID string) ([]*AuthzGrant, error)
+	Delete(ctx context.Context, id string) error
+}
+
+// ApiTokenStore 管理产品内用户的持久化 API Token（P3.11）。
+type ApiTokenStore interface {
+	Create(ctx context.Context, t *ApiToken) error
+	Get(ctx context.Context, id string) (*ApiToken, error)
+	ListByUser(ctx context.Context, userID string) ([]*ApiToken, error)
+	Update(ctx context.Context, t *ApiToken) error
+	Delete(ctx context.Context, id string) error
+}
+
+// compile-time interface checks
+var (
+	_ UserStore       = (*userStore)(nil)
+	_ RoleStore       = (*roleStore)(nil)
+	_ SessionStore    = (*sessionStore)(nil)
+	_ TurnStore       = (*turnStore)(nil)
+	_ StepStore       = (*stepStore)(nil)
+	_ AuditStore      = (*auditStore)(nil)
+	_ SettingsStore   = (*settingsStore)(nil)
+	_ SkillStore      = (*skillStore)(nil)
+	_ ApprovalStore   = (*approvalStore)(nil)
+	_ MemoryStore     = (*memoryStore)(nil)
+	_ RetentionStore  = (*retentionStore)(nil)
+	_ ClusterStore    = (*clusterStore)(nil)
+	_ CredentialStore = (*credentialStore)(nil)
+	_ AuthzGrantStore = (*authzGrantStore)(nil)
+	_ ApiTokenStore   = (*apiTokenStore)(nil)
+	_ Store           = (*dbStore)(nil)
+	_ ReportStore     = (*reportStore)(nil)
+)

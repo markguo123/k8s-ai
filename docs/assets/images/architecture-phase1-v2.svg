@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 800" style="background:#fff" font-family="'Microsoft YaHei','PingFang SC','Noto Sans CJK SC',Arial,sans-serif">
+  <defs>
+    <filter id="p1v-shadow" x="-8%" y="-8%" width="116%" height="122%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0f172a" flood-opacity="0.14"/>
+    </filter>
+    <marker id="p1v-arr" markerWidth="11" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M0,0 L11,4 L0,8 Z" fill="#475569"/>
+    </marker>
+  </defs>
+
+  <text x="500" y="32" font-size="24" font-weight="bold" text-anchor="middle" fill="#0f172a">一期架构：只读巡检 + 规则引擎 + LLM 诊断</text>
+  <text x="500" y="50" font-size="13" text-anchor="middle" fill="#64748b">四层分层架构 · 严格只读 · 单一直读服务供 CLI / Server / CronJob 复用</text>
+
+  <!-- ============ 表示层（入口） ============ -->
+  <rect x="40" y="66" width="920" height="88" rx="14" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="60" y="88" font-size="13" font-weight="bold" fill="#334155">表示层 · Presentation</text>
+  <rect x="80" y="100" width="360" height="44" rx="8" fill="#1e293b" filter="url(#p1v-shadow)"/>
+  <text x="260" y="121" font-size="15" font-weight="bold" text-anchor="middle" fill="#ffffff">CLI 入口 · k8s-ai scan</text>
+  <text x="260" y="138" font-size="11" text-anchor="middle" fill="#cbd5e1">cobra 命令 · 参数解析 · 结果展示</text>
+  <rect x="560" y="100" width="360" height="44" rx="8" fill="#0f766e" filter="url(#p1v-shadow)"/>
+  <text x="740" y="121" font-size="15" font-weight="bold" text-anchor="middle" fill="#ffffff">HTTP Server（1.2 可选）</text>
+  <text x="740" y="138" font-size="11" text-anchor="middle" fill="#99f6e4">REST API · 异步扫描 · 单任务并发限制</text>
+
+  <!-- ============ 应用层 ============ -->
+  <rect x="40" y="172" width="920" height="142" rx="14" fill="#f0f9ff" stroke="#7dd3fc"/>
+  <text x="60" y="194" font-size="13" font-weight="bold" fill="#0369a1">应用层 · Application</text>
+  <rect x="70" y="208" width="270" height="92" rx="10" fill="#0369a1" filter="url(#p1v-shadow)"/>
+  <text x="205" y="236" font-size="15" font-weight="bold" text-anchor="middle" fill="#ffffff">ScanService.Run（组合根）</text>
+  <text x="205" y="256" font-size="11" text-anchor="middle" fill="#bae6fd">用例编排 · 事务边界</text>
+  <text x="205" y="274" font-size="11" text-anchor="middle" fill="#bae6fd">预算与降级策略</text>
+  <text x="205" y="292" font-size="11" text-anchor="middle" fill="#bae6fd">扫描→关联→规则→诊断→评分→报告</text>
+  <rect x="380" y="208" width="270" height="92" rx="10" fill="#e0f2fe" stroke="#0284c7"/>
+  <text x="515" y="235" font-size="15" font-weight="bold" text-anchor="middle" fill="#075985">扫描引擎（Scanner）</text>
+  <text x="515" y="255" font-size="11" text-anchor="middle" fill="#0c4a6e">Phase1 全量轻量 list + Phase2 深度采集</text>
+  <text x="515" y="273" font-size="11" text-anchor="middle" fill="#0c4a6e">Pod/Node/Workload/Storage/Network/Events/系统组件</text>
+  <text x="515" y="291" font-size="11" text-anchor="middle" fill="#0c4a6e">并发采集（8 worker）· 错误隔离 · 只采集不判断</text>
+  <rect x="690" y="208" width="240" height="92" rx="10" fill="#0284c7" filter="url(#p1v-shadow)"/>
+  <text x="810" y="250" font-size="15" font-weight="bold" text-anchor="middle" fill="#ffffff">关联索引 Correlation</text>
+  <text x="810" y="272" font-size="11" text-anchor="middle" fill="#bae6fd">owner / PVC / Service 关系构建</text>
+  <text x="810" y="290" font-size="11" text-anchor="middle" fill="#bae6fd">为规则匹配与诊断提供上下文</text>
+
+  <!-- ============ 领域层 ============ -->
+  <rect x="40" y="332" width="920" height="166" rx="14" fill="#eef2ff" stroke="#a5b4fc"/>
+  <text x="60" y="354" font-size="13" font-weight="bold" fill="#3730a3">领域层 · Domain（纯业务模型与规则，无 I/O）</text>
+  <rect x="60" y="372" width="150" height="60" rx="8" fill="#4f46e5" filter="url(#p1v-shadow)"/>
+  <text x="135" y="398" font-size="14" font-weight="bold" text-anchor="middle" fill="#ffffff">model</text>
+  <text x="135" y="418" font-size="10" text-anchor="middle" fill="#c7d2fe">领域模型 · 枚举 · 指纹 · 严重级</text>
+  <rect x="230" y="372" width="150" height="60" rx="8" fill="#7c3aed" filter="url(#p1v-shadow)"/>
+  <text x="305" y="398" font-size="14" font-weight="bold" text-anchor="middle" fill="#ffffff">rule 规则引擎</text>
+  <text x="305" y="418" font-size="10" text-anchor="middle" fill="#ddd6fe">35 条 A/B/C 规则 · Finding 组装</text>
+  <rect x="400" y="372" width="150" height="60" rx="8" fill="#7c3aed" filter="url(#p1v-shadow)"/>
+  <text x="475" y="398" font-size="14" font-weight="bold" text-anchor="middle" fill="#ffffff">evidence 证据链</text>
+  <text x="475" y="418" font-size="10" text-anchor="middle" fill="#ddd6fe">构建 · 排序 · 截断 · 指纹输入</text>
+  <rect x="570" y="372" width="150" height="60" rx="8" fill="#4f46e5" filter="url(#p1v-shadow)"/>
+  <text x="645" y="398" font-size="14" font-weight="bold" text-anchor="middle" fill="#ffffff">diagnosis 诊断</text>
+  <text x="645" y="418" font-size="10" text-anchor="middle" fill="#c7d2fe">预算裁剪 · LLM 编排 · 校验降级</text>
+  <rect x="740" y="372" width="190" height="60" rx="8" fill="#7c3aed" filter="url(#p1v-shadow)"/>
+  <text x="835" y="398" font-size="14" font-weight="bold" text-anchor="middle" fill="#ffffff">report 报告</text>
+  <text x="835" y="418" font-size="10" text-anchor="middle" fill="#ddd6fe">健康评分 · 历史对比 · MD / JSON</text>
+  <rect x="60" y="446" width="870" height="42" rx="8" fill="#fee2e2" stroke="#f87171"/>
+  <text x="500" y="471" font-size="12" font-weight="bold" text-anchor="middle" fill="#991b1b">security 安全/脱敏（纯文本规则）· 被 evidence / scanner / report 复用 · 双重脱敏在采集边界与渲染各执行一次</text>
+
+  <!-- ============ 基础设施层 ============ -->
+  <rect x="40" y="516" width="920" height="116" rx="14" fill="#ecfdf5" stroke="#6ee7b7"/>
+  <text x="60" y="538" font-size="13" font-weight="bold" fill="#047857">基础设施层 · Infrastructure（外部世界适配）</text>
+  <rect x="70" y="554" width="280" height="66" rx="8" fill="#059669" filter="url(#p1v-shadow)"/>
+  <text x="210" y="580" font-size="14" font-weight="bold" text-anchor="middle" fill="#ffffff">internal/kubernetes 只读门面</text>
+  <text x="210" y="600" font-size="10" text-anchor="middle" fill="#a7f3d0">client-go typed · Reader · QPS/Burst/超时</text>
+  <text x="210" y="615" font-size="10" text-anchor="middle" fill="#a7f3d0">RBAC 只读约束 · Secret 仅键级元数据</text>
+  <rect x="390" y="554" width="220" height="66" rx="8" fill="#065f46" filter="url(#p1v-shadow)"/>
+  <text x="500" y="580" font-size="14" font-weight="bold" text-anchor="middle" fill="#ffffff">internal/llm LLM 客户端</text>
+  <text x="500" y="600" font-size="10" text-anchor="middle" fill="#a7f3d0">OpenAI 兼容 · 重试 / 429</text>
+  <text x="500" y="615" font-size="10" text-anchor="middle" fill="#a7f3d0">prompt 文件内嵌 · 结果脱敏后进入模型</text>
+  <rect x="650" y="554" width="150" height="66" rx="8" fill="#d1fae5" stroke="#059669"/>
+  <text x="725" y="586" font-size="14" font-weight="bold" text-anchor="middle" fill="#065f46">internal/config</text>
+  <text x="725" y="606" font-size="10" text-anchor="middle" fill="#15803d">默认 / YAML / ENV / CLI 合并</text>
+  <rect x="820" y="554" width="120" height="66" rx="8" fill="#d1fae5" stroke="#059669"/>
+  <text x="880" y="586" font-size="14" font-weight="bold" text-anchor="middle" fill="#065f46">version</text>
+  <text x="880" y="606" font-size="10" text-anchor="middle" fill="#15803d">ldflags 版本注入</text>
+
+  <!-- ============ Kubernetes 集群 ============ -->
+  <rect x="40" y="650" width="920" height="88" rx="14" fill="#eff6ff" stroke="#93c5fd"/>
+  <text x="60" y="672" font-size="13" font-weight="bold" fill="#1e40af">基础设施 · Kubernetes 集群（受控只读访问）</text>
+  <rect x="60" y="688" width="380" height="40" rx="8" fill="#326ce5" filter="url(#p1v-shadow)"/>
+  <text x="250" y="705" font-size="14" font-weight="bold" text-anchor="middle" fill="#ffffff">Kubernetes API Server</text>
+  <text x="250" y="722" font-size="10" text-anchor="middle" fill="#bfdbfe">只读动词 get / list / watch + pods/log get</text>
+  <rect x="480" y="688" width="450" height="40" rx="8" fill="#ffffff" stroke="#326ce5"/>
+  <text x="705" y="705" font-size="12" font-weight="bold" text-anchor="middle" fill="#1e3a8a">受管对象：工作负载 / 配置与存储 / 网络 / 事件</text>
+  <text x="705" y="721" font-size="10" text-anchor="middle" fill="#2563eb">Secret 内容值拒读 · 双向 TLS 与 InCluster 模式</text>
+
+  <!-- 安全红线横条 -->
+  <rect x="40" y="756" width="920" height="30" rx="8" fill="#dc2626"/>
+  <text x="500" y="775" font-size="12" font-weight="bold" text-anchor="middle" fill="#ffffff">安全红线贯穿：只读 RBAC | Secret 内容值拒读 | 双重脱敏 | Prompt 注入防护 | LLM 无执行能力</text>
+</svg>

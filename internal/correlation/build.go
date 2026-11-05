@@ -19,6 +19,7 @@ func Build(snap *model.ClusterSnapshot) *model.CorrelationIndex {
 		Services:        map[string]*model.ServiceInfo{},
 		Endpoints:       map[string]*model.EndpointSliceInfo{},
 		Storage:         map[string]*model.StorageInfo{},
+		Ingresses:       map[string]*model.IngressInfo{},
 		PodsByNode:      map[string][]*model.PodInfo{},
 		PodsByWorkload:  map[string][]*model.PodInfo{},
 		PodsByService:   map[string][]*model.PodInfo{},
@@ -27,8 +28,10 @@ func Build(snap *model.ClusterSnapshot) *model.CorrelationIndex {
 		PVByPVC:         map[string]*model.StorageInfo{},
 		SCByPV:          map[string]*model.StorageInfo{},
 		SlicesByService: map[string][]*model.EndpointSliceInfo{},
-		EventsByUID:     map[string][]model.EventInfo{},
-		EventsByKey:     map[string][]model.EventInfo{},
+		// Ingress 反查表：Ingress 与其后端 Service 必须能落进同一条故障链。
+		IngressesByService: map[string][]*model.IngressInfo{},
+		EventsByUID:        map[string][]model.EventInfo{},
+		EventsByKey:        map[string][]model.EventInfo{},
 	}
 
 	// 1. 基础索引：各类资源按 key（kind/ns/name）入表。
@@ -52,6 +55,9 @@ func Build(snap *model.ClusterSnapshot) *model.CorrelationIndex {
 	}
 	for i := range snap.Storage {
 		idx.Storage[snap.Storage[i].Ref.Key()] = &snap.Storage[i]
+	}
+	for i := range snap.Ingresses {
+		idx.Ingresses[snap.Ingresses[i].Ref.Key()] = &snap.Ingresses[i]
 	}
 
 	// 2. Pod → Node。
@@ -112,6 +118,16 @@ func Build(snap *model.ClusterSnapshot) *model.CorrelationIndex {
 		}
 		svcKey := model.ResourceRef{Kind: "Service", Namespace: es.Ref.Namespace, Name: es.ServiceName}.Key()
 		idx.SlicesByService[svcKey] = append(idx.SlicesByService[svcKey], es)
+	}
+
+	// 6b. Ingress → Service：按后端引用反查，让「入口 503」和「后端 Service 坏了」
+	//     能被聚成同一条故障链。后端 Service 不存在时同样入表（key 指向那个不存在的
+	//     Service），否则「Ingress 配了不存在的后端」这条结论会和入口链路脱节。
+	for i := range snap.Ingresses {
+		ing := &snap.Ingresses[i]
+		for _, be := range ing.BackendRefs() {
+			idx.IngressesByService[be.Key()] = append(idx.IngressesByService[be.Key()], ing)
+		}
 	}
 
 	// 6. Service selector ↔ Pod labels（双向索引）。

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/k8s-ai/k8s-ai/internal/correlation"
+	"github.com/k8s-ai/k8s-ai/internal/deterministic"
 	"github.com/k8s-ai/k8s-ai/internal/diagnosis"
 	"github.com/k8s-ai/k8s-ai/internal/evidence"
 	"github.com/k8s-ai/k8s-ai/internal/history"
@@ -17,6 +18,7 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/kubernetes"
 	"github.com/k8s-ai/k8s-ai/internal/llm"
 	"github.com/k8s-ai/k8s-ai/internal/model"
+	"github.com/k8s-ai/k8s-ai/internal/relations"
 	"github.com/k8s-ai/k8s-ai/internal/report"
 	"github.com/k8s-ai/k8s-ai/internal/rule"
 	"github.com/k8s-ai/k8s-ai/internal/scanner"
@@ -36,6 +38,9 @@ type scanService struct {
 	registry  rule.Registry
 	newClient func(model.ScanOptions) (*kubernetes.Client, error)
 	newLLM    func(model.LLMOptions) llm.LLMClient
+	// archive 非 nil 时（平台装配注入，见 ReportArchiveBinder）扫描产物额外归档到对象
+	// 存储。CLI 单跑不设这个字段，行为与三期一致。
+	archive *ReportArchiveWriter
 }
 
 // defaultLLMConcurrency 与 diagnosis.llmConcurrency 保持一致（CONCURRENCY.md）。
@@ -81,17 +86,10 @@ func realLLM(o model.LLMOptions) llm.LLMClient {
 // Phase2 深度采集（日志）→ 证据挂载 → 结果组装。
 func (s *scanService) Run(ctx context.Context, opts model.ScanOptions) (*model.ScanResult, error) {
 	prog := opts.Progress // 允许 nil（静默）
-	phaseStart := func(name, title string) time.Time {
-		if prog != nil {
-			prog.PhaseStarted(name, title)
-		}
-		return time.Now()
-	}
-	phaseDone := func(name, detail string, ok bool, started time.Time) {
-		if prog != nil {
-			prog.PhaseDone(name, detail, ok, time.Since(started))
-		}
-	}
+	// 阶段账：终端进度事件和报告里的「诊断信息 → 执行阶段」出自同一份记录。
+	rec := newStageRecorder(prog)
+	phaseStart := rec.start
+	phaseDone := rec.done
 
 	// 总预算：scan.timeout 控制整次扫描时长（CONCURRENCY.md §2）。
 	if opts.Timeout > 0 {
@@ -101,36 +99,36 @@ func (s *scanService) Run(ctx context.Context, opts model.ScanOptions) (*model.S
 	}
 	started := time.Now()
 
-	connStart := phaseStart("connect", "连接 Kubernetes 集群并校验连通性")
+	connStart := phaseStart(stageConnect, "连接 Kubernetes 集群并校验连通性")
 	client, err := s.newClient(opts)
 	if err != nil {
-		phaseDone("connect", "", false, connStart)
+		phaseDone(stageConnect, "", false, connStart)
 		return nil, err
 	}
 	serverVersion, err := client.ServerVersion(ctx)
 	if err != nil {
-		phaseDone("connect", err.Error(), false, connStart)
+		phaseDone(stageConnect, err.Error(), false, connStart)
 		return nil, fmt.Errorf("connect to cluster: %w", err)
 	}
-	phaseDone("connect", "v"+serverVersion, true, connStart)
+	phaseDone(stageConnect, serverVersionLabel(serverVersion), true, connStart)
 
 	// Phase1：全量轻量 list（无 N+1）。
-	p1Start := phaseStart("phase1", "Phase1 集群资源全量采集")
+	p1Start := phaseStart(stageCollect, "资源采集：集群资源全量 list（无 N+1）")
 	collector := scanner.New(client)
 	snap, err := collector.Phase1(ctx, opts)
 	if err != nil {
-		phaseDone("phase1", err.Error(), false, p1Start)
+		phaseDone(stageCollect, err.Error(), false, p1Start)
 		return nil, err
 	}
 	snap.ServerVersion = serverVersion
-	phaseDone("phase1", fmt.Sprintf("namespaces=%d pods=%d nodes=%d",
+	phaseDone(stageCollect, fmt.Sprintf("namespaces=%d pods=%d nodes=%d",
 		len(snap.Namespaces), len(snap.Pods), len(snap.Nodes)), true, p1Start)
 
 	// P3 关联索引 → P4 规则引擎：自动判定异常 Finding。
-	corrStart := phaseStart("rules", "关联索引 & 规则引擎评估")
+	corrStart := phaseStart(stageRules, "规则引擎：关联索引 + 规则评估")
 	idx := correlation.Build(snap)
 	findings := s.engine.Evaluate(ctx, snap, idx, opts)
-	phaseDone("rules", fmt.Sprintf("%d 条 Finding", len(findings)), true, corrStart)
+	phaseDone(stageRules, fmt.Sprintf("%d 条 Finding", len(findings)), true, corrStart)
 	slog.Info("scan: Phase1 采集完成", "namespaces", len(snap.Namespaces), "pods", len(snap.Pods), "findings", len(findings))
 
 	// 单 Pod 目标扫描：只保留该 Pod 及其直接关联资源（owner/Node/PVC/Service）的 Finding。
@@ -139,33 +137,57 @@ func (s *scanService) Run(ctx context.Context, opts model.ScanOptions) (*model.S
 	}
 
 	// Phase2：只对需要日志的异常 Pod 深度采集，并把日志挂到 Finding 证据。
-	if opts.CollectLogs && len(findings) > 0 {
-		targets := rule.LogTargets(s.registry, findings, idx)
-		p2Title := fmt.Sprintf("Phase2 深度采集（日志）：%d 个目标 Pod", len(targets))
-		p2Start := phaseStart("phase2", p2Title)
-		if len(targets) > 0 {
-			if err := collector.Phase2(ctx, snap, targets, opts); err != nil {
+	var logTargets []model.ResourceRef
+	if opts.CollectLogs {
+		logTargets = rule.LogTargets(s.registry, findings, idx)
+		p2Start := phaseStart(stageEvidence, fmt.Sprintf("按需证据采集：容器日志 %d 个目标 Pod", len(logTargets)))
+		if len(logTargets) > 0 {
+			if err := collector.Phase2(ctx, snap, logTargets, opts); err != nil {
 				// 根 ctx 取消时提前返回；其余失败已记入 collection_errors。
 				if ctx.Err() != nil {
-					phaseDone("phase2", err.Error(), false, p2Start)
+					phaseDone(stageEvidence, err.Error(), false, p2Start)
 					return nil, ctx.Err()
 				}
 			}
 			attachLogEvidence(findings, idx, s.registry)
 		}
-		phaseDone("phase2", fmt.Sprintf("log targets=%d errors=%d",
-			len(targets), len(snap.CollectionErrors)), true, p2Start)
+		phaseDone(stageEvidence, fmt.Sprintf("log targets=%d errors=%d",
+			len(logTargets), len(snap.CollectionErrors)), true, p2Start)
+	} else {
+		rec.skip(stageEvidence, "本次档位不采集容器日志（collect_logs=false）")
 	}
 
-	// 关联证据补全：必须在 result 拷贝前执行，保证报告证据与 LLM 引用编号一致。
-	enrichStart := phaseStart("enrich", "关联证据补全 & 故障链聚合")
+	// 资源关系分析（架构图第 3 阶段）：只按 OwnerReference / Selector /
+	// Spec·Status 字段里的真实引用建边，后面所有因果判断都只能走这张图。
+	relStart := phaseStart(stageRelations, "资源关系分析：OwnerReference/Selector/Spec 建图")
+	graph := relations.Build(snap, idx)
+	phaseDone(stageRelations, fmt.Sprintf("%d 条关系边（类型 %d 种）", graph.EdgeCount(), len(graph.KindCounts())), true, relStart)
+
+	// 关联分析（架构图第 4 阶段）：把关联资源的异常证据补到上游 Finding 上。
+	// 必须在 result 拷贝前执行，保证报告证据与 LLM 引用编号一致。
+	enrichStart := phaseStart(stageCorrelate, "关联分析：补全关联资源证据")
 	enrichRelatedEvidence(findings, idx)
+	phaseDone(stageCorrelate, fmt.Sprintf("findings=%d", len(findings)), true, enrichStart)
 
 	// Finding → Correlation → Incident：同一故障链聚合为一个诊断单元；
 	// 健康评分只统计根因（派生症状不重复扣分）。
+	// 故障聚合（架构图第 5 阶段）：因果边只认关系图上真实存在的路径。
+	incStart := phaseStart(stageIncident, "故障聚合：Finding → Incident → 因果链")
 	findingsV := derefFindings(findings)
 	incs := incident.Build(findingsV, idx)
-	phaseDone("enrich", fmt.Sprintf("incidents=%d", len(incs)), true, enrichStart)
+	incident.Relate(findingsV, incs, graph, idx)
+	incident.AssignRoles(findings, incs)
+	phaseDone(stageIncident, fmt.Sprintf("incidents=%d 因果边=%d", len(incs), countCausalEdges(incs)), true, incStart)
+
+	// 采集质量账：放在深度采集之后统计，日志目标的成败一起算进来。
+	// 这条记录决定健康评分的封顶——采集不完整时不允许报「集群健康」。
+	collection := scanner.CollectionQuality(snap, opts, logTargets)
+
+	// 确定性诊断（架构图第 6 阶段）：场景化诊断器只用已采事实推根因，不调模型。
+	detStart := phaseStart(stageDeterministic, "确定性诊断：场景化诊断器匹配")
+	detDiags := deterministic.NewEngine(snap, idx, graph, findingsV).Apply(incs)
+	detByIncident := indexByIncident(detDiags)
+	phaseDone(stageDeterministic, fmt.Sprintf("%d/%d 个故障链给出确定性结论", len(detDiags), len(incs)), true, detStart)
 
 	result := &model.ScanResult{
 		Meta: model.ScanMeta{
@@ -176,13 +198,15 @@ func (s *scanService) Run(ctx context.Context, opts model.ScanOptions) (*model.S
 			Namespace:     opts.Namespace,
 			Pod:           opts.PodTarget,
 		},
-		Summary:          summaryFromSnapshot(snap),
+		Summary:          summaryFromSnapshot(snap, opts),
 		Findings:         derefFindings(findings),
-		HealthScore:      report.ComputeHealthScore(rootOnlyFindings(findingsV, incs)),
+		HealthScore:      report.ComputeHealthScoreWithQuality(rootOnlyFindings(findingsV, incs), collection),
 		Incidents:        incs,
 		LLMSummary:       model.LLMSummary{Enabled: opts.LLM.Enabled},
 		Components:       snap.Components,
 		CollectionErrors: snap.CollectionErrors,
+		SchemaVersion:    model.ReportSchemaVersion,
+		Collection:       collection,
 	}
 	// 1.2：历史对比——读取上一份 latest.json，按指纹输出新增/持续/恢复
 	// （人读日报为次要产出；主要消费方是二期 Agent 的记忆契约，ADR-019）。
@@ -193,6 +217,10 @@ func (s *scanService) Run(ctx context.Context, opts model.ScanOptions) (*model.S
 	}
 
 	// P7：LLM 诊断（预算裁剪 → 校验 → 降级），单个/全部失败都不中断 scan。
+	var (
+		llmDiags   []model.Diagnosis
+		llmSummary = model.LLMSummary{Enabled: opts.LLM.Enabled}
+	)
 	if opts.LLM.Enabled && len(incs) > 0 {
 		llmOpts := opts.LLM // copy，避免把 ScanProgress 塞进 LLMProgress 时改到原 opts
 		// 把上层 ScanProgress 桥接到 LLMProgress：Incident 粒度事件走 PhaseSub，
@@ -200,44 +228,85 @@ func (s *scanService) Run(ctx context.Context, opts model.ScanOptions) (*model.S
 		if prog != nil && llmOpts.Progress == nil {
 			llmOpts.Progress = &scanProgressLLMBridge{scan: prog}
 		}
-		llmStart := phaseStart("llm", fmt.Sprintf("LLM 诊断：%d 个 Incident（并发 %d）", len(incs), defaultLLMConcurrency))
+		llmStart := phaseStart(stageLLM, fmt.Sprintf("LLM 增强诊断：%d 个 Incident（并发 %d）", len(incs), defaultLLMConcurrency))
 		slog.Info("scan: LLM 诊断开始", "incidents", len(incs))
 		findingByID := map[string]model.Finding{}
 		for _, f := range findingsV {
 			findingByID[f.ID] = f
 		}
-		diagnoses, llmSummary, err := diagnosis.New(llmOpts).DiagnoseIncidents(ctx, incs, findingByID, s.newLLM(llmOpts))
+		// 增强上下文：模型拿到的是「程序已知事实 + 待解释的部分」，而不是一条 Finding 让它重猜。
+		diagCtx := &diagnosis.Context{
+			Snapshot:      snap,
+			Index:         idx,
+			Graph:         graph,
+			Deterministic: detByIncident,
+		}
+		llmDiags, llmSummary, err = diagnosis.NewWithContext(llmOpts, diagCtx).
+			DiagnoseIncidents(ctx, incs, findingByID, s.newLLM(llmOpts))
 		if err != nil {
-			phaseDone("llm", err.Error(), false, llmStart)
+			phaseDone(stageLLM, err.Error(), false, llmStart)
 			return nil, err
 		}
-		result.Diagnoses = diagnoses
 		result.LLMSummary = llmSummary
 		ok := llmSummary.Failed == 0
-		phaseDone("llm", fmt.Sprintf("calls=%d failed=%d degraded=%d",
-			llmSummary.Calls, llmSummary.Failed, llmSummary.Degraded), ok, llmStart)
+		phaseDone(stageLLM, fmt.Sprintf("calls=%d failed=%d degraded=%d rejected=%d",
+			llmSummary.Calls, llmSummary.Failed, llmSummary.Degraded, llmSummary.Rejected), ok, llmStart)
 		slog.Info("scan: LLM 诊断完成", "calls", llmSummary.Calls, "failed", llmSummary.Failed, "degraded", llmSummary.Degraded)
+	} else {
+		switch {
+		case !opts.LLM.Enabled:
+			rec.skip(stageLLM, "未启用 LLM：本次结论全部来自确定性诊断")
+		default:
+			rec.skip(stageLLM, "无故障链，无需诊断")
+		}
 	}
+
+	// 结果校验（架构图第 8 阶段）：合并确定性与 LLM 两条结论线，并做自洽底线检查。
+	// 放在报告之前——报告只允许写校验后的结论。
+	valStart := phaseStart(stageValidate, "结果校验：结论一致性 + 诊断账")
+	merged, diagSummary := mergeDiagnoses(incs, detByIncident, llmDiags, llmSummary, opts.LLM.Enabled)
+	applyDiagnosesToIncidents(incs, merged)
+	result.Diagnoses = merged
+	diagSummary.RuleFindings = len(result.Findings)
+	result.DiagnosisSummary = &diagSummary
+	result.LLMSummary.Mode = diagSummary.Mode
+	phaseDone(stageValidate, diagnosisAccountLine(diagSummary), true, valStart)
 
 	// 诊断完成后记录结束时间：Duration 包含 LLM 耗时（体检 P0-3 修复）。
 	result.Meta.ScanEndedAt = time.Now().UTC().Format(time.RFC3339)
 	result.Meta.Duration = time.Since(started).String()
 
+	// 报告生成（架构图第 9 阶段）：结论 / 资源健康 / 处置建议全部由程序从既有事实推导。
+	repStart := phaseStart(stageReport, "报告生成：结论 + 资源健康 + 处置建议")
+	result.Conclusion = report.BuildConclusion(result)
+	result.Statistics = report.DomainHealthList(result)
+	result.Remediation = report.RemediationItems(result)
+	phaseDone(stageReport, fmt.Sprintf("结论=%s 健康域=%d 处置项=%d",
+		conclusionLevelText(result), len(result.Statistics), len(result.Remediation)), true, repStart)
+	result.Stages = rec.records()
+
 	// 报告落盘：none 不写文件；latest/daily 由 Writer 写出（FR-019）。
 	if opts.ReportMode != "" && opts.ReportMode != "none" {
-		wrStart := phaseStart("report", "写入报告文件")
+		wrStart := phaseStart(stageWrite, "写入报告文件")
 		paths, err := report.NewWriter(opts.ReportDirectory).Write(result, model.ReportOptions{
 			Directory: opts.ReportDirectory,
 			Format:    opts.ReportFormat,
 			Mode:      opts.ReportMode,
 		})
 		if err != nil {
-			phaseDone("report", err.Error(), false, wrStart)
+			phaseDone("write", err.Error(), false, wrStart)
 			return nil, fmt.Errorf("write report: %w", err)
 		}
 		result.ReportPaths = paths
-		phaseDone("report", strings.Join(paths, ", "), true, wrStart)
+		phaseDone("write", strings.Join(paths, ", "), true, wrStart)
+	} else {
+		rec.skip(stageWrite, "report-mode=none：不落盘本地报告")
 	}
+	// 归档到对象存储：与上面的 report.directory 落盘互不相干（本地文件只是兼容副本，
+	// 事实源是 objects + reports），失败只记 WARN，不影响本次扫描的返回值。
+	s.archiveReportsIfNeeded(ctx, result, opts, phaseStart, phaseDone)
+	// 阶段账最后刷一次：把落盘/归档耗时也算进去。
+	result.Stages = rec.records()
 	return result, nil
 }
 
@@ -320,25 +389,52 @@ func (s *scanService) Validate(ctx context.Context, opts model.ScanOptions) (str
 	return serverVersion, nil
 }
 
-// summaryFromSnapshot 汇总集群资源计数，供控制台摘要与报告"资源汇总"节使用。
-func summaryFromSnapshot(snap *model.ClusterSnapshot) model.ClusterSummary {
+// summaryFromSnapshot 按扫描作用域汇总资源计数，供控制台摘要与报告"资源汇总"节使用。
+// 命名空间/Pod 体检不能把 Collector 顺带采到的集群级对象冒充成报告可见范围。
+func summaryFromSnapshot(snap *model.ClusterSnapshot, opts model.ScanOptions) model.ClusterSummary {
 	events := 0
 	for _, list := range snap.EventsIndex {
 		events += len(list)
 	}
-	return model.ClusterSummary{
-		Namespaces:      len(snap.Namespaces),
-		Pods:            len(snap.Pods),
-		Nodes:           len(snap.Nodes),
-		Services:        len(snap.Services),
-		EndpointSlices:  len(snap.EndpointSlices),
-		Workloads:       len(snap.Workloads),
-		Storage:         len(snap.Storage),
-		Ingresses:       len(snap.Ingresses),
-		NetworkPolicies: len(snap.NetworkPolicies),
-		Components:      len(snap.Components),
-		Events:          events,
+	summary := model.ClusterSummary{
+		Namespaces:          len(snap.Namespaces),
+		Pods:                len(snap.Pods),
+		Nodes:               len(snap.Nodes),
+		Services:            len(snap.Services),
+		EndpointSlices:      len(snap.EndpointSlices),
+		Workloads:           len(snap.Workloads),
+		Storage:             len(snap.Storage),
+		Ingresses:           len(snap.Ingresses),
+		NetworkPolicies:     len(snap.NetworkPolicies),
+		Roles:               len(snap.Roles),
+		RoleBindings:        len(snap.RoleBindings),
+		ClusterRoles:        len(snap.ClusterRoles),
+		ClusterRoleBindings: len(snap.ClusterRoleBindings),
+		Components:          len(snap.Components),
+		Events:              events,
 	}
+	if opts.Namespace != "" {
+		summary.Namespaces = 1
+		summary.Nodes = 0
+		summary.Storage = countStorageKind(snap.Storage, "PVC")
+		summary.ClusterRoles = 0
+		summary.ClusterRoleBindings = 0
+		summary.Components = 0
+	}
+	if opts.PodTarget != "" {
+		summary.Pods = 1
+	}
+	return summary
+}
+
+func countStorageKind(items []model.StorageInfo, kind string) int {
+	count := 0
+	for i := range items {
+		if items[i].Ref.Kind == kind {
+			count++
+		}
+	}
+	return count
 }
 
 // clientOptions 把 ScanOptions 转换为 kubernetes 客户端参数。

@@ -1,0 +1,220 @@
+/**
+ * P7.6 聊天页科技感视觉体系（令牌取值与登录页 login-tech.css 同源）。
+ *
+ * 职责边界（这里踩过坑，别再犯）：本文件只放「设计令牌 + 全局海拔底色 + 跨组件共用动效」。
+ * 侧栏、顶栏、会话卡、输入区等"组件形态"一律写在各自组件的 scoped 样式里 ——
+ * scoped 选择器会编译成 `.cls[data-v-xxx]`，权重高于本文件的同名类选择器，
+ * 写在这里的组件规则会被静默压制（表现为"改了没反应"，正是页面显得死板的根因）。
+ *
+ * 本文件在 index.css 之后引入：同名令牌按"后引入者生效"覆盖 index.css 的深色底座。
+ */
+
+/* ── 一、核心色板（与登录页完全一致） ── */
+:root,
+html[data-theme='dark'] {
+  --bg: #0b0d12;
+  --surface: rgba(15, 19, 29, 0.72);
+  --surface-2: rgba(22, 27, 40, 0.78);
+  --surface-hover: rgba(255, 255, 255, 0.05);
+  --border: rgba(125, 145, 185, 0.16);
+  /* 替代生硬描边的"发丝线"：3% 白，拉开层级但不切割版面 */
+  --hairline: rgba(255, 255, 255, 0.03);
+  --accent: #6366f1;
+  --accent-2: #22d3ee;
+  --accent-3: #a855f7;
+  --text: #e8ecf5;
+  --muted: #8b96ad;
+  --faint: #5a6478;
+  --shadow: 0 34px 90px -24px rgba(0, 0, 0, 0.95);
+  --glow-accent: 0 0 20px -5px rgba(99, 102, 241, 0.5);
+  --glow-cyan: 0 0 18px -6px rgba(34, 211, 238, 0.55);
+  /* 海拔：聊天画布比侧栏/会话列表略亮，避免"中间一大块黑" */
+  --canvas: #0f121a;
+  --canvas-inset: inset 0 0 40px rgba(99, 102, 241, 0.05);
+  --brand-gradient: linear-gradient(135deg, #6366f1, #a855f7);
+  --panel-shadow: 12px 0 32px -28px rgba(0, 0, 0, 0.95);
+  /* 会话卡等"轻微悬浮面"的底与描边（统一收在令牌层，组件不写死颜色） */
+  --card-bg: rgba(255, 255, 255, 0.02);
+  --card-bg-hover: rgba(255, 255, 255, 0.05);
+  --accent-2-soft: rgba(34, 211, 238, 0.1);
+  --accent-border: rgba(99, 102, 241, 0.5);
+  --accent-2-border: rgba(34, 211, 238, 0.45);
+  --neutral-soft: rgba(125, 145, 185, 0.12);
+
+  /* 映射到应用令牌：组件统一读 --app-*，因此改令牌即整体跟随新视觉 */
+  --app-bg: var(--bg);
+  --app-surface: var(--surface);
+  --app-surface-2: var(--surface-2);
+  --app-surface-hover: var(--surface-hover);
+  --app-border: var(--border);
+  --app-hairline: var(--hairline);
+  --app-text: var(--text);
+  --app-strong: #ffffff;
+  --app-muted: var(--muted);
+  --app-faint: var(--faint);
+  --app-accent: var(--accent);
+  --app-accent-2: var(--accent-2);
+  --app-accent-3: var(--accent-3);
+  --app-brand: var(--accent-2);
+  --app-accent-soft: rgba(99, 102, 241, 0.15);
+  --app-canvas: var(--canvas);
+  --app-canvas-inset: var(--canvas-inset);
+  --app-brand-gradient: var(--brand-gradient);
+  --app-glow-accent: var(--glow-accent);
+  --app-glow-cyan: var(--glow-cyan);
+  --app-panel-shadow: var(--panel-shadow);
+  --app-card-bg: var(--card-bg);
+  --app-card-bg-hover: var(--card-bg-hover);
+  --app-accent-2-soft: var(--accent-2-soft);
+  --app-accent-border: var(--accent-border);
+  --app-accent-2-border: var(--accent-2-border);
+  --app-neutral-soft: var(--neutral-soft);
+  --app-sidebar: var(--surface);
+  --app-sidebar-text: #c9cdd4;
+  --app-sidebar-muted: var(--faint);
+  --app-shadow: var(--shadow);
+  --app-radius: 10px;
+  --app-radius-sm: 8px;
+  /* 滚动条：纤细深灰，悬浮蓝色光晕（绝不留系统白色粗条） */
+  --app-scroll-thumb: #2a3140;
+  --app-scroll-thumb-hover: #4b56d8;
+}
+
+html[data-theme='light'] {
+  --bg: #eef1f7;
+  --surface: rgba(255, 255, 255, 0.82);
+  --surface-2: rgba(244, 246, 250, 0.9);
+  --surface-hover: rgba(31, 45, 75, 0.04);
+  --border: rgba(31, 45, 75, 0.12);
+  --hairline: rgba(31, 45, 75, 0.06);
+  --accent: #4f46e5;
+  --accent-2: #0891b2;
+  --accent-3: #9333ea;
+  --text: #1b2333;
+  --muted: #5b657a;
+  --faint: #8b93a3;
+  --shadow: 0 22px 50px -20px rgba(16, 24, 40, 0.28);
+  --glow-accent: 0 0 20px -6px rgba(79, 70, 229, 0.35);
+  --glow-cyan: 0 0 18px -8px rgba(8, 145, 178, 0.35);
+  --canvas: #ffffff;
+  --canvas-inset: inset 0 0 40px rgba(79, 70, 229, 0.04);
+  --brand-gradient: linear-gradient(135deg, #4f46e5, #9333ea);
+  --panel-shadow: 10px 0 26px -26px rgba(16, 24, 40, 0.5);
+  --card-bg: rgba(31, 45, 75, 0.03);
+  --card-bg-hover: rgba(31, 45, 75, 0.06);
+  --accent-2-soft: rgba(8, 145, 178, 0.1);
+  --accent-border: rgba(79, 70, 229, 0.5);
+  --accent-2-border: rgba(8, 145, 178, 0.45);
+  --neutral-soft: rgba(31, 45, 75, 0.06);
+
+  --app-bg: var(--bg);
+  --app-surface: var(--surface);
+  --app-surface-2: var(--surface-2);
+  --app-surface-hover: var(--surface-hover);
+  --app-border: var(--border);
+  --app-hairline: var(--hairline);
+  --app-text: var(--text);
+  --app-strong: #0b0e14;
+  --app-muted: var(--muted);
+  --app-faint: var(--faint);
+  --app-accent: var(--accent);
+  --app-accent-2: var(--accent-2);
+  --app-accent-3: var(--accent-3);
+  --app-brand: var(--accent);
+  --app-accent-soft: rgba(79, 70, 229, 0.12);
+  --app-canvas: var(--canvas);
+  --app-canvas-inset: var(--canvas-inset);
+  --app-brand-gradient: var(--brand-gradient);
+  --app-glow-accent: var(--glow-accent);
+  --app-glow-cyan: var(--glow-cyan);
+  --app-panel-shadow: var(--panel-shadow);
+  --app-card-bg: var(--card-bg);
+  --app-card-bg-hover: var(--card-bg-hover);
+  --app-accent-2-soft: var(--accent-2-soft);
+  --app-accent-border: var(--accent-border);
+  --app-accent-2-border: var(--accent-2-border);
+  --app-neutral-soft: var(--neutral-soft);
+  --app-sidebar: var(--surface);
+  --app-sidebar-text: #3a4150;
+  --app-sidebar-muted: var(--faint);
+  --app-shadow: var(--shadow);
+  --app-scroll-thumb: #c3cad8;
+  --app-scroll-thumb-hover: #4f46e5;
+}
+
+/* ── 二、海拔体系 · 背景层（最底） ── */
+/* 不要全黑：用 3% 的 indigo/cyan 径向渐变制造空间感，侧栏与画布才有"浮起来"的余地 */
+.app-shell {
+  background:
+    radial-gradient(1200px 700px at 12% -10%, rgba(99, 102, 241, 0.03), transparent 60%),
+    radial-gradient(900px 600px at 92% 8%, rgba(34, 211, 238, 0.03), transparent 62%),
+    var(--app-bg);
+}
+
+/* ── 三、跨组件共用动效 ── */
+/* 列表项/回合入场：translateY(10px) + 渐显，克制不喧哗 */
+@keyframes riseIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.rise-in {
+  animation: riseIn 0.24s ease both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rise-in {
+    animation: none;
+  }
+}
+
+/* ── 四、通用状态胶囊（会话列表与聊天头部共用，避免两处各写一套） ── */
+/* 文字与底色同调、微光取 currentColor，因此换色调不需要再配一套阴影色 */
+.state-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  height: 18px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 18px;
+  letter-spacing: 0.02em;
+  text-transform: capitalize;
+  white-space: nowrap;
+  color: var(--app-muted);
+  background: var(--app-neutral-soft);
+  box-shadow: 0 0 12px -4px currentColor;
+}
+
+.state-pill.tone-running {
+  color: var(--app-accent);
+  background: var(--app-accent-soft);
+}
+
+.state-pill.tone-done {
+  color: var(--app-accent-2);
+  background: var(--app-accent-2-soft);
+}
+
+.state-pill.tone-waiting {
+  color: var(--app-warning);
+  background: var(--app-warning-soft);
+}
+
+.state-pill.tone-error {
+  color: var(--app-danger);
+  background: var(--app-danger-soft);
+}
+
+.state-pill.tone-idle {
+  color: var(--app-muted);
+  background: var(--app-neutral-soft);
+  box-shadow: none;
+}

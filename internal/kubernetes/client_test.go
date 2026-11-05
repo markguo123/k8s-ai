@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
@@ -23,6 +24,10 @@ func TestReadOnlyActions(t *testing.T) {
 		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "web-0", Namespace: "default"}},
 		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-1"}},
 		&corev1.Event{ObjectMeta: metav1.ObjectMeta{Name: "e1", Namespace: "default"}},
+		&rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: "reader", Namespace: "default"}},
+		&rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: "reader-binding", Namespace: "default"}},
+		&rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: "cluster-reader"}},
+		&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: "cluster-reader-binding"}},
 	)
 	c := NewClientWithClientset(cs)
 	ctx := context.Background()
@@ -47,6 +52,18 @@ func TestReadOnlyActions(t *testing.T) {
 	}
 	if _, err := c.ListPersistentVolumes(ctx); err != nil {
 		t.Fatalf("ListPersistentVolumes: %v", err)
+	}
+	if _, err := c.ListRoles(ctx, ""); err != nil {
+		t.Fatalf("ListRoles: %v", err)
+	}
+	if _, err := c.ListRoleBindings(ctx, ""); err != nil {
+		t.Fatalf("ListRoleBindings: %v", err)
+	}
+	if _, err := c.ListClusterRoles(ctx); err != nil {
+		t.Fatalf("ListClusterRoles: %v", err)
+	}
+	if _, err := c.ListClusterRoleBindings(ctx); err != nil {
+		t.Fatalf("ListClusterRoleBindings: %v", err)
 	}
 
 	for _, a := range cs.Actions() {

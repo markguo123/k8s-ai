@@ -478,6 +478,63 @@ func TestCreateToolDryRunIncludesSkillFindings(t *testing.T) {
 	}
 }
 
+// TestCreateToolSkillEscalationRaisesRisk 验证 P3.8 的风险升档闭环：
+// 内置 create-workload Skill 的 elevateWhen 命中（hostNetwork=true）后，
+// dry-run 输出的 skills 附带 HIGH 风险 finding，apply 风险随之抬到 HIGH。
+func TestCreateToolSkillEscalationRaisesRisk(t *testing.T) {
+	reg, err := skills.NewBuiltin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := newFakeCreateRunner()
+	tool := NewCreateTool(CreateOptions{
+		Limits:           manifestx.Limits{MaxObjects: 3, MaxBytes: 8192},
+		DefaultNamespace: "default",
+		SecretAccess:     "create_only",
+		VerifyTimeout:    30 * time.Second,
+		Skills:           reg,
+	}, runner, NewProposalStore(), "sess-1")
+
+	manifest := `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: risky
+  namespace: default
+spec:
+  hostNetwork: true
+  template:
+    spec:
+      containers:
+      - name: web
+        image: example.com/web:1.0
+`
+	if _, err := tool.Execute(context.Background(), createInput(t, manifest, "", nil)); err != nil {
+		t.Fatal(err)
+	}
+	tr, err := tool.Execute(context.Background(), createInput(t, manifest, CreateModeApply, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := dataOf(t, tr)
+	objects, _ := data["objects"].([]map[string]any)
+	if len(objects) != 1 {
+		t.Fatalf("objects = %v", objects)
+	}
+	finds, _ := objects[0]["skills"].([]skills.Finding)
+	var hostRisk skills.RiskLevel
+	for _, f := range finds {
+		if f.Rule == "host_network" {
+			hostRisk = f.Risk
+		}
+	}
+	if hostRisk != skills.RiskHigh {
+		t.Fatalf("host_network finding 风险应为 HIGH, got %q (finds=%+v)", hostRisk, finds)
+	}
+	if got := tool.Risk(createInput(t, manifest, CreateModeApply, nil)); got != model.RiskHigh {
+		t.Fatalf("apply risk = %s, want HIGH", got)
+	}
+}
+
 func TestProposalStoreExpiryAndCap(t *testing.T) {
 	store := NewProposalStoreWith(time.Millisecond, 2)
 	store.Record("s1", []string{"fp1"}, []string{"ConfigMap/default/a"})

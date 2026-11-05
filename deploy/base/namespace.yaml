@@ -1,0 +1,17 @@
+# 四期平台命名空间（P6.2）。
+# 默认名 k8s-ai；deploy/install.sh 用 --namespace 参数创建自定义命名空间，
+# 并把其余清单里的 "namespace: k8s-ai" 一并改写（ClusterRoleBinding 主体同样受控）。
+# Pod 安全基线先以 warn/audit 观察：本目录清单全部按 restricted 编排（nonroot、
+# drop ALL、seccomp RuntimeDefault），确认无告警后可自行改成 enforce。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k8s-ai
+  labels:
+    app: k8s-ai
+    app.kubernetes.io/name: k8s-ai
+    app.kubernetes.io/part-of: k8s-ai-platform
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest

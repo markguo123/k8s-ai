@@ -270,6 +270,14 @@ func (r HighRestartCountRule) Evaluate(ctx *RuleContext) []*model.Finding {
 			if c.LastReason != "" {
 				evs = append(evs, evidence.ObjectField(src, "lastState.reason", c.LastReason))
 			}
+			if c.LastState != "" {
+				evs = append(evs, evidence.ObjectField(src, "lastState.state", c.LastState))
+			}
+			evs = append(evs, evidence.ObjectField(src, "lastState.exitCode", fmt.Sprint(c.LastExitCode)))
+			if p.RestartPolicy != "" {
+				evs = append(evs,
+					evidence.ObjectField("Pod/"+p.Ref.Name+"/spec", "restartPolicy", p.RestartPolicy))
+			}
 			evs = append(evs, podEventEvidence(ctx, p.Ref)...)
 			out = append(out, newFinding(ctx, r, p.Ref, containerLabel(e)+" 高频重启（restartCount="+fmt.Sprint(c.RestartCount)+"）", model.SeverityLow, evs))
 			break // 每个 Pod 只出一条

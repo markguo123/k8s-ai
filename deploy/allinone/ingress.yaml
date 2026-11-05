@@ -1,0 +1,44 @@
+# Ingress（P6.2 形态 A）：单域名单入口，SPA 与 /api/v1 同源同端口。
+#
+# 部署前必须替换两处现场值，本文件刻意不含任何真实环境信息：
+#   1) spec.rules[].host —— 占位 k8s-ai.example.com（deploy/install.sh 的 INGRESS_HOST）；
+#   2) metadata.annotations 里的 ingressClassName —— 换成现场 IngressClass 名
+#      （kubectl get ingressclass）。
+#
+# SSE 关键项：Chat 是长连接流式接口，必须关响应缓冲并放大读超时，否则前端会
+# 「憋到最后一次性吐出来」。服务端已带 X-Accel-Buffering: no，这里的 annotation
+# 是给 nginx-ingress 的显式兜底；非 nginx 控制器请换成各自等价配置。
+# 形态 B（前后端分离，按路径分流）请用 deploy/separated/ingress.yaml。
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: k8s-ai
+  namespace: k8s-ai
+  labels:
+    app: k8s-ai
+    app.kubernetes.io/component: ingress
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # 报告导出/技能包上传的体量上限，按现场需要调整。
+    nginx.ingress.kubernetes.io/proxy-body-size: "16m"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: k8s-ai.example.com
+      http:
+        paths:
+          # 形态 A 全站只有一个后端：SPA、/api/v1、探针都由 k8s-ai-server 提供。
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: k8s-ai-server
+                port:
+                  number: 8080
+  # 需要 HTTPS 时补：证书 Secret 与同一 host 同名（证书内容不进本仓库）
+  # tls:
+  #   - hosts: [k8s-ai.example.com]
+  #     secretName: k8s-ai-tls

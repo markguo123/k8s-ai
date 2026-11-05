@@ -2,7 +2,9 @@ package scanner
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -38,13 +40,14 @@ func normalizeNamespace(ns corev1.Namespace) model.NamespaceInfo {
 // 注意：annotations 目前原样保存；security 脱敏包落地后会在此边界处理（ADR-006）。
 func normalizePod(p corev1.Pod) model.PodInfo {
 	info := model.PodInfo{
-		Ref:         ref("Pod", p.Namespace, p.Name, string(p.UID)),
-		Phase:       string(p.Status.Phase),
-		Reason:      p.Status.Reason,
-		NodeName:    p.Spec.NodeName,
-		Labels:      redactMap(p.Labels),
-		Annotations: redactMap(p.Annotations),
-		QoSClass:    string(p.Status.QOSClass),
+		Ref:           ref("Pod", p.Namespace, p.Name, string(p.UID)),
+		Phase:         string(p.Status.Phase),
+		Reason:        p.Status.Reason,
+		RestartPolicy: string(p.Spec.RestartPolicy),
+		NodeName:      p.Spec.NodeName,
+		Labels:        redactMap(p.Labels),
+		Annotations:   redactMap(p.Annotations),
+		QoSClass:      string(p.Status.QOSClass),
 	}
 	if p.Status.StartTime != nil {
 		info.StartTime = p.Status.StartTime.UTC().Format(time.RFC3339)
@@ -163,6 +166,7 @@ func normalizeContainerStatus(cs corev1.ContainerStatus, specByName map[string]c
 	ci.State, ci.Reason, ci.Message, ci.ExitCode = containerState(cs.State)
 	ci.LastState, ci.LastReason, _, ci.LastExitCode = containerState(cs.LastTerminationState)
 	if spec, ok := specByName[cs.Name]; ok {
+		ci.Probes = normalizeProbes(spec)
 		for r, q := range spec.Resources.Requests {
 			ci.Requests[string(r)] = q.String()
 		}
@@ -171,6 +175,46 @@ func normalizeContainerStatus(cs corev1.ContainerStatus, specByName map[string]c
 		}
 	}
 	return ci
+}
+
+func normalizeProbes(spec corev1.Container) []model.ProbeInfo {
+	var out []model.ProbeInfo
+	add := func(kind string, probe *corev1.Probe) {
+		if probe == nil {
+			return
+		}
+		info := model.ProbeInfo{
+			Kind:                kind,
+			InitialDelaySeconds: probe.InitialDelaySeconds,
+			PeriodSeconds:       probe.PeriodSeconds,
+			TimeoutSeconds:      probe.TimeoutSeconds,
+			FailureThreshold:    probe.FailureThreshold,
+			SuccessThreshold:    probe.SuccessThreshold,
+		}
+		switch {
+		case probe.HTTPGet != nil:
+			info.Action = "HTTP GET"
+			info.Path = probe.HTTPGet.Path
+			info.Port = probe.HTTPGet.Port.String()
+			info.Host = probe.HTTPGet.Host
+			info.Scheme = string(probe.HTTPGet.Scheme)
+		case probe.TCPSocket != nil:
+			info.Action = "TCP"
+			info.Port = probe.TCPSocket.Port.String()
+			info.Host = probe.TCPSocket.Host
+		case probe.Exec != nil:
+			info.Action = "EXEC"
+			info.Command = strings.Join(probe.Exec.Command, " ")
+		case probe.GRPC != nil:
+			info.Action = "gRPC"
+			info.Port = strconv.Itoa(int(probe.GRPC.Port))
+		}
+		out = append(out, info)
+	}
+	add("readiness", spec.ReadinessProbe)
+	add("liveness", spec.LivenessProbe)
+	add("startup", spec.StartupProbe)
+	return out
 }
 
 // normalizeNode 归一化节点状态、容量与污点（FR-006）。
@@ -388,7 +432,7 @@ func normalizeVolumeAttachment(va storagev1.VolumeAttachment) model.StorageInfo 
 	if va.Status.AttachError != nil {
 		info.Reason = va.Status.AttachError.Message
 	}
-		if !va.CreationTimestamp.IsZero() {
+	if !va.CreationTimestamp.IsZero() {
 		info.CreatedAt = va.CreationTimestamp.UTC().Format(time.RFC3339)
 	}
 	return info
@@ -466,8 +510,8 @@ func normalizeHPA(hpa autoscalingv2.HorizontalPodAutoscaler) model.HpaInfo {
 // normalizePDB 归一化 Pod 驱逐预算（policy/v1，P7.5）。
 func normalizePDB(pdb policyv1.PodDisruptionBudget) model.PdbInfo {
 	info := model.PdbInfo{
-		Ref:    ref("PDB", pdb.Namespace, pdb.Name, string(pdb.UID)),
-		Selector: labelSelector(pdb.Spec.Selector),
+		Ref:                ref("PDB", pdb.Namespace, pdb.Name, string(pdb.UID)),
+		Selector:           labelSelector(pdb.Spec.Selector),
 		DisruptionsAllowed: pdb.Status.DisruptionsAllowed,
 	}
 	if pdb.Spec.MinAvailable != nil {
@@ -481,18 +525,86 @@ func normalizePDB(pdb policyv1.PodDisruptionBudget) model.PdbInfo {
 
 // normalizeClusterRole 归一化 RBAC ClusterRole 元数据（rbac/v1，P7.5，只读）。
 func normalizeClusterRole(cr rbacv1.ClusterRole) model.ClusterRoleInfo {
-	rules := make([]model.PolicyRuleInfo, 0, len(cr.Rules))
-	for _, rule := range cr.Rules {
-		rules = append(rules, model.PolicyRuleInfo{
-			APIGroups: rule.APIGroups,
-			Resources: rule.Resources,
-			Verbs:     rule.Verbs,
-		})
-	}
 	return model.ClusterRoleInfo{
 		Ref:   ref("ClusterRole", "", cr.Name, string(cr.UID)),
-		Rules: rules,
+		Rules: normalizePolicyRules(cr.Rules),
 	}
+}
+
+// normalizeRole 归一化命名空间级 Role（只读元数据）。
+func normalizeRole(role rbacv1.Role) model.RoleInfo {
+	return model.RoleInfo{
+		Ref:   ref("Role", role.Namespace, role.Name, string(role.UID)),
+		Rules: normalizePolicyRules(role.Rules),
+	}
+}
+
+// normalizeRoleBinding 归一化 RoleBinding 的角色引用与主体。
+func normalizeRoleBinding(binding rbacv1.RoleBinding) model.RoleBindingInfo {
+	return model.RoleBindingInfo{
+		Ref:      ref("RoleBinding", binding.Namespace, binding.Name, string(binding.UID)),
+		RoleRef:  normalizeRoleRef(binding.RoleRef),
+		Subjects: normalizeSubjects(binding.Subjects),
+	}
+}
+
+// normalizeClusterRoleBinding 归一化 ClusterRoleBinding 的角色引用与主体。
+func normalizeClusterRoleBinding(binding rbacv1.ClusterRoleBinding) model.ClusterRoleBindingInfo {
+	return model.ClusterRoleBindingInfo{
+		Ref:      ref("ClusterRoleBinding", "", binding.Name, string(binding.UID)),
+		RoleRef:  normalizeRoleRef(binding.RoleRef),
+		Subjects: normalizeSubjects(binding.Subjects),
+	}
+}
+
+func normalizePolicyRules(rules []rbacv1.PolicyRule) []model.PolicyRuleInfo {
+	out := make([]model.PolicyRuleInfo, 0, len(rules))
+	for _, rule := range rules {
+		out = append(out, model.PolicyRuleInfo{
+			APIGroups:       sortedCopy(rule.APIGroups),
+			Resources:       sortedCopy(rule.Resources),
+			Verbs:           sortedCopy(rule.Verbs),
+			ResourceNames:   sortedCopy(rule.ResourceNames),
+			NonResourceURLs: sortedCopy(rule.NonResourceURLs),
+		})
+	}
+	return out
+}
+
+func normalizeRoleRef(roleRef rbacv1.RoleRef) model.RoleRefInfo {
+	return model.RoleRefInfo{
+		APIGroup: roleRef.APIGroup,
+		Kind:     roleRef.Kind,
+		Name:     roleRef.Name,
+	}
+}
+
+func normalizeSubjects(subjects []rbacv1.Subject) []model.SubjectInfo {
+	out := make([]model.SubjectInfo, 0, len(subjects))
+	for _, subject := range subjects {
+		out = append(out, model.SubjectInfo{
+			Kind:      subject.Kind,
+			APIGroup:  subject.APIGroup,
+			Name:      subject.Name,
+			Namespace: subject.Namespace,
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Kind != out[j].Kind {
+			return out[i].Kind < out[j].Kind
+		}
+		if out[i].Namespace != out[j].Namespace {
+			return out[i].Namespace < out[j].Namespace
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
+func sortedCopy(in []string) []string {
+	out := append([]string(nil), in...)
+	sort.Strings(out)
+	return out
 }
 
 // normalizeConfigMap 仅提取 ConfigMap 名称作为存在性集合（不读数据，P7.6）。

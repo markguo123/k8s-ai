@@ -2,6 +2,8 @@ name: create-storage
 domain: storage
 version: 3.0.0
 source: builtin
+author: k8s-ai
+description: 创建存储类资源（PVC/PV/StorageClass）的方法论与风险提示
 kinds:
   - v1/PersistentVolumeClaim
   - v1/PersistentVolume

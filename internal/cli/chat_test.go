@@ -36,8 +36,28 @@ func (s *stubChatService) GetOrCreateSession(id, ns, model string) (*session.Ses
 	return s.mgr.NewSession(id, "", ns, model)
 }
 
+func (s *stubChatService) GetSession(id string) (*session.Session, error) {
+	return s.mgr.Get(id)
+}
+
+func (s *stubChatService) GetOrCreateSessionForUser(id, userID, ns, model string) (*session.Session, error) {
+	return s.mgr.GetOrCreateSessionForUser(id, userID, ns, model)
+}
+
 func (s *stubChatService) ListSessions() ([]session.Session, error) {
 	list, err := s.mgr.List()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]session.Session, 0, len(list))
+	for _, sess := range list {
+		out = append(out, *sess)
+	}
+	return out, nil
+}
+
+func (s *stubChatService) ListSessionsForUser(userID string) ([]session.Session, error) {
+	list, err := s.mgr.ListForUser(userID)
 	if err != nil {
 		return nil, err
 	}
@@ -67,6 +87,15 @@ func (s *stubChatService) RenameSession(id, name string) error {
 		return err
 	}
 	sess.Name = name
+	return s.mgr.Update(sess)
+}
+
+func (s *stubChatService) PinSession(id string, pinned bool) error {
+	sess, err := s.mgr.Get(id)
+	if err != nil {
+		return err
+	}
+	sess.Pinned = pinned
 	return s.mgr.Update(sess)
 }
 

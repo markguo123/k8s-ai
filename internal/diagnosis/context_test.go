@@ -1,6 +1,7 @@
 package diagnosis
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -35,6 +36,33 @@ func TestBuildContextsTrimsPerFinding(t *testing.T) {
 	}
 }
 
+func TestBuildContextsTrimsMultipleCanonicalEvidenceLines(t *testing.T) {
+	evidence := make([]model.Evidence, 0, 8)
+	for i := 1; i <= 8; i++ {
+		evidence = append(evidence, model.Evidence{
+			ID:    "E" + strconv.Itoa(i),
+			Key:   "detail",
+			Value: strings.Repeat("x", 1000),
+		})
+	}
+	f := model.Finding{
+		ID: "f1", Rule: "R", Severity: model.SeverityHigh, Title: "t",
+		Evidence: evidence,
+	}
+	ctxs := buildContexts([]model.Finding{f}, model.LLMOptions{
+		MaxInputTokens: 640, MaxTotalTokens: 100000, MaxFindings: 10,
+	})
+	if len(ctxs) != 1 {
+		t.Fatal("应保留该 finding")
+	}
+	if ctxs[0].tokens > 640 {
+		t.Fatalf("canonical 证据行未参与预算裁剪: %d > 640", ctxs[0].tokens)
+	}
+	if !strings.Contains(ctxs[0].text, "- f1#E") {
+		t.Fatalf("裁剪后应至少保留一条 canonical 证据: %q", ctxs[0].text)
+	}
+}
+
 func TestBuildContextTextRedactsAndCaps(t *testing.T) {
 	f := model.Finding{
 		ID: "f1", Rule: "R", Severity: model.SeverityHigh, Title: "t",
@@ -45,7 +73,7 @@ func TestBuildContextTextRedactsAndCaps(t *testing.T) {
 	if len(text) > 2000 {
 		t.Fatalf("上下文未截断: %d", len(text))
 	}
-	if !strings.Contains(text, "Finding:") || !strings.Contains(text, "- E1") {
+	if !strings.Contains(text, "Finding:") || !strings.Contains(text, "- f1#E1") {
 		t.Fatalf("上下文结构异常: %q", text)
 	}
 }

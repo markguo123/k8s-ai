@@ -34,6 +34,10 @@ var compiledPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._~+/-]+=*`),
 	// JWT（eyJ 开头三段式）
 	regexp.MustCompile(`eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`),
+	// S3 签名参数（方案 15 §13.3）：对象存储 SDK 的错误串里常带完整的预签名 URL，日志
+	// 一落盘就等于把一个「TTL 内公开可读」的链接永久留在审计与日志里。
+	regexp.MustCompile(`(?i)x-amz-(signature|credential|security-token|date|algorithm)\s*[=:]\s*[^&,\s"']+`),
+	regexp.MustCompile(`(?i)[?&;](signature|awsaccesskeyid|accesskeyid|credential)\s*=\s*[^&\s"']+`),
 	// 私钥块（多行）
 	regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----`),
 }

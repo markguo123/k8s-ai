@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/k8s-ai/k8s-ai/internal/scanner"
 )
 
 // rbacRule 是 clusterrole.yaml 的最小解析结构。
@@ -25,11 +27,29 @@ type rbacManifest struct {
 	Rules []rbacRule `yaml:"rules"`
 }
 
-// TestRBACReadOnly 解析 deploy/clusterrole.yaml，断言默认清单保持只读：
+type rbacRoleRef struct {
+	APIGroup string `yaml:"apiGroup"`
+	Kind     string `yaml:"kind"`
+	Name     string `yaml:"name"`
+}
+
+type rbacSubject struct {
+	Kind      string `yaml:"kind"`
+	Name      string `yaml:"name"`
+	Namespace string `yaml:"namespace"`
+}
+
+type rbacBinding struct {
+	Kind     string      `yaml:"kind"`
+	RoleRef  rbacRoleRef `yaml:"roleRef"`
+	Subjects []rbacSubject
+}
+
+// TestRBACReadOnly 解析 deploy/base/clusterrole.yaml，断言默认清单保持只读：
 // verbs 限于 {get,list,watch}；resources 不含 pods/exec、pods/portforward、pods/attach 与写能力。
 // Secret 在二期放行为“元数据/键级读取”，故允许 secrets 的 get/list/watch（仍只读，SECURITY.md §3）。
 func TestRBACReadOnly(t *testing.T) {
-	raw, err := os.ReadFile("../../deploy/clusterrole.yaml")
+	raw, err := os.ReadFile("../../deploy/base/clusterrole.yaml")
 	if err != nil {
 		t.Fatalf("读取 clusterrole.yaml: %v", err)
 	}
@@ -58,6 +78,82 @@ func TestRBACReadOnly(t *testing.T) {
 				t.Errorf("一期不应授权 metrics API: %q", g)
 			}
 		}
+	}
+}
+
+// TestRBACInspectionResources 验证体检采集依赖的资源归属正确：
+// PV/PVC 属于 Core API group；HPA、PDB、RBAC 只读权限已显式授权。
+func TestRBACInspectionResources(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/base/clusterrole.yaml")
+	if err != nil {
+		t.Fatalf("读取 clusterrole.yaml: %v", err)
+	}
+	var m rbacManifest
+	if err := yaml.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("解析 clusterrole.yaml: %v", err)
+	}
+
+	type permissionKey struct {
+		group    string
+		resource string
+		verb     string
+	}
+	granted := make(map[permissionKey]bool)
+	for _, rule := range m.Rules {
+		for _, group := range rule.APIGroups {
+			for _, resource := range rule.Resources {
+				for _, verb := range rule.Verbs {
+					granted[permissionKey{group: group, resource: resource, verb: verb}] = true
+				}
+			}
+		}
+	}
+
+	for _, requirement := range scanner.Phase1CollectionRequirements() {
+		for _, verb := range requirement.Verbs {
+			key := permissionKey{group: requirement.APIGroup, resource: requirement.Resource, verb: verb}
+			if !granted[key] {
+				t.Errorf("采集契约 %s 缺少权限：apiGroups=%q resources=%q verbs=%q",
+					requirement.Operation, key.group, key.resource, key.verb)
+			}
+		}
+	}
+
+	forbidden := []permissionKey{
+		{group: "storage.k8s.io", resource: "persistentvolumes", verb: "list"},
+		{group: "storage.k8s.io", resource: "persistentvolumeclaims", verb: "list"},
+	}
+	for _, key := range forbidden {
+		if granted[key] {
+			t.Errorf("资源归属错误：%q 不应出现在 apiGroups=%q", key.resource, key.group)
+		}
+	}
+}
+
+// TestRBACDefaultBinding 验证默认 ClusterRoleBinding 绑定的是预期只读角色与工作负载身份。
+func TestRBACDefaultBinding(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/base/clusterrolebinding.yaml")
+	if err != nil {
+		t.Fatalf("读取 clusterrolebinding.yaml: %v", err)
+	}
+	var binding rbacBinding
+	if err := yaml.Unmarshal(raw, &binding); err != nil {
+		t.Fatalf("解析 clusterrolebinding.yaml: %v", err)
+	}
+	if binding.Kind != "ClusterRoleBinding" {
+		t.Fatalf("默认绑定 kind = %q，期望 ClusterRoleBinding", binding.Kind)
+	}
+	if binding.RoleRef.APIGroup != "rbac.authorization.k8s.io" ||
+		binding.RoleRef.Kind != "ClusterRole" ||
+		binding.RoleRef.Name != "k8s-ai-readonly" {
+		t.Errorf("默认绑定 roleRef = %+v，期望 ClusterRole/k8s-ai-readonly", binding.RoleRef)
+	}
+	if len(binding.Subjects) != 1 {
+		t.Fatalf("默认绑定 subjects 数量 = %d，期望 1", len(binding.Subjects))
+	}
+	subject := binding.Subjects[0]
+	if subject.Kind != "ServiceAccount" || subject.Name != "k8s-ai" || subject.Namespace != "k8s-ai" {
+		t.Errorf("默认绑定 subject = %+v，期望 ServiceAccount/k8s-ai/k8s-ai", subject)
 	}
 }
 

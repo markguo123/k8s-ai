@@ -21,6 +21,13 @@ func TestRedact(t *testing.T) {
 		{"jwt", "jwt=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc123", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc123", "[REDACTED]"},
 		{"private key", "-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----", "BEGIN RSA PRIVATE KEY", "[REDACTED]"},
 		{"conn string", "postgres://app:secretpw@db:5432/db", "secretpw@", "[REDACTED]"},
+		// S3 预签名 URL 与签名头（方案 15 §13.3）：SDK 错误串常带完整 URL，日志一落盘
+		// 就等于把一个 TTL 内公开可读的链接永久留在审计里。
+		{"s3 presigned signature", "GET https://minio.local/k8sai/reports/x?X-Amz-Expires=900&Signature=94f3c1d2e5b6", "94f3c1d2e5b6", "[REDACTED]"},
+		{"s3 access key id", "https://minio.local/b/k?AWSAccessKeyId=AKIAIOSFODNN7EXAMPLE&Expires=1790000000", "AKIAIOSFODNN7EXAMPLE", "[REDACTED]"},
+		{"s3 credential header", "x-amz-credential=AKIAIOSFODNN7EXAMPLE%2F20261030%2Fus-east-1%2Fs3%2Faws4_request", "AKIAIOSFODNN7EXAMPLE", "[REDACTED]"},
+		{"s3 signature header", "x-amz-signature: 4d4a6f8b21c9fe01", "4d4a6f8b21c9fe01", "[REDACTED]"},
+		{"s3 security token header", "x-amz-security-token:IQoJEXAMPLETOKENVALUE01", "IQoJEXAMPLETOKENVALUE01", "[REDACTED]"},
 		{"plain text", "pod restarted 3 times", "", "pod restarted 3 times"},
 	}
 	for _, tc := range cases {

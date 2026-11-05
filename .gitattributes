@@ -1,0 +1,9 @@
+# 部署脚本与清单最终在 Linux 集群侧执行/交付：无论在哪种平台检出，都固定用 LF，
+# 避免 Windows 的 core.autocrlf 把 shell 脚本改成 CRLF 后报 bad interpreter。
+*.sh text eol=lf
+deploy/install.env.example text eol=lf
+Dockerfile text eol=lf
+deploy/separated/web.Dockerfile text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.conf text eol=lf

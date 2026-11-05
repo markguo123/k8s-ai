@@ -1,0 +1,926 @@
+# Changelog
+
+本项目遵循 docs/VERSIONING.md 的里程碑阶梯约定。
+
+## [v4.0.0] - 开发中（2026-10-11）
+
+四期平台化 M1 平台底座完成、M2 Web Shell 完成（2026-10-15）：前端工程与信息架构、统一 Store、HTTP 中间件、
+认证与权限门禁、Session/Turn/Step 模型与存储、Agent Runtime 生命周期持久化、SSE 事件路由与
+旧事件映射层、配置中心、审计模型与系统事件写入、旧数据导入与测试集（P1.1-P1.13 已完成；审计
+CLUSTER_CHANGE 写入随 P3.2 集群管理 API 落地）。M2 已完成 P2.1 信息架构、P2.2 登录与路由守卫、
+P2.3 API Client、P2.4 会话列表与历史会话加载、P2.5 SSE Client 与事件归一、P2.6 MessageTimeline
+与消息流展示、P2.7 AgentStep 卡片、P2.8 ToolCallCard、P2.9 ApprovalCard、P2.10 Composer、
+P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会话 Token 用量持久化与展示，
+并按原型图完成视觉对齐（M2 出口达成）。2026-10-13 完成审批
+与授权架构修订（见
+`docs/02-架构与设计/13-方案-企业级身份权限与审批中心.md`，计划回写 v1.12/v1.13）。
+
+### Added（2026-11-04，体检 RBAC 采集与权限分析闭环）
+
+- 体检采集补齐 `Role`、`RoleBinding`、`ClusterRole`、`ClusterRoleBinding` 四类只读元数据，统一落到
+  `ClusterSnapshot`，并进入报告资源汇总；`Role` / `RoleBinding` 随命名空间采集，两个 Cluster 级资源保持全集群口径。
+- `RbacOverPrivileged` 规则改为按实际绑定关系判定：CRB 全通配为 High、局部通配为 Medium；
+  RB 全通配为 Medium、局部通配为 Low；仅存在全通配定义且绑定列表完整时降为 Low。
+  Finding 落在实际 Binding 上，Evidence 固定包含 `roleRef` / `binding` / `subjects` / `scope` / 命中规则，
+  不再把“角色定义了通配”误报成“主体已经获得全集群权限”。
+- 采集质量账把四次 RBAC list 合并为「RBAC 权限」一组：任意一次失败只标记 partial 并点名缺口，不再因单次失败误判整组不可用。
+- 报告汇总补齐四类 RBAC 资源计数；「权限与治理」域总数纳入
+  `Namespaces + Roles + RoleBindings + ClusterRoles + ClusterRoleBindings`，避免出现“有绑定 Finding、资源总数却为 0”，
+  Markdown 集群资源汇总同步展示。
+- 部署默认只读 RBAC 修正 PV/PVC 的 Core API group、Storage 组仅保留
+  `storageclasses` / `volumeattachments`，并补齐 HPA、PDB、RBAC 只读权限与默认 `ClusterRoleBinding` 校验；
+  Dockerfile 架构测试补 CRLF 归一化，兼容 Windows 检出。
+- 新增 `internal/scanner/collection_contract.go`：Collector 固定任务集合、RBAC 部署 YAML 与采集权限需求
+  共用一份 operation / API Group / Resource / Verb 契约，新增采集项漏授权时直接失败。
+- 回归门禁新增 RBAC Binding 风险分级、局部通配、`resourceNames`、绑定采集失败、作用域隔离、
+  报告汇总计数、采集质量 partial 与部署 RBAC 资源归属用例。
+- 验证：`go test ./...`、`go vet ./...` 全绿；`web` 侧 `npm run test` 与 `npm run build` 全绿。
+
+### Fixed（2026-11-04，P9.14 语义复核与报告分层收口）
+
+- RBAC 通配风险只认三维同时为 `*` 会漏掉 `verbs=*` 的单资源全动作、`resources=*` 的宽读权限和
+  `nonResourceURLs=*`：改为全通配 / 局部通配分级，单维通配不再逃逸；`resourceNames` 参与判断，
+  避免把对象名受限的规则描述成全集群全对象权限。
+- `list_role_bindings` / `list_cluster_role_bindings` 失败时，空切片曾被解释成“没有绑定”，
+  可能把 `cluster-admin` 从 High 降成 Low：现在绑定采集缺失时禁止输出未绑定结论。
+- 命名空间体检曾分析全局 ClusterRoleBinding、单 Pod 体检也保留全局 RBAC Finding：现在按扫描作用域隔离；
+  业务报告 `ClusterSummary` 不再把集群级资源计数冒充可见汇总。
+- Web 报告故障链证据函数只遍历 `Incident.members`，而后端 `members` 按定义不含根 Finding，
+  导致根因证据消失；现同时遍历 root + members，并让“被牵连异常”即使只有一个也正常展示。
+- 处置建议汇总补“必须处理”标记；RBAC 四类资源进入 Web 汇总标签。
+- Markdown 曾先平铺 Finding、后放故障链，和“根因优先”相反：现按“故障链 → 未归组异常 →
+  默认折叠的完整 Finding / Evidence”输出，并补根 Finding 与派生症状的证据值。
+- 真机 `test-complex` 报告复核发现：事件与日志其实已明确 `/ready`、`/healthz` 返回 404，
+  但 Web 根因区只读规则层 `Incident.RootCause`，把更具体的 `Diagnosis.RootCause` 藏在后面；
+  现根因区、结论和 Markdown 均优先使用最终诊断根因，并显示摘要与未确认边界。
+- 业务故障与治理建议混在同一“故障链”列表，页首出现“2 条故障链”但其中一条只是 default-deny
+  建议；现按 root Finding 的 `Suggestion` 分离“业务故障链 / 治理建议”，结论摘要也分开计数。
+- 传播路径、被牵连异常、证据与待排除项默认折叠；关键证据按诊断 `evidenceChain` 收敛；排查、
+  修复、验证建议与修复说明合并为一个处置框，正文走 Markdown，命令走代码块。
+- Pod 采集补 readiness/liveness/startup 探针配置（HTTP path/port、TCP、Exec、gRPC 与时序），
+  Unhealthy Finding 与确定性诊断可直接引用探针配置，不再只靠事件让模型猜测检查了哪个端点。
+- 修复区从“命令优先”改为“LLM 文字方案优先、命令可选”：`remediationText` 支持完整 Markdown，
+  `remediationDirection` 单独展示前置条件/外部操作/安全边界；`investigation` 与 `verification`
+  命令强制标注 `SAFE`。
+- 移除工具侧“必须有写命令”的规则兜底。LLM 明确表示目标值未确认时，不再追加通用
+  `rollout restart` / `scale` / 占位符 `patch`；被过滤命令的数量与类别写入
+  `DiagnosisValidation.CommandIssues`，页面和 Markdown 都明确展示。
+- `RemediationItem` 增加 `format=text|command`，顶层处置汇总也保留完整文字方案；Markdown 使用正文，
+  命令使用代码块。`remediationText/remediationDirection` 同步纳入报告脱敏边界。
+- 证据编号原先只在 Finding 内唯一（`E1`、`E2`），进入 Incident / Diagnosis 后发生跨 Finding 碰撞：
+  现统一为 `<findingID>#<evidenceID>`，校验、LLM 上下文、报告和 Web 定位共用同一引用；旧裸 E-ID 仅做输入兼容。
+- 根因同时存在于 Incident 与 Diagnosis 会产生双重事实源：现以最终合并后的 `Diagnosis` 为唯一权威，
+  服务层再投影回 Incident；确定性诊断、LLM 增强与报告不再各说一套根因。
+- Incident 内因果边曾按合法 cause/effect 两两组合生成，容易变成密集关系网：现改为从根 Finding 生长的故障树，
+  每个症状最多保留一条入边；关联层边固定 `method=correlation` + `probable`，确定性诊断器可覆盖为更具体的
+  `method=deterministic`，关联层不得自行升格 `confirmed`。
+- Finding 增加 `role=anchor/symptom/impact/advisory/independent`，由聚合层统一注入；报告不再靠标题猜
+  “主信号、派生影响、治理建议”，业务故障与建议可以稳定分离。
+- 诊断上下文预算仍按旧 `- E1` 前缀裁剪证据行，而证据已改成 `- <findingID>#E1`，导致超预算时无法裁掉证据：
+  现按 canonical 证据行识别，并在单条证据仍超预算时做最终硬收口。
+- `HighRestartCount` 曾只采重启次数、当前状态和上次原因，未采 `lastState.exitCode` 与 Pod `restartPolicy`；
+  对“Running/Completed、退出码 0、重启 36 次”会误写成异常崩溃，并可能建议无意义的 `rollout restart`。
+  现在明确区分“正常结束后被拉起”和“异常退出”；退出原因未确认时降为 `probable`，列出 previous logs /
+  启动命令 / restartPolicy 证据缺口，且不生成修复写命令。
+
+### Docs（2026-11-05，P9.14 全仓口径统一）
+
+- 架构与流程：`01-系统架构与技术方案.md`、`07-采集与扫描流程.md`、`18-方案-体检诊断体系升级-四期.md`
+  统一为“最终 Diagnosis 是根因唯一事实源，Incident 是投影”；删除“根因只由确定性层判定”与
+  “Incident.RootCause 可独立演进”的旧说法。
+- 证据与测试：`02-数据模型与数据字典.md`、`03-API接口文档.md`、`09-测试方案.md` 统一使用
+  `FindingID#EID`；测试方案补 Finding 角色、故障树单入边、canonical 预算裁剪与退出码 0 回归。
+- 采集口径：`07-采集与扫描流程.md`、`06-性能设计.md`、`08-安全设计.md`、部署手册与技术手册同步
+  当前 Namespaces + 24 类资源 list + Events；补 HPA/PDB、RBAC 四类、ConfigMap 元数据与 Secret
+  键级元数据，明确 ConfigMap data / Secret 内容值不采集。
+- 产品与操作：`05-巡检功能优化.md` 补最终根因模型、报告处置框、Markdown/命令渲染、canonical 证据
+  与退出码 0 场景；技术手册将当前规则数更新为 35、资源口径更新为 24 类 list + Namespaces + Events。
+- 原始建议文档：`k8s-ai 巡检报告渲染优化建议.md` 与
+  `k8s-ai 巡检采集能力与 RBAC 权限优化指导方案.md` 顶部增加实施状态，明确其“现有缺陷”段落是
+  实施前分析，当前权威口径以方案 18 为准。
+- 开发计划升 v1.77；P9.14 任务数与工时不变。本轮不新增功能，只消除同实现不同文档口径。
+- 新增 **ADR-047**，正式记录“保留 Scanner、证据引用全局化、最终 Diagnosis 单一事实源、
+  Finding 角色、故障树单入边”的架构决策。
+
+### Fixed（2026-11-04，体检真机复验修正）
+
+- 登录页样式越界：`web/src/styles/login-tech.css` 的变量与元素规则泄漏到全局，登录后所有页面的底色与
+  卡片尺寸被带偏；全部规则收进登录页作用域，新增 `web/src/styles/__tests__/loginTechScope.spec.ts` 锁边界
+  （真机核对 `:root` 的 `--bg` 回到应用色板）。该文件同时按仓库 `npm run format` 口径做了 prettier 重排。
+- 「开始体检」弹窗在 1280x620 下表单被截断且滚不到底：表单主体内部滚动、footer 常驻可见。
+- 版本号重复前缀渲染成 `vv1.28.13`：前缀统一由 `serverVersionLabel()`（`internal/service/stages.go`）判定，
+  阶段账与 Markdown 正文同为 `v1.28.13`。
+- 阶段标题在窄容器里被截断：`.stage-title` 允许换行，真机核对无一条溢出。
+- 刷新页面丢进度：进行中的体检 id 与档位写入 `sessionStorage`（`k8s-ai.activeScan`），重进页面自动重挂横幅
+  与阶段清单，且不会重复发起。
+- 阶段清单缺首末三步：`stageSpec` 只登记架构图里的分析阶段，`connect` / `write` / `archive` 靠插入序兜底，
+  导致「连接集群」排到第 11 步；补齐 spec 首末并保留未登记阶段的兜底追加。**阶段账口径由「十阶段」修正为
+  13 项**（前置「连接集群」，末尾「写入报告文件」「归档报告到对象存储」）。
+- 从未 start 过的跳过阶段直接露英文 id（`evidence` / `llm` / `write`）：`skip()` 改走 `stageTitle()` 查 spec 取名。
+- 跳过证据采集的说明写死「快速档」，标准档也显示同样的话：改为只陈述 `collect_logs=false` 这一事实。
+- 验证：`go vet ./...` 干净、`go test ./...` 全绿；`web` 侧 `npm run test` 30 文件 201 用例全绿、
+  `npm run build` 通过；`bin/k8s-ai.exe` 按 Makefile 的 `-s -w` 口径重编，运行体与代码一致。
+
+### Added（2026-11-04，四期 P9.10–P9.13 页面体检体验：术语收口、格式单选、停止体检、实时进度）
+
+- 术语与文案（口径定在 `18-方案-体检诊断体系升级-四期.md` §15，同日二次收口）：导航「体检」、页面大标题保留「智能诊断中心」、发起入口「开始体检」；
+  报告行大字标题**「体检报告」**（格式退为 mono 小字 `JSON` / `Markdown`）；类别与范围拆成两枚徽标
+  （`集群体检` / `业务体检` / `范围未记录` 与 `全集群` / `命名空间 <ns>` / `单 Pod <pod>`）；归属改**「发起人：…」**，
+  自动任务落「发起人：系统自动」；取消「平台集群」占位，没有绑定登记集群就不显示集群徽标；
+  **`系统体检` 定为预留词**（指 K8s 系统服务与节点的体检，本期无实现，页面与文档均不提前占用）。
+- `POST /api/v1/scans` 新增 `format`（`json` / `markdown`，空=`json`，非法值 400 且校验**先于**授权判定），
+  一次体检**只归档选中的那一份**产物；CLI `report.directory` 的双产物口径零变化。
+- 新增 `GET /api/v1/reports/{id}/export`：Markdown 归档原样返回 200，JSON 归档用同一份数据按需渲染，
+  不写回对象存储；授权与 `/content` 同一套判定，越权与不存在同形 404。
+- 新增 `POST /api/v1/scans/{id}/cancel`（`internal/server/scan_cancel.go`）：`StatusCancelled` 独立终态、
+  running 阶段冻结为 failed「已停止」、`scan.cancel` 审计、owner 判定与 `GET /scans/{id}` 同形 404、已结束 409。
+- `GET /scans/{id}` 返回 `stages` 13 项阶段账；页面在发起后即时渲染阶段清单与 `N / M 阶段`（不报百分比）并给出「停止体检」，
+  修掉「点发起没过程、报告结尾才有过程」。
+- 新增 `GET /api/v1/reports/summary`（`total/cluster/business/other/markdown/json/available`）+ `store.ReportStats`
+  + `ReportQuery.ScopeCategory`，列表页用五张总览卡替掉「当前页」计数；列表补 `createdByName`（`withAuthorNames` 整表读用户一次，失败降级空串）。
+- 验证：`go build` / `go vet` 干净、`go test ./...` 全绿（新增 `internal/server/scan_cancel_test.go` 锁停止契约）；
+  `web` 侧 `npm run test` 29 文件 196 用例全绿、`npm run build` 通过。
+  **真机复验（2026-11-04，真集群 v1.28.13 端到端）**：阶段进度实时渲染与刷新后重挂、停止体检真停
+  （二次确认 -> `已由发起人停止` -> 立即释放发起锁可再发起）、单产物归档、JSON 报告按需导出 Markdown
+  全部通过；「集群体检仅 admin 可发起」由授权单测覆盖。复验中发现并修掉的缺陷见上方 Fixed。
+
+### Added（2026-11-04，四期 P9 巡检诊断体系升级：关系图 → 故障聚合 → 确定性诊断 → LLM 增强 → 结构化报告）
+
+- 口径与文档：新立 `docs/02-架构与设计/18-方案-体检诊断体系升级-四期.md` v1.0（十段流水线与代码逐段映射、关系与因果边模型、降级矩阵、九区块报告与健康分封顶、质量体系）；
+  `01-系统架构与技术方案.md` 新增 §6.1 正式架构图与 5 条读图口径、§6.2 分层与包映射，§7 数据流按十段流水线重画；`07-采集与扫描流程.md` 升 v2.0（§1 九段流水线 + mermaid、
+  §7 采集完整性三条定死规则与 60 / 85 / 满分-1 封顶、§8 整段替换为「确定性诊断、LLM 增强与结果校验」）；`03-API接口文档.md` 登记结构化报告端点与契约；
+  `09-测试方案.md` 新增 §3.4 质量测试体系与六指标。
+- **正式架构图**：`docs/assets/images/k8s-ai Kubernetes 体检诊断总体架构图.png` 定为项目官方总体架构图，嵌入方案 18 §1 与系统架构 §6.1。
+- 关系与故障层：`internal/relations`（OwnerReferences / EndpointSlice / Ingress 后端 / PVC-PV-StorageClass / Pod-Node 调度 / ConfigMap·Secret·ServiceAccount 引用，
+  全走只读门面，Secret 仅键名）；`internal/incident/causal.go`（散点 Finding 沿关系边聚成 Incident、生成 CausalEdge，输出 impactChain / evidenceGaps / alternativeCauses，根因唯一）。
+- 确定性诊断：`internal/deterministic` 24 个诊断器覆盖 Pod 7 / 工作负载 6 / 节点 2 / 存储 4 / 网络 4 / 平台 1，输出根因、置信度依据、证据链与调查、处置、验证建议，
+  **不含 LLM 也能在故障第一分钟给出结论**。
+- LLM 增强与结果校验：`internal/diagnosis/enhance.go` + `validation.go`，LLM 只在确定性结论之上补充，schema 校验与证据一致性校验（规则 `p9-evidence-consistency-v1`）
+  不通过即回落确定性结论并标 `validation.downgraded`，伪造证据与臆造资源必被拦下。
+- 采集完整性：`internal/scanner/quality.go` 计划 / 执行 / 部分三本账 + 完整性 full / partial / insufficient + 健康分封顶与 `capReason` 累积。
+- 报告模型与 API：`internal/model/inspection.go` + `internal/report/inspection.go` 九区块统一模型与结论四级；`GET /api/v1/reports/{id}/report` 返回
+  `{report, schemaVersion, legacy, inspection}`（非结构化 415、超预算 413、未命中 404，读鉴权与审计复用报告面既有闸门）；巡检阶段账 13 项 `StageRecord`（按设计不报百分比）。
+- Web：报告详情页 `web/src/views/report/ReportDetailView.vue`（九区块 + 巡检过程 + 原始数据，区块顺序同方案 18 §9）+ 路由 `report/:id` + `api/reports.getStructuredReport` + 报告清单「详情」入口。
+
+### Fixed（2026-11-04，P9 复核修 8 处缺陷）
+
+- `incident.CausalEdge` 零值 `RelationType` 使因果链关系名缺失：`relationPath()` 补兜底。
+- `PendingPod` 场景缺 `ConfigRefNotFound` 因，配置引用缺失时根因跑偏。
+- 采集计划调用记账把集群级 list 失败误读为 partial，健康分封顶算错。
+- 未注册的巡检阶段被静默丢弃：改为落 `other:<op>`。
+- `report.BuildConclusion` 在异常全部落在 incident 内部时误报「健康」：改为按 `rootIDs` 计入故障根因。
+- `splitEvidenceRefs` 把提示词强制要求的 `<findingID>#E-ID` 成员级证据引用剥掉导致校验误判：`buildDiagnosis(f,out,universe)` + `incidentEvidenceUniverse()` 保留成员引用。
+- `KeptDeterministic` 以 `RootCause != ""` 为准，把 LLM 改写误记为确定性结论：改为仅 `deterministicOf()` 命中时计数。
+- 前端巡检阶段行只绑 tone 类而 CSS 认 `.stage.done` / `.failed` / `.running` / `.skipped`，圆点颜色与 skipped 降噪全部失效。
+- 顺带清掉两个未被引用的标识符（`web/src/api/scans.ts` 的 `apiErrorFrom`、`web/src/api/__tests__/scans.spec.ts` 的 `errorResponse`），它们会让 `npm run lint` 失败。
+
+### Tests（2026-11-04，四期 P9 巡检诊断质量夹具矩阵）
+
+- `internal/deterministic` 五套夹具（pod / node / workload / storage / network）× 场景矩阵：CrashLoop ← Pending PVC 链、节点压力驱逐链、Service 无端点链等，
+  逐条断言根因、因果边与证据引用；`chain_test.go` 断言跨资源故障链根因唯一。
+- `internal/relations`、`internal/incident`、`internal/scanner` 质量账、`internal/diagnosis` 校验、`internal/report` 结论、`internal/service` 阶段账与报告合并各补单测；
+  `go build ./...` 与 `go vet ./...` 干净、`go test ./...` **41 包全绿**。
+- Web 新增 `web/src/views/report/__tests__/reportDetailView.spec.ts` 7 例（结论与封顶、根因与牵连异常及 `F-2#E1`、采集失败与证据缺口原文、skipped 阶段不画成执行中、
+  415 空态、legacy 不伪造质量账、410 文案），`npm run test` **29 文件 179 用例全绿**，`typecheck` / `lint` / `build` 干净。
+
+### Changed（2026-10-29，容器执行通道口径翻转 ADR-044 v1.1 / D-33 改写）
+
+- 默认交付镜像运行阶段由 `gcr.io/distroless/static-debian12:nonroot` 改 `debian:bookworm-slim`，内置
+  `bash`、coreutils、`jq`、`curl`、DNS/ICMP 诊断工具与构建期校验下载的 `kubectl`，运行用户仍 uid/gid 65532；
+  另存 `Dockerfile.distroless` 无 shell 变体（`platform.exec.shell_enabled: false` 配套）。
+- 静态开关 `platform.exec.shell_enabled` **默认 `true`**，容器内 shell 与 kubectl 通道默认可用，安全由
+  「shell 命令必经真人审批 + Secret 内容值/`--raw`/交互式动词/`deny_ops` 红线 + 集群 RBAC + 输出脱敏与全量
+  审计 + Deployment 加固」收口；取消 initContainer 投递 kubectl 方案。
+- 同步回写：ADR-044 → v1.1、ADR-041 第 2/7 条、D-06 措辞、D-33 整体改写、方案 16 → v1.1、PRD → v1.19、
+  开发计划 → v1.53（P6.3 0.75d → 1.0d，P6 14.50 → 14.75，合计 82.75 人日）、部署手册 §2.2/§4.2/§4.13/§4.16
+  与新增 §4.17、README 与项目宣讲镜像口径。**均为文档口径改动，代码实现随 P6.3 落地。**
+
+### Changed（2026-10-26，会话 API 包更名 internal/webui → internal/sessionapi）
+
+- 包 `internal/webui` 更名为 `internal/sessionapi`：三期 `a027590` 删除 `internal/cli/web.go`
+  与内嵌单文件页面后，该包只剩 `/api/v1/sessions*` 的 JSON + SSE 接口，旧名易被误读为旧 Web
+  界面仍在维护（见 ADR-039）。
+- 只改包名与引用（`internal/cli/server.go`、`tests/arch/readonly_test.go` 依赖方向白名单、
+  `tests/platform` 装配），HTTP 路径、请求响应契约、SSE 事件与审计动作名一律不变。
+- 配置键 `webui.addr` / `WebUIConfig` 与 settings 目录键 `webui_addr` 本次保留，登记为配置面
+  遗留项，后续单独收口。
+
+### Tests（2026-10-26，P3.13 平台能力测试与红线回归完成）
+
+- 新增 `tests/platform` 端到端测试集：按 `internal/cli/server.go` 的生产装配路径拉起 SQLite
+  Store、认证与角色、配置中心、集群管理、Skill 平台与 Chat 会话，`/api/v1/sessions*` 同样交给
+  `internal/sessionapi`，与真实部署同构。
+- 平台能力回归：用户 CRUD 与三角色固定语义；零权限角色打管理面一律 403、未登记 `/api/v1/*`
+  默认 403、匿名一律 401；配置中心分组读写与敏感键只写不读；Skill 导入/启停/内置不可覆盖；
+  集群生命周期与 kubeconfig 密文（`v1:` 版本前缀）；会话 owner 越权八面（列表、历史与 SSE、
+  续用、发消息、审批、取消、改名、置顶、删除）统一按不存在处理返回 404。
+- 红线回归：Secret 口令、集群 kubeconfig、模型 API key 三类哨兵值在 API 响应、审计记录、
+  SQLite 文件字节、持久化会话数据四处均无明文；`store.RedactJSONPayload` 对 secret/kubeconfig/
+  api_key 键整值替换且不误伤普通字段。以变异验证（临时关闭落库脱敏后用例必须转红）确认断言有效。
+- 随测试补齐两处实现：新增 `internal/sessionapi/audit.go`，admin 跨用户的读取、发消息、审批、取消、
+  改名、置顶、删除统一写审计，只记操作者身份与目标会话、不记对话正文与审批回传值（闭环遗留 U-06）；
+  会话落库改走脱敏副本，消息正文、摘要、工具参数、结构化结果与会话名统一脱敏，且可检索的 `name`
+  列与 `data` 同源，避免索引列绕过脱敏。
+- 全量门禁：`go test ./...` 37 个包全绿、`go vet ./...` 无告警。用户/权限台账 U-01–U-05、
+  U-07–U-10 仍按登记延后。见开发计划 v1.46。
+
+### Changed（2026-10-23，企业平台权限分层与会话隔离口径冻结）
+
+- 平台权限拆分为三层：平台 Permission、Session owner、namespace AuthzGrant。`user/operator`
+  平台 Permission 默认零；登录、创建会话与访问自己的会话属于认证基础能力。
+- 会话创建时由后端写入不可变 `ownerUserId`；普通角色只能列出、读取和操作自己的会话。
+  admin 对全部会话拥有完整读写、运行控制与审批能力。所有 Session HTTP/SSE 要求认证，
+  普通角色按 ID 访问非本人会话统一返回 `404`。
+- operator 不再拥有隐式跨 namespace 能力；namespace 必须逐项授权。Node/PV/StorageClass
+  等集群范围读取不作为普通角色默认能力。
+- 同步 PRD v1.13、权限方案、API、数据模型、安全设计、架构总纲、ADR-037、开发计划 v1.41
+  与项目状态。此条为设计口径变更，代码实施与验收随后按该口径收敛。
+- **代码落地**：后端角色/权限、前端菜单与路由、Session owner 隔离已完成；Session API
+  统一到 `/api/v1/sessions*`，admin 对全部会话拥有完整操作权限；独立无鉴权 `web`
+  命令和旧单文件页面已移除。全量 Go 与前端门禁通过，见开发计划 v1.42。
+- **Scope-aware Agent（v1.43）**：新增 `/api/v1/auth/scope` 与新会话授权范围卡片；
+  Agent 工具执行前按 namespace / 集群级 scope 强制校验，越界不执行、不弹审批，
+  返回 `SCOPE_DENIED` 并写审计。修复角色 `permissions:null` 导致的角色页渲染崩溃，
+  Store 空权限统一返回 `[]`，前端追加防御。
+- **集群端点断连修复（2026-10-23）**：修复 `K8S_AI_ENC_KEY` 缺失时
+  `*cluster.Service(nil)` 装入接口形成 typed nil、导致 `/api/v1/clusters` 与
+  `/api/v1/clusters/current` 请求被 panic 断开的问题。可选集群服务现在按“未装配”
+  处理并返回 501 JSON，消息明确提示配置有效 `K8S_AI_ENC_KEY`；新增 GET 两类端点
+  不重置连接的回归测试，前端将 501 归一为可执行的中文平台提示。
+- **用户/权限复盘与本地分支文档收口（2026-10-23，仅文档）**：确认三角色、零权限基线、
+  管理页隐藏与后端 403、Session owner 隔离、admin 全会话操作、Scope-aware Agent、独立
+  前后端及集群端点修复已对齐当前分支实现。将停用账号 Token 生命周期、API Token 认证闭环、
+  Grant 集群隔离与主体生命周期、组授权、admin 跨用户会话审计、销毁授权执行、集群菜单显隐、
+  首启口令和授权编辑清空等事项登记到开发计划 `U-01`–`U-10`，本轮保持现有代码与行为不变。
+  同步修正 PRD/admin 审批口径冲突，并更新项目状态。当前全量门禁为 Go 全绿、前端 25 个测试
+  文件 / 135 个用例、typecheck/lint/build 全绿。
+
+### Added（2026-10-23，P3.12 用户/权限管理前端完成）
+
+- **用户与权限管理页（P3.12）**：新增 `web/src/api/users.ts` 客户端（users/roles/grants/tokens 端点，对齐后端
+  `internal/auth` / `internal/authz` 契约）与 `web/src/api/types.ts` 权限/用户/授权/Token 类型、`web/src/api/index.ts`
+  导出 users；`UsersView.vue` 由占位页重写为真实管理页——左 rail 四分区（用户管理 / 角色与权限 / 授权委派 /
+  API Token）+ 统计卡 + 用户 CRUD（新建/改角色/停用/恢复/删除）+ 角色权限只读矩阵 + 按 主体类型/主体/集群/
+  namespaces/权限（`*` / `destroy`）/有效期 的授权委派 + 按用户签发 API Token（明文仅创建时展示一次）+ 内置
+  admin 不可删/停/降级、不能自行停用/降级/删除；`user.manage` 权限门禁、无权限渲染 TechEmptyState（前端隐藏
+  非安全机制，后端仍独立强校验）。
+- **测试**：新增 `web/src/api/__tests__/users.spec.ts`（契约：列表/单条 URL 编码/请求体/权限路由/错误归一/
+  明文不回显）与 `web/src/views/users/__tests__/usersView.spec.ts`（组件：四分区渲染/权限门禁/空态）；前端
+  `npm run test` 25 文件 135 用例、`typecheck`/`lint`/`build` 与后端 `go test ./...` / `go vet ./...` 全绿；代码
+  未提交，待真机验证无问题后再入库。
+
+### Changed（2026-10-21，配置面静态/动态权威源拆离，仅文档）
+
+- **`config.yaml` 只承载静态/`platform:` 启动参数**：7 组动态键（model/skill/approval/memory/retention/mcp/ops）
+  彻底移出 config.yaml，唯一权威源是 DB `settings` 表，由配置中心页面维护；页面改动只写 DB 不回写文件，
+  改配置文件也不覆盖 DB 动态键，不存在双权威。
+- **`config init` 模板收敛**：只输出静态/`platform:` 键与 CLI 直用缺省，不再输出全量引擎键（P6.12）。
+- **`migrate` 只显式一次性迁移**：三期旧 config.yaml 动态键仅经显式迁移导入 settings，导入后以 DB 为权威，
+  不随启动自动导入。
+- **终端二进制不受影响**：`k8s-ai chat / k8s-ai scan` 仍以本地 config.yaml + env + flags 静态输入运行，
+  不依赖平台 DB，与平台配置中心执行面隔离。
+- 口径同步：PRD v1.11（§15/§26）、ADR-031 v1.11、开发计划 v1.37、部署手册 §3/§4.9/§8、项目状态。
+
+### Added（2026-10-20，P3.9/P3.10 配置中心完成）
+
+- **敏感字段静态加密（P3.9）**：`internal/settings` 新增 `SecretCipher`/`ErrCipherRequired`/`WithCipher`，
+  `model.api_key`/`mcp.servers`/`ops.kubeconfig` 等敏感键加密落库、读接口不回明文（`value:null`/`hasValue`），
+  未配置 `K8S_AI_ENC_KEY` 时 PATCH 写敏感键返回 501；`k8s-ai migrate` 与 web 装配注入同一 cipher。
+- **配置中心前端（P3.10）**：新增 `SettingsView.vue` 真实页面（7 分组 Tab：model/skill/approval/memory/
+  retention/mcp/ops，敏感键不回显、PATCH 局部保存、清理/JSON/list 控件、`settings.read`/`settings.write`
+  权限门禁），`web/src/api/settings.ts` 契约类型与方法、`settings.spec.ts` 契约测试同步落地。
+- **测试门禁**：`go test ./...`、`go vet ./...`、`go build ./...` 全绿；前端 `npm run test`（20 files /
+  107 passed）、`typecheck`、`lint`、`build` 通过；代码未提交，待真机验证无问题后再入库。
+
+### Added（2026-10-15，P2.7–P2.13 Web Shell 收尾）
+
+- **AgentStep 卡片（P2.7）**：`AgentStepper` 四步过程步进器（思考→工具→观察→报告，随回合重置）、`TurnBlock` 回合容器（头部序号 T{n}/状态/耗时/token + 回合内回显用户诉求）、`ReasoningPanel` 思考面板（推理中自动展开、推理结束自动折叠为一行摘要、用户手动开合优先、附”不进入最终报告”说明）。每个 Step 与事件一一对应，不丢项不重复。
+- **ToolCallCard（P2.8）**：工具名/短名/命令摘要/风险/耗时/复制 + 结构化结果渲染（列表表格、对象键值、事件表、YAML、日志、原始 JSON 折叠），结果到达即展开并保持；新增 `maskSensitiveValues` 前端兜底遮蔽（password/token/secret/apiKey/kubeconfig 等键的值在结构化视图与原始 JSON 中都不回显，键名保留），对象字段不再渲染成 `[object Object]`。
+- **ApprovalCard（P2.9）**：风险等级标签、Tool、参数摘要、目标资源、命中策略/原因 + 批准/拒绝/本次会话都允许 + Secret 占位输入（值仅本次提交、提交后清空、不入历史流）；新增 `web/src/utils/permission.ts`（Permission 常量与段通配判定同后端 `internal/permission` 语义），只读角色隐藏审批按钮并提示联系管理员——前端隐藏不是安全机制，后端仍独立强校验。
+- **Composer 与发送流程（P2.10）**：多行输入（Enter 发送 / Shift+Enter 换行）、空白与禁用态不发送、运行中切换为「停止」并回传 cancel、模型与 Secret 策略提示、底部提示「Shell 语法命令需人工审批 · Secret 值不会进入会话与审计」；发送后由 SSE 事件驱动状态，每轮步进器与执行状态随回合重置。
+- **会话 Token 用量持久化与展示（P2.13）**：`session.TokenUsage.Add/IsZero`、`store.TurnStore.SumTokensBySession`（会话级 SQL 汇总）、`service.SessionTokenizer` 可选能力（三期服务未实现时退化为零值，不破坏既有实现与测试桩）、webui 历史快照与会话列表下发 `token`/`model`（无记录时显式为 null/缺省，不伪造 0）；`k8s-ai web --db` 装配 SQLite Store（会话与 token 落库，数据库不可用仅告警并退回三期内存态）；`TokenUsageBadge` 改为右下角会话级统计（历史快照 + 本连接内逐轮累加，快照即断点不重复计数），刷新/重开会话仍可读。
+- **前端测试与构建门禁（P2.12）**：引入 vitest + @vue/test-utils + jsdom 与 `tsconfig.vitest.json`、`src/test/setup.ts`；新增 12 个测试文件 59 个用例（SSE 帧解析与旧事件映射、useChatStream 连接/切换/退避重连/停止、MessageTimeline 回合聚合与工具卡去重、ToolCallCard 脱敏与展开、ApprovalCard 权限显隐与 Secret 输入、ComposerBox、auth store、路由守卫、ChatView 全链路冒烟）；`package.json` 增加 `test`/`test:watch`/`test:coverage`。
+- **视觉对齐与前端核验工具**：`styles/index.css` 设计令牌与 `docs/02-架构与设计/prototype/index.html` 同源（含 `html.dark` 覆盖，使 Element Plus 组件走品牌 indigo 而不是默认蓝），聊天区（会话栏/回合/思考面板/工具卡/审批卡/报告/composer/Token 浮标）与登录页逐项对齐原型；新增 `web/tools/mock-backend.mjs`（复刻 webui 会话端点与 SSE 帧的联调 mock）与 `web/tools/visual-check.mjs`（原型 vs SPA 逐项比对 18 个关键视觉量并输出截图，当前差异 0）、`web/tools/screenshot.mjs`（无头 Edge/Chrome 截图）。
+
+### Added（2026-10-20，P3.11 用户/角色管理后端部分落地）
+
+- **Store 底座 schema v4（P3.11）**：`internal/store` 迁移 schemaVersion=4，新增 `authz_grants`
+  （principal_type/principal_id/cluster_id/namespaces[]/permissions[]/expires_at/created_by）与
+  `api_tokens`（user_id/name/token_hash(SHA-256)/expires_at/status/last_used_at）表及 principal /
+  user 二级索引；API token 只存 SHA-256 哈希，明文仅在创建时返回一次、永不回读。
+- **用户/角色管理 API（P3.11）**：`internal/auth` 固定 user/operator/admin 三角色，新增
+  `ListUsers/CreateUser/UpdateUser/DeleteUser/ListRoles`
+  （密码最短 8 位、角色三角色白名单、内置 admin 不可删/停/降级、不支持改用户名）；
+  `internal/server` 注册 `GET|POST /api/v1/users`、`PATCH|DELETE /api/v1/users/{id}`、
+  `GET /api/v1/roles` 并登记 `user.manage` 权限，禁止当前登录用户停用/降级/删除自己；
+  口令与哈希永不进入响应、审计与日志。
+- **测试与冒烟**：3 个旧测试适配新默认角色，新增服务端契约测试 5 例；
+  HTTP 冒烟覆盖 建用户/重名 409/user 角色 403/停用后登录 401/删除后列表消失；
+  `go test ./...`、`go vet ./...`、`go build ./...` 全绿。
+- **授权面管理 API（P3.11）**：新增 `internal/authz` 服务（`authz.New` + `WithAuthz` 装配），提供 AuthzGrant 全生命周期 CRUD 与 ApiToken 管理：
+  - `AuthzGrant`：principalType(user|group)/principalId/clusterId/namespaces[]/permissions[]（`*`/`destroy` 白名单）/expiresAt（过去时间拒绝）/createdBy；Update 仅 cluster/namespaces/permissions/expiresAt，主体不可变更。
+  - `ApiToken`：user_id/name/tokenHash(SHA-256)/expiresAt/status(active|revoked|disabled)/lastUsedAt；明文 64 位 token 仅创建时返回一次、永不回显，仅 token 所属用户可读/停用/删除。
+  - 路由：`GET|POST /api/v1/grants`、`GET|PATCH|DELETE /api/v1/grants/{id}`、`GET|POST /api/v1/users/{userID}/tokens`、`PATCH|DELETE /api/v1/users/{userID}/tokens/{id}`，均需 `user.manage`，1MiB 请求体上限、统一错误信封，未配置返回 501；`internal/permission` 登记 9 条 grants/tokens 权限规则。
+  - 测试：`internal/authz` 服务单测 5 例 + 服务端契约测试 5 例。
+
+### 设计修订（2026-10-13）
+
+- **角色固定**：产品角色为 user / operator / admin 三角色。
+- **namespace 即边界**：用户零权限起步，admin 按 namespace 授权；获得授权的 namespace 内
+  拥有除销毁类外全部能力，未授权范围零操作；诊断读取与角色解耦但不放开写入。
+- **销毁类收敛**：delete namespace / delete pvc / delete pv 默认仅 admin；operator 需 admin
+  显式委派（可回收、带过期时间）；未授权确定性拒绝并提示联系管理员，不建审批、不阻塞等待。
+- **审批主体**：只有本人自确认或审批子 agent（Approval Agent）自动两类，废弃"他人在线各自
+  审批"模型并修正原 P4.8；任何情况下不能审批自己的请求，审批人须持有对应 scope 的
+  approval.execute 且非请求人。
+- **自动审批白名单**：显式白名单替代"可逆"模糊定义；读取/提案恒自动、scale 有界可自动、
+  rollout restart 需确认、白名单外至少自确认、高危类/shell 永不自动；总开关默认关闭 +
+  会话开关 + scope 判定，AUTO 以 whitelist_key/plan_hash/reason 落审计且总开关不能覆盖高危。
+- **AuthzGrant + RBAC 派生**：平台 AuthzGrant 为授权权威，Kubernetes RBAC 为派生；
+  受管 RoleBinding/ClusterRoleBinding 带平台标签与 ownerReference；定期 reconcile 清理
+  漂移/孤儿，撤销/过期即删；执行前 SAR 只验权限，操作安全由 Code Guard + 准入控制把关。
+- **多 Agent 平台**：主 Agent 编排 + 统一 agent 注册表（agent_id/name/capabilities/scope/
+  executor/policy_binding/lifecycle），首个实现为 Approval Agent，后续能力型子 Agent 预留
+  接入口；所有子 Agent 写路径与用户一致，不设豁免。
+
+### Added
+
+- **MessageTimeline 与消息流展示（P2.6）**：新增 `web/src/components/chat/MessageTimeline.vue`——历史快照与实时 SSE 归一事件折叠为统一时间线，`message.delta` 按 turn+role 聚合成单个流式消息块，`message.completed` 以事件携带全文收敛并标记完成，状态只吃事件本身、不猜状态；旧事件（无 turn id）仅在该 role 尚无 turn 级流式块时作为兜底展示，避免 legacy 全文与 unified 增量重复累加；工具/审批/回合等事件逐条以时间线条目展示，Summary 只取非敏感字段、Secret 值永不进时间线；新增消息自动滚动到底部；`ChatView.vue` 移除内联 timeline 与事件映射逻辑，改为组件化渲染。`npm run lint`/`typecheck`/`build` 通过。
+- **SSE Client 与事件归一（P2.5）**：新增 `web/src/api/sse.ts`——基于 fetch 的 SSE 传输（兼容 `event:`/`data:` 帧与 CRLF，AbortSignal 控制连接）与归一帧类型（历史快照 / 统一事件 / 旧帧），并实现三期旧 ChatEvent（camelCase）→ 统一 AgentEvent（snake_case，15 类事件）映射，与后端 `internal/sse/legacy.go` 的 MapFromLegacy 同源；新增 `web/src/composables/useChatStream.ts` 管理会话级连接生命周期（切换会话用 AbortController 中止旧连接、断线指数退避 + 抖动自动重连、以历史快照为断点重建时间线并清空实时事件去重）；`sessions.ts` 补全 webui send-message / approve / cancel 端点客户端；`ChatView.vue` 接入真实 SSE 流，展示连接状态徽标、重连控制、历史消息回放与归一事件流（message.delta 按 turn+role 聚合为流式文本）。`npm run lint`/`typecheck`/`build` 通过。
+- **会话列表与历史会话加载（P2.4）**：新增 `web/src/api/sessions.ts` 对接 webui `/api/sessions` 端点（`SessionSummary`/`SessionDetail` 对齐后端 `internal/session/session.go`，裸对象/数组非 `/api/v1` 信封单独封装，复用 fetch 客户端错误归一思维），新增 `web/src/utils/format.ts`（相对时间与 Agent 状态徽标映射）与 `web/src/components/chat/ConversationList.vue`（新建、选择、删除带确认、重命名内联编辑、刷新，展示 messageCount/lastModified/state）；`ChatView.vue` 改为两栏布局接入真实会话端点，SessionStore 数据驱动，支持切换历史会话，当前会话状态持久于 sessionStorage。`npm run lint`/`typecheck`/`build` 通过。
+- **前端工程（P1.1）**：`web/` 新建 Vite + Vue3 + TS 单仓工程，src 骨架 + 7 个侧栏路由入口与登录路由，`npm run lint` / `typecheck` / `build` 通过。
+- **信息架构（P2.1）**：侧栏按 工作区/治理/平台管理 三组分栏；Admin 不再作为侧栏一级菜单，当前用户信息与「管理控制台」移入右上角 User Menu。
+- **登录页与前端路由守卫（P2.2）**：新增 `/login` 登录页、`/app/*` 路由守卫与 401/未登录跳登录，登录后保留 `redirect` 回跳。
+- **API Client 与分页类型（P2.3）**：新增 `web/src/api`（`types.ts` 与后端 `internal/server/response.go`/`auth.go` 一一对应的统一信封、分页、错误码、认证契约；`request.ts` 基于 fetch 的 `/api/v1` 客户端，Bearer 认证头、`page`/`page_size` 分页序列化、信封解析、错误码归一，401 清除会话并跳登录；`auth.ts` 登录/登出/me 端点）；`stores/auth.ts` 接入真实 `/api/v1/auth/login|logout|me`，应用启动经 `/me` 恢复会话并校正角色；登录页显性展示统一错误。`npm run lint`/`typecheck`/`build` 通过。
+- **统一 Store（P1.2/P1.3）**：`internal/store` 统一 `Store` 接口 + SQLite 驱动 + MySQL 方言层 + 幂等迁移（schemaVersion=2），覆盖 11 类平台模型 CRUD 与双方言等价测试。
+- **HTTP 基础中间件（P1.4）**：request_id 生成/透传（X-Request-ID）、统一响应信封（request_id/timestamp/data/error/pagination）、分页解析（page/page_size，兼容 pageSize）、CORS（放行 localhost:5173）、认证占位（仅注入上下文不拒请求）；含中间件与信封单测。
+- **用户/角色与登录认证（P1.5）**：argon2id 密码哈希、内存 Session Token（24h）、`POST/GET /api/v1/auth/login|logout|me`、`server` 命令 SQLite 首次引导（`K8S_AI_ADMIN_PASSWORD` 初始化 admin 角色与用户）；含认证服务与 handler 单测。
+- **Permission Middleware（P1.6）**：`internal/permission` Role→Permission→Policy 判定（精确 / `*` / 段通配）+ `internal/server` 权限门禁（未登录 401、越权 403、`/api/v1` 未登记路由默认 403）；默认路由权限对齐标准 Permission 常量，越权门禁测试通过。
+- **Session/Turn/Step 模型与存储（P1.7）**：`internal/session/turn.go` 状态机（Turn 6 态 / Step 4 态 + token 用量）；Store 增加 `Turns()`/`Steps()` 与对应 CRUD/List，schemaVersion 2 新增 `turns`/`steps` 表与索引，写前脱敏与可空时间字段落地；含状态机与双方言 CRUD 单测。
+- **Agent Runtime 生命周期接入（P1.8）**：`internal/agent` 新增 `Tracer` 观察者接口，每轮 Chat 创建 Turn 并广播 Reason/Tool/Observe/Approval/Response Step 全生命周期，Turn 终态（done/fail）统一收尾；`internal/service` 新增 `NewChatWithStore`（旧 `NewChat` 签名兼容）经 `persistTracer` 落 SQLite，写库失败仅告警不阻塞 Agent；含生命周期时序与持久化断言单测。
+- **SSE 事件路由与旧事件映射层（P1.9）**：新 `internal/sse` 定义 15 类统一事件（session/turn/reason/tool/observation/approval/message 全生命周期）+ 必带信封字段（session_id/turn_id/step_id/timestamp/event_type），提供 Marshal/Frame 帧序列化与三期旧事件双向映射（MapFromLegacy/MapToLegacy）；`service` 新增 `NewChatWithSink`/`NewChatWithStoreAndSink`/`SetSink`，Chat 全生命周期（含审批 required/approved/rejected）双轨广播统一事件与旧 ChatEvent JSON，`webui.Server` 按 `session_id` 扇出统一事件到会话 Broadcaster；所有出站负载统一经 `store.RedactJSONPayload` 脱敏（Secret/kubeconfig/API Key 明文不出站）；含统一事件时序、并发作用域与 webui 路由断言单测。
+- **Config Service（P1.10）**：`internal/settings` 落地配置中心应用服务——需求 v1.2 §15 七组目录（`model`/`skill`/`approval`/`memory`/`retention`/`mcp`/`ops`），键定义携带类型、默认值、枚举、取值范围、敏感标记与三期 config 路径；读视图把目录默认值与已存值合并，写路径先整批校验再落库（任一未知键/枚举越界/类型不符即整批 400，同批合法键不留半成品），取值未变不产生写入与审计；`ImportConfig` 支持三期配置导入（等同默认值不入库）。API 新增 `GET|PATCH /api/v1/settings/{group}`，登记 `settings.read`/`settings.write` 权限。敏感键（`model.api_key`、`ops.kubeconfig`、`mcp.servers`）只在 PATCH 接收，GET 恒回 `value:null` + `hasValue`，明文不进响应、审计与日志。`server` 命令改用 `server.NewWithPlatform` 装配配置中心与 `service.AuditService`（此前配置端点在真实进程中不可达）。
+- **Audit 模型与系统事件写入（P1.11，进行中）**：`internal/store/audit_event.go` 成为 §19 事件类型枚举与「动作 → 事件分类」映射的唯一所有者（LOGIN/LOGOUT/SESSION/APPROVAL/GRANT/TOOL_CALL/RESOURCE_MUTATION/CONFIG_CHANGE/SKILL_RUN/CLUSTER_CHANGE + USER_INPUT/LLM_CALL/SECRET_READ/OTHER），`AuditEvent` 补齐 eventType / resourceKind / resourceName / operation / risk / decision / approvalId / grantId / matchReason / parameterSummary / resultSummary / status 字段，schemaVersion 提升到 3（`audit_events` 补列 + 历史记录回填）；`service.AuditService` 统一写前脱敏与事件分类，登录/登出（LOGIN/LOGOUT）与配置变更（CONFIG_CHANGE）系统事件落库，载荷只含分组与键名，不含口令、Token 或敏感取值。CLUSTER_CHANGE 写入随 P3.2 集群管理 API 落地。
+
+### Changed
+
+- `docs/02-架构与设计/01-系统架构与技术方案.md`、`02-数据模型与数据字典.md`、`03-API接口文档.md`、`04-架构决策记录-ADR.md` 同步四期落地状态（含 ADR-020~024）。
+- `docs/04-项目管理与规范/01-版本计划与发布规则.md`、`02-项目状态.md` 同步四期 M1 进度。
+
+### Tests
+
+- `go test ./...` 通过（含新增 `internal/agent/trace_test.go`、`internal/service/chat_persist_test.go`、`internal/sse/*_test.go`、`internal/service/chat_sse_test.go`、`internal/webui/sse_test.go`、`internal/settings/service_test.go`、`internal/server/settings_test.go`）
+- `go vet ./...` 通过
+- `tests/arch` 通过
+
+## [v3.0.0] - 2026-10-08
+
+三期交付封版（v3.0.0，2026-10-08）：资源创建能力完成（R0–R8）：自然语言创建资源进入统一 `create_resource` 通道，支持 dry-run 提案、人工审批、Server-Side Apply、创建后 verify，并为四期 Skill 引擎冻结数据模型与读接口。
+
+### Added
+
+- **`create_resource` Tool**：`internal/tools/create.go` 提供 `manifest` / `mode` / `verify` / `timeout_seconds` 参数；dry-run 产出会话级提案，apply 需通过 `proposal_id` 或同指纹 manifest。
+- **Executor 创建能力**：`internal/executor/apply.go` 基于 client-go dynamic + Server-Side Apply（fieldManager=`k8s-ai`），支持 server-side dry-run、存在性检查、创建后 verify；写入路径仍只在 Executor。
+- **创建安全门禁**：`internal/approval/codeguard.go` / `create_risk.go` 提供 kind 黑白名单、cluster 授权闸门、命名空间存在性、未 dry-run 拒绝、未知 Kind/危险字段风险升档。
+- **Secret 创建通道**：`agent.secret.access=create_only`；只允许 `stringData` 使用 `$GENERATE` / `$ASK`，明文值走审批带外传入，审计只记录键名/长度/SHA-256/来源。
+- **内置 Skill 元数据**：`internal/skills/` 冻结 Skill/Rule/RiskClause/RiskRule/Check/Source/Registry 契约，go:embed 内置 workload/config/storage/network/rbac 五域 YAML，Skill 模型无执行动作字段。
+- **Agent 创建编排**：`internal/agent/prompt.go` 新增创建/部署/新建意图路由与 `createProtocol` 约束，必须信息收集后 dry-run → 提案 → 用户确认 → apply。
+- **CLI/Web 渲染**：CLI 与 Web 展示创建提案卡、五步执行状态流、创建结果与 Secret 脱敏清单；提案/manifest/指纹/verify 落库并支持刷新恢复。
+- **集成测试**：`internal/creationtest/` 覆盖 dry_run → 审批 → SSA 创建 → verify、Secret `$ASK` 带外取值与审计无明文、绕过 dry-run 拒绝等场景。
+
+### Changed
+
+- `k8s-ai-test.yaml`、`docs/INSTALLATION.md` 增加 `agent.create.*` 与 `agent.secret.access` 配置样例。
+- `docs/E2E_SMOKE.md` 增加资源创建、Secret 审计与失败路径冒烟场景。
+- `docs/RESOURCE_CREATE_DESIGN.md` 实现状态标注为三期已落地。
+- `internal/webui/server.go` 新增 `POST /api/sessions/{id}/cancel` 取消当前 Chat 运行（按 session 记录 `context.CancelFunc`，删除会话时同步取消）；发送区新增停止按钮，运行状态改由停止按钮标识，移除原旋转 spinner；新增 `TestCancelActiveRun` 覆盖取消接口与无活动运行冲突提示。
+
+### Tests
+
+- `go test ./...` 通过（含新增 `internal/creationtest`）
+- `go vet ./...` 通过
+- `tests/arch` 通过
+
+## [v2.6.0] - 2026-09-20
+
+Web 工具卡片结构化渲染与会话持久化补全（Data.kind 驱动工具结果表格/键值展示；kubectl 工具卡仅展示原始命令；arguments/data/ok 落库并随 SSE 回传）。
+
+### Added
+
+- **工具结果结构化渲染**：`internal/webui/index.html` 新增 `renderToolStructured`，由 `Data.kind` 驱动；List 类型（PodList/EventList/NodeUsageList 等）用表头映射 + 表格渲染，单一对象（如 Pod）用键值表 + containers/conditions/events 子表展示。
+- **kubectl 命令特例**：kubectl 工具卡片只展示原始命令文本，避免把 kubectl 原命令再包装成 `[kubectl] JSON`；结构化工具显示 `[工具名] 参数`。
+- **会话持久化补全**：`internal/session/session.go` Message 增加 `arguments`/`data`/`ok`；`internal/agent/loop.go` 落库并输出 `summary`/`data`/`ok`；刷新后命令、参数与结果表格不丢失。
+
+### Changed
+
+- **SSE 工具结果字段**：`internal/service/chat.go` 的 `ChatToolCallView` 增加 `risk`/`summary`/`ok`/`data`，`ok` 作为工具成功与否的权威标记。
+
+### Tests
+
+- `go test ./...` 通过
+- `go vet ./...` 通过
+
+## [v2.5.1] - 2026-09-20
+
+scan 终端报告渲染分层优化（`internal/report/summary.go` 的 `RenderTerminal`）。
+
+### Changed
+
+- **终端摘要分层**：`RenderTerminal` 输出从单一巨大无序列表改为块级标题 + 表格 + 代码块 + 修复建议列表，scan 终端一屏摘要更易扫读。
+
+### Tests
+
+- `go test ./internal/report/` 通过
+
+## [v2.5.0] - 2026-09-18
+
+P7 扫描能力补全与规则池扩展（借鉴 k8sgpt 规则池思路：A/B/C 12 条规则 + 规则元数据体系 + DocProvider + 报告聚合）。
+
+### Added
+
+- **规则元数据体系**：`RuleMeta` 与 `Registry.RegisterWithMeta`，现有全部规则补齐元数据（rule_id / category / kind / severity_base / needs_logs / doc_ref），支持按 category / kind 过滤（SPEC §28.1）
+- **A 级规则（4 条）**：`CronJobSuspended` 挂起、`NetworkPolicyNoDefaultDeny` 缺默认拒绝、`IngressHostConflict` 主机冲突、`DeploymentOverReplicas` 超副本
+- **B 级规则（3 条）**：`VolumeAttachmentStuck` 卷挂载卡住、`StorageClassNoProvisioner` 无 Provisioner、`ContainerHealthTimeout` 容器健康超时
+- **C 级采集与规则（5 条）**：新增 `ListHPA`（autoscaling/v2）/ `ListPDB`（policy/v1）/ `ListClusterRoles`（rbac/v1）Reader；`HpaReplicasMismatch` / `HpaScaleTargetMissing` / `PdbBlocking` / `RbacOverPrivileged` / `ConfigRefNotFound`
+- **DocProvider**：按需 lazy 加载 + 内存缓存 + 静态 JSON 兜底，`--with-doc` 开关可用且默认不增加 API 请求
+- **报告聚合**：按 category / kind 聚合，suggestion 可单独过滤，server / web / CLI 复用同一模型
+
+### Notes
+
+- 规则结论与健康评分口径不降级；新增 `ListSecretMeta`（internal/kubernetes 只读门面）后，`ConfigRefNotFound` 可校验 Secret/ConfigMap 引用存在性（仅元数据/键级，内容值零进入）；安全红线收紧为“Secret 内容值永不进入 evidence / LLM / 会话 / 审计”
+
+### Tests
+
+- `go test ./...` 通过
+- `go vet ./...` 通过
+
+## [v2.4.0] - 2026-09-17
+
+Web 纯前端产品化升级（暗色主题 + 顶部状态条 + 横向阶段步进器 + 过程时间线 + 诊断报告视觉升级，承接 v2.3.2「后续版本继续优化视觉」）。
+
+### Added
+
+- **暗色主题**：Web UI 统一暗色配色（`color-scheme: dark`），整体更接近桌面产品的视觉观感
+- **顶部状态条**：会话顶部新增运行状态与耗时计数（`sessionElapsed`），会话进度一目了然
+- **横向阶段步进器**：每轮对话顶部新增 Reasoning → Tools → Result 横向步进器，随阶段推进高亮/标记完成，最终报告输出后全部置为已完成
+- **报告视觉升级**：诊断报告卡片增加“诊断报告”标识（CSS `::before` Pill），主次结构更清晰
+
+### Changed
+
+- **思考框全程动态展开**：推理期间“分析过程”面板全程展开并实时滚动展示模型隐藏思考，直到最终报告打印完成后再自动折叠，避免中途频繁折叠打断阅读
+- **工具卡自动 peek 优化**：移除工具结果固定的 1.4s 延时 peek，工具卡拿到结果立即展开并保持；最终报告输出完成后统一折叠非错误工具卡（错误卡保持展开便于排查）
+- **思考展示边界说明**：带工具调用轮次的可见正文只保留简短进度说明，完整推理由系统从隐藏 reasoning 通道单独采集并交由 Web 分析面板展示，不再依赖模型写入可见输出
+- **阶段标签**：Web 时间线每条记录保留明确的阶段标签（思考 / 工具执行 / 工具执行中 / 中间分析 / 诊断结论），配合色点与高亮描边更醒目地呈现当前进度
+
+### Tests
+
+- `go test ./...` 通过
+- `go vet ./...` 通过
+
+## [v2.3.2] - 2026-09-16
+
+标准思考参数与思考过程展示修复。
+
+### Changed
+
+- **OpenAI 标准思考参数**：移除 `llm.disable_thinking`，请求体改为标准 `thinking` 字段，例如 `{type: enabled}`；`llm.thinking` 控制 chat，`scan.thinking` 控制一期 Scan 诊断
+- **流式思考字段兼容**：流式解析支持 `reasoning_content` / `reasoning` / `thinking`，可通过 `llm.reasoning_fields` 调整识别顺序
+- **Web 思考展示**：新增 `reasoning-delta` 事件，Web 端在“分析过程”面板实时展示思考文本，并增加状态、滚动、等宽字体与流式光标反馈
+- **Web 流程时间线**：同一轮对话中的“思考 / 工具执行 / 最终结论”纳入左侧竖向时间线，增强过程可观测性（后续版本继续优化视觉）
+- **终端思考展示**：终端逐 token 输出隐藏式思考会干扰阅读，改为一次性显示“分析中...”状态，最终答案仍按 Markdown 渲染
+
+### Fixed
+
+- 修复 `scan.thinking` 配置字段缺失导致的编译失败
+- 修复 `config init` 模板中文注释乱码
+- 修复思考消息持久化位置，确保插入到当前轮次最终回答之前
+
+### Tests
+
+- `go test ./...` 通过
+- `go vet ./...` 通过
+
+## [v2.3.1] - 2026-09-14
+
+Web UI 会话体验优化。
+
+### Changed
+
+- **会话记忆**：使用 sessionStorage 记住上次活跃会话，刷新页面不再跳回第一个会话
+- **欢迎页标语**：从"从现象走向结论"改为"开口说话"，更简洁有力
+- **首屏体验**：`showWelcome()` 提前到 `loadSessions()` 之前执行，避免页面加载时的空白闪烁
+
+## [v2.3.0] - 2026-09-11
+
+Web UI 运维诊断流程可视化重构。
+
+### Changed
+
+- **Web UI 设计系统重构**：`internal/webui/index.html` 全面重构，围绕"运维诊断流程可视化"设计：
+  - **字体与排版**：引入 Inter + JetBrains Mono 字体组合，诊断报告字号 15.5px、行高 1.8，提升可读性
+  - **诊断报告卡片**：最终 answer 以 `.msg.report` 样式呈现（左侧强调条 + 阴影 + 更大内边距），与中间分析过程视觉分离
+  - **分析过程时间线**：`.phase-progress` 面板增加步骤计数、完成勾选标记（✓）、当前步骤高亮动画（●）
+  - **工具卡片摘要栏**：新增 `.tool-summary-bar` 显示"工具调用 N · X 已完成 · Y 执行中"，多工具场景一目了然
+  - **等待状态细分**：typing indicator 区分"AI 正在分析…"与"等待审批…"（后者橙色高亮），审批卡片按钮文案中文化
+  - **错误卡片可折叠**：长错误信息截断显示 + "查看详情"折叠面板
+  - **中文本地化**：展开按钮"Show output"→"展开"/"收起"，who 标签"You"→"你"、"AI Assistant"→"AI 助手"
+  - **响应式适配**：960px 断点 + 移动端侧栏抽屉（汉堡菜单 + 遮罩），工具命令窄屏自动换行
+  - **Reduced Motion**：`prefers-reduced-motion: reduce` 时禁用所有动画
+
+### Fixed
+
+- **流式增量串扰 bug**：`appendDelta()` 现在只找 `data-streaming="true"` 的消息，避免追加到已降级的进度消息
+- **工具结果错配**：`fillToolOutput()` 按 `toolId` 匹配，同名工具多卡片时不再填错
+- **工具卡片构建统一**：`buildToolCard()` 工厂函数统一实时与历史卡片，历史卡片补齐复制按钮
+
+### Tests
+
+- 现有全部测试通过（28 包），前端为纯 HTML/JS 无独立测试。
+
+## [v2.2.1] - 2026-09-10
+
+诊断报告完整性与流式对话稳定性修复：保留真实诊断内容，避免工具调用阶段和证据不足时过早收敛到修复方案。
+
+### Added
+
+- **语义化 LLM 流事件**：区分 `content-delta` 与 `reasoning-delta`，保留真实 reasoning 增量并避免用固定占位文本替代。
+- **阶段化 Chat 事件**：新增 `progress` 与 `answer-delta`，配合 `tool-call`、`tool-response`、`answer` 区分进度、工具活动和最终报告。
+- **Web 分析过程折叠**：分析摘要进入可展开/收起面板，工具执行或最终报告出现后自动收起。
+
+### Changed
+
+- **工具轮次输出闸门**：带 `tool_calls` 的 LLM 轮次先缓存正文；短说明转为 `progress`，完整报告型正文不提前展示；工具结果之后才允许最终回答增量进入 Web/CLI。
+- **诊断报告协议**：最终回答明确按现象、根因、关键证据、修复方案、验证结果组织，避免排查请求直接收敛为方案列表。
+- **证据不足安全边界**：证据不足时优先继续只读取证；完成必要排查仍无法确认时，明确报告证据缺口，不提前生成写入命令。
+- **流式工具参数归一化**：兼容部分 OpenAI 兼容网关对 `function.arguments` 的二次编码和尾部引号噪声；无法安全恢复时保留参数错误，不盲目执行。
+- **失败工具调用收敛**：同一只读工具与同一参数执行失败后不再原样执行，要求模型更换参数或工具，避免反复失败耗尽工具预算。
+- **工具前文本过滤**：移除对“根因/修复/建议/结论”等关键词的过度过滤，避免误删真实诊断摘要。
+- **终端渲染**：CLI 将回答增量缓存至 `answer`，统一使用 Markdown 渲染器输出，保持与 kubectl-ai 类似的终端报告效果。
+
+### Fixed
+
+- 修复流式聊天中完整报告可能早于工具调用展示的问题。
+- 修复最终回答通过增量与完整 `answer` 双重展示的问题。
+- 修复工具失败后模型重复调用同一工具、最终超过 `max_tool_calls`/`max_iterations` 的问题。
+- 修复流式 reasoning 内容被固定为“正在分析证据”的问题。
+
+## [v2.2.0] - 2026-09-09
+
+LLM 响应流式输出（chat 流式逐 token 推送 + SSE 降级回退 + Web UI 增量渲染）。
+
+### Added
+
+- **LLM 流式输出支持**：新增 `llm.StreamClient` 接口（`ChatStream`），`internal/llm/client.go` 实现 OpenAI Compatible SSE 流式协议，`internal/llm/stream.go` 解析流式 chunk（content/tool_calls/usage 累积 + content 增量回调）。
+- **`ChatEventDelta` 事件类型**：`internal/service/chat.go` 新增 `ChatEventDelta`，Agent 消息总线中的 `SourceModel` 增量实时转为 `delta` 事件，与 `ChatEventText`（用户输入回显）和 `ChatEventAnswer`（最终回答）区分。
+- **Web UI 增量渲染**：`internal/webui/index.html` 新增 `case "delta"` 处理分支 + `appendDelta()` 函数，流式增量实时追加到最后一条 agent 消息的 content 中，保持 Markdown 实时渲染。
+- **配置项 `llm.stream`**：`internal/config/config.go` 新增 `Stream bool` 字段（默认 `false`），控制 chat 流式开关。
+
+### Changed
+
+- **Agent 循环 `chatOnce` 方法**（`internal/agent/loop.go`）：`native` 模式且 LLM 客户端支持 `StreamClient` 时走 `ChatStream`，content 增量实时 Emit 到消息总线；`shim` 模式保持非流式（避免中间 JSON 泄漏）。
+- **流式失败自动降级**：`ChatStream` 失败且未发出任何增量 → 退回到非流式 `Chat`（复用其 429/5xx 重试），`streamed` 标记据实返回，审计日志准确记录实际路径。
+
+### Fixed
+
+- **`chatOnce` 回退路径 `streamed` 标志**：流式失败降级到非流式 `Chat` 后不再误报 `stream: true`。
+
+### Borrowed from kubectl-ai
+
+- **Web UI delta 增量渲染**：`appendDelta()` 函数设计借鉴 kubectl-ai 的流式消息追加模式（data-raw 属性累积纯文本 → 全量重渲染 → 保持 Markdown 一致性）。
+
+### Tests
+
+- 现有全部测试通过（28 包），`fakeLLM` 未实现 `StreamClient` → `chatOnce` 在测试中自动走非流式，无需修改测试固件。
+
+## [v2.1.0] - 2026-09-08
+
+修复高危正确性与安全边界，补齐配置项生效，并同步提示词。
+
+### Fixed
+
+- **提示词移除已删除的结构化写工具**：`prompt.go` 不再引导 LLM 调用 `patch_deployment / scale_deployment / delete_pod / patch_configmap / restart_rollout / label`，写操作统一指向 kubectl 工具。
+- **kubectl 动词解析支持全局 flag 独立值**：`kubectl -n default get pods`、`kubectl --context prod get pods` 等命令不再把 flag 值误判为 verb；风险分级与只读判断同步修正。
+- **shell 模式交互式命令硬拒绝**：`kubectl edit ... && echo`、`kubectl exec -it ... && echo` 等不再因动词位于命令开头而绕过交互命令拦截。
+- **Secret / --raw 红线加固**：`IsForbiddenCommand` 能识别 `sec"ret"`、`$(echo secret)`、`'--raw'` 等引用/替换混淆。
+- **delete 风险分级补 Service**：`kubectl delete service ...` 现在归类为 CRITICAL，与 AGENTS.md 红线一致。
+- **配置项生效**：`agent.skip_permissions` 现在会跳过写操作人工确认；`agent.disabled_tools` 会在 Chat 装配工具时移除指定工具。
+
+### Borrowed from kubectl-ai
+
+- **命令安全分类改用 shell 解析器**：`IsForbiddenCommand` 增加 `mvdan.cc/sh/v3/syntax` 解析路径，先按 AST 识别每个 kubectl 调用中的 Secret/`--raw`，解析失败再回退到轻量词法扫描；比纯字符串匹配更能覆盖引号拼接与命令替换。
+- **kubectl 子进程注入 KUBECONFIG**：executor 把 `kubernetes.kubeconfig` 通过 `KUBECONFIG` 环境变量传给 kubectl，避免写命令与 client-go 使用不同集群配置。
+
+### Tests
+
+- 新增解析层、审批层、registry、service 层测试，覆盖全局 flag 前置、shell 交互命令拦截、Secret 混淆、disabled_tools 与 skip_permissions。
+
+## [v2.0.9] - 2026-09-08
+
+删除 6 个结构化写工具，写操作统一走 kubectlTool + 执行器 bug 修复 + Web UI 第一批交互优化。
+
+### Added
+
+- **Web UI 第一批交互优化（index.html）**：
+  - 输入框 disabled + spinner：AI 处理中输入框变灰、placeholder 切为"AI 正在处理..."、发送按钮 disabled、右侧旋转 spinner；
+  - 空会话欢迎页：渐变 logo + 产品名 + 3 张可点击能力卡片（巡检集群/故障诊断/执行变更），点击自动填充提问；
+  - 删除会话确认：删除前 `confirm()` 防误删；
+  - 会话列表时间戳：session item 下方显示"刚刚 / X 分钟前 / X 小时前 / X 天前"；
+  - AI 思考 typing indicator：三点跳动动画 + "AI 正在分析..."，执行完成自动隐藏。
+- **kubectlTool.Execute 补 Text 字段**：之前不填 Text → `MarshalForLLM()` 只能 `json.Marshal(Data)` → 用户看到带引号的 JSON 字符串；现在 `extractKubectlSummary()` 成功取 Stdout 前 200 字符，失败取 exit+stderr，空输出显示 "ok"。
+
+### Changed
+
+- **写工具从 7 个精简为 1 个**：删除 `scale_deployment` / `patch_deployment` / `patch_configmap` / `restart_rollout` / `label` / `delete_pod` 共 6 个结构化写工具（~250 行 Go 代码），全部走 `kubectlTool` → `executor.RunKubectl` 一条路径。WriteRunner 接口和 executor.Runner 的 typed client 实现保留，留作未来内部场景。
+- **NewWriteTools 只注册 kubectlTool**：之前 7 个 → 现在 1 个。LLM 写操作统一生成完整 kubectl 命令（含 shell 构造），执行器自动判断 argv 直调或 `bash -c`。
+
+### Why
+
+6 个结构化工具是 v2.0.8 放开 shell 之前的过渡产物（shell 被 parse.go 硬拒时，LLM 只能用结构化工具调 typed client）。v2.0.8 放开 shell + 新增批量审批后，kubectlTool 已能覆盖全部写操作，结构化工具成为多余维护负担：
+
+- 覆盖不全（写不完 patch_pvc / patch_ingress / annotate / cordon 等无限场景）；
+- LLM 在 JSON patch 参数上反复试错（日志出现 `--access-mode` 单数、`apiVersion: v11` 笔误）；
+- prompt 说"结构化优先"但 LLM 发现覆盖不了又退回 kubectl，体验不统一。
+
+删除后写操作**一条清晰路径**：LLM 生成 kubectl 命令 → `RunKubectl` → 风险分级 → 审批 → 执行。
+
+## [v2.0.8] - 2026-09-07
+
+chat 修复体验对齐 kubectl-ai：放开 shell 构造 + 批量审批 + 拒绝闸门归一化（优化 1/2/3/4/6 全部落地）。
+
+### Added
+
+- **放开 shell 构造（AGENTS.md + executor + approval）**：
+  - AGENTS.md 修改 Kubernetes Safety 条款：shell 构造（pipe/heredoc/redirect/`&&`/`||`/command substitution）允许在 chat 模式使用，但含写操作的 shell 命令必须走人工审批，shell 命令永不自动执行（不被 `--skip-permissions` 豁免）；
+  - `parse.go` 引号外 shell 元字符不再拒绝，改为标记 `isShell=true` 透传 executor；shell 模式跳过 `kubectl` 前缀检查 + 全命令扫描交互式动词；非 shell 模式保持原校验不变；
+  - `kubectl.go` `isShell=true` 时走 `exec.CommandContext(ctx, "bash", "-c", command)`，非 shell 走 argv 直调；两条路径共享 deny_ops + Secret 拦截 + 脱敏 + 截断 + 流式超时；
+  - `approval/risk.go` 新增 `HasShellSyntax()`：`IsReadOnlyCommand()` 对含 shell 语法的命令永远返回 `false`（必须审批）。
+- **批量审批（loop.go `batchApprove`）**：native 模式下 LLM 一轮返回 2+ 写工具调用时，收集所有写操作 → 合并为一个审批面板（逐条展示命令/变更/风险等级）→ 用户选一次 → 顺序执行 → 分别回传结果。借鉴 kubectl-ai `conversation.go L757-794`。审批次数从 9 次降到 3-4 次。
+- **拒绝闸门命令归一化（loop.go `declineKey` + `normalizeKubectlCommand`）**：kubectl 工具的拒绝计数 key 做命令归一化（提取 verb+resource+name+namespace，忽略 `--force`/`--grace-period`/`--now`/`--wait`/`--timeout`/`--cascade`/`--dry-run` 等修饰性 flag 和 flag 顺序），防止 LLM 用"加个 --force"绕过拒绝闸门。结构化工具不归一化（原始 JSON 作为 key）。
+- **Prompt 决策树扩展工具选择引导（prompt.go）**：交叉规则改为"结构化写工具优先，kubectl+shell 作为 fallback"；新增"shell 命令永不自动执行"规则；healthCheckProtocol 去掉 shell 禁止语。
+- **kubectlTool Description 更新（write.go）**：声明支持 shell 构造 + 写命令走审批 + 结构化工具优先 + 复杂场景可直接用 kubectl+shell。
+
+### Changed
+
+- `executeTool` 签名新增 `batchApproved bool` 参数（批量审批预授权时跳过个体审批）。
+- 架构守护测试 `readonly_test.go` 反转：`!inExecutor` 时禁止 shell（executor 内允许 policy-gated shell 路径）；`relPkg` 改用绝对路径修复 WalkDir 场景。
+
+### Tests
+
+- `parse_test.go`：shell 命令检测 isShell=true（7 类 shell 构造）+ 非 shell 不误判（4 类普通命令）。
+- `kubectl_test.go`：交互式命令仍拒绝 + `HasShellSyntax` 正负例。
+- `approval_test.go`：shell 命令永不归类为只读（7 类 shell + 引号内不误判）。
+- `loop_test.go`：批量审批（Yes/No/Mixed 3 组）+ 命令归一化（6 类 kubectl 变体 + 结构化工具不归一化）。
+
+## [v2.0.7] - 2026-09-03
+
+chat 全场景架构优化 + 规则补齐与误报治理 + 安全与诊断解析鲁棒性闭环（一次把近期 5 项优化集中收口：规则覆盖到 23 条、安全洞堵上、双重 LLM 砍掉、工具选择分层、confidence/risk 解析归一化）。
+
+### Added
+
+- **规则引擎补 4 条**，规则总数达到 **23 条**：
+  - `EvictedPod`（Pod 因节点压力被驱逐，Medium；根因指向节点，避免误报普通 Failed）；
+  - `HighRestartCount`（容器仍在 Running 但 restartCount≥5 隐性崩溃抖动，Low；取日志）；
+  - `DaemonSetReplica`（补齐 Workload 三件套对称性，High，desired>ready<desired 即报）；
+  - `DeploymentProgressDeadline`（发布超时时 ProgressDeadlineExceeded 单独报 Medium，比副本不足更精确）。
+- **模型层：chat 按意图分层的工具选择决策树**（internal/agent/prompt.go `toolSelectionProtocol`）：
+  - 第一层 诊断意图 → 首选 `kubectl get <资源> -o yaml`（完整视图不漏字段）+ previous logs + events；
+  - 第二层 浏览意图 → 结构化 get\_\* 摘要工具（省 token）；
+  - 第三层 命名空间级批量健康 → `scan_cluster namespace=<ns>`（23 规则秒级确定性覆盖）；
+  - 第四层 集群全景 → 健康检查协议 + scan_cluster() 全量；
+  - 硬性交叉规则：结构化工具=摘要视图（不够时必须升级 YAML）、写操作永不走 kubectl 工具、CRD 走 YAML 兜底。
+- **诊断输出解析鲁棒性**（internal/diagnosis/schema.go）：
+  - `normalizeConfidenceLevel`：兼容 `HIGH_CONF0.9 / HIGH_CONF / Confidence High / POSSIBLE / uncertain` 等 10+ 类常见变体；空值或无法识别时按 confidence 数值分档兜底（≥0.85 CONFIRMED / ≥0.6 HIGH_CONFIDENCE / ≥0.3 POSSIBLE / <0.3 UNKNOWN），消除因 LLM 枚举轻微偏差走降级；
+  - `normalizeRisk`：兼容 `SAFE / HIGH_RISK / SEVERE / FATAL` 别名，未知值默认 MEDIUM（保守方向）。
+- **安全红线：kubectl 链路拒读 Secret + 输出统一脱敏**（internal/approval/policy.go `IsForbiddenCommand` + internal/executor/kubectl.go）：
+  - 任何形式的 `get/describe/delete secret(s)` 以及 `secret/name`（大小写不敏感、`--raw / --raw=`）无论审批与否一律拒绝；
+  - kubectl stdout/stderr 全路径（含流式超时路径）统一走 `security.Redactor`，明文 env、token、密码等替换为 `[REDACTED]`。
+- **砍 diagnose\_\* 工具内部双重 LLM**（internal/tools/diagnosis.go `LLM.Enabled=false`）：diagnose_pod / diagnose_node / diagnose_workload 退化为**证据采集器**（秒级），分析由 Agent LLM 一次完成，典型 chat 诊断从 40s+ 降到秒级。
+- **模型 & 采集补齐**：PodInfo 补 `Reason`（EvictedPod 判定依据）、`scanner.normalizePod` 采集 `Status.Reason`。
+- **测试**：`TestIsForbiddenCommand`（16 用例：8 拦截 + 8 放行）、`TestRunKubectlForbidsSecretAccess / TestRunKubectlRedactsSensitiveOutput`、`TestSchemaNewFields` 扩充 10 类 confidence 变体 + 6 类 risk 变体断言。
+
+### Changed
+
+- efficiencyProtocol 排查顺序修正：诊断意图先 kubectl -o yaml 再 previous logs + events + configmap，而不是先结构化摘要；
+- agent prompt 重构为 `basePrompt()`，native/shim 两种 tool calling 模式统一装载决策树协议，避免遗漏；
+- kubectl 工具 Description 明确标注禁读 Secret 与 --raw，以及写命令需审批的边界提示。
+
+### Fixed
+
+- confidenceLevel 写为 `HIGH_CONF0.9`、risk 写为 `HIGH_RISK` 等常见 LLM 输出变体被合法枚举拒判 → 走规则初步判断降级的问题，现全部归一化正常进入诊断流程；
+- `kubectl get secret -o yaml` 被 risk.go 误判为只读 SAFE → Secret 明文可能进入 LLM 的安全洞，现于 executor 入口 + deny_ops 双层硬拦截并统一输出脱敏；
+- chat 单点诊断 `diagnose_pod` 因内部 LLM（40s+）+ 摘要视图漏字段导致绕路问题，通过砍内部 LLM + 决策树引导 YAML 取证两条并行路径解决。
+
+## [v2.0.6] - 2026-08-30
+
+规则引擎补齐 4 项重要盲区与误报治理（为后续 chat 优化打基础）。
+
+### Added
+
+- `PVFailed` 规则（storage_rules.go）：PV `Failed=High`、`Released=Low`（Retain 策略下属正常生命周期，低级别提示待清理），PVC 正常但 PV 异常不再静默；
+- `PodTerminating` 规则（pod_rules.go）：`DeletionTimestamp` 存在且年龄 >5min 报 Medium，证据包含 finalizers（finalizer 卡住/卷卸载失败常见）；
+- `NodePIDPressure` 规则（node_rules.go）：High，并纳入 `markCorrelated` 的节点根因集合（PID 压力引发的 Pod 异常标记 Correlated，避免健康评分重复扣分）；
+- IngressBackend 增强：Service 存在但端口不匹配或 Endpoint=0 也报（之前只查 Service 是否存在），使用 `ServiceNoEndpoint` 已有索引；
+- ServiceNoEndpoint 滚动宽限：匹配 Pod 全是 <2min 新建时跳过（滚动发布瞬间 0 端点误报）。
+- `PendingPod` 60s 时间门槛：新建 <60s Pending 属滚动发布暂态跳过；
+- Job `NeedsLogs=true`：`LogTargets` 通过关联索引反查 Job 下属 Pod 进行 Phase2 日志采集；
+- init 容器盲区补齐：CrashLoopBackOff / ImagePullBackOff / ContainerCreateError 均识别 init 容器并在标题注明，配置缺失仍升 HIGH。
+
+### Changed
+
+- `LogTargets(reg, findings, index)` 接收关联索引：非 Pod 但 NeedsLogs 的资源（如 Job）反查下属 Pod 作为日志目标；
+- `markCorrelated` 根因规则表新增 PIDPressure。
+
+### Fixed
+
+- PodInfo 缺 `DeletionTimestamp` 与 `Finalizers` 字段 → Pod 长时间 Terminating 无法判定的盲区；
+- normalize 阶段未采集 Job/CronJob 失败相关的状态字段（导致 JobFailed / CronJobFailed 无法精确命中的问题已通过索引补足）。
+
+## [v2.0.5] - 2026-08-29
+
+Web UI 会话重命名功能 + chat 终端横幅美化与工具调用缩进输出。
+
+### Added
+
+- Web 会话侧栏：会话删除按钮前新增重命名按钮（✎），点击后 prompt 输入新名称；空名或未变更时不发请求；失败在聊天区提示错误，成功后刷新会话列表。
+  - 后端接口：复用 `POST /api/sessions/{id}/rename`（server.go + chatService.RenameSession 既有），零后端改动。
+- chat 终端欢迎横幅（internal/cli/banner.go）：带边框的 ASCII 风格横幅，显示「k8s-ai」产品名 + 版本 + 集群信息；下方展示 3 条精简能力介绍和 exit/clear/Ctrl+C 退出提示；非 TTY（管道/测试）自动降级为无框纯文本。
+- 工具调用行格式优化（chat.go emit）：带缩进箭头 `  ↳ [Tool] 工具名 (参数)`，最终回答前插入空行分隔。
+
+## [v2.0.4] - 2026-08-28
+
+Windows + Linux 双平台二进制重新打包（含会话重命名 + 横幅优化功能）。
+
+## [v2.0.3] - 2026-08-28
+
+Web UI 会话重命名（✎ 按钮）+ Makefile 默认版本升级到 v2.0.3，双平台打包。
+
+## [v2.0.2] - 2026-08-27
+
+Web UI 支持集群下拉切换本机 ~/.kube/config context；会话模型新增 `Session.Cluster` 绑定会话集群，运行中会话不允许热切。
+
+## [v2.0.1] - 2026-08-24
+
+终端交互体验与执行层安全/正确性优化（对标 kubectl-ai，见 docs/CREDITS.md）。
+
+### Added
+
+- **终端 Markdown 渲染**（internal/cli/chat.go）：`k8s-ai chat` 交互模式最终回答经 glamour 渲染（表格/列表/代码块）；`WithAutoStyle` 在管道/非 TTY 自动去样式，`--format json` 不受影响。
+- **readline 交互输入**（internal/cli/chat.go）：终端输入走 chzyer/readline（历史记录文件 `k8s-ai-history`、Ctrl+C/Ctrl+D 优雅退出）；非 TTY（管道/测试）自动回退 bufio，行为与原先一致。
+- **流式命令超时采样**（internal/executor）：`logs -f` / `get -w` 不再在解析层拒绝，改由 executor 套固定超时（默认 7s，`Options.StreamTimeout` 可配）捕获部分输出并标记 `Result.StreamTimeout`，超时不视为错误，不阻塞 Agent Loop。交互式流（attach/exec -it）仍被拒绝。
+- **kubectl 动词分类表扩充**（internal/approval/risk.go + internal/executor/parse.go）：
+  - `rollout history` / `rollout status` 归为只读（SAFE，自动执行）；
+  - 写动词带 `--dry-run` 降级为只读（不实际变更）；
+  - 新增写动词 `autoscale` / `expose` / `taint` / `reconcile` / `certificate` 纳入审批流。
+- 测试：`TestIsStreaming` / `TestRunKubectlStreamingTimeout` / `TestBufInput` / `TestRenderMarkdown` / 风险分类新增 rollout 子命令与 dry-run 用例。
+
+### Changed
+
+- 流式命令（logs -f / get -w）从「解析层拒绝」改为「执行层超时采样」，行为更接近 kubectl-ai 且不再阻塞。
+
+### Fixed
+
+- `kubectl delete ... --dry-run` 此前仍被分类为 HIGH/CRITICAL（delete 走特殊分支、未纳入 dry-run 只读判定）；现统一降级为只读（SAFE），与 apply/scale 等 dry-run 行为一致。
+
+## [v2.0.0] - 2026-08-24
+
+二期交付：自然语言 Kubernetes Agent（chat/web）+ 读写操作 + 人工确认闭环。
+
+### Added
+
+- **`k8s-ai chat`**：交互 / 单发 / stdin / `--format json`；会话管理（--session/--new-session/--list-sessions/--delete-session）；`clear`/`exit` 元命令。
+- **`k8s-ai web`**：浏览器 chat（REST + SSE 流式 + 会话侧栏 + Markdown 渲染 + 审批卡片 + 工具执行过程 Show output）。
+- **Agent 核心**（internal/agent）：消息总线/状态机、native + shim + auto 双模式 Tool Calling、max_iterations/max_tool_calls/timeout、单轮上下文预算、ToolResult 截断/脱敏/不可信定界。
+- **工具集**（internal/tools + tools/k8s）：19 个只读工具、5 个诊断工具（复用一期 ScanService.Run）、7 个写工具（kubectl/scale/patch_deployment/patch_configmap/restart_rollout/label/delete_pod）；`CommandDescriber` 审批可读化。
+- **审批与执行**（internal/approval + internal/executor）：SAFE..CRITICAL 风险分级、deny_ops、require_approval、--skip-permissions；kubectl argv 直调（无 shell）+ client-go 结构化写；执行后验证（Deployment 状态核对）。
+- **修复行为门禁**：诊断类提问只给结论+方案并询问"需要我修复吗？"，用户同意后才调用写工具。
+- **审计**（internal/audit 接入主流程）：用户输入 / LLM / 工具调用 / 审批 / 执行事件落盘（脱敏）。
+- **MCP 预留**（internal/mcp）：Client 接口 + 工具注册表适配器骨架。
+- **RBAC 写权限示例**（deploy/rbac-write.example.yaml，默认清单保持只读）。
+
+### Changed
+
+- `agent.max_iterations` 默认 10 → 15（对标 kubectl-ai，降低弱模型触发上限概率）。
+- LLM tools 请求/回传 wire 对齐 OpenAI 标准（`{"type":"function","function":{...}}`），兼容 vLLM/Qwen 网关。
+- 注册 client-go 认证插件（k8s.io/client-go/plugin/pkg/client/auth），支持 OIDC 等 kubeconfig 认证。
+- 一期兼容改动：kubernetes 包增加节点 metrics 读取（k8s.io/metrics）、kubernetes.Client NewClientset、scanner.Reader Get\*/ConfigMap 扩展。
+
+### Fixed
+
+- 工具结果投喂 LLM 被 Text 摘要覆盖（get_pods 只见 "pods=20"）→ Text+Data 一起投喂。
+- `get_pod` 支持省略 namespace 全集群查找 + 前缀匹配（Deployment 名查 Pod），避免模型猜命名空间导致 max_iterations。
+- markdown 表格重复渲染（解析器每行重复建表）。
+- 审批卡片展示原始转义 JSON → 人类可读命令 + 变更说明。
+
+## [v1.0.3] - 2026-08-19
+
+一期体验迭代：修复命令非交互化（edit→patch/apply）+ scan 终端阶段进度 UI（Spinne + LLM 长任务抚慰）。
+
+### Added
+
+- **scan 终端阶段进度 UI**（internal/cli/progress.go + model.ScanProgress）：
+  - 6 个阶段统一显示 `⠋ 1. 标题 ➜ 当前子项` 单行 Spinner（TTY 下 80ms/帧，行内覆盖刷新）；
+  - 阶段结束时 `✓ 1. 标题 完成（耗时 Xs，细节 Y）` 换行落盘，不刷屏；
+  - JSON/YAML/`--verbose` 模式自动退化为逐行日志（无 `\r`），不污染机器可读输出；
+  - 进度接口仅用 stdlib 类型放在 domain 包，Server/Cron 不设置则静默，严格符合「业务不依赖 CLI」；
+  - 二期 Agent 的 Thinking / Tool Calling 状态指示器可直接复用同一接口扩展实现。
+- **LLM 长任务抚慰提示**（internal/diagnosis/diagnostics.go DiagnoseIncidents）：
+  - 每个 Incident 独立 ticker，超过 10s 未完成时触发 `LongTask`，文本显示「仍在诊断中（已 15s，常见耗时 10-30s，请稍候）」，每 10s 再提醒一次；
+  - 避免用户在 LLM 诊断 20s+ 时误以为卡死而 Ctrl+C（经验 1073789）。
+- **Diagnoser / service 层进度打点**：connect、phase1、rules、phase2、enrich、llm、report 共 7 阶段统一 PhaseStart/PhaseDone；LLM 阶段用 `scanProgressLLMBridge` 把 Incident 粒度事件（Started/Done）桥接到 PhaseSub，保证"诊断 i/N incident xxx"在终端可见。
+
+### Changed
+
+- **修复命令非交互强制化**（system.md §三十五 规则 4 + internal/diagnosis/commands.go `remediationAllowsNonInteractive`）：
+  - 提示词禁止 `kubectl edit` / `exec -it` / `run -i` / `attach` / `port-forward` 等任何 TTY/编辑器交互；
+  - 给出 4 种非交互替代并按推荐度排序：① `patch --type=merge`、② `get -o yaml > file && 改 && apply`、③ `create ... --dry-run=client \| apply`、④ `set image/resources/env/selector`；
+  - 命令校验层同步丢弃交互式修复命令，避免模型「不听话」时进入报告（edit/attach/port-forward 直接失败；exec/run 带 `-i -t -it -ti --stdin --tty` 失败）。
+- 补全 `exec`/`run`/`port-forward` 子命令缺资源名解析（按 firstPositional 取 Pod 名，与 `logs` 同一模式），保证后续命名空间补全/校验覆盖这些子命令。
+
+### Fixed
+
+- 上一版本 v1.0.2 中，修复命令推荐为 `kubectl edit configmap`（交互式、不可复制执行）的问题；现在会被命令校验过滤并要求 LLM 给出 patch/apply 非交互版本。
+- **诊断修复退化为纯只读**：当 LLM 只给出 `get cm -o yaml` 等只读命令（被 §三十五 要求丢弃 edit/exec -it 后，常见"只给确认步骤"）时，remediation 列表最终全是只读命令，未满足 §三十五「至少一条写入操作命令」的硬性要求。现由 `ensureRemediation` + `fallbackWriteCommands` 规则级兜底，按 Finding.Rule / Kind 自动补齐 create/patch/apply/set/scale/rollout restart 等写入类命令（带 `<待确认>` 占位），保证每条诊断都能"下一步真正动起来"。同样兜底也应用于 `degraded` 降级路径。
+- **Spinner 刷屏（非 TTY）**：`useSpinner` 此前只检查报告格式（markdown 且非 verbose），未检测 stdout 是否真正是交互式终端；当输出被管道/重定向时 `\r` 覆盖退化为逐行打印，80ms/帧 × 数十秒产生数百行垃圾。现由 `isTerminal(os.Stdout)` 用 `os.ModeCharDevice` 零依赖检测，管道/重定向自动退化为单行日志模式。
+- **健康度标签写死"集群健康"**：`k8s-ai scan -n xxx` 扫描的是命名空间，`k8s-ai scan pod xxx` 扫描的是 Pod，但摘要头始终打印"集群健康"。现按 scope 动态显示：cluster →"集群健康"、namespace →"命名空间健康"、pod →"Pod 健康度"。
+
+## [v1.0.2] - 2026-08-19
+
+一期迭代：故障等级/修复方案/健康评分/派生展示四项优化 + kubectl 命令命名空间校验生效。
+
+### Changed
+
+- **故障等级强化（FailedMount / CreateContainerConfigError）**：容器启动、存储挂载失败的根因，若证据消息含 ConfigMap/Secret "not found"，等级强制提升为 HIGH（服务完全不可用）；`CreateContainerError` 规则已覆盖 `CreateContainerConfigError` 的等级映射（internal/rule）。
+- **修复方案必须含写入命令**：system.md §三十五 新增硬性要求——每套修复方案必须至少包含一条 create/patch/apply/delete/set/edit/scale 等写入命令，不允许只有 get/describe/logs 等只读命令；只读确认命令仅作前置步骤；字段不确定时用 `<待确认的值>` 标注而非退回只读；多步操作按顺序列出。
+- **健康评分基础分调整**：存在 HIGH 及以上等级的非关联（非 Correlated）根因时，基础分由 100 直接降至 70 再叠加其他罚分，保证"服务完全不可用"场景评分 ≤ 70（internal/report/health.go）。
+- **派生告警不独立显示**：Deployment 副本不足、Service 无 Endpoint 等派生告警不再作为独立问题渲染，只并入根因的"关联问题（派生影响）"影响范围字段（internal/report/render.go）。
+
+- **`-n` 命令校验真正生效**：此前"命令含 namespace 或 Finding 有 namespace 即通过"的兜底校验恒真，导致 LLM 生成的命令缺 `-n`、甚至写错命名空间也能进报告。现在命名空间级资源（Pod/Deployment/PVC/Service/ConfigMap/Secret 等）的命令必须携带 `-n/--namespace`（含 `-n=`/`--namespace=` 形式，动词前/后均可）：
+  - 命令自带 namespace 但与 Finding 命名空间不一致 → 视为 LLM 编造/笔误，整条命令丢弃（ADR-005 防编造）；
+  - 命令缺省 namespace → 自动补全 Finding 命名空间（如 `kubectl get pod web-0` → `kubectl -n prod get pod web-0`），保证报告命令复制即用（system.md §三十五）；
+  - 显式 `-A`/`--all-namespaces` 的跨命名空间查询不补全、不校验。
+- 动词前 `-n` 解析修复：此前 `kubectl -n prod get pod ...` 中动词前的 `-n prod` 会被解析器静默吞掉（namespace 丢失），现由 `extractVerb` 正确提取并参与校验/补全。
+- `kubectl logs <pod>` 支持：`logs` 动词的位置参数是 Pod 名（无资源类型），此前会被整条丢弃；现按 Pod 处理，`-n` 补全对其同样生效（system.md §八 常用排查命令）。
+
+### Fixed
+
+- 修复命令/排查命令缺失 `-n` 或引用错误命名空间时仍被采纳的问题（校验形同虚设）。
+
+## [v1.0.1] - 2026-08-18
+
+一期迭代：Incident 聚合诊断落地 + 诊断体验优化（修复方案文字+命令化、日志完整保留、通用信号规则）。
+
+### Added
+
+- Incident 聚合诊断正式入库：Finding → Correlation → Incident → LLM，同一故障链只调用一次 LLM（之前是每个 Finding 一次）；派生症状（Deployment 副本不足/Service 无 Endpoint）折叠为影响范围，不单独分析/重复扣分；健康评分只统计根因
+- `Incident` 模型与 `internal/incident` 聚合包（并查集按关联资源合并 + 根因选择）；Incident 诊断/报告渲染（Markdown 关联问题段、终端派生折叠）
+- LLM 输出新增 `remediationText`（修复文字说明：做什么/为什么/预期结果，文字是主体）及 `confidenceLevel`（CONFIRMED/HIGH_CONFIDENCE/POSSIBLE/UNKNOWN）、`causalChain`、`uncertainty`、`remediationDirection` 字段，对齐 system.md 诊断协议
+- 通用信号规则：`ContainerCreateError`（Secret/ConfigMap 缺失等启动失败）、`Unhealthy`（探针失败）、`IngressBackend`（backend 指向不存在 Service）
+
+### Changed
+
+- 修复方案"文字+命令化"（system.md §三十五 重写）：remediationText 必填文字说明，remediation 配套可执行 kubectl 命令（含 -n/资源名/完整参数）；报告与终端渲染"建议=文字说明+命令（含风险）"，禁止"只有命令没有文字"或"只有文字没有命令"
+- **修复建议永不缺失**：LLM 漏写文字/空命令时，工具按根因规则兜底生成"修复方向 + 前置确认"（remediationDirection），报告/终端始终有修复指导
+- 日志按行完整保留（TailLines 500、单行不截断仅 >1MiB 防 OOM、总字节按行边界）；Incident 上下文只送根因，派生症状合并到 impact
+- 诊断上下文补充 Pod 引用的 ConfigMap/Secret **名称**（仅名称不读数据），配置/凭据类根因优先给出针对性命令
+
+### Fixed
+
+- 修复方案回归：LLM 只输出命令、丢失文字说明 → 新增 remediationText 字段并同步 latest.json 契约，LLM 漏写时工具用修复方向兜底
+- 终端一屏摘要最多展示 2 条修复命令，其余提示 `--verbose` 完整输出
+
+### Security
+
+- 一期严格只读不变：LLM 生成的 kubectl 命令仅展示不执行；Secret 数据永不读取/发送
+
+## [v1.0.0] - 2026-08-17
+
+一期 1.1 + 1.2 交付（当前版本基线）。
+
+### Added
+
+- 只读 Kubernetes 巡检：全集群 / 命名空间 / 单 Pod 三种扫描形态
+- 13 条内置规则（CrashLoopBackOff、OOMKilled、ImagePullBackOff、PendingPod、Node 压力、PVC Pending、FailedMount、Service 无 Endpoint、副本不匹配、Job Failed 等）
+- 两阶段采集（Phase1 全量 list 无 N+1 / Phase2 仅异常对象取日志）+ 关联索引（owner/PVC/Service）
+- Evidence 证据链：对象字段 / Events / 日志（保留尾部 + 关键行提取）/ 注解，采集边界脱敏
+- LLM 诊断（OpenAI Compatible）：预算裁剪、JSON Schema / Evidence ID / kubectl 命令校验、失败降级为规则初步判断
+- 健康评分 + Markdown/JSON/YAML 报告 + 终端一屏摘要（--verbose 完整输出）
+- 历史对比（v1.0.0 1.2）：按 Finding 指纹输出新增/持续/恢复，写入 latest.json history 字段
+- HTTP Server（v1.0.0 1.2）：healthz/readyz/version + 异步扫描 API
+- 部署：Dockerfile（distroless 非 root）、deploy/ RBAC/ConfigMap/Secret 示例/PVC/CronJob/Deployment/Service
+- 文档：README、INSTALLATION.md（安装部署手册）、TECHNICAL_GUIDE.md、docs/design/ 系列、docs/VERSIONING.md
+
+### Changed
+
+- 诊断上下文补充 Pod 引用的 ConfigMap **名称**（仅名称不读数据）与关联 Pod 的 ConfigMaps 信息；系统提示词引导"配置类根因优先给出 `kubectl edit configmap`"——修复建议不再只会给 rollout restart（实测输出 `kubectl edit configmap nginx-config -n yanshou-nginx`）
+
+- 报告可读性优化：日志证据压缩（体积 -91%）、严重级图标、健康条、组件状态
+- JSON 契约字段小写化；证据链 E-ID 与报告一致性；Duration 含 LLM 耗时（P10 前体检修复）
+
+### Fixed
+
+- P10 前体检 3 个 P0：ComponentInfo JSON 字段名、enrich 顺序导致 E-ID 不一致、Duration 不含 LLM
+- Makefile lint 目录参数失效（改为文件列表校验）
+
+### Security
+
+- 四层只读保证 + AST 架构测试（含 Secrets 禁访）；-race 需 CGO（本机无 gcc，CI/Linux 可跑）

@@ -62,14 +62,17 @@ func TestBuildDiagnosisValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := buildDiagnosis(testFinding(), out)
+	d := buildDiagnosis(testFinding(), out, nil)
 	// Evidence ID：E1 保留，E99 丢弃。
-	if len(d.EvidenceChain) != 1 || d.EvidenceChain[0] != "E1" {
+	if len(d.EvidenceChain) != 1 || d.EvidenceChain[0] != "f1#E1" {
 		t.Fatalf("evidence chain = %v", d.EvidenceChain)
 	}
 	// 排查命令：只读 get 通过；delete 属写动词被丢弃。
 	if len(d.Investigation) != 1 || d.Investigation[0].Text != "kubectl -n prod get pod web-0" {
 		t.Fatalf("investigation = %+v", d.Investigation)
+	}
+	if d.Investigation[0].Risk != model.RiskSafe {
+		t.Fatalf("排查命令必须标注只读风险: %+v", d.Investigation[0])
 	}
 	// 修复命令保留并带风险；文字说明必须映射。
 	if len(d.Remediation) != 1 || d.Remediation[0].Risk != model.RiskMedium {
@@ -77,6 +80,12 @@ func TestBuildDiagnosisValidation(t *testing.T) {
 	}
 	if d.RemediationText != "调高内存限制并观察 Pod 是否恢复" {
 		t.Fatalf("remediationText = %q", d.RemediationText)
+	}
+	if len(d.Verification) != 1 || d.Verification[0].Risk != model.RiskSafe {
+		t.Fatalf("验证命令必须标注只读风险: %+v", d.Verification)
+	}
+	if d.Validation == nil || len(d.Validation.CommandIssues) == 0 {
+		t.Fatalf("被过滤的命令不能静默消失: %+v", d.Validation)
 	}
 }
 
@@ -183,8 +192,8 @@ func TestExtractVerbNamespace(t *testing.T) {
 }
 
 func TestFilterEvidenceRefs(t *testing.T) {
-	refs := filterEvidenceRefs(testFinding().Evidence, []string{"E1", "E99", "E2"})
-	if len(refs) != 2 || strings.Join(refs, ",") != "E1,E2" {
+	refs := filterEvidenceRefs(testFinding().ID, testFinding().Evidence, []string{"E1", "E99", "E2"})
+	if len(refs) != 2 || strings.Join(refs, ",") != "f1#E1,f1#E2" {
 		t.Fatalf("refs = %v", refs)
 	}
 }
@@ -213,10 +222,10 @@ func TestSchemaNewFields(t *testing.T) {
 		{"Confidence: High", 0.7, "HIGH_CONFIDENCE"},
 		{"possible", 0.4, "POSSIBLE"},
 		{"BOGUS", 0.9, "CONFIRMED"},        // 无法识别但 confidence=0.9 → CONFIRMED (≥0.85)
-		{"BOGUS", 0.5, "POSSIBLE"},          // confidence=0.5 → POSSIBLE (0.3~0.59)
-		{"BOGUS", 0.65, "HIGH_CONFIDENCE"},  // confidence=0.65 → HIGH_CONFIDENCE (0.6~0.84)
-		{"", 0.95, "CONFIRMED"},             // 空值按 confidence 高值
-		{"", 0.2, "UNKNOWN"},                // 空值按 confidence 低值
+		{"BOGUS", 0.5, "POSSIBLE"},         // confidence=0.5 → POSSIBLE (0.3~0.59)
+		{"BOGUS", 0.65, "HIGH_CONFIDENCE"}, // confidence=0.65 → HIGH_CONFIDENCE (0.6~0.84)
+		{"", 0.95, "CONFIRMED"},            // 空值按 confidence 高值
+		{"", 0.2, "UNKNOWN"},               // 空值按 confidence 低值
 		{"uncertain", 0.5, "UNKNOWN"},
 	}
 	for _, v := range variants {
@@ -247,7 +256,7 @@ func TestSchemaNewFields(t *testing.T) {
 			t.Errorf("risk 变体 %q = %q, want %q", r.raw, out.Risk, r.want)
 		}
 	}
-	d := buildDiagnosis(testFinding(), out)
+	d := buildDiagnosis(testFinding(), out, nil)
 	if d.ConfidenceLevel != "HIGH_CONFIDENCE" || d.CausalChain != "c" || d.Uncertainty != "u" {
 		t.Fatalf("Diagnosis 映射异常: %+v", d)
 	}

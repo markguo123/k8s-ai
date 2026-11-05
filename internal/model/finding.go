@@ -1,5 +1,7 @@
 package model
 
+import "strings"
+
 // Evidence is a single piece of real evidence attached to a Finding.
 // Values are redacted at the collection boundary and truncated to hard caps
 // (FR-014, ADR-006).
@@ -14,6 +16,35 @@ type Evidence struct {
 	Rank      int          `json:"-"` // internal only
 }
 
+type FindingRole string
+
+const (
+	FindingRoleAnchor      FindingRole = "anchor"
+	FindingRoleSymptom     FindingRole = "symptom"
+	FindingRoleImpact      FindingRole = "impact"
+	FindingRoleAdvisory    FindingRole = "advisory"
+	FindingRoleIndependent FindingRole = "independent"
+)
+
+// GlobalEvidenceRef 生成跨 Finding 唯一的证据引用。
+// E-ID 只在单个 Finding 内稳定，进入 Incident/Diagnosis 后必须带上 Finding ID。
+func GlobalEvidenceRef(findingID, evidenceID string) string {
+	findingID = strings.TrimSpace(findingID)
+	evidenceID = strings.TrimSpace(evidenceID)
+	if findingID == "" || evidenceID == "" {
+		return ""
+	}
+	if strings.Contains(evidenceID, "#") {
+		return evidenceID
+	}
+	return findingID + "#" + evidenceID
+}
+
+// NormalizeEvidenceRef 兼容旧报告中的裸 E-ID，并统一为 Finding#Evidence 形式。
+func NormalizeEvidenceRef(findingID, ref string) string {
+	return GlobalEvidenceRef(findingID, ref)
+}
+
 // Finding is produced by the rule engine. ID is a stable fingerprint
 // (ADR-003). Severity is rule-computed only (ADR-004).
 type Finding struct {
@@ -26,10 +57,11 @@ type Finding struct {
 	Evidence   []Evidence    `json:"evidence"`
 	Related    []ResourceRef `json:"related,omitempty"`
 	Correlated bool          `json:"correlated,omitempty"`
-	FirstSeen  string        `json:"firstSeen,omitempty"` // 1.2 trend
-	LastSeen   string        `json:"lastSeen,omitempty"`  // 1.2 trend
-	Doc        string        `json:"doc,omitempty"`       // P7.7 字段文档（--with-doc）
-	Category   string        `json:"category,omitempty"`  // P7.8 问题域，报告聚合（引擎注入）
-	Kind       string        `json:"kind,omitempty"`      // P7.8 关联资源 Kind，报告聚合（引擎注入）
+	FirstSeen  string        `json:"firstSeen,omitempty"`  // 1.2 trend
+	LastSeen   string        `json:"lastSeen,omitempty"`   // 1.2 trend
+	Doc        string        `json:"doc,omitempty"`        // P7.7 字段文档（--with-doc）
+	Category   string        `json:"category,omitempty"`   // P7.8 问题域，报告聚合（引擎注入）
+	Kind       string        `json:"kind,omitempty"`       // P7.8 关联资源 Kind，报告聚合（引擎注入）
 	Suggestion bool          `json:"suggestion,omitempty"` // P7.8 是否建议（suggestion）类规则
+	Role       FindingRole   `json:"role,omitempty"`       // 报告语义角色：主信号/症状/业务影响/建议/独立异常
 }

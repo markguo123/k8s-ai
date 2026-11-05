@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/k8s-ai/k8s-ai/internal/approval"
@@ -47,6 +48,89 @@ func NewWriteTools(runner WriteRunner) []Tool {
 // 写命令及所有含 shell 语法的命令必须走人工审批。
 // 禁止：交互式命令（edit/attach/port-forward/proxy/run/cp/debug）、读取 Secret 资源、--raw 参数。
 type kubectlTool struct{ runner WriteRunner }
+
+// CheckClusterAccess 在审批前探测已知内置资源的写权限。探测失败时不阻断，
+// 因为 SAR 自身不可用不等于业务操作不可用；明确返回 allowed=false 时才阻断。
+func (t *kubectlTool) CheckClusterAccess(ctx context.Context, input json.RawMessage) error {
+	args, err := ParseArgs(input, "command")
+	if err != nil {
+		return nil
+	}
+	command := args["command"]
+	if approval.IsReadOnlyCommand(command) {
+		return nil
+	}
+	target := approval.ParseCommandTarget(command)
+	if target.Operation == "" || target.Kind == "" {
+		return nil
+	}
+	group, resource, ok := kubectlResourceForKind(target.Kind)
+	if !ok {
+		return nil
+	}
+	checker, ok := t.runner.(interface {
+		CanI(context.Context, string, string, string, string, string) (bool, error)
+	})
+	if !ok {
+		return nil
+	}
+	verb := target.Operation
+	switch verb {
+	case "scale":
+		verb = "update"
+	case "rollout restart", "rollout undo":
+		verb = "patch"
+	case "apply":
+		verb = "patch"
+	}
+	allowed, err := checker.CanI(ctx, verb, group, resource, target.Namespace, target.Name)
+	if err != nil {
+		return nil
+	}
+	if !allowed {
+		return fmt.Errorf("RBAC_DENIED: 当前执行身份不能在 namespace %q 对 %s 执行 %s", target.Namespace, resource, verb)
+	}
+	return nil
+}
+
+func kubectlResourceForKind(kind string) (group, resource string, ok bool) {
+	switch strings.ToLower(kind) {
+	case "deployment", "deployments":
+		return "apps", "deployments", true
+	case "statefulset", "statefulsets":
+		return "apps", "statefulsets", true
+	case "daemonset", "daemonsets":
+		return "apps", "daemonsets", true
+	case "replicaset", "replicasets":
+		return "apps", "replicasets", true
+	case "pod", "pods":
+		return "", "pods", true
+	case "service", "services", "svc":
+		return "", "services", true
+	case "configmap", "configmaps":
+		return "", "configmaps", true
+	case "persistentvolumeclaim", "persistentvolumeclaims", "pvc", "pvcs":
+		return "", "persistentvolumeclaims", true
+	case "persistentvolume", "persistentvolumes", "pv", "pvs":
+		return "", "persistentvolumes", true
+	case "namespace", "namespaces", "ns":
+		return "", "namespaces", true
+	case "ingress", "ingresses":
+		return "networking.k8s.io", "ingresses", true
+	case "networkpolicy", "networkpolicies":
+		return "networking.k8s.io", "networkpolicies", true
+	case "job", "jobs":
+		return "batch", "jobs", true
+	case "cronjob", "cronjobs":
+		return "batch", "cronjobs", true
+	case "clusterrole", "clusterroles":
+		return "rbac.authorization.k8s.io", "clusterroles", true
+	case "clusterrolebinding", "clusterrolebindings":
+		return "rbac.authorization.k8s.io", "clusterrolebindings", true
+	default:
+		return "", "", false
+	}
+}
 
 // SchemaMetadata 说明 kubectl 工具的读写/风险动态性：命令是否只读取决于具体命令，
 // 写命令及所有含 shell 构造的命令都必须走人工审批。
@@ -116,7 +200,7 @@ func (t *kubectlTool) Risk(input json.RawMessage) model.RiskLevel {
 	return approval.ClassifyCommand(args["command"])
 }
 
-// extractKubectlSummary 从 executor.Result 中提取给 LLM 和 Web UI 的一行摘要文本。
+// extractKubectlSummary 从 executor.Result 中提取给 LLM 和前端的一行摘要文本。
 // 成功时：取 Stdout 前 200 字符（去除空行）；失败时：拼接 ExitCode + Stderr。
 func extractKubectlSummary(res executor.Result) string {
 	if res.ExitCode != 0 {

@@ -1,6 +1,9 @@
 package rule
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/k8s-ai/k8s-ai/internal/evidence"
 	"github.com/k8s-ai/k8s-ai/internal/model"
 )
@@ -34,6 +37,10 @@ func (r UnhealthyRule) Evaluate(ctx *RuleContext) []*model.Finding {
 			evs := []model.Evidence{
 				evidence.ObjectField(src, "ready", "false"),
 			}
+			probeSrc := "Pod/" + p.Ref.Name + "/spec.containers[" + c.Name + "]"
+			for _, probe := range c.Probes {
+				evs = append(evs, evidence.ObjectField(probeSrc, probe.Kind+"Probe", probeEvidenceValue(probe)))
+			}
 			for _, cm := range p.ConfigMaps {
 				evs = append(evs, evidence.Derived("related", "configMaps", cm.Namespace+"/"+cm.Name))
 			}
@@ -46,4 +53,26 @@ func (r UnhealthyRule) Evaluate(ctx *RuleContext) []*model.Finding {
 		}
 	}
 	return out
+}
+
+func probeEvidenceValue(probe model.ProbeInfo) string {
+	target := probe.Action
+	switch {
+	case probe.Action == "HTTP GET":
+		target = fmt.Sprintf("HTTP GET %s", probe.Path)
+	case probe.Action == "EXEC":
+		target = "EXEC " + probe.Command
+	}
+	port := ""
+	if probe.Port != "" {
+		port = " port=" + probe.Port
+	}
+	timing := fmt.Sprintf(
+		" initialDelay=%ds period=%ds timeout=%ds failureThreshold=%d",
+		probe.InitialDelaySeconds,
+		probe.PeriodSeconds,
+		probe.TimeoutSeconds,
+		probe.FailureThreshold,
+	)
+	return strings.TrimSpace(target + port + timing)
 }

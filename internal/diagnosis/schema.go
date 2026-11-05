@@ -156,7 +156,11 @@ func normalizeRisk(raw string) string {
 }
 
 // buildDiagnosis 把 LLM 输出映射为 Diagnosis，并做 Evidence ID 与命令校验（ADR-005）。
-func buildDiagnosis(f model.Finding, out *llmOutput) model.Diagnosis {
+//
+// universe 是本故障链额外允许的证据引用（派生症状的 `<findingID>#<E-ID>`）：
+// 增强上下文会明确要求模型这样引用成员证据，schema 层如果按「只看根因 Finding 的
+// E-ID」判定，就会把它当成编造并剥掉，模型越按规矩写反而越容易被判越界。
+func buildDiagnosis(f model.Finding, out *llmOutput, universe map[string]bool) model.Diagnosis {
 	d := model.Diagnosis{
 		FindingID:            f.ID,
 		Summary:              out.Summary,
@@ -171,40 +175,84 @@ func buildDiagnosis(f model.Finding, out *llmOutput) model.Diagnosis {
 		RemediationDirection: out.RemediationDirection,
 		LLMUsed:              true,
 	}
-	d.EvidenceChain = filterEvidenceRefs(f.Evidence, out.EvidenceChain)
-	for _, text := range out.Investigation {
-		if cmd, ok := validateCommand(text, model.CmdInvestigation, f.Resource.Namespace); ok {
-			d.Investigation = append(d.Investigation, cmd)
+	kept, dropped := splitEvidenceRefs(f.ID, f.Evidence, out.EvidenceChain, universe)
+	d.EvidenceChain = kept
+	if len(dropped) > 0 {
+		// 编造证据不再静默丢弃：记进校验结果，报告要能看出是模型越界。
+		d.Validation = &model.DiagnosisValidation{
+			Passed:             false,
+			Rule:               validationRule,
+			Issues:             []string{fmt.Sprintf("引用了 %d 个不存在的证据编号", len(dropped))},
+			FabricatedEvidence: dropped,
 		}
 	}
-	for _, text := range out.Remediation {
-		if cmd, ok := validateCommand(text, model.CmdRemediation, f.Resource.Namespace); ok {
-			cmd.Risk = commandRisk(text, remediationRisk(out.Risk))
-			d.Remediation = append(d.Remediation, cmd)
+	commandIssues := appendValidatedCommands(&d, out, f.Resource.Namespace)
+	if len(commandIssues) > 0 {
+		if d.Validation == nil {
+			d.Validation = &model.DiagnosisValidation{Passed: true, Rule: validationRule}
 		}
-	}
-	for _, text := range out.Verification {
-		if cmd, ok := validateCommand(text, model.CmdVerification, f.Resource.Namespace); ok {
-			d.Verification = append(d.Verification, cmd)
-		}
+		d.Validation.CommandIssues = append(d.Validation.CommandIssues, commandIssues...)
 	}
 	return d
 }
 
+func appendValidatedCommands(d *model.Diagnosis, out *llmOutput, namespace string) []string {
+	var issues []string
+	appendCommands := func(category model.CommandCategory, raw []string, target *[]model.Command) int {
+		dropped := 0
+		for _, text := range raw {
+			cmd, ok := validateCommand(text, category, namespace)
+			if !ok {
+				dropped++
+				continue
+			}
+			cmd.Risk = model.RiskSafe
+			if category == model.CmdRemediation {
+				cmd.Risk = commandRisk(text, remediationRisk(out.Risk))
+			}
+			*target = append(*target, cmd)
+		}
+		return dropped
+	}
+	if dropped := appendCommands(model.CmdInvestigation, out.Investigation, &d.Investigation); dropped > 0 {
+		issues = append(issues, fmt.Sprintf("%d 条排查命令因缺少确定资源名或参数未收录", dropped))
+	}
+	if dropped := appendCommands(model.CmdRemediation, out.Remediation, &d.Remediation); dropped > 0 {
+		issues = append(issues, fmt.Sprintf("%d 条修复命令因缺少确定资源名、字段值或包含交互语法未收录", dropped))
+	}
+	if dropped := appendCommands(model.CmdVerification, out.Verification, &d.Verification); dropped > 0 {
+		issues = append(issues, fmt.Sprintf("%d 条验证命令因缺少确定资源名或参数未收录", dropped))
+	}
+	return issues
+}
+
 // filterEvidenceRefs 只保留真实存在的 E-ID，丢弃编造的引用（ADR-005）。
-func filterEvidenceRefs(evidence []model.Evidence, refs []string) []string {
+func filterEvidenceRefs(findingID string, evidence []model.Evidence, refs []string) []string {
+	kept, _ := splitEvidenceRefs(findingID, evidence, refs, nil)
+	return kept
+}
+
+// splitEvidenceRefs 拆分真实引用与编造引用。
+func splitEvidenceRefs(findingID string, evidence []model.Evidence, refs []string, universe map[string]bool) (kept, dropped []string) {
 	valid := map[string]bool{}
 	for _, e := range evidence {
-		valid[e.ID] = true
+		valid[model.GlobalEvidenceRef(findingID, e.ID)] = true
 	}
-	var out []string
+	for ref := range universe {
+		valid[ref] = true
+	}
 	for _, r := range refs {
-		r = strings.TrimSpace(r)
-		if valid[r] {
-			out = append(out, r)
+		normalized := model.NormalizeEvidenceRef(findingID, r)
+		if normalized == "" {
+			continue
+		}
+		if valid[normalized] {
+			kept = append(kept, normalized)
+		} else {
+			dropped = append(dropped, normalized)
 		}
 	}
-	return out
+	return kept, dropped
 }
 
 // remediationRisk 修复命令风险：LLM 未提供合法值时按动词计算。

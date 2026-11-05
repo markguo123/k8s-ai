@@ -32,7 +32,7 @@ func printChatBanner(w io.Writer, cluster string) {
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "我能帮你：")
-	fmt.Fprintln(w, "  · 巡检集群健康，定位 Pod/节点/存储/网络故障根因")
+	fmt.Fprintln(w, "  · 为集群做健康体检，定位 Pod/节点/存储/网络故障根因")
 	fmt.Fprintln(w, "  · 解读资源状态、事件与日志")
 	fmt.Fprintln(w, "  · 执行变更操作（写操作会先征求你确认）")
 	fmt.Fprintln(w)

@@ -2,6 +2,8 @@ name: create-network
 domain: network
 version: 3.0.0
 source: builtin
+author: k8s-ai
+description: 创建网络类资源（Service/Ingress/NetworkPolicy）的方法论与风险提示
 kinds:
   - v1/Service
   - networking.k8s.io/v1/Ingress

@@ -4,6 +4,7 @@ package session
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/k8s-ai/k8s-ai/internal/approval"
@@ -18,13 +19,29 @@ type Message struct {
 	Arguments  json.RawMessage `json:"arguments,omitempty"`  // 工具调用参数（恢复会话展示命令用，仅读回放不喂 LLM）
 	Data       any             `json:"data,omitempty"`       // 工具结构化结果（恢复会话渲染表格用，仅读回放不喂 LLM）
 	Ok         *bool           `json:"ok,omitempty"`         // 工具执行是否成功（前端权威判定，回放兜底用）
-	Content    string          `json:"content"`
-	Timestamp  time.Time       `json:"timestamp"`
+	// P7.4 工具结果同源契约（ADR-034）：摘要/渲染形态/耗时/风险在本次执行时一并落库，
+	// 刷新后与 chat 流式结果共用同一份头部信息，避免回放时丢失 "320ms" 与风险标签。
+	Summary     string `json:"summary,omitempty"`     // 头部概览摘要（后端计算）
+	DisplayType string `json:"displayType,omitempty"` // terminal | table | kv | events | yaml | logs | text
+	DurationMs  int64  `json:"durationMs,omitempty"`  // 工具执行耗时（毫秒）
+	Risk        string `json:"risk,omitempty"`        // 风险等级（SAFE/LOW/MEDIUM/HIGH/CRITICAL）
+	// terminal 结果契约：命令类工具必须同时保留 stdout/stderr/exitCode，
+	// 让实时卡片与刷新回放使用同一份 kubectl 终端事实。
+	Command   string    `json:"command,omitempty"`
+	Stdout    string    `json:"stdout,omitempty"`
+	Stderr    string    `json:"stderr,omitempty"`
+	ExitCode  int       `json:"exitCode,omitempty"`
+	ErrorCode string    `json:"errorCode,omitempty"`
+	Content   string    `json:"content"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 // Session 是一个对话会话。
 type Session struct {
-	ID             string           `json:"id"`
+	ID string `json:"id"`
+	// UserID 是会话所有者。空值表示三期历史会话或 CLI 会话；管理员可读取
+	// 这类会话，普通用户/操作员不得认领或访问。
+	UserID         string           `json:"userId,omitempty"`
 	Name           string           `json:"name"`
 	Cluster        string           `json:"cluster,omitempty"`
 	Namespace      string           `json:"namespace,omitempty"`
@@ -36,6 +53,16 @@ type Session struct {
 	DeclinedWrites map[string]int   `json:"declinedWrites,omitempty"` // 本次会话拒绝过的写操作 key→次数（用于≥2 次硬拦截）
 	CreatedAt      time.Time        `json:"createdAt"`
 	LastModified   time.Time        `json:"lastModified"`
+	// P7.5 会话置顶：置顶会话始终排最前（置顶集合内部按最近活跃排序）。
+	Pinned bool `json:"pinned,omitempty"`
+	// P8.6 列表索引镜像（方案 15 §8.4）：正文落库时把这两项一并写进 sessions 的
+	// 独立列，列表页从此不必再 SELECT 正文。它们由 AddMessage/ClearMessages 与
+	// store 写入路径维护，读侧只消费。
+	// MessageCount 是消息条数快照。列表不读正文时，正文缺席也要报得出条数。
+	MessageCount int `json:"messageCount,omitempty"`
+	// Title 是 DisplayTitle 的快照。自动标题要扫首条用户消息，列表既然不读正文，
+	// 就只能在上写入时固化。
+	Title string `json:"title,omitempty"`
 }
 
 // AddMessage 追加消息并刷新 LastModified。
@@ -44,13 +71,51 @@ func (s *Session) AddMessage(m Message) {
 		m.Timestamp = time.Now()
 	}
 	s.Messages = append(s.Messages, m)
+	s.MessageCount = len(s.Messages)
 	s.LastModified = time.Now()
 }
 
 // ClearMessages 清空会话消息（元命令 clear）。
 func (s *Session) ClearMessages() {
 	s.Messages = nil
+	s.MessageCount = 0
 	s.LastModified = time.Now()
+}
+
+// TotalMessages 返回消息条数，兼容「正文缺席」的会话：列表走数据库索引列时
+// Messages 为空，条数取自 MessageCount 镜像（P8.6）。
+func (s *Session) TotalMessages() int {
+	if len(s.Messages) > 0 {
+		return len(s.Messages)
+	}
+	return s.MessageCount
+}
+
+// DisplayTitle 返回会话展示标题（P7.5 引入，P8.6 起作为单一事实源）：用户显式
+// 重命名优先，其次取写入时固化的标题快照，最后回退到首条用户消息意图，再回退
+// 「新会话」。列表页在正文缺席时靠快照分支拿到同样的结果。
+func (s *Session) DisplayTitle() string {
+	if s.Name != "" && s.Name != "Session "+s.ID {
+		return s.Name
+	}
+	if s.Title != "" {
+		return s.Title
+	}
+	for _, m := range s.Messages {
+		if m.Role != "user" || m.Type != "text" {
+			continue
+		}
+		line := strings.TrimSpace(strings.SplitN(strings.TrimSpace(m.Content), "\n", 2)[0])
+		if line == "" {
+			continue
+		}
+		runes := []rune(line)
+		if len(runes) > 24 {
+			return string(runes[:24]) + "…"
+		}
+		return line
+	}
+	return "新会话"
 }
 
 // Approved 判断"操作类型+资源"是否已在本次会话授权。

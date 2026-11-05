@@ -1,6 +1,7 @@
 package incident
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/k8s-ai/k8s-ai/internal/correlation"
@@ -107,5 +108,104 @@ func TestIndependentIncidents(t *testing.T) {
 	}
 	if incs := Build(findings, idx); len(incs) != 2 {
 		t.Fatalf("incidents = %d, want 2", len(incs))
+	}
+}
+
+func TestEvidenceRefsUseFindingQualifiedIdentity(t *testing.T) {
+	root := model.Finding{
+		ID: "root-finding", Rule: "Unhealthy", Severity: model.SeverityMedium,
+		Title: "探针失败", Resource: model.ResourceRef{Kind: "Pod", Namespace: "prod", Name: "web-0"},
+		Evidence: []model.Evidence{{ID: "E1", Key: "ready", Value: "false"}},
+	}
+	member := model.Finding{
+		ID: "restart-finding", Rule: "HighRestartCount", Severity: model.SeverityLow,
+		Title: "高频重启", Resource: root.Resource,
+		Evidence: []model.Evidence{{ID: "E1", Key: "restartCount", Value: "36"}},
+	}
+	incs := []model.Incident{{
+		ID: root.ID, Title: root.Title, Severity: model.SeverityMedium,
+		Root:    model.FindingRef{ID: root.ID, Rule: root.Rule, Resource: root.Resource},
+		Members: []model.FindingRef{{ID: member.ID, Rule: member.Rule, Resource: member.Resource}},
+	}}
+	Relate([]model.Finding{root, member}, incs, nil, nil)
+
+	for _, ref := range incs[0].EvidenceRefs {
+		if !strings.Contains(ref, "#E") {
+			t.Fatalf("Incident 证据引用必须包含 Finding ID：%v", incs[0].EvidenceRefs)
+		}
+	}
+	if len(incs[0].CausalEdges) == 0 {
+		t.Fatal("同对象异常应建立因果边")
+	}
+	for _, ref := range incs[0].CausalEdges[0].EvidenceRefs {
+		if !strings.Contains(ref, "#E") {
+			t.Fatalf("CausalEdge 证据引用必须包含 Finding ID：%+v", incs[0].CausalEdges[0].EvidenceRefs)
+		}
+	}
+}
+
+func TestAssignFindingRolesFromIncidents(t *testing.T) {
+	findings := []*model.Finding{
+		{ID: "anchor", Rule: "CrashLoopBackOff"},
+		{ID: "impact", Rule: "DeploymentReplica"},
+		{ID: "symptom", Rule: "HighRestartCount"},
+		{ID: "advisory", Rule: "NetworkPolicyNoDefaultDeny", Suggestion: true},
+		{ID: "independent", Rule: "HpaReplicasMismatch"},
+	}
+	incs := []model.Incident{
+		{
+			ID:      "anchor",
+			Root:    model.FindingRef{ID: "anchor"},
+			Members: []model.FindingRef{{ID: "impact"}, {ID: "symptom"}},
+		},
+		{
+			ID:          "advisory",
+			Root:        model.FindingRef{ID: "advisory"},
+			Independent: true,
+		},
+	}
+	AssignRoles(findings, incs)
+
+	want := map[string]model.FindingRole{
+		"anchor":      model.FindingRoleAnchor,
+		"impact":      model.FindingRoleImpact,
+		"symptom":     model.FindingRoleSymptom,
+		"advisory":    model.FindingRoleAdvisory,
+		"independent": model.FindingRoleIndependent,
+	}
+	for _, finding := range findings {
+		if finding.Role != want[finding.ID] {
+			t.Errorf("%s role = %s, want %s", finding.ID, finding.Role, want[finding.ID])
+		}
+	}
+}
+
+func TestRelateKeepsOneExplainingEdgePerSymptom(t *testing.T) {
+	res := model.ResourceRef{Kind: "Pod", Namespace: "prod", Name: "web-0"}
+	findings := []model.Finding{
+		{ID: "unhealthy", Rule: "Unhealthy", Resource: res},
+		{ID: "crash", Rule: "CrashLoopBackOff", Resource: res},
+		{ID: "restart", Rule: "HighRestartCount", Resource: res},
+	}
+	incs := []model.Incident{{
+		ID: "unhealthy", Root: model.FindingRef{ID: "unhealthy", Rule: "Unhealthy", Resource: res},
+		Members: []model.FindingRef{
+			{ID: "crash", Rule: "CrashLoopBackOff", Resource: res},
+			{ID: "restart", Rule: "HighRestartCount", Resource: res},
+		},
+	}}
+	Relate(findings, incs, nil, nil)
+
+	targets := map[string]int{}
+	for _, edge := range incs[0].CausalEdges {
+		targets[edge.TargetFinding]++
+	}
+	for target, count := range targets {
+		if count != 1 {
+			t.Fatalf("symptom %s 应只保留一条最能解释它的边，实际 %d：%+v", target, count, incs[0].CausalEdges)
+		}
+	}
+	if len(incs[0].CausalEdges) != 2 {
+		t.Fatalf("两个症状应生成两棵传播边，实际 %+v", incs[0].CausalEdges)
 	}
 }

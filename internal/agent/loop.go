@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/k8s-ai/k8s-ai/internal/approval"
 	"github.com/k8s-ai/k8s-ai/internal/audit"
@@ -28,6 +29,27 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 	a.Emit(Message{Source: SourceUser, Type: MessageTypeText, Payload: query})
 	a.audit(ctx, audit.ActionUserInput, map[string]any{"query": query})
 
+	// P1.8: 记录本轮运行轨迹（pending → running），供 service 层持久化回放。
+	a.stepSeq = 0
+	a.turn = &session.Turn{
+		ID:        newID(),
+		SessionID: a.Session.ID,
+		UserID:    a.TurnUserID,
+		Status:    session.TurnPending,
+		Input:     query,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	_ = a.turn.Start()
+	a.trace().TurnStarted(ctx, a.turn)
+	// 任何退出路径都要广播一次 Turn 终态；显式 Complete/Fail 的路径不受影响。
+	defer func() {
+		if a.turn.Status == session.TurnRunning || a.turn.Status == session.TurnWaiting {
+			_ = a.turn.Fail("agent run ended without terminal turn state")
+		}
+		a.trace().TurnUpdated(ctx, a.turn)
+	}()
+
 	mode := a.ToolCalling
 	if mode != "shim" {
 		mode = "native" // auto 起始按 native，不支持时降级 shim
@@ -41,6 +63,9 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 	failedToolCalls := map[string]int{}
 
 	for iter := 0; iter < a.MaxIterations; iter++ {
+		// P1.8: 思考 Step 必须在发起本轮 LLM 调用之前开始。reason.started 若晚于
+		// reasoning 增量下发，前端只能收到一堆没有归属的思考分片（P0-3 同类顺序问题）。
+		reason := a.beginStep(ctx, session.StepReason, "", "")
 		req := llm.ChatRequest{Messages: msgs}
 		if mode == "native" {
 			req.Tools = a.Tools.Schemas()
@@ -52,12 +77,16 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 		if err != nil {
 			// auto 模式：网关不支持原生 tools 时降级 shim 重试一次。
 			if mode == "native" && a.ToolCalling == "auto" && isUnsupportedToolsError(err) {
+				a.completeStep(ctx, reason, false, "native tools unsupported; retrying in shim mode")
 				mode = "shim"
 				msgs[0] = llm.Message{Role: "system", Content: a.systemPromptFor("shim")}
 				continue
 			}
 			a.audit(ctx, audit.ActionLLMError, map[string]any{"error": err.Error()})
 			a.EmitCritical(Message{Source: SourceAgent, Type: MessageTypeError, Payload: err.Error()})
+			a.completeStep(ctx, reason, false, err.Error())
+			a.turn.Token = toSessionUsage(usage)
+			_ = a.turn.Fail(err.Error())
 			return "", usage, err
 		}
 		a.audit(ctx, audit.ActionLLMResponse, map[string]any{"usage": resp.Usage, "toolCalls": len(resp.ToolCalls), "stream": streamed})
@@ -66,13 +95,23 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 		step, err := a.parseStep(mode, resp)
 		if err != nil {
 			a.EmitCritical(Message{Source: SourceAgent, Type: MessageTypeError, Payload: err.Error()})
+			a.completeStep(ctx, reason, false, err.Error())
+			a.turn.Token = toSessionUsage(usage)
+			_ = a.turn.Fail(err.Error())
 			return "", usage, err
 		}
 		if step.answer != "" {
 			a.Session.AddMessage(session.Message{Role: "assistant", Type: "text", Content: step.answer})
+			a.completeStep(ctx, reason, true, summarizeReason(mode, resp))
+			// P1.8: 最终回答输出 Step。
+			response := a.beginStep(ctx, session.StepResponse, "", "")
+			a.completeStep(ctx, response, true, truncateText(step.answer, 240))
+			_ = a.turn.Complete(step.answer)
+			a.turn.Token = toSessionUsage(usage)
 			// 最终回答只经 service 的 answer 事件推送一次，避免 UI 重复渲染。
 			return step.answer, usage, nil
 		}
+		a.completeStep(ctx, reason, true, summarizeReason(mode, resp))
 
 		// 记录 assistant 消息（native 带 tool_calls，shim 带 JSON）。
 		if mode == "native" {
@@ -87,11 +126,17 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 		for _, call := range step.calls {
 			toolCallsTotal++
 			if toolCallsTotal > a.MaxToolCalls {
-				return "", usage, fmt.Errorf("agent exceeded max tool calls (%d)", a.MaxToolCalls)
+				err := fmt.Errorf("agent exceeded max tool calls (%d)", a.MaxToolCalls)
+				a.turn.Token = toSessionUsage(usage)
+				_ = a.turn.Fail(err.Error())
+				return "", usage, err
 			}
 			failureKey := toolCallFailureKey(call)
 			var tr tools.ToolResult
 			toolExecuted := false
+			// P1.8: 工具调用 Step（参数在落库前由 Store 统一脱敏）。
+			toolStep := a.beginStep(ctx, session.StepTool, call.Name, string(call.Arguments))
+			started := time.Now()
 			if failedToolCalls[failureKey] > 0 {
 				// 同一工具、同一参数已经失败过，禁止原样重试；
 				// 让 LLM 更换参数或选择替代工具，避免耗尽工具调用预算。
@@ -109,10 +154,31 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 				}
 				tr = a.executeTool(ctx, call, batchApproved[call.ID])
 			}
-			if toolExecuted && toolResultHasError(tr) {
+			durationMs := time.Since(started).Milliseconds()
+			presentation := tools.Present(tr)
+			ok := presentation.Ok
+			// P7.4：摘要/形态/耗时/风险在本次执行时一次性计算，事件流与落库共用。
+			summary := tools.ToolSummary(tr.Text)
+			displayType := presentation.DisplayType
+			risk := a.toolRisk(call)
+			toolStep.ErrorCode = presentation.ErrorCode
+			a.completeStep(ctx, toolStep, ok, truncateText(tr.Text, 240))
+			// P1.8: 工具结果观察 Step（成功 done / 失败 failed）。
+			observe := a.beginStep(ctx, session.StepObserve, call.Name, "")
+			observe.Data = tr.Data
+			observe.Summary = summary
+			observe.DisplayType = displayType
+			observe.DurationMs = durationMs
+			observe.Risk = risk
+			observe.Command = presentation.Command
+			observe.Stdout = presentation.Stdout
+			observe.Stderr = presentation.Stderr
+			observe.ExitCode = presentation.ExitCode
+			observe.ErrorCode = presentation.ErrorCode
+			a.completeStep(ctx, observe, ok, truncateText(tr.Text, 240))
+			if !ok && (toolExecuted || presentation.ErrorCode == tools.ErrorRBACDenied) {
 				failedToolCalls[failureKey]++
 			}
-			ok := toolResultOK(tr)
 			text, truncated := tools.MarshalForLLM(tr, a.ResultMaxBytes)
 			turnBytes += len(text)
 			budgetExceeded := turnBytes > a.TurnMaxBytes
@@ -122,14 +188,30 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 			}
 			if mode == "native" {
 				msgs = append(msgs, llm.Message{Role: "tool", ToolCallID: call.ID, Content: toolContent})
-				a.Session.AddMessage(session.Message{Role: "tool", Type: "tool-call-response", Name: call.Name, ToolCallID: call.ID, Content: toolContent, Arguments: call.Arguments, Data: tr.Data, Ok: &ok})
+				a.Session.AddMessage(session.Message{
+					Role: "tool", Type: "tool-call-response", Name: call.Name, ToolCallID: call.ID,
+					Content: toolContent, Arguments: call.Arguments, Data: tr.Data, Ok: &ok,
+					Summary: summary, DisplayType: displayType, DurationMs: durationMs, Risk: risk,
+					Command: presentation.Command, Stdout: presentation.Stdout, Stderr: presentation.Stderr,
+					ExitCode: presentation.ExitCode, ErrorCode: presentation.ErrorCode,
+				})
 			} else {
 				obs := fmt.Sprintf("工具 %s 返回：\n%s", call.Name, toolContent)
 				msgs = append(msgs, llm.Message{Role: "user", Content: obs})
-				a.Session.AddMessage(session.Message{Role: "user", Type: "tool-call-response", Name: call.Name, Content: obs, Arguments: call.Arguments, Data: tr.Data, Ok: &ok})
+				a.Session.AddMessage(session.Message{
+					Role: "user", Type: "tool-call-response", Name: call.Name,
+					Content: obs, Arguments: call.Arguments, Data: tr.Data, Ok: &ok,
+					Summary: summary, DisplayType: displayType, DurationMs: durationMs, Risk: risk,
+					Command: presentation.Command, Stdout: presentation.Stdout, Stderr: presentation.Stderr,
+					ExitCode: presentation.ExitCode, ErrorCode: presentation.ErrorCode,
+				})
 			}
 			a.EmitCritical(Message{Source: SourceAgent, Type: MessageTypeToolCallResponse, Payload: map[string]any{
-				"name": call.Name, "text": text, "truncated": truncated, "ok": ok, "summary": tr.Text, "data": tr.Data,
+				"name": call.Name, "text": text, "truncated": truncated, "ok": ok,
+				"summary": summary, "data": tr.Data, "durationMs": durationMs, "risk": risk,
+				"displayType": displayType, "errorCode": presentation.ErrorCode,
+				"command": presentation.Command, "stdout": presentation.Stdout,
+				"stderr": presentation.Stderr, "exitCode": presentation.ExitCode,
 			}})
 			// 写工具失败/被拒：停止执行本批剩余写调用，把决策交回模型。
 			if !toolExecuted && !ok {
@@ -141,34 +223,27 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 			}
 		}
 	}
-	return "", usage, fmt.Errorf("agent exceeded max iterations (%d)", a.MaxIterations)
+	err := fmt.Errorf("agent exceeded max iterations (%d)", a.MaxIterations)
+	a.turn.Token = toSessionUsage(usage)
+	_ = a.turn.Fail(err.Error())
+	return "", usage, err
 }
 
 func toolCallFailureKey(call llm.ToolCall) string {
 	return call.Name + "\x00" + strings.TrimSpace(string(call.Arguments))
 }
 
-func toolResultHasError(result tools.ToolResult) bool {
-	data, ok := result.Data.(map[string]any)
+// toolRisk 返回一次工具调用的风险等级（P7.4 工具卡头部展示 / 落库）。
+// 查不到工具时返回空串：风险展示退化为不显示，安全边界仍由 Tool.Risk 在审批链路强校验。
+func (a *Agent) toolRisk(call llm.ToolCall) string {
+	if a.Tools == nil {
+		return ""
+	}
+	t, ok := a.Tools.Lookup(call.Name)
 	if !ok {
-		return false
+		return ""
 	}
-	_, ok = data["error"]
-	return ok
-}
-
-// toolResultOK 判断工具执行是否成功：无 error 键，且排除“环境缺 kubectl 二进制”
-// 场景（该场景无 error 键但确实失败，前端若只看 error 会误判成功）。
-func toolResultOK(result tools.ToolResult) bool {
-	if toolResultHasError(result) {
-		return false
-	}
-	if data, ok := result.Data.(map[string]any); ok {
-		if kind, _ := data["kind"].(string); kind == "kubectl_binary_missing" {
-			return false
-		}
-	}
-	return true
+	return string(t.Risk(call.Arguments))
 }
 
 // chatOnce 调用一次 LLM 补全（Agent 循环唯一入口）：
@@ -216,12 +291,14 @@ func (a *Agent) chatOnce(ctx context.Context, mode string, req llm.ChatRequest) 
 func (a *Agent) chatOnceTyped(ctx context.Context, sc llm.TypedStreamClient, req llm.ChatRequest) (*llm.ChatResponse, bool, error) {
 	received := false
 	var pending strings.Builder
+	var think strings.Builder
 	resp, err := sc.ChatStreamEvents(ctx, req, func(ev llm.StreamEvent) {
 		switch ev.Type {
 		case llm.StreamReasoningDelta:
 			if ev.Text == "" {
 				return
 			}
+			think.WriteString(ev.Text)
 			a.Emit(Message{Source: SourceModel, Type: MessageTypeReasoningDelta, Payload: ev.Text})
 		case llm.StreamContentDelta:
 			if ev.Text == "" {
@@ -231,6 +308,10 @@ func (a *Agent) chatOnceTyped(ctx context.Context, sc llm.TypedStreamClient, req
 			pending.WriteString(ev.Text)
 		}
 	})
+	// 思考内容按“每轮 LLM 调用一条消息”就地落库：位置先于本轮的思考终态，
+	// 也先于随后追加的工具消息。这样历史视图回放时自然得到
+	// 「思考 → 工具 → 观察 → 思考 → 报告」的顺序与分组，而不是把整轮思考揉成一块。
+	a.persistRoundReasoning(think.String())
 	if err != nil && !received {
 		a.audit(ctx, "stream_fallback", map[string]any{"reason": err.Error()})
 		resp, err = a.LLM.Chat(ctx, req)
@@ -243,6 +324,17 @@ func (a *Agent) chatOnceTyped(ctx context.Context, sc llm.TypedStreamClient, req
 		a.Emit(Message{Source: SourceModel, Type: MessageTypeText, Payload: pending.String()})
 	}
 	return resp, true, err
+}
+
+// persistRoundReasoning 把一轮 LLM 调用累积的思考内容写成一条会话消息。
+// 就地追加（而不是等整轮结束再插到报告之前）是历史视图保持顺序与分组的前提：
+// 消息在 sess.Messages 中的位置，就是它在回合中的位置。
+func (a *Agent) persistRoundReasoning(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" || a.Session == nil {
+		return
+	}
+	a.Session.AddMessage(session.Message{Role: "assistant", Type: "reasoning", Content: text})
 }
 
 // llmStep 是一轮 LLM 输出的解析结果。
@@ -540,6 +632,14 @@ func (a *Agent) batchApprove(ctx context.Context, calls []llm.ToolCall) (approve
 		if !ok || a.approvalDecision(t, call.Arguments) != approval.DecisionRequireApproval {
 			continue
 		}
+		if checker, ok := t.(tools.ClusterAccessChecker); ok && !t.IsReadOnly(call.Arguments) {
+			if err := checker.CheckClusterAccess(ctx, call.Arguments); err != nil {
+				continue
+			}
+		}
+		if err := a.scopeCheck(call); err != nil {
+			continue
+		}
 		key := declineKey(call.Name, call.Arguments)
 		if a.Session.Approved(key) {
 			continue
@@ -630,6 +730,22 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolCall, batchApprove
 		Name: call.Name, Arguments: argsView, Risk: string(t.Risk(call.Arguments)),
 	}})
 	a.audit(ctx, audit.ActionToolCallRequest, map[string]any{"name": call.Name, "arguments": argsView})
+	if err := a.scopeCheck(call); err != nil {
+		a.audit(ctx, audit.ActionApprovalDenied, map[string]any{
+			"name": call.Name, "reason": "scope_denied", "detail": err.Error(),
+		})
+		return tools.ResultErrorWithCode(tools.ErrorScopeDenied, err.Error())
+	}
+	clusterAccessChecked := false
+	if checker, ok := t.(tools.ClusterAccessChecker); ok && !t.IsReadOnly(call.Arguments) {
+		if err := checker.CheckClusterAccess(ctx, call.Arguments); err != nil {
+			a.audit(ctx, audit.ActionApprovalDenied, map[string]any{
+				"name": call.Name, "reason": "cluster_rbac_preflight", "detail": err.Error(),
+			})
+			return tools.ResultErrorWithCode(tools.ErrorRBACDenied, err.Error())
+		}
+		clusterAccessChecked = true
+	}
 
 	detail := a.approvalDecisionDetail(t, call.Arguments)
 	decision := detail.decision
@@ -692,17 +808,36 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolCall, batchApprove
 				prompt += "\n\n工具：" + call.Name + "\n参数：" + string(call.Arguments)
 			}
 			prompt += "\n\n是否执行？"
-			choice, err := a.Approver.Confirm(ctx, prompt, []UserChoiceOption{
+			plan := a.approvalPlan(t, call, detail, clusterAccessChecked)
+			// P1.8: 审批 Step（挂起到等待用户确认）。
+			approvalStep := a.beginStep(ctx, session.StepApproval, call.Name, "")
+			a.waitStep(ctx, approvalStep)
+			approvalOptions := []UserChoiceOption{
 				{Label: "是", Value: ChoiceYes},
 				{Label: "是，本次会话不再询问", Value: ChoiceYesNoAskAgain},
 				{Label: "否", Value: ChoiceNo},
-			})
+			}
+			if approval.GrantEligibleRisk(t.Risk(call.Arguments)) {
+				approvalOptions = []UserChoiceOption{
+					{Label: "确认执行", Value: ChoiceYes},
+					{Label: "本次会话不再询问", Value: ChoiceYesNoAskAgain},
+					{Label: "拒绝", Value: ChoiceNo},
+				}
+			} else {
+				approvalOptions = []UserChoiceOption{
+					{Label: "确认执行", Value: ChoiceYes},
+					{Label: "拒绝", Value: ChoiceNo},
+				}
+			}
+			choice, err := a.confirmApproval(ctx, prompt, approvalOptions, plan)
 			if err != nil {
 				a.audit(ctx, audit.ActionApprovalDenied, map[string]any{"name": call.Name, "reason": err.Error()})
+				a.completeStep(ctx, approvalStep, false, err.Error())
 				return tools.ResultError("approval error: " + err.Error())
 			}
 			switch choice {
 			case ChoiceYesNoAskAgain:
+				a.completeStep(ctx, approvalStep, true, "approved_forever")
 				a.Session.AddApproved(key)
 				grantAudit := map[string]any{"name": call.Name, "choice": choice}
 				if g, ok := approval.NewGrant(a.grantRequestFor(t, call.Arguments)); ok {
@@ -715,8 +850,10 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolCall, batchApprove
 				}
 				a.audit(ctx, audit.ActionApprovalGranted, grantAudit)
 			case ChoiceYes:
+				a.completeStep(ctx, approvalStep, true, "approved")
 				a.audit(ctx, audit.ActionApprovalGranted, map[string]any{"name": call.Name, "choice": choice})
 			default:
+				a.completeStep(ctx, approvalStep, false, "declined")
 				total := a.Session.AddDeclined(key)
 				a.Session.RemoveGrantMatching(a.grantRequestFor(t, call.Arguments))
 				a.audit(ctx, audit.ActionApprovalDenied, map[string]any{
@@ -737,12 +874,11 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolCall, batchApprove
 	if err != nil {
 		tr = tools.ResultError(err.Error())
 	}
-	hasErr := false
-	if m, ok := tr.Data.(map[string]any); ok {
-		_, hasErr = m["error"]
-	}
+	hasErr := !tools.Present(tr).Ok
 	a.audit(ctx, audit.ActionToolCallResponse, map[string]any{
+		// readonly/risk 让四期审计能把非只读工具响应归类为 RESOURCE_MUTATION（P1.11）。
 		"name": call.Name, "truncated": tr.Truncated, "error": hasErr,
+		"readonly": t.IsReadOnly(call.Arguments), "risk": string(t.Risk(call.Arguments)),
 	})
 	if touches := tools.SecretTouchesFromData(tr.Data); len(touches) > 0 {
 		// 三期 R4.6：审计只记 key/长度/SHA-256/来源，明文值从不落盘。
@@ -751,6 +887,67 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolCall, batchApprove
 		})
 	}
 	return tr
+}
+
+func (a *Agent) confirmApproval(ctx context.Context, prompt string, options []UserChoiceOption, plan tools.ApprovalPlan) (string, error) {
+	if structured, ok := a.Approver.(StructuredApprover); ok {
+		return structured.ConfirmStructured(ctx, ApprovalRequest{Prompt: prompt, Options: options, Plan: plan})
+	}
+	return a.Approver.Confirm(ctx, prompt, options)
+}
+
+func (a *Agent) approvalPlan(t tools.Tool, call llm.ToolCall, detail approvalDetail, clusterAccessChecked bool) tools.ApprovalPlan {
+	plan := tools.ApprovalPlan{
+		Tool:      t.Name(),
+		Risk:      string(t.Risk(call.Arguments)),
+		Operation: t.Name(),
+		Summary:   string(call.Arguments),
+	}
+	if planner, ok := t.(tools.ApprovalPlanner); ok {
+		plan = planner.PreviewApproval(call.Arguments)
+		plan.Tool = t.Name()
+		plan.Risk = string(t.Risk(call.Arguments))
+	} else if describer, ok := t.(tools.CommandDescriber); ok {
+		if command, change := describer.Describe(call.Arguments); command != "" {
+			plan.Command = command
+			plan.Summary = change
+		}
+	}
+	if plan.Title == "" {
+		plan.Title = "需要审批的 Kubernetes 操作"
+	}
+	if plan.Target.Cluster == "" && a.Session != nil {
+		plan.Target.Cluster = a.Session.Cluster
+	}
+	plan.Checks = append(plan.Checks, tools.ApprovalCheck{
+		Name: "平台授权", Status: "passed", Message: "当前用户允许发起该操作，仍需人工确认",
+	})
+	if clusterAccessChecked {
+		plan.Checks = append(plan.Checks, tools.ApprovalCheck{
+			Name: "集群 RBAC", Status: "passed", Message: "当前执行身份已通过 Kubernetes 权限预检",
+		})
+	} else {
+		plan.Checks = append(plan.Checks, tools.ApprovalCheck{
+			Name: "集群 RBAC", Status: "unknown", Message: "本次操作未获得可用性预检结果，执行时仍会校验",
+		})
+	}
+	if detail.guard != nil {
+		status := "passed"
+		if detail.guard.Denied() {
+			status = "denied"
+		}
+		plan.Checks = append(plan.Checks, tools.ApprovalCheck{
+			Name: "Code Guard", Status: status, Message: strings.Join(detail.guard.Reasons, "；"),
+		})
+	}
+	return plan
+}
+
+func (a *Agent) scopeCheck(call llm.ToolCall) error {
+	if a.AccessScope == nil {
+		return nil
+	}
+	return a.AccessScope.Check(call.Name, call.Arguments)
 }
 
 // collectSecretValues 在审批通过后、工具执行前逐个索取 $ASK 的 Secret 明文值（三期 R4.5）。
