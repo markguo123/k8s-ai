@@ -57,6 +57,7 @@ export interface AgentStepData {
   params?: string
   result?: string
   error?: string
+  errorCode?: string
 }
 
 /** observation.created 载荷（对齐 ObservationData）。 */
@@ -70,6 +71,11 @@ export interface AgentObservationData {
   durationMs?: number
   risk?: string
   data?: unknown
+  command?: string
+  stdout?: string
+  stderr?: string
+  exitCode?: number
+  errorCode?: string
 }
 
 export interface AgentChoiceOption {
@@ -77,10 +83,44 @@ export interface AgentChoiceOption {
   value: string
 }
 
+export interface AgentApprovalTarget {
+  cluster?: string
+  namespace?: string
+  group?: string
+  version?: string
+  kind?: string
+  name?: string
+}
+
+export interface AgentApprovalChange {
+  path: string
+  operation?: string
+  before?: unknown
+  after?: unknown
+  description?: string
+}
+
+export interface AgentApprovalCheck {
+  name: string
+  status: string
+  message?: string
+}
+
 /** approval.* 载荷（对齐 ApprovalData；secret=true 时前端密码框取值不入流）。 */
 export interface AgentApprovalData {
+  id?: string
+  title?: string
+  tool?: string
+  operation?: string
+  risk?: string
+  summary?: string
+  command?: string
   prompt?: string
   options?: AgentChoiceOption[]
+  target?: AgentApprovalTarget
+  changes?: AgentApprovalChange[]
+  checks?: AgentApprovalCheck[]
+  verification?: string[]
   secret?: boolean
   decision?: string
   resource?: Record<string, unknown>
@@ -104,6 +144,7 @@ export interface AgentEvent {
   session_id?: string
   turn_id?: string
   step_id?: string
+  seq?: number
   timestamp?: string
   event_type: AgentEventType
   data:
@@ -126,6 +167,13 @@ export interface LegacyToolView {
   ok?: boolean
   truncated?: boolean
   data?: unknown
+  displayType?: string
+  durationMs?: number
+  command?: string
+  stdout?: string
+  stderr?: string
+  exitCode?: number
+  errorCode?: string
 }
 
 export interface LegacyChoiceOption {

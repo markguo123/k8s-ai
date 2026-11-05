@@ -56,6 +56,29 @@ describe('useChatStream（P2.5 会话流生命周期）', () => {
     unmount()
   })
 
+  it('重连回放后按 seq 去重，避免同一工具事件生成重复卡片', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sseResponse(
+          [
+            { type: 'history', sessionId: 's1', state: 'running', messages: [], token: null },
+            { event_type: 'tool.started', seq: 7, data: { tool: 'kubectl' } },
+            { event_type: 'tool.started', seq: 7, data: { tool: 'kubectl' } },
+          ],
+          false,
+        ),
+      ),
+    )
+    const { stream, unmount } = mountStream()
+    void stream.connect('s1')
+    await vi.waitFor(() => expect(stream.events.value.length).toBe(1))
+
+    expect(stream.events.value[0].seq).toBe(7)
+    expect(stream.events.value).toHaveLength(1)
+    unmount()
+  })
+
   it('切换会话时中止旧连接并清空状态（不串会话）', async () => {
     const signals: AbortSignal[] = []
     vi.stubGlobal(

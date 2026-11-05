@@ -20,7 +20,7 @@ func TestAccessScopeAllowsAuthorizedNamespace(t *testing.T) {
 }
 
 func TestAccessScopeDeniesClusterAndForeignResources(t *testing.T) {
-	scope := AccessScope{Namespaces: []string{"mysql-dev"}}
+	scope := AccessScope{Namespaces: []string{"mysql-dev"}, CanWrite: true}
 	cases := []struct {
 		name string
 		tool string
@@ -59,9 +59,46 @@ func TestAccessScopeAdminIsUnrestricted(t *testing.T) {
 	}
 }
 
+func TestAccessScopeWriteRequiresCanWrite(t *testing.T) {
+	scope := AccessScope{Namespaces: []string{"test-complex"}}
+	cmd := json.RawMessage(`{"command":"kubectl -n test-complex patch deployment app-backend --type=merge -p '{}'"}`)
+	if err := scope.Check("kubectl", cmd); err == nil || !strings.Contains(err.Error(), "写权限") {
+		t.Fatalf("write without CanWrite should be denied, got %v", err)
+	}
+
+	scope.CanWrite = true
+	if err := scope.Check("kubectl", cmd); err != nil {
+		t.Fatalf("write with CanWrite should be allowed into approval: %v", err)
+	}
+}
+
+func TestAccessScopeDestroyRequiresCanDestroy(t *testing.T) {
+	scope := AccessScope{Namespaces: []string{"test-complex"}, CanWrite: true}
+	cmd := json.RawMessage(`{"command":"kubectl -n test-complex delete pvc app-data"}`)
+	if err := scope.Check("kubectl", cmd); err == nil || !strings.Contains(err.Error(), "销毁权限") {
+		t.Fatalf("destroy without CanDestroy should be denied, got %v", err)
+	}
+
+	scope.CanDestroy = true
+	if err := scope.Check("kubectl", cmd); err != nil {
+		t.Fatalf("destroy with CanDestroy should be allowed into approval: %v", err)
+	}
+}
+
+func TestAccessScopeDeletePodDoesNotRequireDestroy(t *testing.T) {
+	scope := AccessScope{Namespaces: []string{"test-complex"}, CanWrite: true}
+	cmd := json.RawMessage(`{"command":"kubectl -n test-complex delete pod app-backend-0"}`)
+	if err := scope.Check("kubectl", cmd); err != nil {
+		t.Fatalf("delete pod should use normal write capability: %v", err)
+	}
+}
+
 func TestAccessScopePrompt(t *testing.T) {
 	prompt := (AccessScope{Namespaces: []string{"mysql-dev"}}).Prompt()
 	if !strings.Contains(prompt, "mysql-dev") || !strings.Contains(prompt, "Node、PV、StorageClass") {
 		t.Fatalf("prompt = %q", prompt)
+	}
+	if !strings.Contains(prompt, "只读") {
+		t.Fatalf("read-only scope must be explicit in prompt: %q", prompt)
 	}
 }

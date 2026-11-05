@@ -32,6 +32,16 @@ type ToolResult struct {
 	Text      string // 人读摘要（终端/Web 展示）
 	Truncated bool   // Data/Text 是否因超限被截断
 	Redacted  bool   // 是否发生了脱敏
+	// ErrorCode 是稳定的工具错误分类；为空时由 Present 根据结果内容推导。
+	// 该字段只用于 Agent/UI 判断，不改变真实 Kubernetes 授权边界。
+	ErrorCode string
+}
+
+// ClusterAccessChecker 是写工具的可选能力：在人工审批前用当前执行身份做一次
+// Kubernetes SelfSubjectAccessReview。返回错误表示已确定无权限；探测本身失败
+// 时应返回 nil，让真实 API 调用/审批链路继续作为最终边界。
+type ClusterAccessChecker interface {
+	CheckClusterAccess(ctx context.Context, input json.RawMessage) error
 }
 
 // MetadataDescriber 是可选接口：为模型可见的 Tool Schema 提供静态安全元数据前缀。
@@ -62,4 +72,11 @@ type GuardPlanner interface {
 
 func ResultError(msg string) ToolResult {
 	return ToolResult{Data: map[string]any{"error": msg}, Text: "错误：" + msg}
+}
+
+// ResultErrorWithCode 保留稳定错误分类，供 Agent/UI 停止错误的重试批次。
+func ResultErrorWithCode(code, msg string) ToolResult {
+	result := ResultError(msg)
+	result.ErrorCode = code
+	return result
 }

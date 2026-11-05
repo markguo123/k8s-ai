@@ -17,6 +17,20 @@ type Approver interface {
 	Confirm(ctx context.Context, prompt string, options []UserChoiceOption) (string, error)
 }
 
+// ApprovalRequest 是结构化审批请求。Prompt 保留给 CLI/旧客户端；
+// Web 审批卡优先消费 Plan 中的目标、变更、命令和验证条件。
+type ApprovalRequest struct {
+	Prompt  string
+	Options []UserChoiceOption
+	Plan    tools.ApprovalPlan
+}
+
+// StructuredApprover 是 Approver 的可选能力。未实现时 Agent 回退普通 Confirm，
+// 保证 CLI 与既有测试桩不需要跟着改造。
+type StructuredApprover interface {
+	ConfirmStructured(ctx context.Context, req ApprovalRequest) (string, error)
+}
+
 // SecretValueApprover 是 Approver 的可选接口：审批通过后向用户索取单个 Secret 明文值
 // （三期 R4.5）。值只在内存与一次提交里存在，绝不写进会话、审计与 LLM 请求。
 type SecretValueApprover interface {

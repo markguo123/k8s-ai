@@ -53,20 +53,28 @@ function toolFromHistoryMessage(
     displayType?: string
     durationMs?: number
     risk?: string
+    command?: string
+    stdout?: string
+    stderr?: string
+    exitCode?: number
+    errorCode?: string
   },
   key: string,
 ): ToolUiData {
   const name = message.name ?? '工具调用'
   const raw = message.content ?? ''
   const params = message.data ?? null
-  const command = summarizeCommand(name, params)
+  const command =
+    typeof message.command === 'string' && message.command
+      ? message.command
+      : summarizeCommand(name, params)
   return {
     key,
     name,
     shortName: shortNameOf(name, command),
     command,
     risk: message.risk ?? '',
-    status: message.ok ? 'done' : 'error',
+    status: message.ok === true ? 'done' : message.ok === false ? 'error' : 'unknown',
     ok: message.ok ?? false,
     params,
     result: message.data ?? message.content ?? null,
@@ -74,6 +82,10 @@ function toolFromHistoryMessage(
     duration: typeof message.durationMs === 'number' ? message.durationMs : null,
     summary: message.summary,
     displayType: message.displayType,
+    stdout: message.stdout,
+    stderr: message.stderr,
+    exitCode: message.exitCode,
+    errorCode: message.errorCode,
     createResource: detectCreateResource(name, message.data ?? null, message.ok ?? false),
   }
 }
@@ -81,15 +93,23 @@ function toolFromHistoryMessage(
 /** 解析统一事件里的 StepData（reason/tool.*），转成工具展示对象。 */
 function toolFromEvent(event: AgentEvent, key: string, data: Record<string, unknown>): ToolUiData {
   const name = typeof data.tool === 'string' && data.tool ? data.tool : '工具调用'
+  const failed = Boolean(data.error) || data.status === 'failed' || data.status === 'error'
   const status: ToolUiData['status'] =
-    event.event_type === 'tool.completed' ? (data.error ? 'error' : 'done') : 'running'
-  const ok = data.status === 'ok' || (data.error === undefined && status === 'done')
+    event.event_type === 'tool.completed' && failed
+      ? 'error'
+      : event.event_type === 'tool.completed'
+        ? 'done'
+        : 'running'
+  const ok = !failed && (data.status === 'ok' || data.status === 'done' || status === 'done')
   const paramsRaw = typeof data.params === 'string' ? data.params : ''
   const params = (() => {
     const parsed = parseJsonLoose(paramsRaw)
     return parsed !== paramsRaw ? parsed : data.params
   })()
-  const command = summarizeCommand(name, params)
+  const command =
+    typeof data.command === 'string' && data.command
+      ? data.command
+      : summarizeCommand(name, params)
   return {
     key,
     name,
@@ -109,7 +129,16 @@ function toolFromEvent(event: AgentEvent, key: string, data: Record<string, unkn
     duration: typeof data.durationMs === 'number' ? data.durationMs : null,
     summary: typeof data.summary === 'string' ? data.summary : undefined,
     displayType: typeof data.displayType === 'string' ? data.displayType : undefined,
-    error: typeof data.error === 'string' ? data.error : undefined,
+    error:
+      typeof data.error === 'string'
+        ? data.error
+        : typeof data.errorCode === 'string'
+          ? data.errorCode
+          : undefined,
+    errorCode: typeof data.errorCode === 'string' ? data.errorCode : undefined,
+    stdout: typeof data.stdout === 'string' ? data.stdout : undefined,
+    stderr: typeof data.stderr === 'string' ? data.stderr : undefined,
+    exitCode: typeof data.exitCode === 'number' ? data.exitCode : undefined,
     createResource: detectCreateResource(name, params, ok),
   }
 }
@@ -450,9 +479,20 @@ const turns = computed<TurnUiData[]>(() => {
         )
       if (item && item.type === 'tool') {
         if (eventType === 'tool.completed') {
-          item.data.status = data.error ? 'error' : 'done'
+          item.data.status =
+            data.error || data.errorCode || data.status === 'failed' || data.status === 'error'
+              ? 'error'
+              : 'done'
           item.data.ok = item.data.status === 'done'
-          item.data.error = typeof data.error === 'string' ? data.error : undefined
+          item.data.error =
+            typeof data.error === 'string'
+              ? data.error
+              : typeof data.errorCode === 'string'
+                ? data.errorCode
+                : undefined
+          if (typeof data.errorCode === 'string') {
+            item.data.errorCode = data.errorCode
+          }
           if (data.result !== undefined && data.result !== null) {
             item.data.result = data.result
           }
@@ -461,6 +501,15 @@ const turns = computed<TurnUiData[]>(() => {
           item.data.ok = item.data.ok || data.ok === true
           if (data.ok === true) {
             item.data.status = 'done'
+          } else if (data.ok === false) {
+            item.data.status = 'error'
+            item.data.ok = false
+            item.data.error =
+              typeof data.errorCode === 'string' && data.errorCode
+                ? data.errorCode
+                : typeof data.result === 'string'
+                  ? data.result
+                  : '工具执行失败'
           }
         }
         // P7.4：observation.created 携带后端声明的完整 tool_result（summary/形态/耗时/风险/结构化 data），
@@ -476,6 +525,21 @@ const turns = computed<TurnUiData[]>(() => {
         }
         if (typeof data.risk === 'string' && data.risk) {
           item.data.risk = data.risk
+        }
+        if (typeof data.command === 'string') {
+          item.data.command = data.command
+        }
+        if (typeof data.stdout === 'string') {
+          item.data.stdout = data.stdout
+        }
+        if (typeof data.stderr === 'string') {
+          item.data.stderr = data.stderr
+        }
+        if (typeof data.exitCode === 'number') {
+          item.data.exitCode = data.exitCode
+        }
+        if (typeof data.errorCode === 'string') {
+          item.data.errorCode = data.errorCode
         }
         if (data.data !== undefined && data.data !== null) {
           item.data.result = data.data
@@ -496,6 +560,9 @@ const turns = computed<TurnUiData[]>(() => {
           : []
         const approval: ApprovalUiData = {
           key: `${turn.key}:approval:${turn.items.length}`,
+          title: typeof data.title === 'string' ? data.title : undefined,
+          operation: typeof data.operation === 'string' ? data.operation : undefined,
+          command: typeof data.command === 'string' ? data.command : undefined,
           prompt: typeof data.prompt === 'string' ? data.prompt : '需要你的审批确认',
           options,
           secret: data.secret === true,
@@ -505,6 +572,19 @@ const turns = computed<TurnUiData[]>(() => {
           summary: typeof data.params === 'string' ? data.params.slice(0, 300) : '',
           resource: data.resource ?? null,
           reason: typeof data.reason === 'string' ? data.reason : '',
+          target:
+            data.target && typeof data.target === 'object'
+              ? (data.target as ApprovalUiData['target'])
+              : undefined,
+          changes: Array.isArray(data.changes)
+            ? (data.changes as ApprovalUiData['changes'])
+            : undefined,
+          checks: Array.isArray(data.checks)
+            ? (data.checks as ApprovalUiData['checks'])
+            : undefined,
+          verification: Array.isArray(data.verification)
+            ? data.verification.filter((item): item is string => typeof item === 'string')
+            : undefined,
         }
         turn.items.push({ type: 'approval', data: approval })
       } else {

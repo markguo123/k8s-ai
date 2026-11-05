@@ -109,6 +109,11 @@ type Step struct {
 	DisplayType string `json:"displayType,omitempty"`
 	DurationMs  int64  `json:"durationMs,omitempty"`
 	Risk        string `json:"risk,omitempty"`
+	Command     string `json:"command,omitempty"`
+	Stdout      string `json:"stdout,omitempty"`
+	Stderr      string `json:"stderr,omitempty"`
+	ExitCode    int    `json:"exitCode,omitempty"`
+	ErrorCode   string `json:"errorCode,omitempty"`
 
 	StartedAt  time.Time  `json:"startedAt,omitempty"`
 	FinishedAt *time.Time `json:"finishedAt,omitempty"`

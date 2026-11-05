@@ -155,11 +155,13 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 				tr = a.executeTool(ctx, call, batchApproved[call.ID])
 			}
 			durationMs := time.Since(started).Milliseconds()
-			ok := toolResultOK(tr)
+			presentation := tools.Present(tr)
+			ok := presentation.Ok
 			// P7.4：摘要/形态/耗时/风险在本次执行时一次性计算，事件流与落库共用。
 			summary := tools.ToolSummary(tr.Text)
-			displayType := tools.DisplayType(tr.Data)
+			displayType := presentation.DisplayType
 			risk := a.toolRisk(call)
+			toolStep.ErrorCode = presentation.ErrorCode
 			a.completeStep(ctx, toolStep, ok, truncateText(tr.Text, 240))
 			// P1.8: 工具结果观察 Step（成功 done / 失败 failed）。
 			observe := a.beginStep(ctx, session.StepObserve, call.Name, "")
@@ -168,8 +170,13 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 			observe.DisplayType = displayType
 			observe.DurationMs = durationMs
 			observe.Risk = risk
+			observe.Command = presentation.Command
+			observe.Stdout = presentation.Stdout
+			observe.Stderr = presentation.Stderr
+			observe.ExitCode = presentation.ExitCode
+			observe.ErrorCode = presentation.ErrorCode
 			a.completeStep(ctx, observe, ok, truncateText(tr.Text, 240))
-			if toolExecuted && toolResultHasError(tr) {
+			if !ok && (toolExecuted || presentation.ErrorCode == tools.ErrorRBACDenied) {
 				failedToolCalls[failureKey]++
 			}
 			text, truncated := tools.MarshalForLLM(tr, a.ResultMaxBytes)
@@ -181,14 +188,30 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 			}
 			if mode == "native" {
 				msgs = append(msgs, llm.Message{Role: "tool", ToolCallID: call.ID, Content: toolContent})
-				a.Session.AddMessage(session.Message{Role: "tool", Type: "tool-call-response", Name: call.Name, ToolCallID: call.ID, Content: toolContent, Arguments: call.Arguments, Data: tr.Data, Ok: &ok, Summary: summary, DisplayType: displayType, DurationMs: durationMs, Risk: risk})
+				a.Session.AddMessage(session.Message{
+					Role: "tool", Type: "tool-call-response", Name: call.Name, ToolCallID: call.ID,
+					Content: toolContent, Arguments: call.Arguments, Data: tr.Data, Ok: &ok,
+					Summary: summary, DisplayType: displayType, DurationMs: durationMs, Risk: risk,
+					Command: presentation.Command, Stdout: presentation.Stdout, Stderr: presentation.Stderr,
+					ExitCode: presentation.ExitCode, ErrorCode: presentation.ErrorCode,
+				})
 			} else {
 				obs := fmt.Sprintf("工具 %s 返回：\n%s", call.Name, toolContent)
 				msgs = append(msgs, llm.Message{Role: "user", Content: obs})
-				a.Session.AddMessage(session.Message{Role: "user", Type: "tool-call-response", Name: call.Name, Content: obs, Arguments: call.Arguments, Data: tr.Data, Ok: &ok, Summary: summary, DisplayType: displayType, DurationMs: durationMs, Risk: risk})
+				a.Session.AddMessage(session.Message{
+					Role: "user", Type: "tool-call-response", Name: call.Name,
+					Content: obs, Arguments: call.Arguments, Data: tr.Data, Ok: &ok,
+					Summary: summary, DisplayType: displayType, DurationMs: durationMs, Risk: risk,
+					Command: presentation.Command, Stdout: presentation.Stdout, Stderr: presentation.Stderr,
+					ExitCode: presentation.ExitCode, ErrorCode: presentation.ErrorCode,
+				})
 			}
 			a.EmitCritical(Message{Source: SourceAgent, Type: MessageTypeToolCallResponse, Payload: map[string]any{
-				"name": call.Name, "text": text, "truncated": truncated, "ok": ok, "summary": summary, "data": tr.Data, "durationMs": durationMs, "risk": risk, "displayType": displayType,
+				"name": call.Name, "text": text, "truncated": truncated, "ok": ok,
+				"summary": summary, "data": tr.Data, "durationMs": durationMs, "risk": risk,
+				"displayType": displayType, "errorCode": presentation.ErrorCode,
+				"command": presentation.Command, "stdout": presentation.Stdout,
+				"stderr": presentation.Stderr, "exitCode": presentation.ExitCode,
 			}})
 			// 写工具失败/被拒：停止执行本批剩余写调用，把决策交回模型。
 			if !toolExecuted && !ok {
@@ -221,29 +244,6 @@ func (a *Agent) toolRisk(call llm.ToolCall) string {
 		return ""
 	}
 	return string(t.Risk(call.Arguments))
-}
-
-func toolResultHasError(result tools.ToolResult) bool {
-	data, ok := result.Data.(map[string]any)
-	if !ok {
-		return false
-	}
-	_, ok = data["error"]
-	return ok
-}
-
-// toolResultOK 判断工具执行是否成功：无 error 键，且排除“环境缺 kubectl 二进制”
-// 场景（该场景无 error 键但确实失败，前端若只看 error 会误判成功）。
-func toolResultOK(result tools.ToolResult) bool {
-	if toolResultHasError(result) {
-		return false
-	}
-	if data, ok := result.Data.(map[string]any); ok {
-		if kind, _ := data["kind"].(string); kind == "kubectl_binary_missing" {
-			return false
-		}
-	}
-	return true
 }
 
 // chatOnce 调用一次 LLM 补全（Agent 循环唯一入口）：
@@ -632,6 +632,11 @@ func (a *Agent) batchApprove(ctx context.Context, calls []llm.ToolCall) (approve
 		if !ok || a.approvalDecision(t, call.Arguments) != approval.DecisionRequireApproval {
 			continue
 		}
+		if checker, ok := t.(tools.ClusterAccessChecker); ok && !t.IsReadOnly(call.Arguments) {
+			if err := checker.CheckClusterAccess(ctx, call.Arguments); err != nil {
+				continue
+			}
+		}
 		if err := a.scopeCheck(call); err != nil {
 			continue
 		}
@@ -729,7 +734,17 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolCall, batchApprove
 		a.audit(ctx, audit.ActionApprovalDenied, map[string]any{
 			"name": call.Name, "reason": "scope_denied", "detail": err.Error(),
 		})
-		return tools.ResultError(err.Error())
+		return tools.ResultErrorWithCode(tools.ErrorScopeDenied, err.Error())
+	}
+	clusterAccessChecked := false
+	if checker, ok := t.(tools.ClusterAccessChecker); ok && !t.IsReadOnly(call.Arguments) {
+		if err := checker.CheckClusterAccess(ctx, call.Arguments); err != nil {
+			a.audit(ctx, audit.ActionApprovalDenied, map[string]any{
+				"name": call.Name, "reason": "cluster_rbac_preflight", "detail": err.Error(),
+			})
+			return tools.ResultErrorWithCode(tools.ErrorRBACDenied, err.Error())
+		}
+		clusterAccessChecked = true
 	}
 
 	detail := a.approvalDecisionDetail(t, call.Arguments)
@@ -793,14 +808,28 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolCall, batchApprove
 				prompt += "\n\n工具：" + call.Name + "\n参数：" + string(call.Arguments)
 			}
 			prompt += "\n\n是否执行？"
+			plan := a.approvalPlan(t, call, detail, clusterAccessChecked)
 			// P1.8: 审批 Step（挂起到等待用户确认）。
 			approvalStep := a.beginStep(ctx, session.StepApproval, call.Name, "")
 			a.waitStep(ctx, approvalStep)
-			choice, err := a.Approver.Confirm(ctx, prompt, []UserChoiceOption{
+			approvalOptions := []UserChoiceOption{
 				{Label: "是", Value: ChoiceYes},
 				{Label: "是，本次会话不再询问", Value: ChoiceYesNoAskAgain},
 				{Label: "否", Value: ChoiceNo},
-			})
+			}
+			if approval.GrantEligibleRisk(t.Risk(call.Arguments)) {
+				approvalOptions = []UserChoiceOption{
+					{Label: "确认执行", Value: ChoiceYes},
+					{Label: "本次会话不再询问", Value: ChoiceYesNoAskAgain},
+					{Label: "拒绝", Value: ChoiceNo},
+				}
+			} else {
+				approvalOptions = []UserChoiceOption{
+					{Label: "确认执行", Value: ChoiceYes},
+					{Label: "拒绝", Value: ChoiceNo},
+				}
+			}
+			choice, err := a.confirmApproval(ctx, prompt, approvalOptions, plan)
 			if err != nil {
 				a.audit(ctx, audit.ActionApprovalDenied, map[string]any{"name": call.Name, "reason": err.Error()})
 				a.completeStep(ctx, approvalStep, false, err.Error())
@@ -845,10 +874,7 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolCall, batchApprove
 	if err != nil {
 		tr = tools.ResultError(err.Error())
 	}
-	hasErr := false
-	if m, ok := tr.Data.(map[string]any); ok {
-		_, hasErr = m["error"]
-	}
+	hasErr := !tools.Present(tr).Ok
 	a.audit(ctx, audit.ActionToolCallResponse, map[string]any{
 		// readonly/risk 让四期审计能把非只读工具响应归类为 RESOURCE_MUTATION（P1.11）。
 		"name": call.Name, "truncated": tr.Truncated, "error": hasErr,
@@ -861,6 +887,60 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolCall, batchApprove
 		})
 	}
 	return tr
+}
+
+func (a *Agent) confirmApproval(ctx context.Context, prompt string, options []UserChoiceOption, plan tools.ApprovalPlan) (string, error) {
+	if structured, ok := a.Approver.(StructuredApprover); ok {
+		return structured.ConfirmStructured(ctx, ApprovalRequest{Prompt: prompt, Options: options, Plan: plan})
+	}
+	return a.Approver.Confirm(ctx, prompt, options)
+}
+
+func (a *Agent) approvalPlan(t tools.Tool, call llm.ToolCall, detail approvalDetail, clusterAccessChecked bool) tools.ApprovalPlan {
+	plan := tools.ApprovalPlan{
+		Tool:      t.Name(),
+		Risk:      string(t.Risk(call.Arguments)),
+		Operation: t.Name(),
+		Summary:   string(call.Arguments),
+	}
+	if planner, ok := t.(tools.ApprovalPlanner); ok {
+		plan = planner.PreviewApproval(call.Arguments)
+		plan.Tool = t.Name()
+		plan.Risk = string(t.Risk(call.Arguments))
+	} else if describer, ok := t.(tools.CommandDescriber); ok {
+		if command, change := describer.Describe(call.Arguments); command != "" {
+			plan.Command = command
+			plan.Summary = change
+		}
+	}
+	if plan.Title == "" {
+		plan.Title = "需要审批的 Kubernetes 操作"
+	}
+	if plan.Target.Cluster == "" && a.Session != nil {
+		plan.Target.Cluster = a.Session.Cluster
+	}
+	plan.Checks = append(plan.Checks, tools.ApprovalCheck{
+		Name: "平台授权", Status: "passed", Message: "当前用户允许发起该操作，仍需人工确认",
+	})
+	if clusterAccessChecked {
+		plan.Checks = append(plan.Checks, tools.ApprovalCheck{
+			Name: "集群 RBAC", Status: "passed", Message: "当前执行身份已通过 Kubernetes 权限预检",
+		})
+	} else {
+		plan.Checks = append(plan.Checks, tools.ApprovalCheck{
+			Name: "集群 RBAC", Status: "unknown", Message: "本次操作未获得可用性预检结果，执行时仍会校验",
+		})
+	}
+	if detail.guard != nil {
+		status := "passed"
+		if detail.guard.Denied() {
+			status = "denied"
+		}
+		plan.Checks = append(plan.Checks, tools.ApprovalCheck{
+			Name: "Code Guard", Status: status, Message: strings.Join(detail.guard.Reasons, "；"),
+		})
+	}
+	return plan
 }
 
 func (a *Agent) scopeCheck(call llm.ToolCall) error {

@@ -326,6 +326,9 @@ POST   /api/v1/sessions/{id}/approve       // own 或 admin；响应不携带 ch
 POST   /api/v1/sessions/{id}/cancel        // own 或 admin
 ```
 
+`send-message` 请求体只接受 `query` 与可选的 `skills`。Web 端不接受
+`skipPermissions`：审批跳过只能由部署侧的 CLI/自动化能力显式配置，不能由浏览器请求决定。
+
 错误语义：
 
 | 场景 | HTTP | 说明 |
@@ -362,6 +365,7 @@ POST   /api/v1/sessions/{id}/cancel        // own 或 admin
 session_id
 turn_id
 step_id
+seq          // 会话内单调递增；用于重连回放去重
 timestamp
 event_type
 data        // 各事件专属载荷，可为 null
@@ -390,6 +394,37 @@ session.failed
 数据面：`internal/sse` 提供 Marshal 与 Frame。平台只维护这一套原生事件契约，
 不定义第二套旧事件通道。所有出站 `params` / `result` / 回答负载在封装前统一经
 `store.RedactJSONPayload` 脱敏，Secret / kubeconfig / API Key 明文永不进入 SSE。
+
+`observation.created` 的命令类结果额外携带：
+
+```text
+command
+stdout
+stderr
+exitCode
+errorCode     // 如 RBAC_DENIED / SCOPE_DENIED / NOT_FOUND / TIMEOUT
+displayType   // terminal | table | kv | events | yaml | logs | text
+data          // 结构化数据；terminal 视图是 kubectl 的权威展示面
+```
+
+运行中会话重连时，服务端先发送历史快照，再补发当前回合缓存事件；前端按 `seq`
+去重。历史快照仍是已持久化消息的权威来源，缓存事件只补齐尚未落库的运行过程。
+
+`approval.required` 的结构化载荷新增：
+
+```text
+title / tool / operation / risk
+target{cluster, namespace, group, version, kind, name}
+changes[{path, operation, before, after, description}]
+checks[{name, status, message}]
+verification[]
+command
+options[]
+```
+
+`prompt` 继续保留给 CLI 和旧客户端回退；Web 新版审批卡以目标、变更、检查、
+验证和命令字段为主。HIGH/CRITICAL 的 `options` 不包含
+`yes_and_dont_ask_again`。
 
 ## 10. 平台依赖矩阵
 

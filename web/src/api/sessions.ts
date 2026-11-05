@@ -121,15 +121,13 @@ export async function pinSession(
   )
 }
 
-/** 发起一轮 Chat（webui `POST /api/v1/sessions/{id}/send-message`），SSE 流随后推送事件。 */
+/** 发起一轮 Chat（webui `POST /api/v1/sessions/{id}/send-message`），SSE 流随后推送事件。
+ * Web 端不暴露 skipPermissions；审批跳过只能由部署侧自动化能力配置。 */
 export async function sendMessage(
   id: string,
-  payload: { query: string; skipPermissions?: boolean; skills?: string[] },
+  payload: { query: string; skills?: string[] },
 ): Promise<{ sessionId: string }> {
   const body: Record<string, unknown> = { query: payload.query }
-  if (payload.skipPermissions !== undefined) {
-    body.skipPermissions = payload.skipPermissions
-  }
   // P3.8.4：显式 @skill 指定的名称只在非空时随请求提交，后端强校验。
   if (payload.skills && payload.skills.length > 0) {
     body.skills = payload.skills

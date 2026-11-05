@@ -57,6 +57,11 @@ type ChatToolCallView struct {
 	// P7.4：工具结果同源（ADR-034），随 tool-response 一并下发（旧客户端兼容）。
 	DurationMs  int64  `json:"durationMs,omitempty"`
 	DisplayType string `json:"displayType,omitempty"`
+	Command     string `json:"command,omitempty"`
+	Stdout      string `json:"stdout,omitempty"`
+	Stderr      string `json:"stderr,omitempty"`
+	ExitCode    int    `json:"exitCode,omitempty"`
+	ErrorCode   string `json:"errorCode,omitempty"`
 }
 
 // ChatChoiceOption 是审批/选择项。
@@ -67,8 +72,9 @@ type ChatChoiceOption struct {
 
 // ChatChoice 是审批请求（写操作确认）。
 type ChatChoice struct {
-	Prompt  string             `json:"prompt"`
-	Options []ChatChoiceOption `json:"options"`
+	Prompt   string             `json:"prompt"`
+	Options  []ChatChoiceOption `json:"options"`
+	Approval *sse.ApprovalData  `json:"approval,omitempty"`
 	// Secret 为 true 时该请求要收集 Secret 值：前端用密码框，值不回显、不入会话与审计。
 	Secret bool `json:"secret,omitempty"`
 }
@@ -862,6 +868,11 @@ func translateEvent(m agent.Message) (ChatEvent, bool) {
 					Risk:        toString(mm["risk"]),
 					DurationMs:  toInt64(mm["durationMs"]),
 					DisplayType: toString(mm["displayType"]),
+					Command:     toString(mm["command"]),
+					Stdout:      toString(mm["stdout"]),
+					Stderr:      toString(mm["stderr"]),
+					ExitCode:    int(toInt64(mm["exitCode"])),
+					ErrorCode:   toString(mm["errorCode"]),
 				},
 			}, true
 		}
@@ -881,6 +892,58 @@ type chatApprover struct {
 }
 
 func (a *chatApprover) Confirm(ctx context.Context, prompt string, options []agent.UserChoiceOption) (string, error) {
+	return a.confirm(ctx, prompt, options, nil)
+}
+
+// ConfirmStructured 在保留 CLI/旧事件 prompt 的同时，向统一 SSE 下发结构化审批事实。
+func (a *chatApprover) ConfirmStructured(ctx context.Context, req agent.ApprovalRequest) (string, error) {
+	data := approvalDataFromPlan(req)
+	return a.confirm(ctx, req.Prompt, req.Options, &data)
+}
+
+func approvalDataFromPlan(req agent.ApprovalRequest) sse.ApprovalData {
+	plan := req.Plan
+	data := sse.ApprovalData{
+		Title:        plan.Title,
+		Tool:         plan.Tool,
+		Operation:    plan.Operation,
+		Risk:         plan.Risk,
+		Summary:      plan.Summary,
+		Command:      plan.Command,
+		Prompt:       req.Prompt,
+		Options:      sseChoiceOptions(req.Options),
+		Verification: append([]string(nil), plan.Verification...),
+	}
+	if plan.Target != (tools.ApprovalTarget{}) {
+		data.Target = &sse.ApprovalTarget{
+			Cluster: plan.Target.Cluster, Namespace: plan.Target.Namespace,
+			Group: plan.Target.Group, Version: plan.Target.Version,
+			Kind: plan.Target.Kind, Name: plan.Target.Name,
+		}
+	}
+	for _, change := range plan.Changes {
+		data.Changes = append(data.Changes, sse.ApprovalChange{
+			Path: change.Path, Operation: change.Operation, Before: change.Before,
+			After: change.After, Description: change.Description,
+		})
+	}
+	for _, check := range plan.Checks {
+		data.Checks = append(data.Checks, sse.ApprovalCheck{
+			Name: check.Name, Status: check.Status, Message: check.Message,
+		})
+	}
+	return data
+}
+
+func sseChoiceOptions(options []agent.UserChoiceOption) []sse.ChoiceOption {
+	out := make([]sse.ChoiceOption, 0, len(options))
+	for _, o := range options {
+		out = append(out, sse.ChoiceOption{Label: o.Label, Value: o.Value})
+	}
+	return out
+}
+
+func (a *chatApprover) confirm(ctx context.Context, prompt string, options []agent.UserChoiceOption, approvalData *sse.ApprovalData) (string, error) {
 	if a.skip || a.autoApprove {
 		return agent.ChoiceYes, nil
 	}
@@ -888,15 +951,16 @@ func (a *chatApprover) Confirm(ctx context.Context, prompt string, options []age
 	for _, o := range options {
 		opts = append(opts, ChatChoiceOption{Label: o.Label, Value: o.Value})
 	}
-	a.events <- ChatEvent{Type: ChatEventChoice, Choice: &ChatChoice{Prompt: prompt, Options: opts}}
+	a.events <- ChatEvent{Type: ChatEventChoice, Choice: &ChatChoice{Prompt: prompt, Options: opts, Approval: approvalData}}
 	if a.sink != nil {
-		sseOpts := make([]sse.ChoiceOption, 0, len(options))
-		for _, o := range options {
-			sseOpts = append(sseOpts, sse.ChoiceOption{Label: o.Label, Value: o.Value})
+		data := sse.ApprovalData{Prompt: prompt}
+		if approvalData != nil {
+			data = *approvalData
+			data.Prompt = prompt
+		} else {
+			data.Options = sseChoiceOptions(options)
 		}
-		a.sink(sse.New(a.scope.session(), a.scope.turn(), a.scope.step(), sse.EventApprovalRequired, sse.ApprovalData{
-			Prompt: prompt, Options: sseOpts,
-		}))
+		a.sink(sse.New(a.scope.session(), a.scope.turn(), a.scope.step(), sse.EventApprovalRequired, data))
 	}
 	select {
 	case <-ctx.Done():

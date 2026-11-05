@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { Check, CircleCheck, Lock, Warning } from '@element-plus/icons-vue'
+import { Check, CircleCheck, CopyDocument, Lock, Warning } from '@element-plus/icons-vue'
+import TerminalBlock from './render/TerminalBlock.vue'
+import copyText from '@/composables/useClipboard'
 
 /**
  * P2.9 ApprovalCard：审批卡。
@@ -12,6 +14,9 @@ import { Check, CircleCheck, Lock, Warning } from '@element-plus/icons-vue'
 
 export interface ApprovalUiData {
   key: string
+  title?: string
+  operation?: string
+  command?: string
   prompt: string
   options: Array<{ label: string; value: string }>
   secret: boolean
@@ -21,6 +26,23 @@ export interface ApprovalUiData {
   summary: string
   resource: unknown
   reason?: string
+  target?: {
+    cluster?: string
+    namespace?: string
+    group?: string
+    version?: string
+    kind?: string
+    name?: string
+  }
+  changes?: Array<{
+    path: string
+    operation?: string
+    before?: unknown
+    after?: unknown
+    description?: string
+  }>
+  checks?: Array<{ name: string; status: string; message?: string }>
+  verification?: string[]
 }
 
 const props = withDefaults(
@@ -49,6 +71,31 @@ const secretVisible = ref(false)
 const pending = computed(() => props.approval.decision === 'pending')
 const auto = computed(() => props.approval.decision === 'auto')
 const showActions = computed(() => pending.value && props.canDecide)
+const highRisk = computed(() => riskTag.value === 'danger')
+const titleText = computed(() => props.approval.title || '审批请求')
+const operationText = computed(() => props.approval.operation || props.approval.tool)
+const commandData = computed(() =>
+  props.approval.command ? { command: props.approval.command } : null,
+)
+const showLegacyPrompt = computed(
+  () =>
+    !props.approval.target &&
+    !props.approval.changes?.length &&
+    !props.approval.checks?.length &&
+    !props.approval.command &&
+    !props.approval.verification?.length,
+)
+const visibleOptions = computed(() => {
+  const options = props.approval.options.filter((option) => option.value !== 'no')
+  if (!highRisk.value) {
+    return options
+  }
+  return options.filter(
+    (option) =>
+      option.value !== 'yes_and_dont_ask_again' &&
+      !/不再询问|本次会话都允许/i.test(option.label),
+  )
+})
 
 const riskTag = computed<'danger' | 'warning' | 'info' | 'primary'>(() => {
   const risk = props.approval.risk?.toUpperCase() ?? ''
@@ -79,6 +126,29 @@ const resourceText = computed(() => {
   }
   return parts.join(' · ')
 })
+
+const targetText = computed(() => {
+  const target = props.approval.target
+  if (!target) return resourceText.value
+  const parts = [target.kind, target.namespace, target.name].filter(Boolean)
+  return parts.join(' · ')
+})
+
+function optionLabel(option: { label: string; value: string }): string {
+  if (option.value === 'yes') return '确认执行'
+  if (option.value === 'yes_and_dont_ask_again') return '本次会话不再询问'
+  return option.label || option.value
+}
+
+function changeValue(value: unknown): string {
+  if (value === null || value === undefined) return ''
+  if (typeof value === 'string') return value
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
+}
 
 /** 把密码框值填入允许占位符（如 $INPUT / $SECRET / $$SECRET），仅本次提交。 */
 function resolveSecret(optionValue: string): string {
@@ -112,7 +182,11 @@ function reject(): void {
         ><Lock v-if="pending" /><CircleCheck
           v-else-if="auto || approval.decision === 'approved'" /><Warning v-else
       /></el-icon>
-      <span class="approval-title">审批请求</span>
+      <div class="approval-heading">
+        <span class="approval-title">{{ titleText }}</span>
+        <span v-if="operationText" class="approval-operation">{{ operationText }}</span>
+      </div>
+      <el-tag v-if="riskLabel" size="small" effect="plain" :type="riskTag">{{ riskLabel }}</el-tag>
       <el-tag v-if="auto" size="small" type="info" effect="dark" class="approval-auto">
         AUTO 白名单自动通过
       </el-tag>
@@ -134,10 +208,68 @@ function reject(): void {
       </el-tag>
     </div>
 
-    <p v-if="approval.prompt" class="approval-prompt">{{ approval.prompt }}</p>
+    <p v-if="showLegacyPrompt && approval.prompt" class="approval-prompt">{{ approval.prompt }}</p>
+
+    <div v-if="targetText" class="approval-target">
+      <span class="approval-section-label">目标资源</span>
+      <strong>{{ targetText }}</strong>
+      <span v-if="approval.target?.cluster" class="approval-target-cluster">
+        {{ approval.target.cluster }}
+      </span>
+    </div>
+
+    <section v-if="approval.changes?.length" class="approval-section">
+      <div class="approval-section-head">
+        <span class="approval-section-label">将发生的变更（{{ approval.changes.length }} 项）</span>
+      </div>
+      <div class="approval-changes">
+        <div v-for="(change, index) in approval.changes" :key="`${change.path}:${index}`" class="approval-change">
+          <code class="approval-change-path">{{ change.path }}</code>
+          <span v-if="change.operation" class="approval-change-op">{{ change.operation }}</span>
+          <span v-if="change.after !== undefined" class="approval-change-value">→ {{ changeValue(change.after) }}</span>
+        </div>
+      </div>
+    </section>
+
+    <section v-if="approval.checks?.length" class="approval-section">
+      <div class="approval-section-head">
+        <span class="approval-section-label">执行前检查</span>
+      </div>
+      <div class="approval-checks">
+        <div v-for="check in approval.checks" :key="check.name" class="approval-check">
+          <span class="approval-check-dot" :class="check.status"></span>
+          <span class="approval-check-name">{{ check.name }}</span>
+          <span class="approval-check-status">{{ check.status }}</span>
+          <span v-if="check.message" class="approval-check-message">{{ check.message }}</span>
+        </div>
+      </div>
+    </section>
+
+    <section v-if="approval.verification?.length" class="approval-section">
+      <div class="approval-section-head">
+        <span class="approval-section-label">执行后验证</span>
+      </div>
+      <ul class="approval-verification">
+        <li v-for="item in approval.verification" :key="item">{{ item }}</li>
+      </ul>
+    </section>
+
+    <section v-if="approval.command && commandData" class="approval-section">
+      <div class="approval-section-head">
+        <span class="approval-section-label">完整命令</span>
+        <el-button
+          size="small"
+          text
+          :icon="CopyDocument"
+          @click="copyText(approval.command || '', '命令已复制')"
+        >
+          复制命令
+        </el-button>
+      </div>
+      <TerminalBlock :data="commandData" />
+    </section>
 
     <div class="approval-meta">
-      <el-tag v-if="riskLabel" size="small" effect="plain" :type="riskTag">{{ riskLabel }}</el-tag>
       <span v-if="approval.tool" class="approval-meta-item">{{ approval.tool }}</span>
       <span
         v-if="approval.summary"
@@ -146,9 +278,6 @@ function reject(): void {
       >
         {{ approval.summary }}
       </span>
-      <span v-if="resourceText" class="approval-meta-item approval-resource">{{
-        resourceText
-      }}</span>
       <span v-if="approval.reason" class="approval-meta-item approval-reason">{{
         approval.reason
       }}</span>
@@ -181,13 +310,13 @@ function reject(): void {
     <!-- 普通审批（非 secret）：展示批准/拒绝选项 -->
     <div v-else-if="showActions" class="approval-actions">
       <el-button
-        v-for="(option, index) in approval.options"
+        v-for="(option, index) in visibleOptions"
         :key="option.value || index"
         type="primary"
         plain
         @click="approve(option)"
       >
-        {{ option.label || option.value }}
+        {{ optionLabel(option) }}
       </el-button>
       <el-button type="danger" plain @click="reject">拒绝</el-button>
     </div>
@@ -239,6 +368,23 @@ function reject(): void {
   font-size: 12.5px;
 }
 
+.approval-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.approval-operation {
+  overflow: hidden;
+  color: var(--app-muted);
+  font-family: var(--app-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .approval-auto {
   margin-left: auto;
 }
@@ -264,6 +410,133 @@ function reject(): void {
 .approval-meta-item {
   font-size: 11.5px;
   color: var(--app-muted);
+}
+
+.approval-target {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 12px 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--app-surface-2);
+  font-size: 12px;
+}
+
+.approval-target strong {
+  color: var(--app-text);
+  font-family: var(--app-mono);
+  font-weight: 600;
+}
+
+.approval-target-cluster {
+  margin-left: auto;
+  color: var(--app-muted);
+  font-size: 11px;
+}
+
+.approval-section {
+  margin: 0 12px 10px;
+}
+
+.approval-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.approval-section-label {
+  color: var(--app-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.approval-changes,
+.approval-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.approval-change,
+.approval-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 5px;
+  background: var(--app-surface-2);
+  font-size: 11.5px;
+}
+
+.approval-change-path {
+  min-width: 0;
+  color: var(--app-text);
+  font-family: var(--app-mono);
+  word-break: break-word;
+}
+
+.approval-change-op,
+.approval-check-status {
+  flex: none;
+  color: var(--app-muted);
+  font-family: var(--app-mono);
+  font-size: 10.5px;
+  text-transform: uppercase;
+}
+
+.approval-change-value {
+  min-width: 0;
+  color: var(--app-accent);
+  font-family: var(--app-mono);
+  word-break: break-word;
+}
+
+.approval-check-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--app-muted);
+}
+
+.approval-check-dot.passed {
+  background: var(--app-success);
+}
+
+.approval-check-dot.denied {
+  background: var(--app-danger);
+}
+
+.approval-check-dot.unknown,
+.approval-check-dot.skipped {
+  background: var(--app-warning);
+}
+
+.approval-check-name {
+  flex: none;
+  min-width: 82px;
+  color: var(--app-text);
+  font-weight: 600;
+}
+
+.approval-check-message {
+  min-width: 0;
+  color: var(--app-muted);
+  word-break: break-word;
+}
+
+.approval-verification {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--app-text);
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .approval-summary {

@@ -5,6 +5,7 @@ import { ArrowDown, CopyDocument, WarningFilled } from '@element-plus/icons-vue'
 import MarkdownView from './MarkdownView.vue'
 import YamlBlock from './render/YamlBlock.vue'
 import LogBlock from './render/LogBlock.vue'
+import TerminalBlock from './render/TerminalBlock.vue'
 import StructuredTable from './render/StructuredTable.vue'
 import StructuredKv from './render/StructuredKv.vue'
 import StructuredEvents from './render/StructuredEvents.vue'
@@ -32,7 +33,7 @@ export interface ToolUiData {
   shortName: string
   command: string
   risk: string
-  status: 'running' | 'done' | 'error'
+  status: 'running' | 'done' | 'error' | 'unknown'
   ok: boolean
   params: unknown
   result: unknown
@@ -42,6 +43,10 @@ export interface ToolUiData {
   summary?: string
   displayType?: string
   error?: string
+  errorCode?: string
+  stdout?: string
+  stderr?: string
+  exitCode?: number
   createResource?: CreateResourceState | null
 }
 
@@ -136,9 +141,19 @@ const durationText = computed(() => {
   return `${(value / 1000).toFixed(1)}s`
 })
 
+const errorText = computed(() => {
+  if (props.tool.errorCode === 'RBAC_DENIED') {
+    return '当前集群执行身份没有该操作权限（RBAC 拒绝）'
+  }
+  if (props.tool.errorCode === 'SCOPE_DENIED') {
+    return '当前平台授权范围不允许该操作'
+  }
+  return props.tool.error || '工具执行失败'
+})
+
 /** 尝试识别结果是否为结构化数据：K8s 列表 / 事件 / 单对象键值。 */
 interface ResultView {
-  type: 'table' | 'events' | 'kv' | 'yaml' | 'logs' | 'markdown' | 'text' | 'empty'
+  type: 'terminal' | 'table' | 'events' | 'kv' | 'yaml' | 'logs' | 'markdown' | 'text' | 'empty'
   parse: unknown
   kind?: string
   label?: string
@@ -176,6 +191,14 @@ function detectView(source: unknown): ResultView {
       return { type: 'table', parse: source, kind };
     }
     const record = source as Record<string, unknown>;
+    if (
+      typeof record.command === 'string' ||
+      typeof record.stdout === 'string' ||
+      typeof record.stderr === 'string' ||
+      typeof record.exitCode === 'number'
+    ) {
+      return { type: 'terminal', parse: record };
+    }
     if (
       Array.isArray(record.events) &&
       record.events.length > 0 &&
@@ -235,7 +258,10 @@ const view = computed<ResultView>(() => {
   const guessed = detectView(result)
   const declared = props.tool.displayType
   // P7.4：后端声明渲染形态（ADR-034），前端优先采用，仍保留启发式兜底。
-  if (declared && ['table', 'kv', 'events', 'yaml', 'logs', 'text'].includes(declared)) {
+  if (
+    declared &&
+    ['terminal', 'table', 'kv', 'events', 'yaml', 'logs', 'text'].includes(declared)
+  ) {
     return { ...guessed, type: declared as ResultView['type'] }
   }
   return guessed
@@ -329,11 +355,14 @@ function toggle(): void {
     <!-- 工具错误信息 -->
     <div v-if="expanded && tool.status === 'error'" class="toolcard-error">
       <el-icon><WarningFilled /></el-icon>
-      <span class="toolcard-error-text">{{ tool.error || '工具执行失败' }}</span>
+      <span class="toolcard-error-text">{{ errorText }}</span>
     </div>
 
     <!-- 结构化结果 -->
-    <div v-if="expanded && tool.status !== 'error'" class="toolcard-result">
+    <div
+      v-if="expanded && (tool.status !== 'error' || view.type === 'terminal')"
+      class="toolcard-result"
+    >
       <template v-if="tool.status === 'running'">
         <div class="toolcard-running">
           <span class="running-bar"></span>
@@ -341,8 +370,9 @@ function toggle(): void {
         </div>
       </template>
       <template v-else>
+        <TerminalBlock v-if="view.type === 'terminal'" :data="view.parse" />
         <StructuredTable
-          v-if="view.type === 'table'"
+          v-else-if="view.type === 'table'"
           :items="view.parse as unknown[]"
           :kind="view.kind"
         />

@@ -35,6 +35,7 @@ export function useChatStream() {
   let controller: AbortController | null = null
   let running = false
   let disposed = false
+  const seenEventSeq = new Set<number>()
 
   function reset(): void {
     status.value = 'idle'
@@ -59,10 +60,17 @@ export function useChatStream() {
       // 历史快照为会话重放的断点：重建历史并清空实时事件，规避重连重复。
       history.value = frame.snapshot
       events.value = []
+      seenEventSeq.clear()
       status.value = 'open'
       return
     }
     if (frame.kind === 'event') {
+      if (typeof frame.event.seq === 'number') {
+        if (seenEventSeq.has(frame.event.seq)) {
+          return
+        }
+        seenEventSeq.add(frame.event.seq)
+      }
       events.value.push(frame.event)
       return
     }

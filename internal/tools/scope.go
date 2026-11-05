@@ -104,8 +104,14 @@ func (s AccessScope) Prompt() string {
 	if len(s.Namespaces) == 0 {
 		return "## 当前授权范围\n当前账号尚未获得任何 namespace 授权。不要调用 Kubernetes 查询工具；直接说明当前没有可查询范围，并提示用户联系管理员授权。工具返回 SCOPE_DENIED 时，用自然、专业的业务语言向用户说明，不要输出内部错误码。"
 	}
-	return fmt.Sprintf("## 当前授权范围\n当前账号仅可访问以下 namespace：%s。不要查询其他 namespace，也不要查询 Node、PV、StorageClass、Namespace 等集群级资源。超出范围时，直接说明当前授权范围并提示联系管理员调整授权，不要假设或编造数据。工具返回 SCOPE_DENIED 时，用自然、专业的业务语言向用户说明，不要输出内部错误码。",
+	message := fmt.Sprintf("## 当前授权范围\n当前账号仅可访问以下 namespace：%s。不要查询其他 namespace，也不要查询 Node、PV、StorageClass、Namespace 等集群级资源。超出范围时，直接说明当前授权范围并提示联系管理员调整授权，不要假设或编造数据。工具返回 SCOPE_DENIED 时，用自然、专业的业务语言向用户说明，不要输出内部错误码。",
 		strings.Join(s.Namespaces, "、"))
+	if !s.CanWrite {
+		message += "\n当前执行范围是只读的：不要尝试 patch/scale/create/apply/delete/rollout 等写操作。用户要求修复时，给出诊断结论、待授权命令、预期验证方法和需要管理员完成的授权动作。"
+	} else if !s.CanDestroy {
+		message += "\n当前执行范围允许普通写操作，但不允许 delete 等销毁类操作：不要尝试删除资源；需要销毁时说明需要单独的销毁权限。"
+	}
+	return message
 }
 
 // Check 在执行工具前校验资源作用域。error 文本是给模型与用户的稳定拒绝原因。
@@ -176,6 +182,9 @@ func (s AccessScope) deny(requirement string) error {
 }
 
 func (s AccessScope) checkManifest(manifest string) error {
+	if !s.CanWrite {
+		return s.deny("namespace 写权限")
+	}
 	manifest = strings.TrimSpace(manifest)
 	if manifest == "" {
 		// apply 只携带 proposal_id 时，清单已在 dry-run 阶段完成 scope 校验。
@@ -211,6 +220,9 @@ func (s AccessScope) checkKubectl(command string) error {
 	argv, err := executor.ParseCommand(command)
 	if err != nil {
 		return s.deny("可解析资源作用域的 kubectl 命令")
+	}
+	if !approval.IsReadOnlyCommand(command) {
+		return s.checkKubectlWrite(command)
 	}
 	verbIdx := -1
 	for i, token := range argv {
@@ -253,6 +265,40 @@ func (s AccessScope) checkKubectl(command string) error {
 		return s.deny("显式 namespace 查询范围；当前不允许跨 namespace 查询")
 	}
 	return s.checkNamespace(ns)
+}
+
+// checkKubectlWrite 对非 shell 写命令做平台侧范围门禁。
+// 这里只判断“平台授权是否允许进入后续审批”，不替代 Kubernetes RBAC；
+// 真实 RBAC 仍由执行器与 API Server 兜底。
+func (s AccessScope) checkKubectlWrite(command string) error {
+	target := approval.ParseCommandTarget(command)
+	if target.Operation == "" {
+		return s.deny("可确定操作类型的 kubectl 写命令")
+	}
+	if target.Namespace == "" {
+		return s.deny("显式 namespace 写操作范围；当前不允许跨 namespace 写入")
+	}
+	if err := s.checkNamespace(target.Namespace); err != nil {
+		return err
+	}
+	if !s.CanWrite {
+		return s.deny("namespace 写权限")
+	}
+	if target.Operation == "delete" && isDestroyKind(target.Kind) && !s.CanDestroy {
+		return s.deny("销毁权限")
+	}
+	return nil
+}
+
+func isDestroyKind(kind string) bool {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "namespace", "namespaces", "ns",
+		"persistentvolumeclaim", "persistentvolumeclaims", "pvc", "pvcs",
+		"persistentvolume", "persistentvolumes", "pv", "pvs":
+		return true
+	default:
+		return false
+	}
 }
 
 func stringArg(args map[string]any, key string) string {

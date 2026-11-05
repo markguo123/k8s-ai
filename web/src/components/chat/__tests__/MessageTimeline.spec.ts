@@ -317,4 +317,22 @@ describe('MessageTimeline（P2.6/P2.7 回合聚合）', () => {
     expect(tool.risk).toBe('SAFE')
     expect(tool.result).toEqual(structured)
   })
+
+  it('observation.created ok=false 会把工具卡置为失败', () => {
+    const wrapper = mountTimeline({
+      events: [
+        event('turn.started', { input: '修复' }),
+        event('tool.started', { kind: 'tool', tool: 'kubectl', params: '{"command":"kubectl patch deployment/app"}' }),
+        event('observation.created', {
+          tool: 'kubectl',
+          result: 'Forbidden: cannot patch resource "deployments"',
+          ok: false,
+          displayType: 'terminal',
+          data: { exitCode: 1, stderr: 'Forbidden: cannot patch resource "deployments"' },
+        }),
+      ],
+    })
+    const tool = wrapper.findComponent({ name: 'ToolCallCard' }).props('tool') as { status: string }
+    expect(tool.status).toBe('error')
+  })
 })

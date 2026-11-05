@@ -21,12 +21,19 @@ type Message struct {
 	Ok         *bool           `json:"ok,omitempty"`         // 工具执行是否成功（前端权威判定，回放兜底用）
 	// P7.4 工具结果同源契约（ADR-034）：摘要/渲染形态/耗时/风险在本次执行时一并落库，
 	// 刷新后与 chat 流式结果共用同一份头部信息，避免回放时丢失 "320ms" 与风险标签。
-	Summary     string    `json:"summary,omitempty"`     // 头部概览摘要（后端计算）
-	DisplayType string    `json:"displayType,omitempty"` // table | kv | events | yaml | logs | text
-	DurationMs  int64     `json:"durationMs,omitempty"`  // 工具执行耗时（毫秒）
-	Risk        string    `json:"risk,omitempty"`        // 风险等级（SAFE/LOW/MEDIUM/HIGH/CRITICAL）
-	Content     string    `json:"content"`
-	Timestamp   time.Time `json:"timestamp"`
+	Summary     string `json:"summary,omitempty"`     // 头部概览摘要（后端计算）
+	DisplayType string `json:"displayType,omitempty"` // terminal | table | kv | events | yaml | logs | text
+	DurationMs  int64  `json:"durationMs,omitempty"`  // 工具执行耗时（毫秒）
+	Risk        string `json:"risk,omitempty"`        // 风险等级（SAFE/LOW/MEDIUM/HIGH/CRITICAL）
+	// terminal 结果契约：命令类工具必须同时保留 stdout/stderr/exitCode，
+	// 让实时卡片与刷新回放使用同一份 kubectl 终端事实。
+	Command   string    `json:"command,omitempty"`
+	Stdout    string    `json:"stdout,omitempty"`
+	Stderr    string    `json:"stderr,omitempty"`
+	ExitCode  int       `json:"exitCode,omitempty"`
+	ErrorCode string    `json:"errorCode,omitempty"`
+	Content   string    `json:"content"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 // Session 是一个对话会话。

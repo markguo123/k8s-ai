@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -9,6 +11,14 @@ import (
 	"github.com/k8s-ai/k8s-ai/internal/session"
 	"github.com/k8s-ai/k8s-ai/internal/tools"
 )
+
+type deniedAccessTool struct {
+	stubTool
+}
+
+func (t *deniedAccessTool) CheckClusterAccess(context.Context, json.RawMessage) error {
+	return errors.New("RBAC_DENIED: current execution identity cannot patch deployments")
+}
 
 func TestAgentScopeDenialSkipsToolAndApproval(t *testing.T) {
 	executed := 0
@@ -56,5 +66,39 @@ func TestAgentScopeDenialSkipsToolAndApproval(t *testing.T) {
 	}
 	if !foundDenial {
 		t.Fatal("scope denial was not returned to the model")
+	}
+}
+
+func TestAgentClusterDenialSkipsApprovalAndRemainingWrites(t *testing.T) {
+	executed := 0
+	fl := &fakeLLM{responses: []*llm.ChatResponse{
+		toolCallResp(call("c1", "write", `{}`), call("c2", "write", `{}`)),
+		{Content: "当前执行身份只读，已生成待授权方案。"},
+	}}
+	reg := tools.NewRegistry()
+	if err := reg.Register(&deniedAccessTool{stubTool: stubTool{name: "write", executed: &executed}}); err != nil {
+		t.Fatal(err)
+	}
+	approver := &stubApprover{choices: []string{ChoiceYes}}
+	a := New(Options{
+		LLM:           fl,
+		Tools:         reg,
+		Session:       &session.Session{ID: "rbac"},
+		Approver:      approver,
+		MaxIterations: 3,
+		MaxToolCalls:  5,
+	})
+	answer, _, err := a.Chat(context.Background(), "修复")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executed != 0 {
+		t.Fatalf("preflight denial must not execute writes, got %d", executed)
+	}
+	if approver.calls != 0 {
+		t.Fatalf("preflight denial must not prompt approval, got %d", approver.calls)
+	}
+	if answer != "当前执行身份只读，已生成待授权方案。" {
+		t.Fatalf("answer = %q", answer)
 	}
 }

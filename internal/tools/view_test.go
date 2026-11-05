@@ -1,6 +1,10 @@
 package tools
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/k8s-ai/k8s-ai/internal/executor"
+)
 
 func TestDisplayType(t *testing.T) {
 	cases := []struct {
@@ -36,5 +40,31 @@ func TestToolSummary(t *testing.T) {
 	}
 	if got := ToolSummary("  \n  "); got != "" {
 		t.Fatalf("ToolSummary() = %q, want empty", got)
+	}
+}
+
+func TestDisplayTypeExecutorResultIsTerminal(t *testing.T) {
+	data := executor.Result{
+		Command:  "kubectl -n test-complex get pods",
+		Stdout:   "NAME READY\napp 0/2",
+		Stderr:   "Forbidden: User \"system:serviceaccount:k8s-ai-test:k8s-ai\" cannot patch resource \"deployments\"",
+		ExitCode: 1,
+	}
+	if got := DisplayType(data); got != "terminal" {
+		t.Fatalf("DisplayType(executor.Result) = %q, want terminal", got)
+	}
+}
+
+func TestPresentExecutorForbiddenIsDeniedFailure(t *testing.T) {
+	p := Present(ToolResult{Data: executor.Result{
+		Command:  "kubectl -n test-complex patch deployment/app-backend --type=json",
+		Stderr:   `Forbidden: User "system:serviceaccount:k8s-ai-test:k8s-ai" cannot patch resource "deployments"`,
+		ExitCode: 1,
+	}})
+	if p.Ok {
+		t.Fatal("non-zero kubectl exit must not be successful")
+	}
+	if p.ErrorCode != ErrorRBACDenied {
+		t.Fatalf("ErrorCode = %q, want %q", p.ErrorCode, ErrorRBACDenied)
 	}
 }

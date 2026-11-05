@@ -146,12 +146,15 @@ func (t *fanOutTracer) StepUpdated(ctx context.Context, step *session.Step) {
 		t.emit(sse.New(t.scope.session(), step.TurnID, step.ID, sse.EventToolCompleted, sse.StepData{
 			Kind: sse.StepKindTool, Status: string(step.Status), Seq: step.Seq,
 			Tool: step.Tool, Result: store.RedactJSONPayload(step.Result), Error: step.Error,
+			ErrorCode: step.ErrorCode,
 		}))
 	case session.StepObserve:
 		t.emit(sse.New(t.scope.session(), step.TurnID, step.ID, sse.EventObservationCreated, sse.ObservationData{
 			Tool: step.Tool, Result: store.RedactJSONPayload(step.Result),
 			Summary: step.Summary, DisplayType: step.DisplayType, DurationMs: step.DurationMs, Risk: step.Risk,
-			Data: redactAny(step.Data),
+			Data:    redactAny(step.Data),
+			Command: store.RedactJSONPayload(step.Command), Stdout: store.RedactJSONPayload(step.Stdout), Stderr: store.RedactJSONPayload(step.Stderr),
+			ExitCode: step.ExitCode, ErrorCode: step.ErrorCode,
 		}))
 	case session.StepApproval:
 		if step.Status == session.StepDone {

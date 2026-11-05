@@ -30,6 +30,51 @@ describe('ApprovalCard（P2.9 审批卡）', () => {
     expect(wrapper.text()).toContain('Deployment · web · default')
   })
 
+  it('结构化审批展示目标、变更、检查、验证和命令', () => {
+    const wrapper = mount(ApprovalCard, {
+      props: {
+        approval: approval({
+          title: '修改 Deployment',
+          operation: 'patch Deployment',
+          target: { namespace: 'test-complex', kind: 'Deployment', name: 'app-backend' },
+          command:
+            "kubectl -n test-complex patch deployment app-backend --type=json -p='[{...}]'",
+          changes: [
+            {
+              path: 'containers[0].livenessProbe.httpGet.path',
+              operation: 'replace',
+              after: '/',
+            },
+            {
+              path: 'containers[0].readinessProbe.httpGet.path',
+              operation: 'replace',
+              after: '/',
+            },
+          ],
+          checks: [
+            { name: '平台授权', status: 'passed', message: '允许进入审批' },
+            { name: '集群 RBAC', status: 'passed', message: 'patch deployments 已通过预检' },
+          ],
+          verification: ['Pod 2/2 Ready', 'Deployment 可用副本 = 期望副本'],
+        }),
+      },
+    })
+    expect(wrapper.text()).toContain('修改 Deployment')
+    expect(wrapper.text()).toContain('patch Deployment')
+    expect(wrapper.text()).toContain('test-complex')
+    expect(wrapper.text()).toContain('livenessProbe.httpGet.path')
+    expect(wrapper.text()).toContain('集群 RBAC')
+    expect(wrapper.text()).toContain('Pod 2/2 Ready')
+    expect(wrapper.text()).toContain('复制命令')
+  })
+
+  it('HIGH 风险不展示“本次会话不再询问”', () => {
+    const wrapper = mount(ApprovalCard, { props: { approval: approval() } })
+    expect(wrapper.text()).not.toContain('本次会话都允许')
+    expect(wrapper.text()).toContain('确认并执行')
+    expect(wrapper.findAll('button').filter((button) => button.text() === '拒绝')).toHaveLength(1)
+  })
+
   it('审批通过/拒绝各自回传选择值，不影响会话内其他状态', async () => {
     const wrapper = mount(ApprovalCard, { props: { approval: approval() } })
     const buttons = wrapper.findAll('button')

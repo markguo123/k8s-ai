@@ -81,6 +81,32 @@ describe('ToolCallCard（P2.8 工具卡）', () => {
     expect(wrapper.html()).not.toContain('[object Object]')
   })
 
+  it('kubectl 的真实 Result 使用终端视图，失败时保留 stderr 与退出码', () => {
+    const wrapper = mount(ToolCallCard, {
+      props: {
+        tool: tool({
+          name: 'kubectl',
+          shortName: 'patch',
+          command: 'kubectl -n test-complex patch deployment app-backend --type=json',
+          status: 'error',
+          ok: false,
+          error: 'RBAC_DENIED',
+          displayType: 'terminal',
+          result: {
+            command: 'kubectl -n test-complex patch deployment app-backend --type=json',
+            stdout: 'deployment.apps/app-backend patched',
+            stderr: 'Forbidden: cannot patch resource "deployments"',
+            exitCode: 1,
+          },
+          raw: '',
+        }),
+      },
+    })
+    expect(wrapper.find('.toolcard-terminal').exists()).toBe(true)
+    expect(wrapper.text()).toContain('Forbidden')
+    expect(wrapper.text()).toContain('退出码 1')
+  })
+
   it('create_resource 两段式：展示 manifest 与 dry-run/validated/applied 状态', () => {
     const wrapper = mount(ToolCallCard, {
       props: {

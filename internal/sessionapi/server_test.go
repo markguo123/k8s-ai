@@ -18,11 +18,12 @@ import (
 
 // fakeChat 是 sessionapi 测试用 ChatService 桩。
 type fakeChat struct {
-	mu        sync.Mutex
-	sessions  map[string]*session.Session
-	script    []service.ChatEvent
-	gotChoice string
-	gotSkills []string
+	mu                 sync.Mutex
+	sessions           map[string]*session.Session
+	script             []service.ChatEvent
+	gotChoice          string
+	gotSkills          []string
+	gotSkipPermissions bool
 }
 
 func newFakeChat(script ...service.ChatEvent) *fakeChat {
@@ -126,6 +127,7 @@ func (f *fakeChat) PinSession(id string, pinned bool) error {
 func (f *fakeChat) Chat(ctx context.Context, req service.ChatRequest, respond <-chan string) (<-chan service.ChatEvent, error) {
 	f.mu.Lock()
 	f.gotSkills = append([]string{}, req.Skills...)
+	f.gotSkipPermissions = req.SkipPermissions
 	f.mu.Unlock()
 	out := make(chan service.ChatEvent, len(f.script)+4)
 	go func() {
@@ -150,6 +152,30 @@ func (f *fakeChat) Chat(ctx context.Context, req service.ChatRequest, respond <-
 		}
 	}()
 	return out, nil
+}
+
+func TestWebSendMessageCannotEnableSkipPermissions(t *testing.T) {
+	chat := newFakeChat()
+	srv := httptest.NewServer(testHandler(New(chat, "qwen-plus")))
+	defer srv.Close()
+
+	resp := postJSON(t, srv.URL+"/api/v1/sessions", `{"id":"s-skip"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("create session status = %d", resp.StatusCode)
+	}
+
+	resp = postJSON(t, srv.URL+"/api/v1/sessions/s-skip/send-message", `{"query":"修复","skipPermissions":true}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("send status = %d", resp.StatusCode)
+	}
+	chat.mu.Lock()
+	got := chat.gotSkipPermissions
+	chat.mu.Unlock()
+	if got {
+		t.Fatal("Web request body must not enable skipPermissions")
+	}
 }
 
 func (f *fakeChat) persistToolResponse(id string, tool *service.ChatToolCallView) {

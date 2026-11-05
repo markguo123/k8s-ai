@@ -105,24 +105,29 @@ const scopeWelcome = computed(() => {
   }
   if (scope.isAdmin || scope.clusterScoped) {
     return {
-      title: '当前授权范围：全集群',
-      hint: '你可以查询全部命名空间，以及 Node、PV、StorageClass 等集群级资源。',
-      tags: ['全部命名空间', '集群级资源'],
+      title: '当前授权范围：全集群，平台允许发起修复',
+      hint:
+        '你可以查询全部命名空间，以及 Node、PV、StorageClass 等集群级资源；写操作仍会经过审批。',
+      tags: ['全部命名空间', '集群级资源', '平台可写'],
     }
   }
   if (scope.namespaces.length === 0) {
     return {
       title: '当前尚未获得命名空间授权',
-      hint: '请联系管理员完成 namespace 授权后重新打开会话。授权生效前无法查询集群资源。',
-      tags: [],
+      hint: '请联系管理员完成 namespace 授权。授权生效前无法查询或修改集群资源。',
+      tags: ['只读诊断'],
     }
   }
+  const canWrite = scope.canWrite
   return {
-    title: `当前授权范围：${scope.namespaces.length} 个命名空间`,
+    title: `当前授权范围：${scope.namespaces.length} 个命名空间${canWrite ? '，平台允许发起修复' : '，只读诊断'}`,
     hint:
-      '你可以查询以下命名空间内的工作负载、Pod、事件、日志并执行故障诊断。' +
-      '其他命名空间及 Node、PV、StorageClass 等集群级资源需要管理员单独授权。',
-    tags: scope.namespaces,
+      canWrite
+        ? '你可以查询以下命名空间内的工作负载、Pod、事件、日志；修复操作仍需要审批，集群 RBAC 也必须允许。' +
+          '其他命名空间及 Node、PV、StorageClass 等集群级资源需要管理员单独授权。'
+        : '你可以查询以下命名空间内的工作负载、Pod、事件、日志并生成修复建议；当前没有可用的写权限。' +
+          '其他命名空间及 Node、PV、StorageClass 等集群级资源需要管理员单独授权。',
+    tags: [...scope.namespaces, canWrite ? '平台可写' : '只读诊断'],
   }
 })
 

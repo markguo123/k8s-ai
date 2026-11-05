@@ -119,7 +119,16 @@ type Server struct {
 	broadcasters map[string]*Broadcaster
 	pending      map[string]chan string        // sessionID → 当前 Chat 的审批响应通道
 	runs         map[string]context.CancelFunc // sessionID → 当前 Chat 运行取消函数
+	eventSeq     map[string]uint64
+	eventLogs    map[string][]bufferedEvent
 }
+
+type bufferedEvent struct {
+	seq uint64
+	raw []byte
+}
+
+const maxBufferedEventsPerSession = 512
 
 // New 创建会话 API 服务。
 func New(chat chatService, model string) *Server {
@@ -129,16 +138,36 @@ func New(chat chatService, model string) *Server {
 		broadcasters: map[string]*Broadcaster{},
 		pending:      map[string]chan string{},
 		runs:         map[string]context.CancelFunc{},
+		eventSeq:     map[string]uint64{},
+		eventLogs:    map[string][]bufferedEvent{},
 	}
 	// 服务端事件路由：统一事件按 session_id 扇出到对应 Broadcaster；
 	// 旧 ChatEvent JSON 仍在 handleSendMessage 里并行广播，两者不互相覆盖。
 	if em, ok := chat.(sseEmitter); ok {
 		em.SetSink(func(e sse.Event) {
+			// 事件日志只保留当前运行回合，供重连时补齐工具/审批流；
+			// 新一回合开始或会话重新发消息时清空旧日志，避免与历史快照重复。
+			s.mu.Lock()
+			id := e.SessionID
+			if e.EventType == sse.EventSessionCreated || e.EventType == sse.EventTurnStarted {
+				s.eventLogs[id] = nil
+			}
+			s.eventSeq[id]++
+			e.Seq = s.eventSeq[id]
 			raw, err := json.Marshal(e)
 			if err != nil {
+				s.mu.Unlock()
 				slog.Warn("sessionapi: 统一事件序列化失败", "error", err)
 				return
 			}
+			if id != "" {
+				logs := append(s.eventLogs[id], bufferedEvent{seq: e.Seq, raw: raw})
+				if len(logs) > maxBufferedEventsPerSession {
+					logs = logs[len(logs)-maxBufferedEventsPerSession:]
+				}
+				s.eventLogs[id] = logs
+			}
+			s.mu.Unlock()
 			s.broadcaster(e.SessionID).broadcast(raw)
 		})
 	}
@@ -433,6 +462,8 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	delete(s.broadcasters, id)
 	delete(s.pending, id)
 	delete(s.runs, id)
+	delete(s.eventSeq, id)
+	delete(s.eventLogs, id)
 	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]string{"deleted": id})
 }
@@ -458,6 +489,9 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	// 反向代理（Nginx 等）默认缓冲响应体，会把 SSE 攒成一段一段；显式关闭本响应的
 	// 缓冲，代理配置遗漏时也能正常推流（P6.11）。
 	w.Header().Set("X-Accel-Buffering", "no")
+	b := s.broadcaster(id)
+	ch := b.add()
+	defer b.remove(ch)
 	snapshot, _ := json.Marshal(map[string]any{
 		"type":      "history",
 		"sessionId": sess.ID,
@@ -469,9 +503,17 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "data: %s\n\n", snapshot)
 	flusher.Flush()
 
-	b := s.broadcaster(id)
-	ch := b.add()
-	defer b.remove(ch)
+	// 运行中回合的事件日志先补齐，再消费实时通道。客户端按 seq 去重，
+	// 因此这里与快照之后到达的实时帧重叠也不会产生重复卡片。
+	if sess.State == "running" || sess.State == "waiting" {
+		s.mu.Lock()
+		logs := append([]bufferedEvent(nil), s.eventLogs[id]...)
+		s.mu.Unlock()
+		for _, item := range logs {
+			fmt.Fprintf(w, "data: %s\n\n", item.raw)
+			flusher.Flush()
+		}
+	}
 	for {
 		select {
 		case <-r.Context().Done():
@@ -487,8 +529,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var body struct {
-		Query           string `json:"query"`
-		SkipPermissions bool   `json:"skipPermissions"`
+		Query string `json:"query"`
 		// Skills 用户显式 @ 指定的 Skill 名称（P3.8.4），由 service 层强校验。
 		Skills []string `json:"skills"`
 	}
@@ -548,7 +589,6 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		UserID:          principal.User.ID,
 		AllowAnySession: principal.canManageAllSessions(),
 		AccessScope:     accessScope,
-		SkipPermissions: body.SkipPermissions,
 		Skills:          body.Skills,
 	}, respond)
 	if err != nil {

@@ -39,6 +39,23 @@ func (f *fakeWriteRunner) DeletePod(context.Context, string, string, *int64) (ex
 	return executor.Result{Stdout: "deleted"}, nil
 }
 
+type accessPreflightRunner struct {
+	fakeWriteRunner
+	allowed bool
+}
+
+func (f *accessPreflightRunner) CanI(context.Context, string, string, string, string, string) (bool, error) {
+	return f.allowed, nil
+}
+
+func TestKubectlToolPreflightBlocksDeniedWrite(t *testing.T) {
+	tool := &kubectlTool{runner: &accessPreflightRunner{allowed: false}}
+	err := tool.CheckClusterAccess(context.Background(), json.RawMessage(`{"command":"kubectl -n test-complex patch deployment app-backend --type=merge -p '{}'"}`))
+	if err == nil {
+		t.Fatal("denied SAR must block kubectl write")
+	}
+}
+
 func TestKubectlToolReadOnlyAndRisk(t *testing.T) {
 	r := &fakeWriteRunner{}
 	ts := NewWriteTools(r)

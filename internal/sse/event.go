@@ -38,6 +38,7 @@ type Event struct {
 	SessionID string    `json:"session_id"`
 	TurnID    string    `json:"turn_id"`
 	StepID    string    `json:"step_id"`
+	Seq       uint64    `json:"seq,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
 	EventType EventType `json:"event_type"`
 	Data      any       `json:"data"`
@@ -86,14 +87,15 @@ type TurnData struct {
 
 // StepData 是 reason.* / tool.* 事件的载荷。Params/Result 在封装前必须脱敏。
 type StepData struct {
-	Kind   StepKind `json:"kind"`
-	Status string   `json:"status"`
-	Seq    int      `json:"seq,omitempty"`
-	Tool   string   `json:"tool,omitempty"`
-	Risk   string   `json:"risk,omitempty"`
-	Params string   `json:"params,omitempty"`
-	Result string   `json:"result,omitempty"`
-	Error  string   `json:"error,omitempty"`
+	Kind      StepKind `json:"kind"`
+	Status    string   `json:"status"`
+	Seq       int      `json:"seq,omitempty"`
+	Tool      string   `json:"tool,omitempty"`
+	Risk      string   `json:"risk,omitempty"`
+	Params    string   `json:"params,omitempty"`
+	Result    string   `json:"result,omitempty"`
+	Error     string   `json:"error,omitempty"`
+	ErrorCode string   `json:"errorCode,omitempty"`
 }
 
 // ObservationData 是 observation.created 事件的载荷（工具结果观察，脱敏后摘要）。
@@ -108,6 +110,13 @@ type ObservationData struct {
 	DurationMs  int64  `json:"durationMs,omitempty"`
 	Risk        string `json:"risk,omitempty"`
 	Data        any    `json:"data,omitempty"`
+	// 命令类结果的终端事实。前端 terminal 视图直接消费这些字段，
+	// 不再从任意 data 对象猜测 stdout/stderr。
+	Command   string `json:"command,omitempty"`
+	Stdout    string `json:"stdout,omitempty"`
+	Stderr    string `json:"stderr,omitempty"`
+	ExitCode  int    `json:"exitCode,omitempty"`
+	ErrorCode string `json:"errorCode,omitempty"`
 }
 
 // ChoiceOption 是审批可选项。
@@ -116,14 +125,48 @@ type ChoiceOption struct {
 	Value string `json:"value"`
 }
 
+type ApprovalTarget struct {
+	Cluster   string `json:"cluster,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+	Group     string `json:"group,omitempty"`
+	Version   string `json:"version,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	Name      string `json:"name,omitempty"`
+}
+
+type ApprovalChange struct {
+	Path        string `json:"path"`
+	Operation   string `json:"operation,omitempty"`
+	Before      any    `json:"before,omitempty"`
+	After       any    `json:"after,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+type ApprovalCheck struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
+}
+
 // ApprovalData 是 approval.* 事件的载荷。Secret 为 true 时前端以密码框取值，
 // 值永不回显、不入事件流。
 type ApprovalData struct {
-	Prompt   string         `json:"prompt,omitempty"`
-	Options  []ChoiceOption `json:"options,omitempty"`
-	Secret   bool           `json:"secret,omitempty"`
-	Decision string         `json:"decision,omitempty"` // approved | rejected
-	Resource map[string]any `json:"resource,omitempty"`
+	ID           string           `json:"id,omitempty"`
+	Title        string           `json:"title,omitempty"`
+	Tool         string           `json:"tool,omitempty"`
+	Operation    string           `json:"operation,omitempty"`
+	Risk         string           `json:"risk,omitempty"`
+	Summary      string           `json:"summary,omitempty"`
+	Command      string           `json:"command,omitempty"`
+	Prompt       string           `json:"prompt,omitempty"`
+	Options      []ChoiceOption   `json:"options,omitempty"`
+	Target       *ApprovalTarget  `json:"target,omitempty"`
+	Changes      []ApprovalChange `json:"changes,omitempty"`
+	Checks       []ApprovalCheck  `json:"checks,omitempty"`
+	Verification []string         `json:"verification,omitempty"`
+	Secret       bool             `json:"secret,omitempty"`
+	Decision     string           `json:"decision,omitempty"` // approved | rejected
+	Resource     map[string]any   `json:"resource,omitempty"`
 }
 
 // MessageData 是 message.delta / message.completed 事件的载荷。

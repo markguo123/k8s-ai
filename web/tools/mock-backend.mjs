@@ -166,16 +166,32 @@ const TURN_EVENTS = [
     turn_id: 't-demo',
     step_id: 's-5',
     data: {
+      title: '修改 Deployment',
+      operation: 'create_resource / apply',
+      risk: 'HIGH',
+      command: 'create_resource mode=apply  Deployment/default/web-deployment',
       prompt: 'create_resource 将对 Deployment/web-deployment（default）执行 apply：提升内存 limit 至 1Gi 并补探针。',
       options: [
         { label: '确认并执行', value: 'yes' },
-        { label: '本次会话都允许', value: 'always' },
       ],
       tool: 'create_resource',
-      risk: 'HIGH',
       params: 'mode=dry_run → apply（两段式）· Grant 未命中写白名单 · 需自确认',
       resource: { kind: 'Deployment', name: 'web-deployment', namespace: 'default' },
       reason: 'Grant 未命中写白名单 · 需自确认',
+      target: { namespace: 'default', kind: 'Deployment', name: 'web-deployment' },
+      changes: [
+        { path: 'containers[0].resources.limits.memory', operation: 'set', after: '1Gi' },
+        { path: 'containers[0].livenessProbe', operation: 'add', after: '配置 HTTP 探针' },
+      ],
+      checks: [
+        { name: '平台授权', status: 'passed', message: '当前用户允许发起资源变更' },
+        { name: '集群 RBAC', status: 'passed', message: '当前执行身份可 apply Deployment' },
+        { name: 'Dry-run', status: 'passed', message: 'manifest 已通过服务端预演' },
+      ],
+      verification: [
+        'Deployment 可用副本达到期望值',
+        'Pod 全部 Ready，重启次数不再增长',
+      ],
     },
   },
   {
