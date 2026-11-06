@@ -947,6 +947,19 @@ pvc_diag() { # PVC 没 Bound 时的统一排障输出
   _emit "$("$KUBECTL_BIN" get storageclass 2>&1 || true)"
 }
 
+pvc_wait_bound() { # $1=timeout seconds
+  local timeout="$1" deadline phase
+  deadline=$((SECONDS + timeout))
+  while (( SECONDS < deadline )); do
+    phase="$("$KUBECTL_BIN" -n "$NAMESPACE" get pvc "$PVC_NAME" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+    if [[ "$phase" == "Bound" ]]; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
 # storageClassName 创建后不可修改。既有 PVC 已经定了存储类时：参数留空就沿用既有值重新渲染
 # （否则 apply 会被 API 判成「把存储类改回未指定」而拒绝）；参数给了别的名字就直接拒绝，
 # 因为这个字段无论怎么改都改不动，猜一个只会把失败推到更晚的阶段。
@@ -994,7 +1007,7 @@ stage_pvc() {
   fi
 
   info "等待 PVC Bound（存储类 ${class:-<未指定>}，绑定模式 ${mode:-<未知>}，最多 ${WAIT_TIMEOUT}s）"
-  if ! "$KUBECTL_BIN" -n "$NAMESPACE" wait --for=condition=bound "persistentvolumeclaim/${PVC_NAME}" --timeout="${WAIT_TIMEOUT}s" >/dev/null 2>&1; then
+  if ! pvc_wait_bound "$WAIT_TIMEOUT"; then
     pvc_diag
     die "PVC ${PVC_NAME} 在 ${WAIT_TIMEOUT}s 内没有 Bound" \
       "看上面 events：多为存储类无 provisioner、容量超限、访问模式不匹配（多副本要 RWX）；绑定模式为 WaitForFirstConsumer 时属正常延迟，本脚本会自动改到阶段 6 之后校验"
@@ -1010,7 +1023,7 @@ pvc_verify_deferred_bind() {
   local class
   class="$(pvc_resolve_class)"
   info "校验延迟绑定的 PVC ${PVC_NAME}（存储类 ${class:-<未知>}）"
-  if ! "$KUBECTL_BIN" -n "$NAMESPACE" wait --for=condition=bound "persistentvolumeclaim/${PVC_NAME}" --timeout=60s >/dev/null 2>&1; then
+  if ! pvc_wait_bound 60; then
     pvc_diag
     _emit "$("$KUBECTL_BIN" -n "$NAMESPACE" get pods -o wide 2>&1 | tail -n 12 || true)"
     die "延迟绑定模式下 PVC 仍未 Bound：${class} 的 provisioner 没能创建出卷" \
@@ -1351,14 +1364,19 @@ can_i() { # $1=verb $2=resource $3=extra(如 -n ns)
 }
 
 # blobs_current_backend 输出集群里当前生效的对象存储 driver。
-# 先看后端 Deployment 的 env（install.sh 对四个 driver 都下发 driver，手工 patch 也落在这里，
-# env 优先级最高；db 也不例外，否则从 s3 切回 db 时闸门读不到旧后端），
-# 再看 ConfigMap 里 platform.blobs.driver。取不到（首次安装/组件被删）就输出空串。
+# 先看后端 Deployment 是否存在；不存在说明工作负载已被删除，失败安装遗留的 ConfigMap
+# 不能代表现网后端。Deployment 存在时先看 env（install.sh 对四个 driver 都下发 driver，
+# 手工 patch 也落在这里，env 优先级最高；db 也不例外），再回退到 ConfigMap，
+# 兼容尚未注入 driver env 的旧版本。
 # 注意不能直接取 config.yaml 里第一个 driver——那是 platform.store.driver。
 blobs_current_backend() {
-  local out="" cm=""
-  out="$("$KUBECTL_BIN" -n "$NAMESPACE" get deploy aegisops-server \
-    -o jsonpath='{.spec.template.spec.containers[*].env[?(@.name=="AEGISOPS_PLATFORM_BLOBS_DRIVER")].value}' 2>/dev/null || true)"
+  local deploy_cfg="" out="" cm=""
+  deploy_cfg="$("$KUBECTL_BIN" -n "$NAMESPACE" get deploy aegisops-server \
+    -o jsonpath='{.metadata.name}{"|"}{.spec.template.spec.containers[*].env[?(@.name=="AEGISOPS_PLATFORM_BLOBS_DRIVER")].value}' 2>/dev/null || true)"
+  if [[ -z "$deploy_cfg" ]]; then
+    return 0
+  fi
+  out="${deploy_cfg#*|}"
   out="${out//[[:space:]]/}"
   if [[ -n "$out" ]]; then printf '%s' "$out"; return 0; fi
   cm="$("$KUBECTL_BIN" -n "$NAMESPACE" get configmap aegisops-config \
