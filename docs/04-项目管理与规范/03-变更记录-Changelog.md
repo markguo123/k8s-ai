@@ -29,6 +29,18 @@ P2.11 三期 Chat 行为回归、P2.12 前端测试与构建门禁、P2.13 会�
   前端偏好会重置。
 - Go module 路径 `github.com/k8s-ai/k8s-ai` 作为内部技术标识保留，不随对外品牌变更。
 
+### Changed（2026-11-06，Agent 非交互 exec 与 Secret 按需诊断）
+
+- 非交互 `kubectl exec <pod> -- <command>` 开放，但每次必须真人审批，`skip_permissions`
+  不得绕过；stdin/tty、attach、port-forward 等继续硬拒。
+- `agent.secret.access` 新增 `read_on_demand`，只允许 `get_secret_value` 按
+  namespace/name/key 读取，单次最多 5 key；`read_write` 继续拒绝。
+- Secret 明文只进入当前轮模型上下文；ToolResult 拆出 `ModelOnly/SensitiveValues`，
+  UI/SSE、会话、数据库、审计、最终回答及后续工具参数/输出统一精确脱敏。
+- 写 RBAC 示例新增 `pods/exec create`，不授权 `pods/portforward` 与 `pods/attach`。
+- 新增 ADR-048 与《19-方案-Agent执行与Secret按需诊断-四期.md》，取代旧的
+  “Secret 永不进入任何 LLM / pods/exec 永不授权”绝对口径。
+
 ### Added（2026-11-04，体检 RBAC 采集与权限分析闭环）
 
 - 体检采集补齐 `Role`、`RoleBinding`、`ClusterRole`、`ClusterRoleBinding` 四类只读元数据，统一落到

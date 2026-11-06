@@ -151,6 +151,12 @@ func ParseCommandTarget(command string) CommandTarget {
 	}
 	t := CommandTarget{Operation: fields[verbIdx]}
 	rest := fields[verbIdx+1:]
+	if t.Operation == "exec" {
+		t.Namespace = namespaceFromFields(fields)
+		t.Kind = "pod"
+		t.Name = firstExecPod(rest)
+		return t
+	}
 	if t.Operation == "rollout" {
 		if i := firstNonFlagIndex(rest); i >= 0 {
 			t.Operation = "rollout " + rest[i]
@@ -199,6 +205,31 @@ func ParseCommandTarget(command string) CommandTarget {
 		}
 	}
 	return t
+}
+
+// firstExecPod 返回 `kubectl exec <pod> ... -- <command>` 里的 Pod 名。
+// exec 的第一个位置参数没有资源类型前缀，不能交给通用 kind/name 解析器。
+func firstExecPod(fields []string) string {
+	for i := 0; i < len(fields); i++ {
+		f := fields[i]
+		if f == "--" {
+			return ""
+		}
+		if strings.HasPrefix(f, "-") {
+			if strings.Contains(f, "=") {
+				continue
+			}
+			if valueFlags[f] && i+1 < len(fields) {
+				i++
+			}
+			continue
+		}
+		if slash := strings.Index(f, "/"); slash >= 0 {
+			return f[slash+1:]
+		}
+		return f
+	}
+	return ""
 }
 
 // firstNonFlagIndex 返回第一个非 flag 字段的下标，找不到返回 -1。

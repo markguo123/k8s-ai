@@ -92,6 +92,12 @@ func TestParseCommandRejects(t *testing.T) {
 		"kubectl port-forward svc/x 80:80",
 		"kubectl exec -it pod -- ls",
 		"kubectl exec -i pod -- ls",
+		"kubectl exec -i=true pod -- ls",
+		"kubectl exec -t=false pod -- ls",
+		"kubectl exec --stdin=false pod -- ls",
+		"kubectl exec --tty=false pod -- ls",
+		"kubectl exec pod -n default cat /etc/os-release",
+		"kubectl exec pod -n default --",
 		"kubectl frobnicate pods",
 		`kubectl get pods "unbalanced`,
 		"",
@@ -101,6 +107,17 @@ func TestParseCommandRejects(t *testing.T) {
 		if _, err := ParseCommand(cmd); err == nil {
 			t.Errorf("应拒绝: %q", cmd)
 		}
+	}
+}
+
+func TestParseCommandAllowsNonInteractiveExec(t *testing.T) {
+	cmd := "kubectl exec pod-1 -n default -- cat /etc/os-release"
+	pc, err := ParseCommandDetail(cmd)
+	if err != nil {
+		t.Fatalf("非交互 exec 应允许: %v", err)
+	}
+	if pc.IsShell {
+		t.Fatal("普通 exec 不应被当成 shell")
 	}
 }
 

@@ -41,10 +41,20 @@ func (f *fakeWriteRunner) DeletePod(context.Context, string, string, *int64) (ex
 
 type accessPreflightRunner struct {
 	fakeWriteRunner
-	allowed bool
+	allowed   bool
+	lastVerb  string
+	lastGroup string
+	lastRes   string
+	lastNS    string
+	lastName  string
 }
 
-func (f *accessPreflightRunner) CanI(context.Context, string, string, string, string, string) (bool, error) {
+func (f *accessPreflightRunner) CanI(_ context.Context, verb, group, resource, namespace, name string) (bool, error) {
+	f.lastVerb = verb
+	f.lastGroup = group
+	f.lastRes = resource
+	f.lastNS = namespace
+	f.lastName = name
 	return f.allowed, nil
 }
 
@@ -53,6 +63,31 @@ func TestKubectlToolPreflightBlocksDeniedWrite(t *testing.T) {
 	err := tool.CheckClusterAccess(context.Background(), json.RawMessage(`{"command":"kubectl -n test-complex patch deployment app-backend --type=merge -p '{}'"}`))
 	if err == nil {
 		t.Fatal("denied SAR must block kubectl write")
+	}
+}
+
+func TestKubectlToolPreflightMapsExecSubresource(t *testing.T) {
+	runner := &accessPreflightRunner{allowed: true}
+	tool := &kubectlTool{runner: runner}
+	err := tool.CheckClusterAccess(context.Background(), json.RawMessage(`{"command":"kubectl exec app-0 -n prod -- cat /etc/os-release"}`))
+	if err != nil {
+		t.Fatalf("allowed exec should pass: %v", err)
+	}
+	if runner.lastVerb != "create" || runner.lastGroup != "" || runner.lastRes != "pods/exec" {
+		t.Fatalf("exec preflight mapped to %s %s/%s, want create /pods/exec", runner.lastVerb, runner.lastGroup, runner.lastRes)
+	}
+	if runner.lastNS != "prod" || runner.lastName != "app-0" {
+		t.Fatalf("exec target = %s/%s, want prod/app-0", runner.lastNS, runner.lastName)
+	}
+}
+
+func TestKubectlExecAlwaysRequiresHumanApproval(t *testing.T) {
+	tool := &kubectlTool{runner: &fakeWriteRunner{}}
+	if !tool.RequiresHumanApproval(json.RawMessage(`{"command":"kubectl exec app-0 -n prod -- cat /etc/os-release"}`)) {
+		t.Fatal("non-interactive exec must require human approval even with skip_permissions")
+	}
+	if tool.RequiresHumanApproval(json.RawMessage(`{"command":"kubectl get pods"}`)) {
+		t.Fatal("ordinary read should not be marked mandatory approval")
 	}
 }
 

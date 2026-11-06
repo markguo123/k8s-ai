@@ -32,6 +32,11 @@ type ToolResult struct {
 	Text      string // 人读摘要（终端/Web 展示）
 	Truncated bool   // Data/Text 是否因超限被截断
 	Redacted  bool   // 是否发生了脱敏
+	// ModelOnly 只进入当前一轮 LLM 上下文，绝不进入 UI、SSE、会话或审计。
+	// 当前仅用于审批后的 Secret 按 key 诊断值。
+	ModelOnly any `json:"-"`
+	// SensitiveValues 是当前轮必须从所有非模型出口精确遮蔽的原值。
+	SensitiveValues []string `json:"-"`
 	// ErrorCode 是稳定的工具错误分类；为空时由 Present 根据结果内容推导。
 	// 该字段只用于 Agent/UI 判断，不改变真实 Kubernetes 授权边界。
 	ErrorCode string
@@ -42,6 +47,12 @@ type ToolResult struct {
 // 时应返回 nil，让真实 API 调用/审批链路继续作为最终边界。
 type ClusterAccessChecker interface {
 	CheckClusterAccess(ctx context.Context, input json.RawMessage) error
+}
+
+// MandatoryHumanApproval 标记即使开启 --skip-permissions / require_approval=false
+// 也必须由真人确认的敏感工具调用。
+type MandatoryHumanApproval interface {
+	RequiresHumanApproval(input json.RawMessage) bool
 }
 
 // MetadataDescriber 是可选接口：为模型可见的 Tool Schema 提供静态安全元数据前缀。

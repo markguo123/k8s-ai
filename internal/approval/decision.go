@@ -30,6 +30,9 @@ type Input struct {
 	ReadOnly bool
 	Risk     model.RiskLevel
 	Shell    bool
+	// RequireHuman marks sensitive operations that can never be skipped by
+	// automation flags (for example non-interactive exec or Secret reads).
+	RequireHuman bool
 	// Denied 是 Code Guard 的硬拒绝结论（kind 黑名单、未 dry run、命名空间缺失等）。
 	// 它优先级最高：跳过 SkipPermissions 与 RequireApproval=false，因为这两条
 	// 自动化通道只免除「人工确认」，不能免除代码级门禁。
@@ -48,7 +51,7 @@ func (p Policy) Evaluate(in Input) Decision {
 	if in.Denied {
 		return DecisionDeny
 	}
-	if in.Shell {
+	if in.Shell || in.RequireHuman {
 		return DecisionRequireApproval
 	}
 	if in.ReadOnly {

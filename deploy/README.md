@@ -207,7 +207,9 @@ Deployment 即可，不需要先删；反向切换同理。
 - 部署期种子配置（模型地址/模型名/默认命名空间）：`deploy/example/env-overrides.example.yaml`。
   密钥态变量（DSN、`AEGISOPS_LLM_API_KEY`）恒优先，种子态只在配置库该键为空时生效一次。
 - 开放写操作：`kubectl apply -f deploy/rbac-write.example.yaml`，并在配置中心按命名空间授权；
-  镜像内无 shell/kubectl，写执行只走 client-go。
+  镜像内置 kubectl，执行仍只经 `internal/executor`，非交互 `pods/exec` 每次真人审批。
+- Secret 按需诊断：配置中心设置 `agent.secret.access=read_on_demand`；只允许
+  `get_secret_value` 逐 key 审批读取，明文仅当前轮模型可见，审计/会话/SSE/最终回答脱敏。
 - 每日巡检：`kubectl apply -f deploy/scan/configmap.yaml -f deploy/scan/cronjob.yaml`（先把
   `scan/configmap.yaml` 里的 `REPLACE_WITH_LLM_HOST` / `REPLACE_WITH_MODEL_NAME` 换成现场值，
   或改 `llm.enabled: false`）。

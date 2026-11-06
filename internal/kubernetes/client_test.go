@@ -114,8 +114,8 @@ func TestTruncateLogs(t *testing.T) {
 	}
 }
 
-// TestListSecretMetaStripsData 验证 ListSecretMeta 只暴露元数据与键名，
-// Secret 内容值在采集边界剥离，绝不进入应用/证据/LLM/会话/审计（AGENTS.md LLM Safety）。
+// TestListSecretMetaStripsData 验证巡检采集边界只暴露元数据与键名。
+// 内容值仅能经独立的审批制诊断通道读取，不进入证据链路。
 func TestListSecretMetaStripsData(t *testing.T) {
 	cs := fake.NewSimpleClientset(
 		&corev1.Secret{
@@ -144,5 +144,34 @@ func TestListSecretMetaStripsData(t *testing.T) {
 	}
 	if strings.Contains(fmt.Sprintf("%+v", sec), "s3cr3t-pass") || strings.Contains(fmt.Sprintf("%+v", sec), "admin") {
 		t.Fatal("Secret 内容值不得出现在元数据中")
+	}
+}
+
+// TestGetSecretValuesReturnsOnlyRequestedKeys 验证按需读取是逐 key 的：
+// 不能把同 namespace 的其它 key 或其它 Secret 一并带出只读门面。
+func TestGetSecretValuesReturnsOnlyRequestedKeys(t *testing.T) {
+	cs := fake.NewSimpleClientset(
+		&corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "db-secret", Namespace: "default"},
+			Data: map[string][]byte{
+				"username": []byte("admin"),
+				"password": []byte("s3cr3t-pass"),
+			},
+		},
+		&corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: "default"},
+			Data:       map[string][]byte{"password": []byte("other-pass")},
+		},
+	)
+	c := NewClientWithClientset(cs)
+	values, err := c.GetSecretValues(context.Background(), "default", "db-secret", []string{"password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 1 || string(values["password"]) != "s3cr3t-pass" {
+		t.Fatalf("values = %#v, want only password", values)
+	}
+	if _, ok := values["username"]; ok {
+		t.Fatal("未请求的 key 不应返回")
 	}
 }

@@ -33,8 +33,10 @@ type jobTemplateHolder struct {
 }
 
 type podTemplateSpec struct {
-	Containers []containerSpec `yaml:"containers"`
-	Volumes    []volumeSpec    `yaml:"volumes"`
+	ServiceAccountName           string          `yaml:"serviceAccountName"`
+	AutomountServiceAccountToken *bool           `yaml:"automountServiceAccountToken"`
+	Containers                   []containerSpec `yaml:"containers"`
+	Volumes                      []volumeSpec    `yaml:"volumes"`
 }
 
 type containerSpec struct {

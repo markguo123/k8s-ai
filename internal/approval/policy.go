@@ -34,10 +34,10 @@ func IsDenied(denyOps []string, command string) bool {
 	return false
 }
 
-// IsForbiddenCommand 判断命令是否触碰 LLM 数据安全硬红线，
+// IsForbiddenCommand 判断命令是否触碰 kubectl 数据安全硬红线，
 // 命中则无论只读/写、无论是否审批，一律拒绝执行：
-//   - 红线 1：任何形式的 Secret 资源访问——工具输出会进入 LLM 上下文，
-//     违反 "Never send Kubernetes Secret data to the LLM"（AGENTS.md）。
+//   - 红线 1：kubectl 直接访问 Secret 资源。结构化按需读取必须走
+//     get_secret_value 的审批与当前轮模型专用数据通道。
 //   - 红线 2：--raw flag——可绕过资源名直接请求任意 API 路径（含 secret data）。
 //
 // 匹配非 flag 的资源 token：secret、secrets、secret/name。

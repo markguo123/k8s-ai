@@ -2,6 +2,10 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/k8s-ai/k8s-ai/internal/approval"
@@ -96,34 +100,36 @@ type Agent struct {
 	HistoryTurns   int
 
 	// turn 是当前聊天轮的运行轨迹（P1.8），Chat 执行期间非 nil。
-	turn    *session.Turn
-	stepSeq int
+	turn            *session.Turn
+	stepSeq         int
+	sensitiveValues map[string]struct{}
 }
 
 // New 创建 Agent 实例并应用默认值。
 func New(opts Options) *Agent {
 	a := &Agent{
-		ID:             newID(),
-		State:          AgentStateIdle,
-		Output:         make(chan Message, 64),
-		Input:          make(chan any, 16),
-		LLM:            opts.LLM,
-		Tools:          opts.Tools,
-		Session:        opts.Session,
-		Approver:       opts.Approver,
-		Recorder:       opts.Recorder,
-		ApprovalPolicy: opts.ApprovalPolicy,
-		Tracer:         opts.Tracer,
-		TurnUserID:     opts.TurnUserID,
-		AccessScope:    opts.AccessScope,
-		SkillContext:   opts.SkillContext,
-		MaxIterations:  opts.MaxIterations,
-		MaxToolCalls:   opts.MaxToolCalls,
-		Timeout:        opts.Timeout,
-		ToolCalling:    opts.ToolCalling,
-		ResultMaxBytes: opts.ResultMaxBytes,
-		TurnMaxBytes:   opts.TurnMaxBytes,
-		HistoryTurns:   opts.HistoryTurns,
+		ID:              newID(),
+		State:           AgentStateIdle,
+		Output:          make(chan Message, 64),
+		Input:           make(chan any, 16),
+		LLM:             opts.LLM,
+		Tools:           opts.Tools,
+		Session:         opts.Session,
+		Approver:        opts.Approver,
+		Recorder:        opts.Recorder,
+		ApprovalPolicy:  opts.ApprovalPolicy,
+		Tracer:          opts.Tracer,
+		TurnUserID:      opts.TurnUserID,
+		AccessScope:     opts.AccessScope,
+		SkillContext:    opts.SkillContext,
+		MaxIterations:   opts.MaxIterations,
+		MaxToolCalls:    opts.MaxToolCalls,
+		Timeout:         opts.Timeout,
+		ToolCalling:     opts.ToolCalling,
+		ResultMaxBytes:  opts.ResultMaxBytes,
+		TurnMaxBytes:    opts.TurnMaxBytes,
+		HistoryTurns:    opts.HistoryTurns,
+		sensitiveValues: map[string]struct{}{},
 	}
 	if a.MaxIterations <= 0 {
 		a.MaxIterations = 10
@@ -154,6 +160,123 @@ func New(opts Options) *Agent {
 		}
 	}
 	return a
+}
+
+// recordSensitiveValues 登记当前轮不得进入 UI/持久化/最终回答的 Secret 原值。
+func (a *Agent) recordSensitiveValues(values []string) {
+	if a.sensitiveValues == nil {
+		a.sensitiveValues = map[string]struct{}{}
+	}
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		a.sensitiveValues[value] = struct{}{}
+		quoted := strconv.Quote(value)
+		if len(quoted) >= 2 {
+			a.sensitiveValues[quoted[1:len(quoted)-1]] = struct{}{}
+		}
+	}
+}
+
+func (a *Agent) hasSensitiveValues() bool {
+	return len(a.sensitiveValues) > 0
+}
+
+func (a *Agent) clearSensitiveValues() {
+	clear(a.sensitiveValues)
+}
+
+// redactSensitive 对完整字符串执行精确值脱敏；只能用于完整文本，不能用于可能被
+// 拆成多个分片的流式增量。敏感模式下流式输出被抑制，最终完整文本再经过这里。
+func (a *Agent) redactSensitive(text string) string {
+	if text == "" || len(a.sensitiveValues) == 0 {
+		return text
+	}
+	values := make([]string, 0, len(a.sensitiveValues))
+	for value := range a.sensitiveValues {
+		values = append(values, value)
+	}
+	sort.Slice(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
+	for _, value := range values {
+		text = strings.ReplaceAll(text, value, "[REDACTED]")
+	}
+	return text
+}
+
+func (a *Agent) safeArguments(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 || len(a.sensitiveValues) == 0 {
+		return raw
+	}
+	return json.RawMessage(a.redactSensitive(string(raw)))
+}
+
+func (a *Agent) redactValue(v any) any {
+	switch value := v.(type) {
+	case string:
+		return a.redactSensitive(value)
+	case map[string]any:
+		out := make(map[string]any, len(value))
+		for k, item := range value {
+			out[k] = a.redactValue(item)
+		}
+		return out
+	case []any:
+		out := make([]any, len(value))
+		for i, item := range value {
+			out[i] = a.redactValue(item)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+func (a *Agent) safeStructured(v any) any {
+	if v == nil || len(a.sensitiveValues) == 0 {
+		return v
+	}
+	switch value := v.(type) {
+	case string, map[string]any, []any:
+		return a.redactValue(value)
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return v
+	}
+	var decoded any
+	if json.Unmarshal([]byte(a.redactSensitive(string(raw))), &decoded) != nil {
+		return v
+	}
+	return decoded
+}
+
+func (a *Agent) safeApprovalPlan(plan tools.ApprovalPlan) tools.ApprovalPlan {
+	plan.Title = a.redactSensitive(plan.Title)
+	plan.Operation = a.redactSensitive(plan.Operation)
+	plan.Summary = a.redactSensitive(plan.Summary)
+	plan.Command = a.redactSensitive(plan.Command)
+	plan.Target.Cluster = a.redactSensitive(plan.Target.Cluster)
+	plan.Target.Namespace = a.redactSensitive(plan.Target.Namespace)
+	plan.Target.Group = a.redactSensitive(plan.Target.Group)
+	plan.Target.Version = a.redactSensitive(plan.Target.Version)
+	plan.Target.Kind = a.redactSensitive(plan.Target.Kind)
+	plan.Target.Name = a.redactSensitive(plan.Target.Name)
+	for i := range plan.Changes {
+		plan.Changes[i].Path = a.redactSensitive(plan.Changes[i].Path)
+		plan.Changes[i].Operation = a.redactSensitive(plan.Changes[i].Operation)
+		plan.Changes[i].Description = a.redactSensitive(plan.Changes[i].Description)
+		plan.Changes[i].Before = a.redactValue(plan.Changes[i].Before)
+		plan.Changes[i].After = a.redactValue(plan.Changes[i].After)
+	}
+	for i := range plan.Checks {
+		plan.Checks[i].Name = a.redactSensitive(plan.Checks[i].Name)
+		plan.Checks[i].Message = a.redactSensitive(plan.Checks[i].Message)
+	}
+	for i := range plan.Verification {
+		plan.Verification[i] = a.redactSensitive(plan.Verification[i])
+	}
+	return plan
 }
 
 // audit 写入一条审计事件（Recorder 为空时静默跳过；实现负责脱敏）。

@@ -135,12 +135,14 @@ type CreateConfig struct {
 	MaxManifestBytes int `mapstructure:"max_manifest_bytes"`
 }
 
-// SecretConfig controls the Secret create channel (D-06/D-12). Reading Secret
-// content values stays a hard red line in every mode.
+// SecretConfig controls the Secret create channel and structured on-demand
+// diagnostic reads. Broad kubectl Secret dumps remain forbidden; on-demand
+// reads require a per-key human approval and never persist plaintext.
 type SecretConfig struct {
-	// Access is "off" (no Secret creation), "create_only" (default: create with
-	// values that never enter the LLM context) or "read_write" (reserved,
-	// rejected by Validate until a later phase).
+	// Access is "off" (no Secret creation/read), "create_only" (create with
+	// values that never enter the LLM context), or "read_on_demand" (creation
+	// plus structured, per-key diagnostic reads after explicit approval).
+	// "read_write" is intentionally rejected because it is too broad.
 	Access string `mapstructure:"access"`
 }
 
@@ -378,7 +380,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("agent.create.cluster_kinds", []string{})
 	v.SetDefault("agent.create.max_objects_per_call", 3)
 	v.SetDefault("agent.create.max_manifest_bytes", 8*1024)
-	v.SetDefault("agent.secret.access", "create_only")
+	v.SetDefault("agent.secret.access", "read_on_demand")
 
 	v.SetDefault("webui.addr", "127.0.0.1:8081")
 
@@ -668,16 +670,15 @@ func validateMySQLDSN(dsn string) error {
 	return fmt.Errorf("platform.store.dsn must set parseTime=true")
 }
 
-// validateSecretAccess enforces the Phase 3 Secret channel gate (D-12/R4.7):
-// only "off" and "create_only" are available; reading Secret content values
-// ("read_write") stays out of scope and is rejected instead of silently ignored.
+// validateSecretAccess enforces the Secret access gate. The broad "read_write"
+// name is rejected: diagnostic reads must stay key-scoped and approval-gated.
 func validateSecretAccess(access string) error {
 	switch access {
-	case "", "off", "create_only":
+	case "", "off", "create_only", "read_on_demand":
 		return nil
 	case "read_write":
-		return fmt.Errorf("agent.secret.access=read_write is not supported: reading Secret content values stays a red line")
+		return fmt.Errorf("agent.secret.access=read_write is not supported: use read_on_demand for approval-gated per-key reads")
 	default:
-		return fmt.Errorf("agent.secret.access must be one of off, create_only")
+		return fmt.Errorf("agent.secret.access must be one of off, create_only, read_on_demand")
 	}
 }

@@ -111,7 +111,7 @@ type Options struct {
 	Mapper Mapper
 	// DefaultNamespace 是 namespaced 资源缺省 namespace 时的补齐值；空取 default。
 	DefaultNamespace string
-	// SecretAccess 是 agent.secret.access（off / create_only / read_write）。
+	// SecretAccess 是 agent.secret.access（off / create_only / read_on_demand）。
 	SecretAccess string
 }
 

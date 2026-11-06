@@ -101,7 +101,7 @@ func TestInstallScriptCoversRequiredBehavior(t *testing.T) {
 		{"参数文件默认探测 install.env", "install.env"},
 		{"权限预检", "auth can-i"},
 		{"默认存储类探测", "is-default-class"},
-		{"PVC 等待绑定", "wait --for=condition=bound"},
+		{"PVC 等待绑定", "pvc_wait_bound"},
 		{"PVC 延迟绑定模式识别（WaitForFirstConsumer）", "WaitForFirstConsumer"},
 		{"延迟绑定推迟到工作负载后校验", "pvc_verify_deferred_bind"},
 		{"PVC 存储类不可变对齐", "pvc_align_class"},

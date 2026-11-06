@@ -51,6 +51,7 @@ var (
 		"get_configmaps":     true,
 		"get_logs":           true,
 		"get_previous_logs":  true,
+		"get_secret_value":   true,
 		"scan_pod":           true,
 		"diagnose_pod":       true,
 		"diagnose_workload":  true,

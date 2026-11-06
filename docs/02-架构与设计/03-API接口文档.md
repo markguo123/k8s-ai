@@ -58,7 +58,9 @@ type Reader interface {
 
 约束：
 - `Client` 内部只允许调用 typed clientset 的 List/Get 方法与 `CoreV1().Pods(ns).GetLogs(...)`。
-- 暴露给工具的一面无写方法；Secret 内容值永不返回，法则见 `08-安全设计.md`。
+- 暴露给工具的一面无写方法；默认工具仅返回 Secret 元数据。`read_on_demand`
+  模式下 `get_secret_value` 的明文只进入当前轮模型，API/UI 结果仍为脱敏指纹，
+  规则见 `08-安全设计.md` 与 ADR-048。
 - `ListOptions{ResourceVersion:"0"}` 走 apiserver 缓存（ADR-009）。
 
 ## 3. Collector 与诊断编排（Application）

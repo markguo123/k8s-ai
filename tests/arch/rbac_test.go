@@ -9,6 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/k8s-ai/k8s-ai/internal/scanner"
+	k8stools "github.com/k8s-ai/k8s-ai/internal/tools/k8s"
 )
 
 // rbacRule 是 clusterrole.yaml 的最小解析结构。
@@ -48,6 +49,7 @@ type rbacBinding struct {
 // TestRBACReadOnly 解析 deploy/base/clusterrole.yaml，断言默认清单保持只读：
 // verbs 限于 {get,list,watch}；resources 不含 pods/exec、pods/portforward、pods/attach 与写能力。
 // Secret 在二期放行为“元数据/键级读取”，故允许 secrets 的 get/list/watch（仍只读，SECURITY.md §3）。
+// metrics.k8s.io 的 nodes/pods 只支持 get/list，供 get_node_usage 与 kubectl top 使用。
 func TestRBACReadOnly(t *testing.T) {
 	raw, err := os.ReadFile("../../deploy/base/clusterrole.yaml")
 	if err != nil {
@@ -71,11 +73,6 @@ func TestRBACReadOnly(t *testing.T) {
 			// Secret 允许只读（get/list/watch，由 verbs 校验保证）；仅禁止执行/端口转发/附加等能力。
 			if strings.Contains(res, "/exec") || strings.Contains(res, "/portforward") || strings.Contains(res, "/attach") || strings.Contains(res, "/exec/") {
 				t.Errorf("发现禁止资源 %q", res)
-			}
-		}
-		for _, g := range rule.APIGroups {
-			if strings.Contains(g, "metrics") {
-				t.Errorf("一期不应授权 metrics API: %q", g)
 			}
 		}
 	}
@@ -130,6 +127,45 @@ func TestRBACInspectionResources(t *testing.T) {
 	}
 }
 
+// TestRBACAgentToolResources 验证 Chat/Agent 的内置只读工具与 kubectl 只读回退路径
+// 所需权限全部由默认 ClusterRole 覆盖。新增工具访问面但漏更新部署清单时，这条会先失败。
+func TestRBACAgentToolResources(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/base/clusterrole.yaml")
+	if err != nil {
+		t.Fatalf("读取 clusterrole.yaml: %v", err)
+	}
+	var m rbacManifest
+	if err := yaml.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("解析 clusterrole.yaml: %v", err)
+	}
+
+	type permissionKey struct {
+		group    string
+		resource string
+		verb     string
+	}
+	granted := make(map[permissionKey]bool)
+	for _, rule := range m.Rules {
+		for _, group := range rule.APIGroups {
+			for _, resource := range rule.Resources {
+				for _, verb := range rule.Verbs {
+					granted[permissionKey{group: group, resource: resource, verb: verb}] = true
+				}
+			}
+		}
+	}
+
+	for _, requirement := range k8stools.ReadAccessRequirements() {
+		for _, verb := range requirement.Verbs {
+			key := permissionKey{group: requirement.APIGroup, resource: requirement.Resource, verb: verb}
+			if !granted[key] {
+				t.Errorf("Agent 访问契约 %s 缺少权限：apiGroups=%q resources=%q verbs=%q",
+					requirement.Operation, key.group, key.resource, key.verb)
+			}
+		}
+	}
+}
+
 // TestRBACDefaultBinding 验证默认 ClusterRoleBinding 绑定的是预期只读角色与工作负载身份。
 func TestRBACDefaultBinding(t *testing.T) {
 	raw, err := os.ReadFile("../../deploy/base/clusterrolebinding.yaml")
@@ -166,7 +202,7 @@ func TestRBACWriteExample(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读取 rbac-write.example.yaml: %v", err)
 	}
-	allowed := map[string]bool{"get": true, "list": true, "watch": true, "create": true, "update": true, "patch": true, "scale": true, "delete": true}
+	allowed := map[string]bool{"get": true, "list": true, "watch": true, "create": true, "update": true, "patch": true, "delete": true}
 	secretAllowed := map[string]bool{"create": true, "patch": true, "update": true}
 	var role *rbacManifest
 	dec := yaml.NewDecoder(bytes.NewReader(raw))
@@ -187,10 +223,11 @@ func TestRBACWriteExample(t *testing.T) {
 		t.Fatal("示例清单里没有 ClusterRole")
 	}
 	grantsCreate := false
+	grantsExec := false
 	secretsFound := false
 	for _, rule := range role.Rules {
 		for _, res := range rule.Resources {
-			if strings.Contains(res, "/exec") || strings.Contains(res, "/portforward") || strings.Contains(res, "/attach") {
+			if strings.Contains(res, "/portforward") || strings.Contains(res, "/attach") {
 				t.Errorf("示例清单授权了危险子资源 %q", res)
 			}
 			if res == "*" {
@@ -206,6 +243,11 @@ func TestRBACWriteExample(t *testing.T) {
 			}
 			if v == "create" {
 				grantsCreate = true
+				for _, res := range rule.Resources {
+					if res == "pods/exec" {
+						grantsExec = true
+					}
+				}
 			}
 		}
 		for _, res := range rule.Resources {
@@ -223,7 +265,61 @@ func TestRBACWriteExample(t *testing.T) {
 	if !grantsCreate {
 		t.Error("三期创建通道需要 create 动词，示例清单未授予")
 	}
+	if !grantsExec {
+		t.Error("非交互 exec 需要 pods/exec 的 create 权限")
+	}
 	if !secretsFound {
 		t.Error("示例清单应包含 secrets 的创建授权（create/patch/update），否则创建通道无法覆盖 Secret")
+	}
+}
+
+// TestRBACServiceAccountContract 锁定三类运行负载的身份边界：
+// 后端与巡检需要挂载 SA Token；前端与迁移 Job 都不应获得集群 API 凭据。
+// SA 本身默认关闭 automount，只有实际访问 API 的 Pod 显式打开。
+func TestRBACServiceAccountContract(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/base/serviceaccount.yaml")
+	if err != nil {
+		t.Fatalf("读取 serviceaccount.yaml: %v", err)
+	}
+	var sa struct {
+		APIVersion string `yaml:"apiVersion"`
+		Kind       string `yaml:"kind"`
+		Metadata   struct {
+			Name      string `yaml:"name"`
+			Namespace string `yaml:"namespace"`
+		} `yaml:"metadata"`
+		Automount *bool `yaml:"automountServiceAccountToken"`
+	}
+	if err := yaml.Unmarshal(raw, &sa); err != nil {
+		t.Fatalf("解析 serviceaccount.yaml: %v", err)
+	}
+	if sa.APIVersion != "v1" || sa.Kind != "ServiceAccount" {
+		t.Fatalf("ServiceAccount 清单头 = %s %s", sa.APIVersion, sa.Kind)
+	}
+	if sa.Metadata.Name != "aegisops" || sa.Metadata.Namespace != "aegisops" {
+		t.Errorf("ServiceAccount = %s/%s，期望 aegisops/aegisops", sa.Metadata.Namespace, sa.Metadata.Name)
+	}
+	if sa.Automount == nil || *sa.Automount {
+		t.Error("ServiceAccount 默认应关闭 automountServiceAccountToken，由需要 API 的 Pod 显式开启")
+	}
+
+	for _, tc := range []struct {
+		manifest       []string
+		serviceAccount string
+		automount      bool
+	}{
+		{[]string{"deploy", "allinone", "deployment.yaml"}, "aegisops", true},
+		{[]string{"deploy", "separated", "deployment.yaml"}, "aegisops", true},
+		{[]string{"deploy", "scan", "cronjob.yaml"}, "aegisops", true},
+		{[]string{"deploy", "separated", "web-deployment.yaml"}, "", false},
+		{[]string{"deploy", "base", "db-migrate-job.yaml"}, "", false},
+	} {
+		spec := readWorkload(t, tc.manifest...).podSpec()
+		if spec.ServiceAccountName != tc.serviceAccount {
+			t.Errorf("%s serviceAccountName = %q，期望 %q", tc.manifest, spec.ServiceAccountName, tc.serviceAccount)
+		}
+		if spec.AutomountServiceAccountToken == nil || *spec.AutomountServiceAccountToken != tc.automount {
+			t.Errorf("%s automountServiceAccountToken = %v，期望 %t", tc.manifest, spec.AutomountServiceAccountToken, tc.automount)
+		}
 	}
 }

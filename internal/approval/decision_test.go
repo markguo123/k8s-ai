@@ -26,6 +26,12 @@ func TestPolicyEvaluateStrict(t *testing.T) {
 			want:   DecisionRequireApproval,
 		},
 		{
+			name:   "mandatory sensitive read plus skip-permissions still requires approval",
+			policy: Policy{Mode: ModeStrict, RequireApproval: true, SkipPermissions: true},
+			in:     Input{ReadOnly: false, Risk: model.RiskHigh, RequireHuman: true},
+			want:   DecisionRequireApproval,
+		},
+		{
 			name:   "shell plus require_approval false still requires approval",
 			policy: Policy{Mode: ModeStrict, RequireApproval: false},
 			in:     Input{ReadOnly: false, Risk: model.RiskCritical, Shell: true},

@@ -1,7 +1,8 @@
-# 默认只读 RBAC（P6.2）：平台所有只读能力（巡检、Chat 只读调查、集群端点连通性测试、
-# 资源枚举）都只用下面的动词。
-# 口径：get/list/watch + pods/log get + secrets 元数据/键级读取（get/list/watch）。
-# 不授任何写动词；不含 pods/exec、pods/portforward、pods/attach、metrics（ADR-009 / SECURITY.md）。
+# 默认只读 RBAC（P6.2）：平台所有只读能力（巡检、Chat 只读调查、kubectl 只读回退、
+# 集群端点连通性测试、资源枚举）都只用下面的动词。
+# 口径：get/list/watch + pods/log get + secrets 元数据/键级读取（get/list/watch）
+# + metrics.k8s.io nodes/pods get/list（只读 API，本身不支持 watch）。
+# 不授任何写动词；不含 pods/exec、pods/portforward、pods/attach（ADR-009 / SECURITY.md）。
 # LLM 永远不是权限主体：真实边界就是这份 ClusterRole，提示词无法绕过 RBAC。
 # 需要写操作（审批后的修复 / create_resource）时，另行显式 apply
 # deploy/rbac-write.example.yaml，默认清单保持只读。
@@ -14,7 +15,9 @@ metadata:
     app.kubernetes.io/component: identity
 rules:
   - apiGroups: [""]
-    resources: [namespaces, pods, nodes, services, endpoints, events, configmaps, persistentvolumes, persistentvolumeclaims]
+    # LimitRange / ResourceQuota / ServiceAccount / ReplicationController 是排障时
+    # kubectl describe/get all 会访问的核心资源；只读，不提供任何身份或配额修改能力。
+    resources: [namespaces, pods, nodes, services, endpoints, events, configmaps, serviceaccounts, limitranges, resourcequotas, replicationcontrollers, persistentvolumes, persistentvolumeclaims]
     verbs: [get, list, watch]
   - apiGroups: [""]
     # secrets 仅用于元数据/键级读取（ListSecretMeta），内容值永不出采集边界
@@ -47,3 +50,17 @@ rules:
   - apiGroups: [networking.k8s.io]
     resources: [ingresses, networkpolicies]
     verbs: [get, list, watch]
+  - apiGroups: [scheduling.k8s.io]
+    resources: [priorityclasses]
+    verbs: [get, list, watch]
+  - apiGroups: [node.k8s.io]
+    resources: [runtimeclasses]
+    verbs: [get, list, watch]
+  - apiGroups: [apiregistration.k8s.io]
+    # kubectl get apiservices / describe node 的健康排查需要看聚合 API 可用性。
+    resources: [apiservices]
+    verbs: [get, list, watch]
+  - apiGroups: [metrics.k8s.io]
+    # get_node_usage 使用 nodes；kubectl top pods 使用 pods。metrics API 只支持 get/list。
+    resources: [nodes, pods]
+    verbs: [get, list]

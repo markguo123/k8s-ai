@@ -11,6 +11,9 @@ func TestAccessScopeAllowsAuthorizedNamespace(t *testing.T) {
 	if err := scope.Check("get_pods", json.RawMessage(`{"namespace":"mysql-dev"}`)); err != nil {
 		t.Fatalf("authorized namespace denied: %v", err)
 	}
+	if err := scope.Check("get_secret_value", json.RawMessage(`{"namespace":"mysql-dev","name":"db","keys":["password"],"reason":"test"}`)); err != nil {
+		t.Fatalf("authorized namespace Secret diagnostic denied: %v", err)
+	}
 	if err := scope.Check("kubectl", json.RawMessage(`{"command":"kubectl get pods -n mysql-dev"}`)); err != nil {
 		t.Fatalf("authorized kubectl denied: %v", err)
 	}
@@ -30,6 +33,7 @@ func TestAccessScopeDeniesClusterAndForeignResources(t *testing.T) {
 		{"nodes", "get_nodes", `{}`, "集群级资源读取"},
 		{"foreign namespace", "get_pods", `{"namespace":"default"}`, `namespace "default"`},
 		{"all namespaces", "get_pods", `{}`, "显式 namespace"},
+		{"foreign Secret", "get_secret_value", `{"namespace":"default","name":"db","keys":["password"],"reason":"test"}`, `namespace "default"`},
 		{"full scan", "scan_cluster", `{}`, "集群体检"},
 		{"resource kind", "get_resources", `{"kind":"nodes"}`, "集群级资源读取"},
 		{"kubectl nodes", "kubectl", `{"command":"kubectl get nodes"}`, "集群级资源读取"},

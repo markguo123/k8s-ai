@@ -5,6 +5,7 @@ package k8s
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/k8s-ai/k8s-ai/internal/model"
 	"github.com/k8s-ai/k8s-ai/internal/scanner"
@@ -56,6 +57,13 @@ func All(r Reader) []tools.Tool {
 	}
 }
 
+// RegisterOptions 控制按部署配置选择性注册的工具。
+type RegisterOptions struct {
+	// SecretAccess 对应 agent.secret.access；只有 read_on_demand 注册
+	// get_secret_value，off/create_only 均不暴露读取工具。
+	SecretAccess string
+}
+
 // newNodeUsageTool 在 reader 支持 metrics 时启用节点资源用量工具。
 func newNodeUsageTool(r Reader) tools.Tool {
 	if m, ok := r.(MetricsReader); ok {
@@ -66,7 +74,18 @@ func newNodeUsageTool(r Reader) tools.Tool {
 
 // RegisterAll 把全部只读工具注册进注册表。
 func RegisterAll(reg *tools.Registry, r Reader) error {
-	for _, t := range All(r) {
+	return RegisterAllWithOptions(reg, r, RegisterOptions{})
+}
+
+// RegisterAllWithOptions 按运行配置注册只读工具及可选的敏感读取工具。
+func RegisterAllWithOptions(reg *tools.Registry, r Reader, opts RegisterOptions) error {
+	all := All(r)
+	if strings.EqualFold(strings.TrimSpace(opts.SecretAccess), "read_on_demand") {
+		if secretReader, ok := r.(SecretValuesReader); ok {
+			all = append(all, &secretValueTool{reader: secretReader})
+		}
+	}
+	for _, t := range all {
 		if err := reg.Register(t); err != nil {
 			return fmt.Errorf("register tool %s: %w", t.Name(), err)
 		}

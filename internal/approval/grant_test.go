@@ -166,6 +166,11 @@ func TestParseCommandTarget(t *testing.T) {
 			want:    CommandTarget{Operation: "rollout restart", Kind: "deployment", Name: "web", Namespace: "prod"},
 		},
 		{
+			name:    "non-interactive exec targets pod",
+			command: "kubectl exec app-0 -n prod -- cat /etc/os-release",
+			want:    CommandTarget{Operation: "exec", Kind: "pod", Name: "app-0", Namespace: "prod"},
+		},
+		{
 			name:    "shell pipeline is not grantable",
 			command: "kubectl get pods | kubectl delete pod x",
 			want:    CommandTarget{},

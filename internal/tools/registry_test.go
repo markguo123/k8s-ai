@@ -100,6 +100,27 @@ func TestMarshalForLLMIncludesTextAndData(t *testing.T) {
 	}
 }
 
+func TestMarshalForLLMAddsModelOnlySecretData(t *testing.T) {
+	const plain = "diag-password-42"
+	result := ToolResult{
+		Text:            "secret values loaded",
+		Data:            map[string]any{"value": "[REDACTED]"},
+		ModelOnly:       map[string]any{"password": plain},
+		SensitiveValues: []string{plain},
+	}
+	modelText, _ := MarshalForLLM(result, 0)
+	if !strings.Contains(modelText, plain) {
+		t.Fatalf("模型上下文应包含当前轮诊断值: %q", modelText)
+	}
+	safeText, _ := MarshalSafe(result, 0)
+	if strings.Contains(safeText, plain) {
+		t.Fatalf("UI/会话安全上下文泄露 Secret: %q", safeText)
+	}
+	if !strings.Contains(safeText, "[REDACTED]") {
+		t.Fatalf("安全上下文应保留脱敏标记: %q", safeText)
+	}
+}
+
 func TestMarshalForLLMTruncates(t *testing.T) {
 	long := strings.Repeat("x", 10*1024)
 	out, truncated := MarshalForLLM(ToolResult{Data: map[string]any{"log": long}}, 512)

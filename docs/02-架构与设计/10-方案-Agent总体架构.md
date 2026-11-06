@@ -1,7 +1,7 @@
 # Agent 总体架构（二期/三期已落地）
 
-- 版本：v3.1.0
-- 日期：2026-10-08（2026-11-05 按四期 P9 体检诊断链路修订 Agent 消费口径）
+- 版本：v3.2.0
+- 日期：2026-11-06（补非交互 exec、Secret 按需诊断与精确脱敏）
 - 状态：二期 Agent / 三期创建闭环已封版；四期 P9 诊断接入口径已同步
 
 > 范围说明：本文档定义 Agent 的稳定职责边界——Agent、Tools、Scanner/Rule、
@@ -16,7 +16,7 @@
 
 **Prompt**
 
-- `internal/agent/prompt.go` 通过 `basePrompt()` 拼接了身份与诚实约束、响应协议、健康检查协议、工具选择协议、效率协议、修复门约束。
+- `internal/agent/prompt.go` 通过 `basePrompt()` 拼接了身份与诚实约束、响应协议、健康检查协议、工具选择协议、Secret 按需诊断协议、效率协议、修复门约束。
 - `internal/llm/prompt.go` 返回 `prompts/system.md`，承载 Evidence 唯一、故障链聚合、根因/直接症状/派生症状、确认根因与推断的区别、修复方案结构等要求。
 - 结论：当前存在两套系统提示词，`agent` 负责 Agentic 行为，`llm/system.md` 负责诊断结果质量。两者部分重复，但没有到必须合并的程度。主要问题是安全与执行约束大量出现在 prompt 中，而真正安全边界在代码层已经存在。
 
@@ -24,13 +24,16 @@
 
 - `internal/tools/tool.go` 定义 `Tool` 接口：`Name / Description / InputSchema / Execute / IsReadOnly / Risk`。
 - `internal/tools/registry.go` 的 `Schemas()` 只把 `name / description / parameters` 传给 LLM；`IsReadOnly / Risk` 不进入模型可读的 Tool Schema，只用于审批展示、审计和 Agent Loop 的只读判断。
-- `kubectl` 是唯一写工具。`internal/tools/k8s` 提供 22 个只读 Kubernetes 工具（`get_pod / get_deployment / get_node / get_events / get_logs ...`）。
+- `kubectl` 是唯一通用执行工具。`internal/tools/k8s` 提供常规只读工具；
+  `read_on_demand` 模式额外注册审批制的 `get_secret_value`。
 - CURRENT 中“工具风险”的半结构化信息存在于两部分：代码里的 `Tool.IsReadOnly/Risk`，以及 prompt/kubectl Description 里的安全措辞。两者不一致时需要人工维护两份。
 
 **Code Guard**
 
 - `internal/approval/risk.go` 统一做命令分类：`IsReadOnlyCommand`、`ClassifyCommand`、`HasShellSyntax`、`IsForbiddenCommand`。
-- `internal/executor/parse.go` 做命令解析：`deny_ops`、Secret/`--raw` 红线、交互式命令拒绝、shell 元字符识别、非 shell 命令动词白名单、`exec -i/-t` 拦截、流式命令识别。
+- `internal/executor/parse.go` 做命令解析：`deny_ops`、kubectl Secret/`--raw` 红线、
+  交互式命令拒绝、shell 元字符识别、非 shell 命令动词白名单、非交互 exec 的
+  `-- <command>` 约束、`exec -i/-t/--stdin/--tty` 拦截、流式命令识别。
 - `internal/executor/kubectl.go` 在 shell 模式下用 `bash -c` 执行并做脱敏/截断/超时采样。
 - `internal/agent/loop.go` 在 Tool 执行前判断 `Tool.IsReadOnly`，写操作走 `Approver.Confirm`；同签名拒绝达 2 次后硬拦截。
 - 结论：安全边界已经落在代码层，且比 prompt 更可靠。prompt 中的大量“必须/禁止”更多是行为引导，不是安全边界本身。
@@ -55,7 +58,8 @@
 4. 工具选择决策树：意图路由、结构化工具 vs `kubectl`、`-o yaml` 升级、`scan_cluster` 优先。
 5. 调查效率与收敛：同一资源不重复调用、预算 6 次、回答结构。
 6. 修复门：诊断类问题不主动写、修复四步、写操作审批、拒绝语义、delete/PVC 偏好。
-7. 部分安全红线：Secret、`--raw`、shell 语法永不自动执行、交互式命令禁止。
+7. 部分安全红线：kubectl Secret、`--raw`、shell 语法永不自动执行、交互式命令禁止；
+   非交互 exec 与 Secret 按需读取必须真人审批。
 
 #### 2. 哪些职责应该继续留在 Prompt？
 
@@ -81,7 +85,7 @@
 #### 4. 哪些规则应该由 Code Guard 强制保证？
 
 - `deny_ops` 硬拦截。
-- Secret 内容读取与 `--raw` 红线。
+- kubectl Secret 读取与 `--raw` 红线；结构化 Secret 按需读取必须审批。
 - 写操作审批（Agent Loop + Approver）。
 - shell 命令永不自动执行。
 - 交互式/阻塞性命令拒绝。
@@ -146,7 +150,7 @@
 | 同签名写操作拒绝 2 次后硬拦截 | `remediationGate`、`loop.go maxDeclinesBeforeBlock` | Agent/Application Logic | 代码已实现 | 小改：从 prompt 删除重复细节 |
 | `USER_EXPLICITLY_DECLINED` 不是工具错误 | `remediationGate`、`formatDeclinedMsg` | Tool Protocol + Agent/Application Logic | 代码通过结果文本表达 | 小改 |
 | shell 构造永不自动执行 | prompt、`approval.IsReadOnlyCommand`、`executor.ParseCommandDetail`、`kubectl` 描述 | Code Guard | 代码层已强制 | 是：精简 prompt 重复 |
-| Secret 读取与 `--raw` 红线 | `approval.IsForbiddenCommand`、executor、`kubectl` 描述 | Code Guard | 必须由代码拦截 | 是：prompt 保留语义提示，代码保留硬拦截 |
+| kubectl Secret / `--raw` 红线；结构化 Secret 读取审批 | `approval.IsForbiddenCommand`、executor、`get_secret_value` | Code Guard + Tool | 必须由代码拦截 | 是：prompt 保留语义提示，代码保留硬拦截与 MandatoryHumanApproval |
 | 交互式命令拒绝 | `kubectl` 描述、`executor.rejectedInteractiveVerbs` | Code Guard | 代码层强制 | 否 |
 | 流式命令超时采样 | `kubectl` 描述、`executor.IsStreaming` | Code Guard | 代码层实现 | 否 |
 | 输出脱敏与截断 | `tools.ToolResult`、executor 输出处理 | Code Guard + Application Logic | 代码已有 | 否 |
@@ -261,7 +265,7 @@ TARGET 只是减少 prompt 上的重复安全措辞，不改变 Code Guard 位�
 ### 4.1 必须修改的部分
 
 1. 去掉/弱化与代码重复的“安全条例”细节：
-   - Secret、`--raw` 红线的完整列举。
+   - kubectl Secret、`--raw` 与结构化按需读取审批边界的完整列举。
    - shell 构造可以做什么以及“永不自动执行”的重复描述。
    - 同签名拒绝 2 次的硬拦截说明。
    这些信息保留在 Tool Description 和 Code Guard，Prompt 只保留一句话语义。

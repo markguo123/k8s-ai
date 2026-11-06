@@ -160,7 +160,7 @@ agent:
     max_objects_per_call: 3   # 单次最多对象数（1-10）
     max_manifest_bytes: 8192  # 单次 manifest 最大字节数（1KiB-1MiB）
   secret:
-    access: create_only       # off | create_only（read_write 未开放：读取 Secret 内容仍是红线）
+    access: read_on_demand    # off | create_only | read_on_demand（逐 key 审批读取；read_write 不支持）
 
 rules:
   enabled: []                 # 非空则只启用这些规则

@@ -1,6 +1,7 @@
 // Secret 值通道（三期 R4.5，RESOURCE_CREATE_DESIGN.md §5.3）。
 //
-// 红线：Secret 明文值绝不进入 manifest、ToolResult.Data/Text、会话文件、审计文件与 LLM 请求。
+// 创建通道红线：Secret 明文值绝不进入 manifest、ToolResult.Data/Text、会话文件、
+// 审计文件与 LLM 请求。诊断读取走独立的 get_secret_value 通道。
 // 模型在 manifest 里只写 manifestx.PlaceholderAsk，真实值由交互通道（CLI/Web 审批环节）
 // 在审批通过后单独收集，只经内存与 context 传给一次 executor.ApplyRequest。
 package tools

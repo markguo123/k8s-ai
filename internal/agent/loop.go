@@ -24,6 +24,8 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 	}
 	a.SetState(AgentStateRunning)
 	defer func() { a.SetState(AgentStateDone) }()
+	a.clearSensitiveValues()
+	defer a.clearSensitiveValues()
 
 	a.Session.AddMessage(session.Message{Role: "user", Type: "text", Content: query})
 	a.Emit(Message{Source: SourceUser, Type: MessageTypeText, Payload: query})
@@ -101,8 +103,9 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 			return "", usage, err
 		}
 		if step.answer != "" {
+			step.answer = a.redactSensitive(step.answer)
 			a.Session.AddMessage(session.Message{Role: "assistant", Type: "text", Content: step.answer})
-			a.completeStep(ctx, reason, true, summarizeReason(mode, resp))
+			a.completeStep(ctx, reason, true, a.redactSensitive(summarizeReason(mode, resp)))
 			// P1.8: 最终回答输出 Step。
 			response := a.beginStep(ctx, session.StepResponse, "", "")
 			a.completeStep(ctx, response, true, truncateText(step.answer, 240))
@@ -135,7 +138,8 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 			var tr tools.ToolResult
 			toolExecuted := false
 			// P1.8: 工具调用 Step（参数在落库前由 Store 统一脱敏）。
-			toolStep := a.beginStep(ctx, session.StepTool, call.Name, string(call.Arguments))
+			safeCallArgs := a.safeArguments(call.Arguments)
+			toolStep := a.beginStep(ctx, session.StepTool, call.Name, string(safeCallArgs))
 			started := time.Now()
 			if failedToolCalls[failureKey] > 0 {
 				// 同一工具、同一参数已经失败过，禁止原样重试；
@@ -143,7 +147,7 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 				tr = tools.ResultError("same tool call already failed; do not retry the identical call, change the arguments or choose another tool")
 			} else if batchDeclined[call.ID] {
 				// 批量拒绝：直接返回拒绝结果，不走 executeTool。
-				key := declineKey(call.Name, call.Arguments)
+				key := declineKey(call.Name, safeCallArgs)
 				total := a.Session.Declined(key)
 				tr = tools.ResultError(a.formatDeclinedMsg(call.Name, key, total))
 			} else {
@@ -158,60 +162,69 @@ func (a *Agent) Chat(ctx context.Context, query string) (string, llm.TokenUsage,
 			presentation := tools.Present(tr)
 			ok := presentation.Ok
 			// P7.4：摘要/形态/耗时/风险在本次执行时一次性计算，事件流与落库共用。
-			summary := tools.ToolSummary(tr.Text)
+			summary := a.redactSensitive(tools.ToolSummary(tr.Text))
 			displayType := presentation.DisplayType
 			risk := a.toolRisk(call)
 			toolStep.ErrorCode = presentation.ErrorCode
-			a.completeStep(ctx, toolStep, ok, truncateText(tr.Text, 240))
+			a.completeStep(ctx, toolStep, ok, truncateText(a.redactSensitive(tr.Text), 240))
 			// P1.8: 工具结果观察 Step（成功 done / 失败 failed）。
 			observe := a.beginStep(ctx, session.StepObserve, call.Name, "")
-			observe.Data = tr.Data
+			safeData := a.safeStructured(tr.Data)
+			safeCommand := a.redactSensitive(presentation.Command)
+			safeStdout := a.redactSensitive(presentation.Stdout)
+			safeStderr := a.redactSensitive(presentation.Stderr)
+			observe.Data = safeData
 			observe.Summary = summary
 			observe.DisplayType = displayType
 			observe.DurationMs = durationMs
 			observe.Risk = risk
-			observe.Command = presentation.Command
-			observe.Stdout = presentation.Stdout
-			observe.Stderr = presentation.Stderr
+			observe.Command = safeCommand
+			observe.Stdout = safeStdout
+			observe.Stderr = safeStderr
 			observe.ExitCode = presentation.ExitCode
 			observe.ErrorCode = presentation.ErrorCode
-			a.completeStep(ctx, observe, ok, truncateText(tr.Text, 240))
+			a.completeStep(ctx, observe, ok, truncateText(a.redactSensitive(tr.Text), 240))
 			if !ok && (toolExecuted || presentation.ErrorCode == tools.ErrorRBACDenied) {
 				failedToolCalls[failureKey]++
 			}
-			text, truncated := tools.MarshalForLLM(tr, a.ResultMaxBytes)
+			text, _ := tools.MarshalForLLM(tr, a.ResultMaxBytes)
+			safeText, safeTruncated := tools.MarshalSafe(tr, a.ResultMaxBytes)
+			safeText = a.redactSensitive(safeText)
 			turnBytes += len(text)
 			budgetExceeded := turnBytes > a.TurnMaxBytes
 			toolContent := text
+			sessionContent := safeText
 			if budgetExceeded {
 				toolContent = "turn context budget exceeded; answer with the evidence you have."
+				sessionContent = toolContent
 			}
 			if mode == "native" {
 				msgs = append(msgs, llm.Message{Role: "tool", ToolCallID: call.ID, Content: toolContent})
 				a.Session.AddMessage(session.Message{
 					Role: "tool", Type: "tool-call-response", Name: call.Name, ToolCallID: call.ID,
-					Content: toolContent, Arguments: call.Arguments, Data: tr.Data, Ok: &ok,
+					Content: sessionContent, Arguments: safeCallArgs, Data: safeData, Ok: &ok,
 					Summary: summary, DisplayType: displayType, DurationMs: durationMs, Risk: risk,
-					Command: presentation.Command, Stdout: presentation.Stdout, Stderr: presentation.Stderr,
+					Command: safeCommand, Stdout: safeStdout, Stderr: safeStderr,
 					ExitCode: presentation.ExitCode, ErrorCode: presentation.ErrorCode,
 				})
 			} else {
-				obs := fmt.Sprintf("工具 %s 返回：\n%s", call.Name, toolContent)
-				msgs = append(msgs, llm.Message{Role: "user", Content: obs})
+				modelObs := fmt.Sprintf("工具 %s 返回：\n%s", call.Name, toolContent)
+				sessionObs := fmt.Sprintf("工具 %s 返回：\n%s", call.Name, sessionContent)
+				msgs = append(msgs, llm.Message{Role: "user", Content: modelObs})
 				a.Session.AddMessage(session.Message{
 					Role: "user", Type: "tool-call-response", Name: call.Name,
-					Content: obs, Arguments: call.Arguments, Data: tr.Data, Ok: &ok,
+					Content: a.redactSensitive(sessionObs), Arguments: safeCallArgs, Data: safeData, Ok: &ok,
 					Summary: summary, DisplayType: displayType, DurationMs: durationMs, Risk: risk,
-					Command: presentation.Command, Stdout: presentation.Stdout, Stderr: presentation.Stderr,
+					Command: safeCommand, Stdout: safeStdout, Stderr: safeStderr,
 					ExitCode: presentation.ExitCode, ErrorCode: presentation.ErrorCode,
 				})
 			}
 			a.EmitCritical(Message{Source: SourceAgent, Type: MessageTypeToolCallResponse, Payload: map[string]any{
-				"name": call.Name, "text": text, "truncated": truncated, "ok": ok,
-				"summary": summary, "data": tr.Data, "durationMs": durationMs, "risk": risk,
+				"name": call.Name, "text": safeText, "truncated": safeTruncated, "ok": ok,
+				"summary": summary, "data": safeData, "durationMs": durationMs, "risk": risk,
 				"displayType": displayType, "errorCode": presentation.ErrorCode,
-				"command": presentation.Command, "stdout": presentation.Stdout,
-				"stderr": presentation.Stderr, "exitCode": presentation.ExitCode,
+				"command": safeCommand, "stdout": safeStdout,
+				"stderr": safeStderr, "exitCode": presentation.ExitCode,
 			}})
 			// 写工具失败/被拒：停止执行本批剩余写调用，把决策交回模型。
 			if !toolExecuted && !ok {
@@ -283,7 +296,9 @@ func (a *Agent) chatOnce(ctx context.Context, mode string, req llm.ChatRequest) 
 		a.audit(ctx, "stream_partial", map[string]any{"reason": err.Error()})
 	}
 	if resp != nil && len(resp.ToolCalls) == 0 && pending.Len() > 0 {
-		a.Emit(Message{Source: SourceModel, Type: MessageTypeText, Payload: pending.String()})
+		if !a.hasSensitiveValues() {
+			a.Emit(Message{Source: SourceModel, Type: MessageTypeText, Payload: pending.String()})
+		}
 	}
 	return resp, true, err
 }
@@ -299,7 +314,9 @@ func (a *Agent) chatOnceTyped(ctx context.Context, sc llm.TypedStreamClient, req
 				return
 			}
 			think.WriteString(ev.Text)
-			a.Emit(Message{Source: SourceModel, Type: MessageTypeReasoningDelta, Payload: ev.Text})
+			if !a.hasSensitiveValues() {
+				a.Emit(Message{Source: SourceModel, Type: MessageTypeReasoningDelta, Payload: ev.Text})
+			}
 		case llm.StreamContentDelta:
 			if ev.Text == "" {
 				return
@@ -321,7 +338,9 @@ func (a *Agent) chatOnceTyped(ctx context.Context, sc llm.TypedStreamClient, req
 		a.audit(ctx, "stream_partial", map[string]any{"reason": err.Error()})
 	}
 	if resp != nil && len(resp.ToolCalls) == 0 && pending.Len() > 0 {
-		a.Emit(Message{Source: SourceModel, Type: MessageTypeText, Payload: pending.String()})
+		if !a.hasSensitiveValues() {
+			a.Emit(Message{Source: SourceModel, Type: MessageTypeText, Payload: pending.String()})
+		}
 	}
 	return resp, true, err
 }
@@ -334,7 +353,7 @@ func (a *Agent) persistRoundReasoning(text string) {
 	if text == "" || a.Session == nil {
 		return
 	}
-	a.Session.AddMessage(session.Message{Role: "assistant", Type: "reasoning", Content: text})
+	a.Session.AddMessage(session.Message{Role: "assistant", Type: "reasoning", Content: a.redactSensitive(text)})
 }
 
 // llmStep 是一轮 LLM 输出的解析结果。
@@ -514,6 +533,11 @@ func (a *Agent) grantRequestFor(t tools.Tool, args json.RawMessage) approval.Gra
 		Cluster: a.Session.Cluster,
 		Risk:    t.Risk(args),
 	}
+	if a.hasSensitiveValues() {
+		// 当前轮已经看到过 Secret 原值时，禁止把后续调用折叠成可复用授权，
+		// 防止敏感值进入会话授权记录或后续自动执行。
+		req.NoGrant = true
+	}
 	if a.toolHasShell(t, args) {
 		req.Shell = true
 	}
@@ -587,6 +611,9 @@ func (a *Agent) approvalDecisionDetail(t tools.Tool, args json.RawMessage) appro
 	if a.toolHasShell(t, args) {
 		in.Shell = true
 	}
+	if mandatory, ok := t.(tools.MandatoryHumanApproval); ok {
+		in.RequireHuman = mandatory.RequiresHumanApproval(args)
+	}
 	guard := a.guardFor(t, args)
 	if guard != nil {
 		in.Denied = guard.Denied()
@@ -640,7 +667,8 @@ func (a *Agent) batchApprove(ctx context.Context, calls []llm.ToolCall) (approve
 		if err := a.scopeCheck(call); err != nil {
 			continue
 		}
-		key := declineKey(call.Name, call.Arguments)
+		safeArgs := a.safeArguments(call.Arguments)
+		key := declineKey(call.Name, safeArgs)
 		if a.Session.Approved(key) {
 			continue
 		}
@@ -658,16 +686,17 @@ func (a *Agent) batchApprove(ctx context.Context, calls []llm.ToolCall) (approve
 	for i, pw := range pendingWrites {
 		risk := pw.tool.Risk(pw.call.Arguments)
 		fmt.Fprintf(&sb, "\n\n%d. 风险等级：%s", i+1, risk)
+		safeArgs := a.safeArguments(pw.call.Arguments)
 		if d, ok := pw.tool.(tools.CommandDescriber); ok {
 			if cmd, change := d.Describe(pw.call.Arguments); cmd != "" {
-				sb.WriteString("\n   命令：" + cmd)
+				sb.WriteString("\n   命令：" + a.redactSensitive(cmd))
 				if change != "" {
-					sb.WriteString("\n   变更：" + change)
+					sb.WriteString("\n   变更：" + a.redactSensitive(change))
 				}
 			}
 		} else {
 			sb.WriteString("\n   工具：" + pw.call.Name)
-			sb.WriteString("\n   参数：" + string(pw.call.Arguments))
+			sb.WriteString("\n   参数：" + string(safeArgs))
 		}
 	}
 	sb.WriteString("\n\n是否全部执行？")
@@ -726,10 +755,12 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolCall, batchApprove
 	}
 	var argsView map[string]any
 	_ = json.Unmarshal(call.Arguments, &argsView)
+	safeArgsView, _ := a.redactValue(argsView).(map[string]any)
+	safeCallArgs := a.safeArguments(call.Arguments)
 	a.EmitCritical(Message{Source: SourceAgent, Type: MessageTypeToolCallRequest, Payload: ToolCallEvent{
-		Name: call.Name, Arguments: argsView, Risk: string(t.Risk(call.Arguments)),
+		Name: call.Name, Arguments: safeArgsView, Risk: string(t.Risk(call.Arguments)),
 	}})
-	a.audit(ctx, audit.ActionToolCallRequest, map[string]any{"name": call.Name, "arguments": argsView})
+	a.audit(ctx, audit.ActionToolCallRequest, map[string]any{"name": call.Name, "arguments": safeArgsView})
 	if err := a.scopeCheck(call); err != nil {
 		a.audit(ctx, audit.ActionApprovalDenied, map[string]any{
 			"name": call.Name, "reason": "scope_denied", "detail": err.Error(),
@@ -783,7 +814,7 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolCall, batchApprove
 		return tools.ResultError("tool call denied by approval policy")
 	}
 	if decision == approval.DecisionRequireApproval {
-		key := declineKey(call.Name, call.Arguments)
+		key := declineKey(call.Name, safeCallArgs)
 		// 先查拒绝计数 ≥ 上限？是 → 不再打扰用户，直接返回"硬拦截 + 替代方案提示"，LLM 必须收敛到新方案。
 		if a.Session.Declined(key) >= maxDeclinesBeforeBlock {
 			a.audit(ctx, audit.ActionApprovalDenied, map[string]any{
@@ -799,13 +830,13 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolCall, batchApprove
 			prompt := fmt.Sprintf("将执行以下操作（风险等级：%s）：", t.Risk(call.Arguments))
 			if d, ok := t.(tools.CommandDescriber); ok {
 				if cmd, change := d.Describe(call.Arguments); cmd != "" {
-					prompt += "\n\n命令：\n" + cmd
+					prompt += "\n\n命令：\n" + a.redactSensitive(cmd)
 					if change != "" {
-						prompt += "\n\n变更：\n" + change
+						prompt += "\n\n变更：\n" + a.redactSensitive(change)
 					}
 				}
 			} else {
-				prompt += "\n\n工具：" + call.Name + "\n参数：" + string(call.Arguments)
+				prompt += "\n\n工具：" + call.Name + "\n参数：" + string(safeCallArgs)
 			}
 			prompt += "\n\n是否执行？"
 			plan := a.approvalPlan(t, call, detail, clusterAccessChecked)
@@ -874,6 +905,7 @@ func (a *Agent) executeTool(ctx context.Context, call llm.ToolCall, batchApprove
 	if err != nil {
 		tr = tools.ResultError(err.Error())
 	}
+	a.recordSensitiveValues(tr.SensitiveValues)
 	hasErr := !tools.Present(tr).Ok
 	a.audit(ctx, audit.ActionToolCallResponse, map[string]any{
 		// readonly/risk 让四期审计能把非只读工具响应归类为 RESOURCE_MUTATION（P1.11）。
@@ -940,7 +972,7 @@ func (a *Agent) approvalPlan(t tools.Tool, call llm.ToolCall, detail approvalDet
 			Name: "Code Guard", Status: status, Message: strings.Join(detail.guard.Reasons, "；"),
 		})
 	}
-	return plan
+	return a.safeApprovalPlan(plan)
 }
 
 func (a *Agent) scopeCheck(call llm.ToolCall) error {

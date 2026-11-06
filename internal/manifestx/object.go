@@ -44,7 +44,7 @@ func secretAccessFinding(o *Object, access string) []Finding {
 	}
 	return []Finding{{Code: CodeSecretAccessOff, Severity: SeverityError, Field: "kind",
 		Message: "agent.secret.access=off，当前配置禁止创建 Secret",
-		Fix:     "如确需创建，请由管理员把 agent.secret.access 设为 create_only（只放行占位符生成）"}}
+		Fix:     "如确需创建，请由管理员把 agent.secret.access 设为 create_only 或 read_on_demand（只放行占位符生成）"}}
 }
 
 // resolveMapping 解析 GVK→GVR 与 scope。

@@ -99,7 +99,7 @@ var catalog = map[string][]Definition{
 		{Key: "skip_permissions", Kind: KindBool, Default: false, Source: "agent.skip_permissions", Desc: "非交互自动化放行写操作"},
 		{Key: "deny_ops", Kind: KindStringList, Default: []string{}, Example: "delete, edit", Source: "agent.deny_ops", Desc: "禁止的操作名单"},
 		{Key: "cmd_max_bytes", Kind: KindInt, Default: 65536, Min: 1, Source: "agent.cmd_max_bytes", Desc: "命令长度上限"},
-		{Key: "secret_access", Kind: KindString, Default: "create_only", Enum: []string{"off", "create_only"}, Source: "agent.secret.access", Desc: "Secret 创建通道"},
+		{Key: "secret_access", Kind: KindString, Default: "read_on_demand", Enum: []string{"off", "create_only", "read_on_demand"}, Source: "agent.secret.access", Desc: "Secret 创建与逐 key 审批读取"},
 	},
 	GroupMemory: {
 		{Key: "enabled", Kind: KindBool, Default: false, Desc: "启用长期记忆（P5.2 消费）"},

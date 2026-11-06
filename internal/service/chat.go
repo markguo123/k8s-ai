@@ -452,7 +452,9 @@ func (s *chatService) Chat(ctx context.Context, req ChatRequest, respond <-chan 
 	// 本轮运行的 turn/step 作用域要在工具装配前创建：Skill 观测回调要用它补关联字段。
 	scope := &runScope{sessID: sess.ID}
 	reg := tools.NewRegistry()
-	if err := k8stools.RegisterAll(reg, reader); err != nil {
+	if err := k8stools.RegisterAllWithOptions(reg, reader, k8stools.RegisterOptions{
+		SecretAccess: cfg.Agent.Secret.Access,
+	}); err != nil {
 		return nil, err
 	}
 	// 诊断 Tool 复用一期 ScanService（P3）。

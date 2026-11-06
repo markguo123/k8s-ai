@@ -384,7 +384,7 @@ func (c *Client) GetConfigMap(ctx context.Context, namespace, name string) (*cor
 }
 
 // ListSecretMeta 按命名空间列出 Secret 的元数据与键名集合（不含任何 data 内容值，P7.6）。
-// 采集边界即剥离 data 值，仅暴露名称/类型/键集/immutable；Secret 内容值绝不进入证据/LLM/会话/审计（AGENTS.md LLM Safety）。
+// 采集边界即剥离 data 值，仅暴露名称/类型/键集/immutable；内容值不进入证据链路。
 func (c *Client) ListSecretMeta(ctx context.Context, namespace string) ([]model.SecretInfo, error) {
 	list, err := c.clientset.CoreV1().Secrets(allOrNs(namespace)).List(ctx, listOpts())
 	if err != nil {
@@ -404,6 +404,37 @@ func (c *Client) ListSecretMeta(ctx context.Context, namespace string) ([]model.
 			Keys:      keys,
 			Immutable: s.Immutable != nil && *s.Immutable,
 		})
+	}
+	return out, nil
+}
+
+// GetSecretValues 按精确 key 读取 Secret 内容，仅供审批后的诊断工具使用。
+// 返回副本且只包含请求的 key；调用方必须在进入模型前把原值与平台持久化面隔离。
+func (c *Client) GetSecretValues(ctx context.Context, namespace, name string, keys []string) (map[string][]byte, error) {
+	if namespace == "" || name == "" {
+		return nil, fmt.Errorf("get secret values: namespace and name are required")
+	}
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("get secret values: at least one key is required")
+	}
+	secret, err := c.clientset.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("get secret %s/%s: %w", namespace, name, err)
+	}
+	out := make(map[string][]byte, len(keys))
+	for _, key := range keys {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		value, ok := secret.Data[key]
+		if !ok {
+			return nil, fmt.Errorf("secret %s/%s has no key %q", namespace, name, key)
+		}
+		out[key] = append([]byte(nil), value...)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("get secret values: no valid keys requested")
 	}
 	return out, nil
 }

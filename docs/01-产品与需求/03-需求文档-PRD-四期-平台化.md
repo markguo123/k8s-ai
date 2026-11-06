@@ -1,7 +1,7 @@
 # AegisOps 四期需求规格（平台化）
 
-> 版本：v1.21
-> 日期：2026-10-30
+> 版本：v1.22
+> 日期：2026-11-06
 > 状态：四期最终需求方案  
 > 目标：交付面向企业的多用户 Kubernetes AI 运维平台，在同一权限、会话、审计与安全执行体系下提供 Chat、诊断、集群管理、Skill、审批和治理能力。
 
@@ -714,11 +714,14 @@ procedural 消费路径：
 - SKILL.md 正文仅作文本上下文注入，不解析、不执行其中任何「指令式」内容。
 - 技能包内 `scripts/` 一律 inert（静态存储，平台不提供直接运行引擎）。
   用户方法论文本里的命令，由 Agent 翻译为受信工具调用后执行，并遵守既有 shell /
-  exec 审批红线：交互式 `exec -i/-t`、`attach`、`port-forward` 等仍硬拒；
+  exec 审批红线：非交互 `exec <pod> -- <command>` 需真人审批且不能被自动化开关绕过；
+  交互式 `exec -i/-t/--stdin/--tty`、`attach`、`port-forward` 等仍硬拒；
   `logs | grep` 走结构化 logs 或经人工审批的 shell。
 - 平台能力无法覆盖的方法学步骤，明确拒绝并说明，记入 `SKILL_RUN` 审计；
   不允许技能伪造不存在的工具或绕过既有能力。
-- Secret 内容值永不进入 LLM / 上下文 / 会话 / 审计；kubeconfig 红线不变。
+- Secret 默认只读元数据。`agent.secret.access=read_on_demand` 时，指定 key 的
+  内容值可在逐次审批后进入当前轮模型上下文；值不得进入 evidence、UI/SSE、会话、
+  数据库、审计、最终回答或后续轮次。kubeconfig 红线不变。
 
 ---
 
@@ -1635,7 +1638,7 @@ initContainer），`server` 启动内保留同一迁移的幂等兜底；`aopsct
 按版本与 sha256 校验下载的 `kubectl`，容器内 Chat 保持与本地 CLI 等价的读命令、shell 管道与 kubectl 写通道能力，
 平台已有能力不因部署进 Kubernetes 而丢失。静态开关 `platform.exec.shell_enabled` 默认 `true`；置 `false` 时在构造
 执行命令之前返回可指导文案，配套 `Dockerfile.distroless` 无 shell 变体供硬合规现场选用。安全不靠隐藏工具，而由
-shell 命令必经真人审批、Secret 值与 `--raw` 与交互式动词红线、集群 RBAC（默认只读、不含 `pods/exec`）、输出脱敏与
+shell 命令必经真人审批、非交互 exec 与 Secret 按需读取强制人工审批、kubectl Secret/`--raw`/交互式动词红线、集群 RBAC（默认只读；写 profile 可显式增加 `pods/exec create`）、输出脱敏与
 全量审计、Deployment 安全加固（非 root 65532、`allowPrivilegeEscalation: false`、drop ALL capabilities、
 `seccompProfile: RuntimeDefault`、只读根文件系统 + 可写 emptyDir）共同收口。Code Guard + `internal/executor`
 双层边界不变，且仍是唯一写执行通道。
@@ -1714,9 +1717,9 @@ LLM 只作**辅助安装**（D-34 / ADR-045）：脚本本体零 LLM、零外呼
 
 必须保持：
 
-1. Secret 不进入 LLM。
-2. Secret 不进入 Audit。
-3. Secret 不进入 Memory。
+1. Secret 默认不进入 LLM；仅 `read_on_demand` 下指定 key 可经逐次审批进入当前轮模型。
+2. Secret 明文不进入 Audit、Session、平台数据库、UI/SSE 或最终回答。
+3. Secret 明文不进入 Memory。
 4. kubeconfig 不进入 LLM。
 5. kubeconfig 不进入普通 Session。
 6. kubeconfig 不进入 Audit。
@@ -1726,7 +1729,7 @@ LLM 只作**辅助安装**（D-34 / ADR-045）：脚本本体零 LLM、零外呼
 10. 所有写操作必须经过既有 Approval / Code Guard / Executor。
 11. Code Guard 永远是最终安全边界。
 12. 产品角色不替代 Kubernetes RBAC。
-13. `skip_permissions` 等配置不能绕过 Code Guard。
+13. `skip_permissions` 等配置不能绕过 Code Guard、非交互 exec 或 Secret 按需读取审批。
 14. Shell 的安全约束不能因为 Web 平台化而降低。
 15. 产品授权以 namespace 为唯一边界，AuthzGrant 为权威、Kubernetes RBAC 为派生并对账
     回收；执行前 SAR 只验权限，操作安全仍由 Code Guard + 准入控制把关。
@@ -2056,3 +2059,4 @@ Security Boundary Unchanged
 | v1.19 | 2026-10-29 | 两条部署与存储口径统一（仅文档，不改需求范围）：① **存储边界**（D-32、ADR-043、方案《15-方案-存储边界与对象存储-四期.md》、开发计划 v1.52 新增主线 P8）——大载荷统一经 internal/blobstore 决定落点，新增静态段 platform.blobs.*（driver 取 off、db、dir、s3，默认 db，不入动态键白名单），默认后端行为与现状一致，s3 对接 S3 兼容对象存储且 MinIO 只是默认交付后端，MySQL 仍是会话唯一权威源，dir 后端限制多副本扩容须在文档与校验中备注，CLI 仅允许 off 与 dir；② **容器执行通道口径翻转**（D-33、ADR-044 v1.1、方案《16-方案-容器执行通道与镜像基座-四期.md》）——默认镜像运行阶段改 debian:bookworm-slim 并内置 bash、coreutils、jq、curl 与构建期校验下载的 kubectl，platform.exec.shell_enabled 默认 true，安全由 shell 必经真人审批、既有红线、集群 RBAC、脱敏与全量审计、Deployment 加固收口，保留 Dockerfile.distroless 无 shell 变体，取消 initContainer 投递 kubectl；§22/§26/§27/§28 同步回写，开发计划 v1.53、部署手册 §2.2 与 §4.16/§4.17 |
 | v1.20 | 2026-10-29 | 一键安装口径冻结（仅文档，不改需求范围，见开发计划 v1.56、D-34、ADR-045）：① **`STORAGE_CLASS` 语义修正**：由「为空则不创建 PVC」改为「为空即用集群默认存储类」，PVC 默认创建承载报告与导出，集群无默认存储类且未指定时前置检查失败并列出可选值；② **暴露层改可选**：`EXPOSE=nodeport/ingress` 且**默认 NodePort**（现场常无真实域名，Ingress 自定义域名要逐台改客户端 hosts），`NODE_PORT` 为空由集群分配并回显节点 URL，Ingress 仅在给出 `INGRESS_HOST` 时启用，且经核对无需改 Go 代码（token 走 `Authorization` 头、同源放行、SPA 相对路径），正式清单 Service 仍固定 ClusterIP；③ **脚本两段一体 + 九阶段 + 配置三层**（CLI flag > env > `install.env` > 内置默认），参数表补齐 BUILD/FORM/IMAGE_WEB/REPORT_STORAGE_SIZE/PERSIST_REPORTS/EXPOSE/NODE_PORT/INGRESS_CLASS/IMAGE_PULL_SECRET，渲染进临时目录并断言零占位符残留、不就地改写仓库 YAML，DSN 与口令经 stdin 注入；④ **LLM 仅辅助**：脚本本体零 LLM，可选 `install doctor`/`install plan` 子命令（开发计划 P6.14/P6.15）不进关键路径，无模型时纯参数必须装通。§26/§27 同步回写，部署手册 §4.4/§4.6/§4.10 与 `deploy/` 注释同步 |
 | v1.21 | 2026-10-30 | 存储边界与对象存储架构评审回写（仅文档，不改需求范围与优先级，见方案《15-方案-存储边界与对象存储-四期.md》v1.3、ADR-043 v1.1、新增 ADR-046、开发计划 v1.60）：① **双存储职责表冻结**——MySQL 是默认业务数据库并持有对象元数据与状态机，对象存储只承载实际文件内容与大体积非结构化数据；业务数据不迁桶，不因引入对象存储改变 MySQL 默认业务库定位。② **统一抽象改名**——抽象层包名定为 `internal/objectstore`（`internal/blobstore`、表名 `blob_objects` 为早期草案命名，落地时统一为 `objects`），业务模块禁止直接 import 厂商 SDK；配置面沿用已落地的 `platform.blobs.*` 静态段与 `BLOBS_*` 安装变量不改名，CLI 侧 `blobs gc`、`blobs verify` 命令名保留。③ **新增前置任务 P8.0 会话事实源收敛**（ADR-046）——现状 Web 会话权威源是容器内文件存储、MySQL 只写不读，且删除、清空、改名、置顶只写文件存储，导致库内残留已删会话整份正文（合规风险），对象存储接入前必须先让 Web 读写路径统一走平台库。④ **元数据与一致性**——`objects` 表 + `ready`、`orphaned`、`missing`、`deleting` 四态状态机 + 两段式 GC（先解除引用并落库，再删桶内内容），`internal/store` 新增 `WithTx` 事务入口（现状无任何事务边界）。⑤ **故障隔离写入验收级条款**——`/readyz` 判据不含对象存储，启动期配置错误 fail-fast、运行期只把对象端点降级为 503，桶不可达不得把整个进程打成不可用。⑥ **备份与恢复**——顺序固定「先 MySQL、后对象存储」，`gc_grace_period` 默认 168h 且必须远大于备份窗口，恢复后以 `blobs verify --strict` 为准出关口，并明确 ETag 不等于 sha256、不可用作完整性依据。⑦ **会话正文四期不外置**——`session_data` 不落桶，改为新增 `agent.session_max_bytes`（默认 12MiB、达 85% 预警）抑制单会话膨胀，`db` 后端单行超 8MiB 出 WARN。⑧ **安全口径**——红线 22 改写为对象引用与凭据脱敏的完整表述，新增红线 23（桶故障不得波及基础业务、禁止熔断器与写缓冲伪造成功）与红线 24（备份顺序与 verify 准出）。⑨ **落地约束登记**——新增权限位须同步权限注册表且注意内置角色权限每次启动由代码覆盖、页面改动不持久，新增静态配置键须登记进静态引擎键白名单，未登记的新 API 路由在权限网关默认 403。§22 整段改写、§7.1 增会话事实源条款、§28 红线同步；P8 工时由 7.50 调至 11.00 人日，附件上传通道 P8.7 延至 v4.2。 |
+| v1.22 | 2026-11-06 | **Agent 非交互执行与 Secret 按需诊断**：允许 `kubectl exec <pod> -n <ns> -- <command>`，但 stdin/tty、attach、port-forward 继续硬拒；exec 每次真人审批且不受 `skip_permissions` 豁免；新增 `agent.secret.access=read_on_demand`，仅允许 `get_secret_value` 逐 key 审批读取，值只进入当前轮模型，非模型出口精确脱敏；写 RBAC 示例增加 `pods/exec create` 但不授权 attach/port-forward。见 ADR-048 与《19-方案-Agent执行与Secret按需诊断-四期.md》。 |

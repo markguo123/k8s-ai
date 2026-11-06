@@ -1,9 +1,13 @@
 # 项目开发任务：AegisOps 二期（需求规格 v4.0）
 
-> 版本：v4.0
-> 日期：2026-09-18
-> 状态：v3.0 已实施完成；§28 为新增需求草案（2026-09-18）
+> 版本：v4.1
+> 日期：2026-11-06
+> 状态：v3.0 已实施完成；安全条款已按 ADR-048 更新
 > 关联：docs/DEVELOPMENT*PLAN*二期.md（开发计划）、AGENTS.md、docs/design/ARCHITECTURE.md、docs/design/ADR.md
+
+> 2026-11-06 口径更新：本文历史章节中的“Secret 永不进入任何 LLM 请求”、
+> “禁止所有 pods/exec”均已被 ADR-048 取代。当前允许审批后的非交互 exec；
+> `read_on_demand` 可按 key、逐次审批读取 Secret，值只进入当前轮模型，其他出口精确脱敏。
 
 ## 修订记录
 
@@ -13,6 +17,7 @@
 | v2.0 | 2026-08-21 | 基于 kubectl-ai 设计复盘重组为章节化需求，补充接口契约/配置/验收                                            |
 | v3.0 | 2026-08-23 | 按四点澄清修订：读写不限制 + 人类确认、充分照抄 kubectl-ai、一期能力全继承（tools 不重复开发）、新增 Web UI |
 | v4.0 | 2026-09-18 | 新增扫描能力补全与规则池扩展需求（§28）；方法论 skill 化明确不在本版范围；评审后调整：MirrorPod 改为 DeploymentOverReplicas、ConfigRefNotFound 降为 suggestion 并延后、C 级规则延后到后续迭代 |
+| v4.1 | 2026-11-06 | 安全口径更新：非交互 exec 人工审批开放；Secret `read_on_demand` 逐 key 审批；attach/port-forward/stdin/tty 与 kubectl Secret/--raw 继续禁止 |
 
 ---
 

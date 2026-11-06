@@ -212,15 +212,32 @@ func extractFirstNonFlag(tokens []string) (string, []string) {
 }
 
 // validateFlags 拒绝交互式 flag（exec -i/-t）。
+// exec 必须是 `kubectl exec <pod> -- <command>` 形式：`--` 之前不得出现
+// stdin/tty 相关 flag，`--` 之后必须有明确命令，避免 kubectl 落入默认交互会话。
 // 流式 flag（logs -f / get -w）不再拒绝，改由 executor 统一超时捕获部分输出。
 func validateFlags(verb string, tokens []string) error {
 	if verb != "exec" {
 		return nil
 	}
-	for _, t := range tokens {
-		if t == "-i" || t == "-t" || t == "-it" || t == "-ti" || t == "--stdin" || t == "--tty" {
+	sep := -1
+	for i, t := range tokens {
+		if t == "--" {
+			sep = i
+			break
+		}
+		switch {
+		case t == "-i", t == "-t", t == "-it", t == "-ti",
+			strings.HasPrefix(t, "-i="), strings.HasPrefix(t, "-t="),
+			t == "--stdin", strings.HasPrefix(t, "--stdin="),
+			t == "--tty", strings.HasPrefix(t, "--tty="):
 			return fmt.Errorf("interactive exec is not supported; use non-interactive exec with a specific command")
 		}
+	}
+	if sep < 0 {
+		return fmt.Errorf("non-interactive exec requires `-- <command>`")
+	}
+	if sep == len(tokens)-1 {
+		return fmt.Errorf("non-interactive exec requires a command after `--`")
 	}
 	return nil
 }

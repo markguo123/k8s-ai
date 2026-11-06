@@ -668,6 +668,11 @@
 - **后果**：镜像约 20MB → 约 180MB、CVE 面上升（交付前镜像扫描报告归档）；容器内具备本地命令执行能力，故上述加固项为必配；换来 K8s 形态与本地 CLI 形态的执行能力对齐（管道、聚合统计、heredoc、非交互 `kubectl exec`）。代码面为 `Options`/config 各一个布尔键、两处可指导文案与启动探测，`tests/arch` 增加「shell 执行点唯一且必须被闸门包裹」红线。
 - **落实状态**：待实现（P6.3）。方案见 `16-方案-容器执行通道与镜像基座-四期.md` v1.1。
 
+> 2026-11-06 口径更新：本 ADR 中“写权限不含 `pods/exec`”与“Secret 值永不进入
+> LLM”的绝对表述已由 ADR-048 取代。当前允许审批后的非交互 `pods/exec`，并允许
+> `read_on_demand` 逐 key 读取 Secret；attach/port-forward、stdin/tty、kubectl Secret
+> 和 `--raw` 仍禁止。
+
 ## ADR-045 一键安装：配置三层分层、暴露层可插拔（默认 NodePort）与 LLM 辅助边界
 
 - **状态**：已接受（2026-10-29）；实现落 P6.4，安装辅助拆到 P6.14/P6.15（可选、不进关键路径）
@@ -711,6 +716,31 @@
   4. 采集质量只表示计划内 API 调用是否成功，不冒充证据充分度；每个诊断仍用 `EvidenceRefs` + `EvidenceGaps` 自证。正常退出码 0 的高重启容器不得描述为崩溃，未确认原因前不得盲推 `rollout restart`。
 - **后果**：报告/API/Web 的证据 ID 可稳定定位，根因口径唯一，故障链由关系网收敛为树；旧裸 E-ID 报告仍可读但新结果统一 canonical 格式。Scanner 不做重写，降低引入采集回归的风险。
 - **落实状态**：代码与测试已落地；权威细节见 `18-方案-体检诊断体系升级-四期.md` v1.4 §4、§6、§16–§17，数据字段见 `02-数据模型与数据字典.md`，流程见 `07-采集与扫描流程.md` v2.1。
+
+## ADR-048 Agent 非交互执行与 Secret 按需诊断
+
+- **状态**：Accepted（2026-11-06）
+- **背景**：默认只读 RBAC 与“Secret 内容值永不进入 LLM”的绝对口径导致 Agent
+  无法执行非交互容器命令，也无法处理认证失败、配置格式错误、旧凭据未更新等确需
+  比较 Secret 值的故障。交互式能力继续放宽会引入阻塞进程和任意 stdin 风险。
+- **决策**：
+  1. 允许 `kubectl exec <pod> -n <ns> -- <command>`；硬拒 `-i/-t/--stdin/--tty`，
+     且 exec 永远要求真人审批；`attach/port-forward` 等继续拒绝。
+  2. 新增 `agent.secret.access=read_on_demand`：只允许结构化
+     `get_secret_value` 按 namespace/name/key 读取，单次最多 5 key，每个值
+     16 KiB、单次总 32 KiB。
+  3. Secret 读取每次弹审批卡；`--skip-permissions` 不得绕过。
+  4. 审批后的明文只进入当前轮模型上下文。UI/SSE、ToolResult 安全字段、会话、
+     平台数据库、审计、最终回答和后续轮次不得保存或回显明文。
+  5. 平台采用模型专用 `ModelOnly` 数据通道与当前轮精确值脱敏；读取后暂停流式输出，
+     完整回答和后续工具参数/输出统一替换为 `[REDACTED]`。
+  6. kubectl Secret 直接访问与 `--raw` 继续硬拒绝；巡检与 Evidence 仍只读元数据。
+- **后果**：Agent 可以用真实集群 Secret 值诊断，但模型提供方可见审批后的明文，
+  部署方必须确认数据处理边界。写 RBAC 示例需要新增 `pods/exec create`，默认只读
+  角色不变。旧的“Secret 永不进入任何 LLM 请求”“pods/exec 永不授权”表述由本 ADR
+  和《19-方案-Agent执行与Secret按需诊断-四期.md》取代。
+- **落实状态**：代码、RBAC 示例、审批门禁、审计/会话/SSE 隔离测试已落地；
+  真机验证见开发记录。
 
 ## 待决策事项（需在编码前确认）
 

@@ -23,6 +23,23 @@ const (
 // 如 get_pods 只有 "pods=20" 而没有 Pod 列表，会导致模型反复调用同一工具）。
 // maxBytes<=0 时使用默认 8KB。
 func MarshalForLLM(result ToolResult, maxBytes int) (string, bool) {
+	payload, truncated := marshalSafePayload(result, maxBytes)
+	if result.ModelOnly != nil {
+		if raw, err := json.Marshal(result.ModelOnly); err == nil && len(raw) > 0 {
+			payload += "\n<model_only_sensitive_secret_values>\n" + string(raw) + "\n</model_only_sensitive_secret_values>"
+		}
+	}
+	return untrustedPrefix + payload + untrustedSuffix, truncated
+}
+
+// MarshalSafe 返回可进入 UI、SSE、会话与审计的安全表示：永不包含 ModelOnly
+// 或 SensitiveValues，只保留已脱敏的 Text/Data。
+func MarshalSafe(result ToolResult, maxBytes int) (string, bool) {
+	payload, truncated := marshalSafePayload(result, maxBytes)
+	return untrustedPrefix + payload + untrustedSuffix, truncated
+}
+
+func marshalSafePayload(result ToolResult, maxBytes int) (string, bool) {
 	if maxBytes <= 0 {
 		maxBytes = 8 * 1024
 	}
@@ -39,7 +56,7 @@ func MarshalForLLM(result ToolResult, maxBytes int) (string, bool) {
 	payload := strings.Join(parts, "\n")
 	payload = redactor.Redact(payload)
 	truncated := truncate(&payload, maxBytes)
-	return untrustedPrefix + payload + untrustedSuffix, truncated
+	return payload, truncated
 }
 
 // Redacted 判断文本是否需要脱敏（供测试与摘要）。

@@ -33,10 +33,10 @@ var forbiddenMethodCalls = []string{
 	"Create", "Update", "Patch", "Delete", "Apply", "Replace", "Scale", "Exec", "PortForward",
 }
 
-// Secret 内容值红线（AGENTS.md LLM Safety）：
+// Secret 内容值边界：
 //   - StringData 是 corev1.Secret 的原始内容值（写入）字段，生产代码任何位置都禁止触碰；
-//   - Secret 元数据/键级读取只允许发生在只读门面 internal/kubernetes（采集边界剥离 data 值，
-//     只向应用暴露名称/类型/键集合，内容值不进入证据/LLM/会话/审计）。
+//   - Secret 读取只允许发生在 internal/kubernetes 门面：元数据采集剥离 data；
+//     按需诊断只由人工审批后的 GetSecretValues 读取指定 key。
 const forbiddenSecretValueField = "StringData"
 const secretReadAllowedPkg = "kubernetes"
 
